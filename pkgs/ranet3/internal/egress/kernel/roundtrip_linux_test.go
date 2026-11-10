@@ -29,6 +29,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -50,7 +51,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 
 	cfg := egress.Egress{
 		Return:    true,
@@ -242,7 +243,7 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	rt := Runtime{Interface: "ranet0", Steered: true}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
@@ -357,7 +358,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	rt := Runtime{
 		Interface:  "ranet0",
 		Steered:    true,
@@ -458,7 +459,7 @@ func TestNftablesRewritesALineEditedUnderItsComment(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	be, err := newBackend(egress.Egress{}, rt)
@@ -534,7 +535,7 @@ func TestNftablesReadsForwardAndIPv6sChainBack(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	be, err := newBackend(egress.Egress{}, rt)
@@ -647,7 +648,7 @@ func TestNftablesRemakesTheTableAnEarlierLayoutWrote(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	be, err := newBackend(egress.Egress{}, rt)
@@ -735,7 +736,7 @@ func TestNftablesDeletesTheRetiredChainBesideAStrayItGoesTo(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	be, err := newBackend(egress.Egress{}, rt)
@@ -793,7 +794,7 @@ func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	cfg := egress.Egress{Translate: []egress.Class{
 		{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
@@ -933,7 +934,7 @@ func TestNftablesNamesTheChainThatKeepsAStrayChainOfNone(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	cfg := egress.Egress{Translate: []egress.Class{{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}}}}
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
@@ -1017,7 +1018,7 @@ func TestNftablesRemakesBesideAKilledInstancesChainOfNone(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	killed := egress.Egress{FlowsPerSource: 64, Translate: []egress.Class{
@@ -1071,7 +1072,7 @@ func TestNftablesRemakesAStaleTimeoutAlone(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	be, err := newBackend(egress.Egress{}, rt)
@@ -1127,7 +1128,7 @@ func TestNftablesKeepsTheSetsCountsAcrossARewrite(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	nft, err := exec.LookPath("nft")
 	if err != nil {
 		t.Fatal("another writer's changes are made through nft, which is not on the path")
@@ -1200,7 +1201,7 @@ func TestNftablesRemakesASetThatCountsAnotherLimit(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	nft, err := exec.LookPath("nft")
 	if err != nil {
 		t.Fatal("another writer's changes are made through nft, which is not on the path")
@@ -1286,7 +1287,7 @@ func TestNftablesReportsTheNatChainsAtItsPriorityOrBelow(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	nft, err := exec.LookPath("nft")
 	if err != nil {
 		t.Fatal("another writer's chains are made through nft, which is not on the path")
@@ -1447,7 +1448,7 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	nft, err := exec.LookPath("nft")
 	if err != nil {
 		t.Fatal("another writer's changes are made through nft, which is not on the path")
@@ -1638,7 +1639,7 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	be, err := newBackend(egress.Egress{}, Runtime{Interface: "ranet0", Steered: true})
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -1701,28 +1702,4 @@ func requireEmptyRuleset(t *testing.T, be backend) {
 	if rules, _, _ := flatten(read); len(rules) != 0 {
 		t.Fatalf("the namespace holds %d rules of this tool's", len(rules))
 	}
-}
-
-// enterThrowawayNamespace moves this thread into a network namespace of its
-// own and refuses to continue if it did not move, the same pair of guards
-// internal/kernel's netlink test takes.
-func enterThrowawayNamespace(t testing.TB) {
-	t.Helper()
-	runtime.LockOSThread()
-	before := namespaceID(t)
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		t.Fatalf("unshare a network namespace: %v", err)
-	}
-	if namespaceID(t) == before {
-		t.Fatal("refusing to continue: the network namespace did not change")
-	}
-}
-
-func namespaceID(t testing.TB) uint64 {
-	t.Helper()
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
-		t.Fatalf("stat this thread's network namespace: %v", err)
-	}
-	return st.Ino
 }

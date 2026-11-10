@@ -61,10 +61,7 @@ func newBenchHost(b *testing.B) *benchHost {
 	if os.Getuid() != 0 {
 		b.Skip("the antispoof filter's benchmarks need root on linux")
 	}
-	enterThrowawayNamespace(b)
-	if err := netnstest.BringUp("lo"); err != nil {
-		b.Fatal(err)
-	}
+	netnstest.EnterEmpty(b)
 	// an address the uplink takes is usable at once, with no duplicate detection to wait out
 	if err := os.WriteFile("/proc/sys/net/ipv6/conf/default/accept_dad", []byte("0"), 0o644); err != nil {
 		b.Fatal(err)

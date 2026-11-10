@@ -165,7 +165,7 @@ func TestBorderTakesTheExemptOwnRangeFromItsCarveOutsLinkAlone(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	p := netip.MustParsePrefix
 	source := netip.MustParseAddr("203.0.113.65")
 	site, uplink := netnstest.StartThread(t), netnstest.StartThread(t)
@@ -213,7 +213,7 @@ func TestBorderKeepsTheOwnRangeCarvedWhereACarveOutHoldingItIsNotExempt(t *testi
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	p := netip.MustParsePrefix
 	source := netip.MustParseAddr("203.0.113.6")
 	site, wlan := netnstest.StartThread(t), netnstest.StartThread(t)

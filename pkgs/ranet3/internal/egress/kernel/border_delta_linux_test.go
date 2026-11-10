@@ -17,6 +17,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // elementListener is a socket on nf_tables' notification group, as nft monitor
@@ -92,7 +93,7 @@ func TestBorderPassSendsAOneLANChangeAsItsDelta(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	// one goroutine throughout, since a subtest's would run outside the namespace
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	listener := openElementListener(t)
 	for _, n := range []int{10, 1000, 10000} {
 		// every other index, so no two LANs touch

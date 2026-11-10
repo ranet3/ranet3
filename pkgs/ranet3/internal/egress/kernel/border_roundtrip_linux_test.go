@@ -24,6 +24,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -39,7 +40,7 @@ func TestBorderRoundTrip(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatalf("open the antispoof filter's backend: %v", err)
@@ -232,7 +233,7 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	nft, err := exec.LookPath("nft")
 	if err != nil {
 		t.Fatal("another writer's changes are made through nft, which is not on the path")
@@ -407,7 +408,7 @@ func TestBorderRoundTripRefillsAFlushedSet(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
@@ -458,7 +459,7 @@ func TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	// on a host holding no table the first start makes one
 	fresh, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
@@ -525,7 +526,7 @@ func TestBorderRoundTripLeavesAnotherWritersChainInTheTable(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	conn, err := nftables.Dial()
 	if err != nil {
@@ -622,7 +623,7 @@ func TestBorderRoundTripOutlivesAKilledOwner(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

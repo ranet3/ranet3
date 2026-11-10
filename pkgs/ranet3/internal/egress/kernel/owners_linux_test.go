@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -160,7 +161,7 @@ func TestEachOwnersRemakeKeepsTheOthers(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	tr, _, _, f, switchConn := startOwners(t)
 	translates := func(name string) bool {
@@ -232,7 +233,7 @@ func TestOwnersWakeOnTheirOwnChangesAlone(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	tr, be, filterBackend, f, switchConn := startOwners(t)
 	switchMonitor, err := nftables.OpenMonitor(switchConn, switchScope)

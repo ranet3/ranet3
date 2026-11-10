@@ -39,7 +39,7 @@ func TestForwardTakesEachFamilyAcrossItsOwnLinesAlone(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	const mesh, out = "ranet0", "ranetout0"
 	in := benchOpenTun(t, mesh)
@@ -159,7 +159,7 @@ func TestTranslatorLineLeavesTheOtherFamilysFlowsUncounted(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	const mesh, out = "ranet0", "ranetout0"
 	in := benchOpenTun(t, mesh)
