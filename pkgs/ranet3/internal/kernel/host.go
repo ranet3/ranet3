@@ -14,16 +14,6 @@ import (
 // through, and the addresses it assigns. A nil Host is the kernel this process
 // is running on, the one every deployment gets.
 //
-// It exists because the path from a configuration file to a route on the wire
-// ran through nothing a test could stand in for. Every mechanism under it is
-// exercised against a hand-built struct, and the wiring that decides which of
-// them a file turns on was exercised by nothing: on darwin a reconciler built
-// through New opens a route socket, resolves a utun and dumps the table before
-// any of it is observable, so a test without a kernel could not reach a single
-// default of that capability. A recorded Host is a routing table a test writes
-// and reads back, so the daemon is built the way the command builds it and the
-// assertions are about what reached the kernel.
-//
 // Only the darwin backend consults one. linux has its own seam a layer down,
 // the netlink connection its write tests drive, and reads this never.
 type Host interface {
