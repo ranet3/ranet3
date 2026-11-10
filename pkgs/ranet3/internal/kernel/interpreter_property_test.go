@@ -856,8 +856,8 @@ func (h interpreted) expected(p fibPacket) string {
 			return route.device
 		}
 	}
-	if route, ok := lookup(h.host.tables[schema.TableMain], p); ok && route.destination.Bits() > 0 && reaches(priorityMain) {
-		return route.device
+	if route, ok := lookup(h.host.tables[schema.TableMain], p); ok && (route.destination.Bits() > 0 || route.unreachable) && reaches(priorityMain) {
+		return answer(route)
 	}
 	mesh, own := reaches(priorityMesh), reaches(priorityOwn) && h.owns(p.source)
 	if inside {
@@ -959,23 +959,28 @@ func plainHost(tailnet bool) fib {
 	})
 }
 
-// the walk's named cases, each where both the walk and the rules written out send it
-func TestRuleWalkNamedCases(t *testing.T) {
-	learnedAt := func(destination string) mirrorEntry {
-		return mirrorEntry{destination: prefix(destination), value: learned}
-	}
-	at := func(value *netstack.Peer, destination string) mirrorEntry {
-		return mirrorEntry{destination: prefix(destination), value: value}
-	}
-	overlay := []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
-	from := func(source, destination string) fibPacket {
-		return fibPacket{source: netip.MustParseAddr(source), destination: netip.MustParseAddr(destination)}
-	}
-	marked := func(p fibPacket, mark uint32) fibPacket { p.mark = mark; return p }
-	arriving := func(link string, p fibPacket) fibPacket { p.iif = link; return p }
-	// a bridge forward names and a LAN through eth1 it leaves out, an overlay
-	// address on the loopback, and on dummy0 a network about the overlay
-	forwarding := exitView{on: true, forwarded: []string{"br-1a"}, network: NetworkState{
+// learnedAt is a learned entry at destination
+func learnedAt(destination string) mirrorEntry {
+	return mirrorEntry{destination: prefix(destination), value: learned}
+}
+
+// at is an entry of value at destination
+func at(value *netstack.Peer, destination string) mirrorEntry {
+	return mirrorEntry{destination: prefix(destination), value: value}
+}
+
+// from is an unmarked lookup of the host's own
+func from(source, destination string) fibPacket {
+	return fibPacket{source: netip.MustParseAddr(source), destination: netip.MustParseAddr(destination)}
+}
+
+var (
+	// namedOverlay is the overlay of the walk's named cases and of the rows
+	namedOverlay = []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
+	// namedForwarding is mode 2 over a bridge forward names and a LAN through
+	// eth1 it leaves out, an overlay address on the loopback, and on dummy0 a
+	// network about the overlay
+	namedForwarding = exitView{on: true, forwarded: []string{"br-1a"}, network: NetworkState{
 		IPv4: NetworkFamily{Links: []Link{
 			{Name: "br-1a", Prefixes: []netip.Prefix{prefix("203.0.113.129/26")}},
 			{Name: "eth0", Prefixes: []netip.Prefix{prefix("198.51.100.10/24")}},
@@ -989,9 +994,17 @@ func TestRuleWalkNamedCases(t *testing.T) {
 			{Name: "eth1", Prefixes: []netip.Prefix{prefix("2001:db8:50::1/64")}},
 		}},
 	}}
+	// namedDefaults is a learned default and a mesh subnet of each family
+	namedDefaults = []mirrorEntry{learnedAt("0.0.0.0/0"), learnedAt("::/0"), learnedAt("203.0.113.0/27"), learnedAt("2001:db8:300::/64")}
+)
+
+// the walk's named cases, each where both the walk and the rules written out send it
+func TestRuleWalkNamedCases(t *testing.T) {
+	overlay, forwarding, defaultsAndSubnets := namedOverlay, namedForwarding, namedDefaults
+	marked := func(p fibPacket, mark uint32) fibPacket { p.mark = mark; return p }
+	arriving := func(link string, p fibPacket) fibPacket { p.iif = link; return p }
 	refusing := forwarding
 	refusing.fallback = true
-	defaultsAndSubnets := []mirrorEntry{learnedAt("0.0.0.0/0"), learnedAt("::/0"), learnedAt("203.0.113.0/27"), learnedAt("2001:db8:300::/64")}
 	// a subnet router announcing the LAN through eth1 it holds an address in
 	routerLinks := NetworkState{
 		IPv4: NetworkFamily{Links: []Link{
