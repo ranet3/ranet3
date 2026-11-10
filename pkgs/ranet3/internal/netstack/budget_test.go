@@ -217,12 +217,22 @@ func TestBudgetHoldsItsLimitUnderConcurrentReservers(t *testing.T) {
 	}
 }
 
+const (
+	// raceLosses is how many swaps of their own the reservers racing for one budget lose before they stop
+	raceLosses = 50
+	// raceTimeout bounds the race on a host where the reservers' swaps lose rarely
+	raceTimeout = 30 * time.Second
+)
+
 // a budget with room for every reserver at once refuses none of them, however they race
-// a reserver whose swap loses to another reserver, or to the sender giving bytes back, loads the count again
+// a reserver whose swap loses to another reserver taking or giving back its own charge loads the count again
 // rather than dropping a read with room to spare
 // the reservers take the charges of shares on each side of both edges of the charge
+// each one's takes alternate with a load and a swap of its own that it never retries
+// and they race until those swaps have lost raceLosses times or raceTimeout passes
+// the test counts those losses, not take's, and skips when they are fewer, having seen no refusal
 func TestBudgetNeverRefusesRoomThatIsThere(t *testing.T) {
-	const reservers, takes = 16, 2000
+	const reservers = 16
 	shares := []struct{ count, bytes int }{
 		{1, 1}, {4, 4*leastPacketBytes - 1}, {4, 4 * leastPacketBytes}, {transmitBatchSize, peerDataBudget / 2}, {1, peerDataBudget}, {transmitBatchSize, peerDataBudget + 1},
 	}
@@ -233,13 +243,20 @@ func TestBudgetNeverRefusesRoomThatIsThere(t *testing.T) {
 		charges[r] = dataCharge(share.count, share.bytes)
 		budget.limit += int64(charges[r])
 	}
-	var refused atomic.Int64
+	var takes, lost, refused atomic.Int64
 	var wg sync.WaitGroup
 	start := make(chan struct{})
+	deadline := time.Now().Add(raceTimeout)
 	for _, n := range charges {
 		wg.Go(func() {
 			<-start
-			for range takes {
+			for lost.Load() < raceLosses && time.Now().Before(deadline) {
+				if used := budget.used.Load(); budget.used.CompareAndSwap(used, used+int64(n)) {
+					budget.used.Add(-int64(n))
+				} else {
+					lost.Add(1)
+				}
+				takes.Add(1)
 				if !budget.take(n) {
 					refused.Add(1)
 					continue
@@ -251,7 +268,10 @@ func TestBudgetNeverRefusesRoomThatIsThere(t *testing.T) {
 	close(start)
 	wg.Wait()
 	if got := refused.Load(); got != 0 {
-		t.Errorf("%d of %d takes were refused by a budget with room for every reserver", got, reservers*takes)
+		t.Fatalf("%d of %d takes were refused by a budget with room for every reserver", got, takes.Load())
+	}
+	if got := lost.Load(); got < raceLosses {
+		t.Skipf("the reservers' own swaps lost %d of %d times in %s, too few to show the contention a lost swap in take needs, and no take was refused", got, raceLosses, raceTimeout)
 	}
 }
 
