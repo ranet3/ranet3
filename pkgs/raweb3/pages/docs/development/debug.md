@@ -147,16 +147,18 @@ These commands take flags of their own:
   as `route -n get` names it, such as
   `198.51.100.0/24 via 127.0.0.1 on lo0 reject` for the hold, and the `underlay`
   rows, their source and interface `-`, the pin's interface named in the answer.
-  A row is one address live sessions send to, a link-local one with its zone,
-  with the interface of the pin their sends carry where that pin has one. A pin
-  has the interface its index names, or with no index, the interface holding its
-  address, and [routing](../routing.md#the-underlays-interface-on-macos) gives
-  which sends carry a pin. Sessions whose sends carry no pin, or a pin with no
-  interface, share the address's row. A row with an interface shows `dev` with
-  its name, or its index where the host has no interface of that index, and no
-  matched route. A row without one shows `dev` with the interface
+  A row is one address live sessions send to, a link-local one zoned by the
+  interface their sends leave by, with the interface of the pin their sends
+  carry where that pin has one. A pin has the interface its index names, or with
+  no index, the interface holding its address, and
+  [routing](../routing.md#the-underlays-interface-on-macos) gives which sends
+  carry a pin. Sessions whose sends carry no pin, or a pin with no interface,
+  share the address's row. A row with an interface shows `dev` with its name, or
+  its index where the host has no interface of that index, and no matched route.
+  A row without one shows `dev` with the interface
   [the selection](../routing.md#the-underlays-interface-on-macos) names and the
-  route it matched, or `no route`. No row is taken. Then, under `cap.exit.via`,
+  route it matched, or `no route`, which a link-local address that names no
+  interface always shows. No row is taken. Then, under `cap.exit.via`,
   `Steered defaults in table <id>` with the path `up`, or `down` at the first
   segment that does not resolve and the mesh's answer, and each family's steered
   default `installed`, on macOS in a family the mode covers as its zero-free

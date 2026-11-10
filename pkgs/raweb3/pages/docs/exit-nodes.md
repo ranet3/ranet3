@@ -547,10 +547,14 @@ translate is not ready. On Linux `ranet3 debug egress` shows each family's
 judgment condition by condition with the lookups the last pass read, as
 [debugging](development/debug.md) describes.
 
-On macOS a family is ready while the exit's stack runs, the host has a link to
-each prefix the family advertises, and the host holds every address its classes
-name, as [the exit on macOS](#the-exit-on-macos) gives. The lookups below are
-the kernel exit's.
+On macOS a family is ready while the exit's stack runs, a link outside the mesh
+reaches each prefix the family advertises, or its default where it advertises
+none, and the host holds every address its classes name, as
+[the exit on macOS](#the-exit-on-macos) gives. A prefix none of whose candidate
+read addresses, below, a router forwards a packet from, such as `224.0.0.0/3`,
+holds its family not ready there, with
+`cap.egress advertises 224.0.0.0/3, which holds no unicast address to look its route up for`.
+The lookups below are the kernel exit's.
 
 The kernel's routes are read from its own route lookups, all of a pass in 1
 batch through 1 netlink socket:
@@ -951,15 +955,15 @@ family not ready as not ready.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host carries out is: on Linux each family the host
-forwards, and on macOS each family the host routes out of the mesh or whose
-route lookup failed, as its [readiness](#readiness) pass reads the routes. A
-leaf reads the `/128` as the exit's liveness. An exit carrying out a single
-family still serves that family, and an exit whose translation broke in a family
-it carries out withdraws the SID. Each pass reads forwarding again on Linux, and
-those routes on macOS, so a family the host starts or stops carrying out moves
-the `/128` on the next pass even where readiness stays as it was. `cap.route`
-may not announce the SID's `/128`, since it would hold the route up whatever
-readiness says.
+forwards, and on macOS each family where a link outside the mesh reaches any
+prefix its [readiness](#readiness) pass looks up, or where any of those lookups
+failed. A leaf reads the `/128` as the exit's liveness. An exit carrying out a
+single family still serves that family, and an exit whose translation broke in a
+family it carries out withdraws the SID. Each pass reads forwarding again on
+Linux, and those lookups on macOS, so a family the host starts or stops carrying
+out moves the `/128` on the next pass even where readiness stays as it was.
+`cap.route` may not announce the SID's `/128`, since it would hold the route up
+whatever readiness says.
 
 ## Reloads, down and up
 
