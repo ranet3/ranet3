@@ -668,8 +668,7 @@ func (m *Mesh) noteDeviceGone(err error) {
 }
 
 // reportedCount counts one kind of trouble in the packets the mesh handles and spaces the reports about it, a warning or an event, an interval apart
-// the forwarding decision's drop report spaces its reports with claim alone, its counters keeping the count
-// and each ICMP limit's report with claim and since, the limit's shards keeping the count
+// a report whose count is kept elsewhere spaces itself with claim alone, or with claim and since where it gives the count since the last report
 type reportedCount struct {
 	total atomic.Uint64
 	// next is the earliest the next report may go out
@@ -699,6 +698,8 @@ func (c *reportedCount) since(total uint64) uint64 {
 // next is the earliest time of the next report as that caller loaded it
 // of the callers that loaded the same next only the first to claim it writes one
 // and its claim moves the next report an interval past now
+// a reading of a clock no constructor started saturates, so the first claim's now+interval wraps below now
+// and every claim whose next was loaded after it succeeds, swapping next for the value it already holds
 func (c *reportedCount) claim(now, next int64) bool {
 	return now >= next && c.next.CompareAndSwap(next, now+int64(reportInterval))
 }

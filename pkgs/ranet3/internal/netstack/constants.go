@@ -45,7 +45,7 @@ const (
 // a read needs none, the device laying out the slab it reads into
 const TUNHeadroom = 16
 
-// reportInterval is the least time between two reports of one reportedCount, a read cut short, a frame or a write the device refused, an ICMP error a limit withheld, a packet the forwarding decision dropped or one an End.DT46 took out of an ECN combination no tunnel sends
+// reportInterval is the least time between two reports of one reportedCount
 // the counter keeps the exact count, and the report only has to point at it
 const reportInterval = 30 * time.Second
 
@@ -110,11 +110,6 @@ const defaultCloseGrace = 5 * time.Second
 // sendErrReportInterval bounds how often a batch the transport refused is said
 // out loud. See Peer.sendErrReported.
 const sendErrReportInterval = 10 * time.Second
-
-// segmentDropInterval bounds how often a refused segment is reported. A peer
-// choosing to send malformed headers should cost this node a counter, not a
-// log line per packet.
-const segmentDropInterval = 30 * time.Second
 
 // egressPairs is how many source and destination pairs a batch keeps the egress check's answers for, each pair past them looked up again
 // a batch carries a few flows, and a search of the kept pairs costs less than the lookup it saves only while they are few

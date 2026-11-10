@@ -235,7 +235,7 @@ func (m *Mesh) dropTransit(tally *transitTally, reason transitReason, src, dst n
 // reportTransitDrop writes a line and records netstack.transit.dropped for a packet from src to dst dropped for reason
 // at most once a reportInterval, the counters keeping the exact count
 func (m *Mesh) reportTransitDrop(reason transitReason, src, dst netip.Addr) {
-	if !m.segmentsStarted.IsZero() && !m.transitReport.claim(int64(time.Since(m.segmentsStarted)), m.transitReport.next.Load()) {
+	if !m.transitReport.claim(int64(time.Since(m.segmentsStarted)), m.transitReport.next.Load()) {
 		return
 	}
 	name := transitReasonNames[reason]

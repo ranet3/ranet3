@@ -860,15 +860,8 @@ func (m *Mesh) reportUnroutedSegment(first netip.Addr, verdict Verdict, match Ma
 }
 
 // segmentDropDue claims the interval's one segment drop report, and a caller holding it writes the line
-// a mesh built without startSegmentReports, which only a test builds, reports every drop
-// since time.Since of a zero time saturates and would hold every report after the first
 func (m *Mesh) segmentDropDue() bool {
-	if m.segmentsStarted.IsZero() {
-		return true
-	}
-	now := int64(time.Since(m.segmentsStarted))
-	previous := m.segmentReported.Load()
-	return now-previous >= int64(segmentDropInterval) && m.segmentReported.CompareAndSwap(previous, now)
+	return m.segmentReport.claim(int64(time.Since(m.segmentsStarted)), m.segmentReport.next.Load())
 }
 
 // segmentCounters is the atomic half of SegmentCounters, embedded in Mesh.
@@ -897,11 +890,10 @@ type segmentCounters struct {
 	withheldBySource, withheldByNode reportedCount
 	// ecnUnused counts the packets SegmentCounters.ECNUnused counts and spaces their records
 	ecnUnused reportedCount
-	// segmentsStarted and segmentReported space the drop reports on the
-	// monotonic clock, as Peer.sendErrReported does, so a backward step of the
-	// wall clock cannot suppress every report until it catches up.
+	// segmentReport spaces the segment drop reports
+	segmentReport reportedCount
+	// segmentsStarted is the start of the clock the mesh's reports and ICMP limit read through time.Since, which keeps it monotonic
 	segmentsStarted time.Time
-	segmentReported atomic.Int64
 }
 
 // steerTally is one read's steering counts, added to the mesh's once the read is classified
@@ -928,9 +920,7 @@ func (m *Mesh) addSteerTally(tally *steerTally) {
 	}
 }
 
-// startSegmentReports lets the first refused packet report immediately and
-// spaces the rest.
+// startSegmentReports starts the clock the mesh's reports and ICMP limit read
 func (c *segmentCounters) startSegmentReports() {
 	c.segmentsStarted = time.Now()
-	c.segmentReported.Store(-int64(segmentDropInterval))
 }

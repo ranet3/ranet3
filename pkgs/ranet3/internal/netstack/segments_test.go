@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -787,24 +788,17 @@ func TestTwoSegmentsOfThisNodeInOneListAreBothActedOn(t *testing.T) {
 	}
 }
 
-// The report interval is measured on the monotonic clock, which needs a start.
-// time.Since of a zero time saturates, so a counter set that was never started
-// would report once and then suppress everything for 292 years, which is the
-// failure a rate limit exists to prevent rather than to cause.
+// an unstarted set reads time.Since of a zero time, which saturates, and reports every segment drop and every transit drop
+// the drops come one after another, since a drop racing the set's first claim can lose its line
 func TestDropReportsSurviveACounterSetThatWasNeverStarted(t *testing.T) {
 	lines := countRecords(t)
-
-	started := &Mesh{Routes: NewRouteTable()}
-	started.startSegmentReports()
-	for range 3 {
-		started.reportSegmentDrop("spaced")
-	}
-	if got := *lines; got != 1 {
-		t.Errorf("a started set wrote %d lines for three drops, want one", got)
-	}
-
-	*lines = 0
+	recorded := 0
 	var unstarted Mesh
+	unstarted.events = func(kind, _ string, _ ...slog.Attr) {
+		if kind == "netstack.transit.dropped" {
+			recorded++
+		}
+	}
 	if !unstarted.segmentsStarted.IsZero() {
 		t.Fatal("the unstarted case is no longer reachable, so this is not testing it")
 	}
@@ -812,8 +806,35 @@ func TestDropReportsSurviveACounterSetThatWasNeverStarted(t *testing.T) {
 		unstarted.reportSegmentDrop("still speaking")
 	}
 	if got := *lines; got != 3 {
-		t.Errorf("an unstarted set wrote %d lines for three drops, want every one", got)
+		t.Errorf("an unstarted set wrote %d lines for three segment drops, want every one", got)
 	}
+	*lines = 0
+	for range 3 {
+		unstarted.reportTransitDrop(transitNoRoute, transitSender[6], transitNowhere[6])
+	}
+	if got := *lines; got != 3 || recorded != 3 {
+		t.Errorf("an unstarted set wrote %d lines and recorded %d events for three transit drops, want every one", got, recorded)
+	}
+}
+
+// a started set reports its first segment drop at once and the next one reportInterval after it, and none between
+func TestSegmentDropReportsAreAReportIntervalApart(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		lines := countRecords(t)
+		m := &Mesh{Routes: NewRouteTable()}
+		m.startSegmentReports()
+		m.reportSegmentDrop("first")
+		time.Sleep(reportInterval - time.Nanosecond)
+		m.reportSegmentDrop("within the interval")
+		if got := *lines; got != 1 {
+			t.Fatalf("two drops within %s wrote %d lines, want one", reportInterval, got)
+		}
+		time.Sleep(time.Nanosecond)
+		m.reportSegmentDrop("an interval after the first")
+		if got := *lines; got != 2 {
+			t.Errorf("a drop %s after the first report wrote %d lines in all, want two", reportInterval, got)
+		}
+	})(t)
 }
 
 // countRecords points the default logger at a counter for the test's duration.
