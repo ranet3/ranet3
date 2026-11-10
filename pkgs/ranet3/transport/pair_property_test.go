@@ -320,7 +320,26 @@ func (m *pairMachine) RuleClose(tc hegel.TestCase) {
 // RuleFragment lets a mux's family fragment or stops that, as a path under the floor does
 func (m *pairMachine) RuleFragment(tc hegel.TestCase) {
 	_, mux := m.pick(tc)
-	on := hegel.Draw(tc, hegel.Booleans())
+	m.fragment(tc, mux, hegel.Draw(tc, hegel.Booleans()))
+}
+
+// RuleFragmentUnderASocket moves the family's mode while a pair holds a socket, by one mux that starts fragmenting or every one that stops
+func (m *pairMachine) RuleFragmentUnderASocket(tc hegel.TestCase) {
+	tc.Assume(slices.ContainsFunc(m.muxes, func(mux *pairMux) bool { return mux.joined && m.pairs[mux.at].socket }))
+	if !m.fragments() {
+		_, mux := m.pick(tc)
+		m.fragment(tc, mux, true)
+		return
+	}
+	for _, mux := range m.muxes {
+		if mux.fragmenting {
+			m.fragment(tc, mux, false)
+		}
+	}
+}
+
+// fragment lets mux's family fragment where on is set, or stops that
+func (m *pairMachine) fragment(tc hegel.TestCase, mux *pairMux, on bool) {
 	fragmented := m.fragments()
 	if err := mux.mux.Fragment(on); err != nil {
 		tc.Errorf("fragment the sends to %s %v: %v", m.peers[mux.peer], on, err)
