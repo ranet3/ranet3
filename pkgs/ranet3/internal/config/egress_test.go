@@ -96,6 +96,15 @@ func TestEgressSegmentReadsAlikeInEveryFormat(t *testing.T) {
 	}
 }
 
+// A file advertising a prefix every address of which the mesh drops is refused
+// at load, naming the prefix
+func TestEgressAdvertisingAPrefixTheMeshDropsWholeIsRefused(t *testing.T) {
+	const want = "egress: cap.egress advertise 224.0.0.0/3 holds no address the mesh forwards a unicast packet to, so no packet through it reaches an exit"
+	if _, err := loadTOML(t, overlayTOML+nodeTOML+"\n[cap.egress]\nadvertise = [\"0.0.0.0/0\", \"224.0.0.0/3\"]\n"); err == nil || err.Error() != want {
+		t.Errorf("refused with %v, want %q", err, want)
+	}
+}
+
 // An egress segment loads only beside cap.egress, which translates what it
 // carries, and with its /128 left to readiness, in each format
 func TestEgressSegmentIsRefusedWithoutWhatCarriesIt(t *testing.T) {

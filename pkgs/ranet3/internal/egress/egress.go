@@ -113,8 +113,9 @@ func (e Egress) Validate() error {
 		return errors.New("egress: cap.egress return is set and advertise is empty, so there is no prefix to translate from")
 	}
 	// a prefix with bits below its length is refused rather than masked, which would advertise a whole prefix where one address was written
-	// and one spelling IPv4 as IPv6 rather than unmapped, which an IPv6 rule would translate for a family no packet on the wire carries
-	if err := schema.CheckPrefixes("egress: cap.egress advertise", e.Advertise, nil); err != nil {
+	// and one spelling IPv4 as IPv6 rather than unmapped, which an IPv6 rule would translate for a family no packet on the wire carries,
+	// and one with no read address, since the mesh drops every packet through it before an exit
+	if err := schema.CheckPrefixes("egress: cap.egress advertise", e.Advertise, unread); err != nil {
 		return err
 	}
 	froms := make([]schema.Prefix, 0, len(e.Translate))
@@ -142,6 +143,13 @@ func (e Egress) Validate() error {
 		return fmt.Errorf("egress: cap.egress sweep %s is negative", e.Sweep)
 	}
 	return nil
+}
+
+func unread(prefix netip.Prefix) string {
+	if _, ok := ReadAddress(prefix); ok {
+		return ""
+	}
+	return "holds no address the mesh forwards a unicast packet to, so no packet through it reaches an exit"
 }
 
 // Serves refuses a capability that would translate nothing and offer nothing:

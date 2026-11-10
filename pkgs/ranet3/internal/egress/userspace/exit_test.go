@@ -501,20 +501,16 @@ func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 // prefix it reads or the lookup of any of them failed, judged over every
 // prefix whichever fails first, so a family routed in part, or whose route is
 // unknown, withdraws the egress SIDs while it is not ready in either order of
-// its prefixes. A prefix with no unicast address to look up carries nothing.
-// Why it is not ready names the first prefix that fails, and a pass looks each
-// prefix up once at most
+// its prefixes. Why it is not ready names the first prefix that fails, and a
+// pass looks each prefix up once at most
 func TestReadinessJudgesEveryPrefixForItsRouteWhicheverFailsFirst(t *testing.T) {
 	low, high := schema.MustPrefix("0.0.0.0/1"), schema.MustPrefix("128.0.0.0/1")
-	// multicast and class E alone, which New takes as a default
-	unicastless := schema.MustPrefix("224.0.0.0/3")
-	// the addresses readAddress reads for low and high
+	// the addresses egress.ReadAddress reads for low and high
 	lowRead, highRead := netip.MustParseAddr("64.0.0.0"), netip.MustParseAddr("192.0.0.0")
 	lowUnrouted := "no link outside the mesh reaches 64.0.0.0 for 0.0.0.0/1"
 	highUnrouted := "no link outside the mesh reaches 192.0.0.0 for 128.0.0.0/1"
 	lookupFailure := errors.New("no such network interface")
 	lowFailed := "the route lookup of 64.0.0.0 for 0.0.0.0/1 failed: no such network interface"
-	noUnicast := "cap.egress advertises 224.0.0.0/3, which holds no unicast address to look its route up for"
 	for _, c := range []struct {
 		name    string
 		order   []schema.Prefix
@@ -532,9 +528,6 @@ func TestReadinessJudgesEveryPrefixForItsRouteWhicheverFailsFirst(t *testing.T) 
 		{"the routed prefix first, the other's lookup failed", []schema.Prefix{high, low}, []netip.Addr{highRead}, []netip.Addr{lowRead}, true, lowFailed},
 		{"the failed lookup first, the other unrouted", []schema.Prefix{low, high}, nil, []netip.Addr{lowRead}, true, lowFailed},
 		{"the unrouted prefix first, the other's lookup failed", []schema.Prefix{high, low}, nil, []netip.Addr{lowRead}, true, highUnrouted},
-		{"no unicast address first, the other routed", []schema.Prefix{unicastless, low}, []netip.Addr{lowRead}, nil, true, noUnicast},
-		{"the routed prefix first, the other with no unicast address", []schema.Prefix{low, unicastless}, []netip.Addr{lowRead}, nil, true, noUnicast},
-		{"no unicast address first, the other unrouted", []schema.Prefix{unicastless, low}, nil, nil, false, noUnicast},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := fakePlatform{routes6: true, reaches: c.reaches}

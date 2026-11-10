@@ -27,7 +27,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
-	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -438,12 +437,12 @@ func (x *Exit) pass() {
 // out, which holds where a link outside the mesh reaches any prefix the family
 // reads or the lookup of any of them failed, judged over all of them whichever
 // fails first, and why it is not ready, the first failure in the prefixes'
-// order and then the classes': the host must route each prefix the family
-// advertises, or its default where it advertises none, over a link outside the
-// mesh, and hold each address its classes name where a socket scoped to each
-// such link sends from it. A failed lookup counts as carried, since an unknown
-// route is not a known absence, so the family withdraws the egress SIDs while
-// it is not ready.
+// order and then the classes': the host must route the read address of each
+// prefix the family advertises, or of its default where it advertises none,
+// over a link outside the mesh, and hold each address its classes name where a
+// socket scoped to each such link sends from it. A failed lookup counts as
+// carried, since an unknown route is not a known absence, so the family
+// withdraws the egress SIDs while it is not ready.
 func (x *Exit) readiness(family uint8) (ready, routed bool, why string) {
 	type read struct {
 		prefix netip.Prefix
@@ -452,9 +451,8 @@ func (x *Exit) readiness(family uint8) (ready, routed bool, why string) {
 	var reads []read
 	for _, prefix := range x.cfg.ReadPrefixes(family) {
 		failed := ""
-		if address, ok := readAddress(prefix); !ok {
-			failed = "cap.egress advertises " + prefix.String() + ", which holds no unicast address to look its route up for"
-		} else if link, found, err := x.rt.Platform.Route(address); err != nil {
+		address, _ := egress.ReadAddress(prefix)
+		if link, found, err := x.rt.Platform.Route(address); err != nil {
 			routed = true
 			failed = "the route lookup of " + address.String() + " for " + prefix.String() + " failed: " + err.Error()
 		} else if !found {
@@ -485,15 +483,4 @@ func (x *Exit) readiness(family uint8) (ready, routed bool, why string) {
 		}
 	}
 	return true, routed, ""
-}
-
-// readAddress is the address a readiness lookup reads for prefix, the first
-// of its candidates a server may hold
-func readAddress(prefix netip.Prefix) (netip.Addr, bool) {
-	for _, address := range egress.ReadCandidates(prefix) {
-		if !packet.InvalidSource(address) {
-			return address, true
-		}
-	}
-	return netip.Addr{}, false
 }

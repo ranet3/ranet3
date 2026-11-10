@@ -578,8 +578,7 @@ type EgressStatus struct {
 	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
 	// route lookups where they ran, and Unready why a family it translates is
 	// not. Skipped names the route lookups the pass left out and why: those of
-	// a family no other node's prefix inside overlay gives a source
-	// to read from, and that of a prefix holding no address to read
+	// a family no other node's prefix inside overlay gives a source to read from
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
 	Skipped string   `json:"skipped,omitempty"`

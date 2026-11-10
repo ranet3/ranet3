@@ -275,10 +275,10 @@ func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
 // not, with the reason for one this node translates, names neither before the
 // first pass, and says what the route lookups left out and why: a family held
 // by a forward lookup that failed, its prefix withheld, one held by a reply
-// lookup leaving by the uplink, a family with no member to read from and a
-// prefix with no address to read. It names the flows each family's limit
-// refused where any were, against the limit, and the host's connection table
-// against its maximum, as far as the pass read them.
+// lookup leaving by the uplink, and one family or both with no member to read
+// from. It names the flows each family's limit refused where any were, against
+// the limit, and the host's connection table against its maximum, as far as
+// the pass read them.
 // the flows a class of none left untranslated only where there are any
 func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
@@ -289,7 +289,6 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 		Unready: "the host does not forward ipv4 or ipv6"}) + "\n")
 	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3", Installed: 1}) + "\n")
 	advertise := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("::/0")}
-	linkLocal := []netip.Prefix{advertise[0], advertise[1], netip.MustParsePrefix("fe80::/10")}
 	for _, judged := range []EgressStatus{
 		{
 			Advertise: advertise, Ready: []string{"ipv6"}, Announced: advertise[1:],
@@ -304,8 +303,8 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 			Skipped: "lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay",
 		},
 		{
-			Advertise: linkLocal, Ready: []string{"ipv4", "ipv6"}, Announced: linkLocal,
-			Skipped: "lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination",
+			Advertise: advertise, Ready: []string{"ipv4", "ipv6"}, Announced: advertise,
+			Skipped: "lookup skipped, the mesh routes no other node's ipv4 or ipv6 prefix inside overlay",
 		},
 	} {
 		judged.Enabled, judged.Where, judged.Installed = true, "nftables ip ranet3, ip6 ranet3", 2

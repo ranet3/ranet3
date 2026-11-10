@@ -207,25 +207,18 @@ func modelLive(route Route) []string {
 
 // modelLookups is the lookups the model reads for a family whose rule and
 // forwarding pass, empty where it skips them: from the read address of the
-// first member of the family, by lowest base and then longest prefix, that
-// holds one, to the read address of each prefix it advertises, or of its
-// default where it advertises none, each arriving on the tun, the first asking
-// for its reply, with the prefix each reads. A family with no such member reads
-// nothing
+// first member of the family, by lowest base and then longest prefix, to the
+// read address of each prefix it advertises, or of its default where it
+// advertises none, each arriving on the tun, the first asking for its reply,
+// with the prefix each reads. A family with no member reads nothing
 func modelLookups(cfg egress.Egress, tun string, members []netip.Prefix, family uint8) ([]Lookup, []netip.Prefix) {
 	of := func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == (family == egress.FamilyIPv4) }
 	ordered := slices.SortedFunc(slices.Values(slices.DeleteFunc(slices.Clone(members), func(p netip.Prefix) bool { return !of(p) })),
 		func(a, b netip.Prefix) int { return cmp.Or(a.Addr().Compare(b.Addr()), b.Bits()-a.Bits()) })
-	var source netip.Addr
-	for _, member := range ordered {
-		if address, ok := readAddress(member); ok {
-			source = address
-			break
-		}
-	}
-	if !source.IsValid() {
+	if len(ordered) == 0 {
 		return nil, nil
 	}
+	source, _ := egress.ReadAddress(ordered[0])
 	var prefixes []netip.Prefix
 	for _, prefix := range cfg.Advertise {
 		if of(prefix.Prefix) {
@@ -238,10 +231,9 @@ func modelLookups(cfg egress.Egress, tun string, members []netip.Prefix, family 
 	var lookups []Lookup
 	var read []netip.Prefix
 	for _, prefix := range prefixes {
-		if address, ok := readAddress(prefix); ok {
-			lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: tun, Reply: len(lookups) == 0})
-			read = append(read, prefix)
-		}
+		address, _ := egress.ReadAddress(prefix)
+		lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: tun, Reply: len(lookups) == 0})
+		read = append(read, prefix)
 	}
 	return lookups, read
 }
@@ -367,7 +359,7 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 		desired := tr.desired()
 		var destinations []netip.Addr
 		for _, prefix := range append(plain(cfg.Advertise), netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")) {
-			if address, ok := readAddress(prefix); ok && !slices.Contains(destinations, address) {
+			if address, _ := egress.ReadAddress(prefix); !slices.Contains(destinations, address) {
 				destinations = append(destinations, address)
 			}
 		}

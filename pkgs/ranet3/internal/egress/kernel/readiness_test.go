@@ -386,48 +386,27 @@ func TestReasonFollowsAPassThatMovesNoFamily(t *testing.T) {
 	}
 }
 
-// A prefix holding no address the kernel takes as a unicast destination skips
-// its own lookup and is named, its family judged by its other prefixes, and a
-// family whose every prefix holds none is judged by its rule and forwarding
-// alone
-func TestPrefixWithNoReadAddressSkipsItsLookupAndIsNamed(t *testing.T) {
-	host := &lookupHost{answers: map[netip.Addr]Answer{read4: passingAnswer(), read6: passingAnswer()}}
-	members := readMembers
-	cfg := egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "fe80::/10", "::/0")}
-	tr := readingExit(t, cfg, host, &members, events.New())
-	if err := tr.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	const skipped = "lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination"
-	if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped {
-		t.Errorf("the pass reports ready %v and %v, skipping %q, want both ready, skipping %q", stats.Ready4, stats.Ready6, stats.Skipped, skipped)
-	}
-	want := []Lookup{
-		{Source: readMembers[0].Addr(), Destination: read4, IIF: readTUN, Reply: true},
-		{Source: readMembers[1].Addr(), Destination: read6, IIF: readTUN, Reply: true},
-	}
-	if len(host.asked) != 1 || !slices.Equal(host.asked[0], want) {
-		t.Errorf("the pass asked for %v, want one batch of %v", host.asked, want)
-	}
-	if got := tr.Announce(); !slices.Equal(got, plain(cfg.Advertise)) {
-		t.Errorf("the pass announces %v, want %v", got, cfg.Advertise)
-	}
-
-	alone := &lookupHost{}
-	tr = readingExit(t, egress.Egress{Advertise: prefixes(t, "fe80::/10")}, alone, &members, events.New())
-	if err := tr.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped || len(alone.asked) != 0 {
-		t.Errorf("advertising fe80::/10 alone the pass reports ready %v and %v, skipping %q, after asking for %v, want IPv6 alone ready, skipping %q and asking nothing",
-			stats.Ready4, stats.Ready6, stats.Skipped, alone.asked, skipped)
+// The skip names each family with no member, IPv4 first, and nothing where
+// each has one
+func TestSkipNamesEachFamilyWithNoMember(t *testing.T) {
+	for _, c := range []struct {
+		v4, v6 bool
+		want   string
+	}{
+		{false, false, ""},
+		{true, false, "lookup skipped, the mesh routes no other node's ipv4 prefix inside overlay"},
+		{false, true, "lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay"},
+		{true, true, "lookup skipped, the mesh routes no other node's ipv4 or ipv6 prefix inside overlay"},
+	} {
+		if got := skippedText(judgment{noMember: c.v4}, judgment{noMember: c.v6}); got != c.want {
+			t.Errorf("with no member of ipv4 %v and of ipv6 %v the skip reads %q, want %q", c.v4, c.v6, got, c.want)
+		}
 	}
 }
 
-// The lookups read from the first member of the family holding a read address,
-// by lowest base address and then longest prefix, a member holding none passed
-// over
-func TestLookupsReadFromTheFirstMemberHoldingAReadAddress(t *testing.T) {
+// The lookups read from the read address of the family's first member, by
+// lowest base address and then longest prefix
+func TestLookupsReadFromTheFirstMember(t *testing.T) {
 	for _, test := range []struct {
 		members []string
 		family  uint8
@@ -435,8 +414,8 @@ func TestLookupsReadFromTheFirstMemberHoldingAReadAddress(t *testing.T) {
 	}{
 		{[]string{"203.0.113.0/24", "192.0.2.64/26", "192.0.2.0/24"}, egress.FamilyIPv4, "192.0.2.128"},
 		{[]string{"192.0.2.0/24", "192.0.2.0/25"}, egress.FamilyIPv4, "192.0.2.64"},
-		{[]string{"192.0.2.7/32", "0.0.0.0/32", "3fff:20::1/128"}, egress.FamilyIPv4, "192.0.2.7"},
-		{[]string{"3fff:20::1/128", "::1/128", "3fff:20::/48"}, egress.FamilyIPv6, "3fff:20:0:8000::"},
+		{[]string{"192.0.2.7/32", "3fff:20::1/128"}, egress.FamilyIPv4, "192.0.2.7"},
+		{[]string{"3fff:20::1/128", "3fff:20::/48"}, egress.FamilyIPv6, "3fff:20:0:8000::"},
 		{[]string{"192.0.2.7/32"}, egress.FamilyIPv6, ""},
 		{nil, egress.FamilyIPv4, ""},
 	} {

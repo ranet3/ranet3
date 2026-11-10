@@ -197,6 +197,26 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 	}
 }
 
+// An advertised prefix every address of which the mesh drops, split between
+// two classes or a host route, is refused by name in one fixed predicate after
+// a prefix that loads, while one whose middle address the mesh drops and whose
+// base plus 1 it forwards to loads, and a mapped spelling keeps its own refusal
+func TestValidateRefusesAnAdvertisedPrefixNoAddressOfWhichTheMeshForwards(t *testing.T) {
+	for _, prefix := range []string{"224.0.0.0/3", "0.0.0.0/32"} {
+		want := "egress: cap.egress advertise " + prefix + " holds no address the mesh forwards a unicast packet to, so no packet through it reaches an exit"
+		if err := (Egress{Advertise: prefixes(t, "0.0.0.0/0", prefix)}).Validate(); err == nil || err.Error() != want {
+			t.Errorf("advertising %s refused with %v, want %q", prefix, err, want)
+		}
+	}
+	if err := (Egress{Advertise: prefixes(t, "169.252.0.0/14")}).Validate(); err != nil {
+		t.Errorf("advertising 169.252.0.0/14 refused: %v", err)
+	}
+	const mapped = "egress: cap.egress advertise ::ffff:0.0.0.0/96 is an IPv4 prefix written as IPv6, so write it as 0.0.0.0/0"
+	if err := (Egress{Advertise: prefixes(t, "::ffff:0:0/96")}).Validate(); err == nil || err.Error() != mapped {
+		t.Errorf("advertising ::ffff:0:0/96 refused with %v, want %q", err, mapped)
+	}
+}
+
 // Classes of none that leave some source of each family translated load: a
 // longer translating class inside a none from every source, and a none
 // narrower than its family beside the auto every other source takes

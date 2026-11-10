@@ -32,7 +32,6 @@ type judgment struct {
 	ready      bool
 	why        string
 	noMember   bool
-	unread     []netip.Prefix
 	unwritten  string
 	forwarding bool
 	lookups    []Lookup
@@ -87,17 +86,12 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 			judged[family] = read
 		} else {
 			reads.source, reads.first = source, len(lookups)
-			var unread []netip.Prefix
 			for _, prefix := range t.cfg.ReadPrefixes(family) {
-				address, ok := readAddress(prefix)
-				if !ok {
-					unread = append(unread, prefix)
-					continue
-				}
+				address, _ := egress.ReadAddress(prefix)
 				lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: t.rt.Interface, Reply: len(reads.reads) == 0})
 				reads.reads = append(reads.reads, forwardRead{prefix, address})
 			}
-			read.ready, read.unread = true, unread
+			read.ready = true
 			judged[family] = read
 		}
 		if len(reads.held) > 0 || len(reads.reads) > 0 {
@@ -160,17 +154,20 @@ func (t *Translator) unheld(held []netip.Addr, answers []Answer) string {
 	return ""
 }
 
+// memberSource is the read address of the family's first member, by lowest
+// base address and then longest prefix, and false where it has none. A member
+// lies inside overlay, whose entries hold no address schema.Unroutable names,
+// so each has a read address
 func memberSource(members []netip.Prefix, family uint8) (netip.Addr, bool) {
 	members = slices.DeleteFunc(slices.Clone(members), func(member netip.Prefix) bool { return egress.AddressFamily(member.Addr()) != family })
-	slices.SortFunc(members, func(a, b netip.Prefix) int {
+	if len(members) == 0 {
+		return netip.Addr{}, false
+	}
+	first := slices.MinFunc(members, func(a, b netip.Prefix) int {
 		return cmp.Or(a.Masked().Addr().Compare(b.Masked().Addr()), cmp.Compare(b.Bits(), a.Bits()))
 	})
-	for _, member := range members {
-		if address, ok := readAddress(member); ok {
-			return address, true
-		}
-	}
-	return netip.Addr{}, false
+	address, _ := egress.ReadAddress(first)
+	return address, true
 }
 
 // readsFail is why a family's lookups found a path a translated packet cannot
@@ -267,27 +264,15 @@ func (t *Translator) sysctlInt(path string) int {
 }
 
 func skippedText(v4, v6 judgment) string {
-	var parts, families, unread []string
-	for _, family := range []struct {
-		name string
-		judgment
-	}{{"ipv4", v4}, {"ipv6", v6}} {
-		if family.noMember {
-			families = append(families, family.name)
-		}
-		for _, prefix := range family.unread {
-			unread = append(unread, prefix.String())
-		}
+	var families []string
+	if v4.noMember {
+		families = append(families, "ipv4")
 	}
-	if len(families) > 0 {
-		parts = append(parts, "lookup skipped, the mesh routes no other node's "+strings.Join(families, " or ")+" prefix inside overlay")
+	if v6.noMember {
+		families = append(families, "ipv6")
 	}
-	switch len(unread) {
-	case 0:
-	case 1:
-		parts = append(parts, "lookup skipped for "+unread[0]+", which holds no address the kernel takes as a unicast destination")
-	default:
-		parts = append(parts, "lookup skipped for "+strings.Join(unread, " ")+", which hold no address the kernel takes as a unicast destination")
+	if len(families) == 0 {
+		return ""
 	}
-	return strings.Join(parts, ", ")
+	return "lookup skipped, the mesh routes no other node's " + strings.Join(families, " or ") + " prefix inside overlay"
 }
