@@ -38,7 +38,7 @@ func TestReconcilerRecordsThePassesThatDidSomething(t *testing.T) {
 	table.Remove(skipped.Source, skipped.Destination)
 	table.Set(other.Source, other.Destination, nil)
 	reconciler.reconcile()
-	// a route refused anew sorts before one refused already, and the pass is one to record though its last refusal is no news
+	// a route refused already is tried before one refused anew, and the pass is one to record though its first refusal is no news
 	table.Set(skipped.Source, skipped.Destination, nil)
 	reconciler.reconcile()
 	fake.failList = errors.New("netlink is busy")
