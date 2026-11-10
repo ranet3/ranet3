@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
-	"ranet3.com/pkgs/ranet3/internal/client"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
@@ -338,6 +337,11 @@ func TestStartupRefusalsSurviveAProductionLogLevel(t *testing.T) {
 	}
 }
 
+// runtimeSource answers the runtime view and no other read
+type runtimeSource struct{ control.Source }
+
+func (runtimeSource) DebugRuntime() control.RuntimeInfo { return control.RuntimeInfo{} }
+
 // the socket the daemon serves answers the node's debug paths
 func TestServeControlAnswersTheDebugPaths(t *testing.T) {
 	var parsed options
@@ -355,7 +359,7 @@ func TestServeControlAnswersTheDebugPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	go control.Serve(listener, &client.Client{})
+	go control.Serve(listener, runtimeSource{})
 	response, err := control.Dial(socket).Raw(t.Context(), http.MethodGet, control.PathDebugRuntime, nil)
 	if err != nil {
 		t.Fatal(err)
