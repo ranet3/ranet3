@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // VethPeer is VETH_INFO_PEER of linux/veth.h, which describes the other end of a new pair
@@ -236,12 +238,7 @@ func (n Netlink) Request(kind, flags uint16, body []byte) error {
 
 // Message is one netlink request of kind carrying body, with flags added
 func Message(kind, flags uint16, body []byte) []byte {
-	message := make([]byte, unix.NLMSG_HDRLEN, unix.NLMSG_HDRLEN+len(body))
-	message = append(message, body...)
-	binary.NativeEndian.PutUint32(message[0:], uint32(len(message)))
-	binary.NativeEndian.PutUint16(message[4:], kind)
-	binary.NativeEndian.PutUint16(message[6:], flags|unix.NLM_F_REQUEST)
-	return message
+	return netlink.AppendMessage(nil, kind, flags|unix.NLM_F_REQUEST, 0, 0, body)
 }
 
 // Acknowledged sends the messages in raw, one of them asking for an acknowledgment, on the netlink socket fd and answers the error the kernel acknowledged it with
@@ -254,11 +251,11 @@ func Acknowledged(fd int, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	messages, err := syscall.ParseNetlinkMessage(reply[:got])
+	messages, err := netlink.ParseMessages(reply[:got])
 	if err != nil {
 		return err
 	}
-	if len(messages) != 1 || messages[0].Header.Type != unix.NLMSG_ERROR || len(messages[0].Data) < 4 {
+	if len(messages) != 1 || messages[0].Kind != unix.NLMSG_ERROR || len(messages[0].Data) < 4 {
 		return errors.New("the kernel answered with something other than an acknowledgment")
 	}
 	if errno := -int32(binary.NativeEndian.Uint32(messages[0].Data)); errno != 0 {
@@ -386,14 +383,7 @@ func IfInfo(index int, flags uint32) []byte {
 }
 
 // Attr is one route netlink attribute of kind carrying value, padded to its alignment
-func Attr(kind uint16, value []byte) []byte {
-	length := unix.SizeofRtAttr + len(value)
-	encoded := make([]byte, (length+unix.RTA_ALIGNTO-1)&^(unix.RTA_ALIGNTO-1))
-	binary.NativeEndian.PutUint16(encoded[0:], uint16(length))
-	binary.NativeEndian.PutUint16(encoded[2:], kind)
-	copy(encoded[unix.SizeofRtAttr:], value)
-	return encoded
-}
+func Attr(kind uint16, value []byte) []byte { return netlink.PutAttr(nil, kind, value) }
 
 func U32(value uint32) []byte { return binary.NativeEndian.AppendUint32(nil, value) }
 

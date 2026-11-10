@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -424,32 +423,12 @@ func deleteLink(t *testing.T, name string) {
 // and returns the error the kernel acknowledged it with
 func routeRequest(t *testing.T, kind, flags uint16, body []byte) error {
 	t.Helper()
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	netlink, err := netnstest.OpenNetlink()
 	if err != nil {
-		t.Fatalf("open route netlink: %v", err)
+		t.Fatal(err)
 	}
-	defer unix.Close(fd)
-	message := slices.Concat(make([]byte, unix.NLMSG_HDRLEN), body)
-	binary.NativeEndian.PutUint32(message[0:], uint32(len(message)))
-	binary.NativeEndian.PutUint16(message[4:], kind)
-	binary.NativeEndian.PutUint16(message[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK|flags)
-	if err := unix.Sendto(fd, message, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return err
-	}
-	reply := make([]byte, os.Getpagesize())
-	got, _, err := unix.Recvfrom(fd, reply, 0)
-	if err != nil {
-		return err
-	}
-	// the answer is one struct nlmsgerr, whose error is the negated errno and zero for an acknowledgment
-	answers, err := syscall.ParseNetlinkMessage(reply[:got])
-	if err != nil || len(answers) != 1 || answers[0].Header.Type != unix.NLMSG_ERROR || len(answers[0].Data) < 4 {
-		t.Fatalf("the kernel answered message type %d with %x", kind, reply[:got])
-	}
-	if errno := unix.Errno(-int32(binary.NativeEndian.Uint32(answers[0].Data))); errno != 0 {
-		return errno
-	}
-	return nil
+	defer netlink.Close()
+	return netlink.Request(kind, flags, body)
 }
 
 // listenerSettle is how long a route listener has to hear the link changes the kernel sends it
