@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -42,7 +43,7 @@ func drawAddress(tc hegel.TestCase, width int) netip.Addr {
 // matchedAnswer lays out the answer to a route lookup as the kernel's
 // fib_dump_info and rt6_fill_node do, the table in the header only where it
 // fits and the destination and source left out at length 0
-func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (nlMessage, MatchedRoute, []uint32) {
+func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (netlink.Message, MatchedRoute, []uint32) {
 	family := uint8(unix.AF_INET6)
 	if width == 32 {
 		family = unix.AF_INET
@@ -65,21 +66,21 @@ func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (nlMessage
 	flags := hegel.Draw(tc, hegel.Integers[uint32](0, math.MaxUint32))
 	binary.NativeEndian.PutUint32(header[8:], flags)
 	var attrs [][]byte
-	attrs = append(attrs, putAttrU32(nil, unix.RTA_TABLE, want.Table))
+	attrs = append(attrs, netlink.PutAttrU32(nil, unix.RTA_TABLE, want.Table))
 	if object != 0 {
-		attrs = append(attrs, putAttrU32(nil, rtaNHID, object))
+		attrs = append(attrs, netlink.PutAttrU32(nil, rtaNHID, object))
 	}
 	if want.Prefix.Bits() > 0 {
-		attrs = append(attrs, putAttr(nil, unix.RTA_DST, addressBytes(want.Prefix.Addr())))
+		attrs = append(attrs, netlink.PutAttr(nil, unix.RTA_DST, netlink.AddressBytes(want.Prefix.Addr())))
 	}
 	if width == 128 && hegel.Draw(tc, hegel.Booleans()) {
 		want.Source = netip.PrefixFrom(drawAddress(tc, width), hegel.Draw(tc, pbt.Spanning(1, width))).Masked()
 		header[2] = uint8(want.Source.Bits())
-		attrs = append(attrs, putAttr(nil, unix.RTA_SRC, addressBytes(want.Source.Addr())))
+		attrs = append(attrs, netlink.PutAttr(nil, unix.RTA_SRC, netlink.AddressBytes(want.Source.Addr())))
 	}
 	attrs = append(attrs,
-		putAttrU32(nil, unix.RTA_PRIORITY, hegel.Draw(tc, hegel.Integers[uint32](0, math.MaxUint32))),
-		putAttr(nil, unix.RTA_PREFSRC, addressBytes(drawAddress(tc, width))))
+		netlink.PutAttrU32(nil, unix.RTA_PRIORITY, hegel.Draw(tc, hegel.Integers[uint32](0, math.MaxUint32))),
+		netlink.PutAttr(nil, unix.RTA_PREFSRC, netlink.AddressBytes(drawAddress(tc, width))))
 
 	offset := hegel.Draw(tc, hegel.Integers(0, 2))
 	var multipath []byte
@@ -92,7 +93,7 @@ func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (nlMessage
 		switch (i + offset) % 3 {
 		case viaGateway:
 			hop.Gateway = drawAddress(tc, width)
-			gateway = putAttr(nil, unix.RTA_GATEWAY, addressBytes(hop.Gateway))
+			gateway = netlink.PutAttr(nil, unix.RTA_GATEWAY, netlink.AddressBytes(hop.Gateway))
 		case viaOtherFamily:
 			otherWidth, otherFamily := 128, uint16(unix.AF_INET6)
 			if width == 128 {
@@ -100,12 +101,12 @@ func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (nlMessage
 			}
 			hop.Gateway = drawAddress(tc, otherWidth)
 			via := binary.NativeEndian.AppendUint16(nil, otherFamily)
-			gateway = putAttr(nil, unix.RTA_VIA, append(via, addressBytes(hop.Gateway)...))
+			gateway = netlink.PutAttr(nil, unix.RTA_VIA, append(via, netlink.AddressBytes(hop.Gateway)...))
 		}
 		if hops == 1 {
 			hop.Dead, hop.LinkDown = flags&unix.RTNH_F_DEAD != 0, flags&unix.RTNH_F_LINKDOWN != 0
 			want.NextHops = append(want.NextHops, hop)
-			attrs = append(attrs, putAttrU32(nil, unix.RTA_OIF, index))
+			attrs = append(attrs, netlink.PutAttrU32(nil, unix.RTA_OIF, index))
 			if gateway != nil {
 				attrs = append(attrs, gateway)
 			}
@@ -120,7 +121,7 @@ func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (nlMessage
 		multipath = append(multipath, append(nexthop, gateway...)...)
 	}
 	if multipath != nil {
-		attrs = append(attrs, putAttr(nil, unix.RTA_MULTIPATH, multipath))
+		attrs = append(attrs, netlink.PutAttr(nil, unix.RTA_MULTIPATH, multipath))
 	}
 	// the decoder holds no order the kernel promises
 	turn := hegel.Draw(tc, hegel.Integers(0, len(attrs)-1))
@@ -128,7 +129,7 @@ func matchedAnswer(tc hegel.TestCase, width, hops int, object uint32) (nlMessage
 	for _, attr := range append(attrs[turn:], attrs[:turn]...) {
 		data = append(data, attr...)
 	}
-	return nlMessage{Kind: unix.RTM_NEWROUTE, Data: data}, want, indexes
+	return netlink.Message{Kind: unix.RTM_NEWROUTE, Data: data}, want, indexes
 }
 
 // Every field of the route is decoded from the answer's layout, its prefixes,
@@ -209,7 +210,7 @@ func TestRouteNextHopsEndACorruptedMultipathInAnError(t *testing.T) {
 			if width == 32 {
 				header[0] = unix.AF_INET
 			}
-			message := nlMessage{Kind: unix.RTM_NEWROUTE, Data: putAttr(header, unix.RTA_MULTIPATH, hops)}
+			message := netlink.Message{Kind: unix.RTM_NEWROUTE, Data: netlink.PutAttr(header, unix.RTA_MULTIPATH, hops)}
 			done := make(chan walk, 1)
 			go func() {
 				var got walk

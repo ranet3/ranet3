@@ -13,12 +13,13 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
-	"os"
 	"slices"
 	"strconv"
 	"sync"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // netlinkConn is everything this backend asks of a netlink socket. Reaching
@@ -27,7 +28,7 @@ import (
 // goes unnoticed on the platform the fleet runs. darwin's rtSocket is the same
 // seam.
 type netlinkConn interface {
-	execute(kind, flags uint16, body []byte) ([]nlMessage, error)
+	execute(kind, flags uint16, body []byte) ([]netlink.Message, error)
 	link(index uint32, name string) (linkInfo, error)
 	Close() error
 }
@@ -143,11 +144,11 @@ func (p *netlinkPlatform) Routes() ([]Route, error) {
 // a host holding a full table in main then pays nothing for it here
 // a table nothing has written yet does not exist
 // its dump ends on ENOENT, which reads as empty here and in no other dump
-func (p *netlinkPlatform) dumpTable(family, protocol uint8) ([]nlMessage, error) {
+func (p *netlinkPlatform) dumpTable(family, protocol uint8) ([]netlink.Message, error) {
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0] = family
 	body[5] = protocol
-	body = putAttrU32(body, unix.RTA_TABLE, uint32(p.table.ID))
+	body = netlink.PutAttrU32(body, unix.RTA_TABLE, uint32(p.table.ID))
 	replies, err := p.conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, body)
 	if errors.Is(err, unix.ENOENT) {
 		return nil, nil
@@ -158,7 +159,7 @@ func (p *netlinkPlatform) dumpTable(family, protocol uint8) ([]nlMessage, error)
 // decodeRoute keeps only the routes this reconciler owns. Everything else in
 // the dump belongs to somebody else, so it is dropped here and can never reach
 // a delete list.
-func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
+func (p *netlinkPlatform) decodeRoute(message netlink.Message) (Route, bool) {
 	if message.Kind != unix.RTM_NEWROUTE || len(message.Data) < unix.SizeofRtMsg {
 		return Route{}, false
 	}
@@ -172,7 +173,7 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 	}
 	var destination, source netip.Addr
 	var oif, metric uint32
-	for attr, value := range message.attributes(unix.SizeofRtMsg) {
+	for attr, value := range message.Attributes(unix.SizeofRtMsg) {
 		switch attr {
 		case unix.RTA_TABLE:
 			// rtm_table is a byte, so a table above 255 only exists here.
@@ -267,19 +268,19 @@ func (p *netlinkPlatform) routeMessage(route Route, del bool) []byte {
 	body[5] = p.table.Proto
 	body[6] = scope
 	body[7] = kind
-	body = putAttrU32(body, unix.RTA_TABLE, uint32(p.table.ID))
+	body = netlink.PutAttrU32(body, unix.RTA_TABLE, uint32(p.table.ID))
 	if route.Destination.Bits() > 0 {
-		body = putAttr(body, unix.RTA_DST, addressBytes(route.Destination.Addr()))
+		body = netlink.PutAttr(body, unix.RTA_DST, netlink.AddressBytes(route.Destination.Addr()))
 	}
 	if srcLen > 0 {
-		body = putAttr(body, unix.RTA_SRC, addressBytes(route.Source.Addr()))
+		body = netlink.PutAttr(body, unix.RTA_SRC, netlink.AddressBytes(route.Source.Addr()))
 	}
 	if !route.Unreachable && !route.Throw {
-		body = putAttrU32(body, unix.RTA_OIF, p.index)
+		body = netlink.PutAttrU32(body, unix.RTA_OIF, p.index)
 	}
 	// the metric is always explicit: leaving it out would let the kernel pick
 	// its own, and a delete has to name the same one to match the route.
-	body = putAttrU32(body, unix.RTA_PRIORITY, route.Metric)
+	body = netlink.PutAttrU32(body, unix.RTA_PRIORITY, route.Metric)
 	return body
 }
 
@@ -349,7 +350,7 @@ func (p *netlinkPlatform) Addrs() ([]netip.Prefix, error) {
 	return out, nil
 }
 
-func (p *netlinkPlatform) decodeAddr(message nlMessage) (netip.Prefix, bool) {
+func (p *netlinkPlatform) decodeAddr(message netlink.Message) (netip.Prefix, bool) {
 	if message.Kind != unix.RTM_NEWADDR || len(message.Data) < unix.SizeofIfAddrmsg {
 		return netip.Prefix{}, false
 	}
@@ -358,7 +359,7 @@ func (p *netlinkPlatform) decodeAddr(message nlMessage) (netip.Prefix, bool) {
 		return netip.Prefix{}, false
 	}
 	var local, address netip.Addr
-	for attr, value := range message.attributes(unix.SizeofIfAddrmsg) {
+	for attr, value := range message.Attributes(unix.SizeofIfAddrmsg) {
 		switch attr {
 		case unix.IFA_LOCAL:
 			local, _ = addressFromBytes(value)
@@ -390,11 +391,11 @@ func (p *netlinkPlatform) addrMessage(prefix netip.Prefix) []byte {
 	body[1] = uint8(prefix.Bits())
 	body[3] = unix.RT_SCOPE_UNIVERSE
 	binary.NativeEndian.PutUint32(body[4:], p.index)
-	raw := addressBytes(prefix.Addr())
+	raw := netlink.AddressBytes(prefix.Addr())
 	// with no peer address the two attributes carry the same value, which is
 	// what "ip addr add" sends. IPv4 reads IFA_LOCAL and IPv6 IFA_ADDRESS.
-	body = putAttr(body, unix.IFA_LOCAL, raw)
-	body = putAttr(body, unix.IFA_ADDRESS, raw)
+	body = netlink.PutAttr(body, unix.IFA_LOCAL, raw)
+	body = netlink.PutAttr(body, unix.IFA_ADDRESS, raw)
 	return body
 }
 
@@ -422,13 +423,13 @@ func (p *netlinkPlatform) keysByLength(address netip.Addr) bool { return address
 // with it off the secondaries go with the primary, and a renumber within the subnet leaves the tun without IPv4
 // a tun without IPv4 loses every IPv4 route through it, another writer's among them
 func promoteSecondaries(conn netlinkConn, index uint32) error {
-	conf := putAttrU32(nil, ipv4DevconfPromoteSecondaries, 1)
+	conf := netlink.PutAttrU32(nil, ipv4DevconfPromoteSecondaries, 1)
 	// kernels that validate the devconf attributes against a policy parse IFLA_INET_CONF strictly
 	// and refuse it with EINVAL unless it carries NLA_F_NESTED
-	inet := putAttr(nil, unix.AF_INET, putAttr(nil, unix.IFLA_INET_CONF|unix.NLA_F_NESTED, conf))
+	inet := netlink.PutAttr(nil, unix.AF_INET, netlink.PutAttr(nil, unix.IFLA_INET_CONF|unix.NLA_F_NESTED, conf))
 	body := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(body[4:], index)
-	body = putAttr(body, unix.IFLA_AF_SPEC, inet)
+	body = netlink.PutAttr(body, unix.IFLA_AF_SPEC, inet)
 	_, err := conn.execute(unix.RTM_NEWLINK, unix.NLM_F_ACK, body)
 	return err
 }
@@ -444,7 +445,7 @@ func promoteSecondaries(conn netlinkConn, index uint32) error {
 type routeMonitor struct {
 	name    string
 	source  io.ReadCloser
-	wakesOn func(nlMessage) bool
+	wakesOn func(netlink.Message) bool
 	signal  chan struct{}
 	// stop ends a backoff before Close closes source
 	stop    chan struct{}
@@ -462,33 +463,15 @@ const reconcilerGroups = uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE 
 	unix.RTMGRP_IPV4_IFADDR | unix.RTMGRP_IPV6_IFADDR)
 
 // openMonitor joins groups and wakes once per datagram holding a message wakesOn takes
-func openMonitor(name string, groups uint32, wakesOn func(nlMessage) bool) (*routeMonitor, error) {
-	file, err := monitorSocket(name, groups)
+func openMonitor(name string, groups uint32, wakesOn func(netlink.Message) bool) (*routeMonitor, error) {
+	file, err := netlink.Subscribe(name, unix.NETLINK_ROUTE, groups, monitorReceiveBuffer)
 	if err != nil {
 		return nil, err
 	}
 	return startMonitor(name, file, wakesOn), nil
 }
 
-func monitorSocket(name string, groups uint32) (*os.File, error) {
-	fd, err := unix.Socket(unix.AF_NETLINK,
-		unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_ROUTE)
-	if err != nil {
-		return nil, fmt.Errorf("kernel: open %s socket: %w", name, err)
-	}
-	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: groups}); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("kernel: join the notification groups of %s: %w", name, err)
-	}
-	// a large receive buffer keeps a route flood from costing an ENOBUFS,
-	// which is survivable but forces a full resync.
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, monitorReceiveBuffer)
-	// the socket is nonblocking, so os.NewFile registers it with the runtime
-	// poller and Close unblocks the reader without racing on the descriptor.
-	return os.NewFile(uintptr(fd), name), nil
-}
-
-func startMonitor(name string, source io.ReadCloser, wakesOn func(nlMessage) bool) *routeMonitor {
+func startMonitor(name string, source io.ReadCloser, wakesOn func(netlink.Message) bool) *routeMonitor {
 	monitor := &routeMonitor{
 		name:    name,
 		source:  source,
@@ -504,7 +487,7 @@ func startMonitor(name string, source io.ReadCloser, wakesOn func(nlMessage) boo
 func (m *routeMonitor) run() {
 	defer close(m.done)
 	readNotifications(m.name, m.source, make([]byte, monitorReadSize), m.stop, m.wake, func(datagram []byte) {
-		messages, err := parseMessages(datagram)
+		messages, err := netlink.ParseMessages(datagram)
 		// a notification that does not parse still means something changed
 		if err != nil || slices.ContainsFunc(messages, m.wakesOn) {
 			m.wake()
@@ -515,8 +498,8 @@ func (m *routeMonitor) run() {
 // reconcilerWakes takes a notification touching what the reconciler owns
 // a rule is woken on only when it goes, since the pass that follows puts it back
 // an address is woken on only where it is the tun's, whoever wrote it, since the rules of modes 2 and 3 follow the tun's overlay addresses
-func reconcilerWakes(table uint32, proto uint8, tun uint32) func(nlMessage) bool {
-	return func(message nlMessage) bool {
+func reconcilerWakes(table uint32, proto uint8, tun uint32) func(netlink.Message) bool {
+	return func(message netlink.Message) bool {
 		switch message.Kind {
 		case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
 			return notificationTable(message) == table
@@ -530,11 +513,11 @@ func reconcilerWakes(table uint32, proto uint8, tun uint32) func(nlMessage) bool
 }
 
 // ruleProtocol is the FRA_PROTOCOL one rule notification carries, 0 where it carries none
-func ruleProtocol(message nlMessage) uint8 {
+func ruleProtocol(message netlink.Message) uint8 {
 	if len(message.Data) < sizeofFibRuleHdr {
 		return 0
 	}
-	for attr, value := range message.attributes(sizeofFibRuleHdr) {
+	for attr, value := range message.Attributes(sizeofFibRuleHdr) {
 		if attr == unix.FRA_PROTOCOL && len(value) == 1 {
 			return value[0]
 		}
@@ -558,12 +541,12 @@ func (m *routeMonitor) Close() error {
 	return err
 }
 
-func notificationTable(message nlMessage) uint32 {
+func notificationTable(message netlink.Message) uint32 {
 	if len(message.Data) < unix.SizeofRtMsg {
 		return 0
 	}
 	table := uint32(message.Data[4])
-	for attr, value := range message.attributes(unix.SizeofRtMsg) {
+	for attr, value := range message.Attributes(unix.SizeofRtMsg) {
 		if attr == unix.RTA_TABLE && len(value) == 4 {
 			return binary.NativeEndian.Uint32(value)
 		}
@@ -645,7 +628,7 @@ func protocolLabel(protocol uint8) string {
 // rule can be tested without a netlink socket.
 // replies hold the routes of the reconciler's table alone
 // the kernel filtered the dump to it
-func collectForeignWriters(replies []nlMessage, ours uint8, seen map[uint8]bool) {
+func collectForeignWriters(replies []netlink.Message, ours uint8, seen map[uint8]bool) {
 	for _, reply := range replies {
 		if reply.Kind != unix.RTM_NEWROUTE || len(reply.Data) < unix.SizeofRtMsg {
 			continue

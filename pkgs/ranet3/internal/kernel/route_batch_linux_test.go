@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
@@ -195,7 +196,7 @@ func openBatchLab(tb testing.TB, prefixes int) {
 		}
 	}
 	changeBatchLink(tb, conn, dead, unix.IFF_UP, nil)
-	changeBatchLink(tb, conn, linkDown, 0, putAttr(nil, unix.IFLA_CARRIER, []byte{0}))
+	changeBatchLink(tb, conn, linkDown, 0, netlink.PutAttr(nil, unix.IFLA_CARRIER, []byte{0}))
 	// the link watch marks a hop link-down after the carrier change is answered
 	waitFor(tb, func() bool {
 		for _, f := range batchFamilies {
@@ -258,23 +259,23 @@ func writeBatchRoute(tb testing.TB, conn *nlConn, table uint32, destination neti
 		}
 	}
 	body[1], body[5], body[7] = uint8(destination.Bits()), unix.RTPROT_STATIC, unix.RTN_UNICAST
-	body = putAttrU32(body, unix.RTA_TABLE, table)
-	body = putAttr(body, unix.RTA_DST, addressBytes(destination.Addr()))
+	body = netlink.PutAttrU32(body, unix.RTA_TABLE, table)
+	body = netlink.PutAttr(body, unix.RTA_DST, netlink.AddressBytes(destination.Addr()))
 	if len(hops) == 1 {
-		body = putAttrU32(body, unix.RTA_OIF, hops[0].index)
+		body = netlink.PutAttrU32(body, unix.RTA_OIF, hops[0].index)
 		if hops[0].gateway.IsValid() {
-			body = putAttr(body, unix.RTA_GATEWAY, addressBytes(hops[0].gateway))
+			body = netlink.PutAttr(body, unix.RTA_GATEWAY, netlink.AddressBytes(hops[0].gateway))
 		}
 	} else {
 		var multipath []byte
 		for _, hop := range hops {
 			nexthop := make([]byte, unix.SizeofRtNexthop)
 			binary.NativeEndian.PutUint32(nexthop[4:], hop.index)
-			nexthop = putAttr(nexthop, unix.RTA_GATEWAY, addressBytes(hop.gateway))
+			nexthop = netlink.PutAttr(nexthop, unix.RTA_GATEWAY, netlink.AddressBytes(hop.gateway))
 			binary.NativeEndian.PutUint16(nexthop, uint16(len(nexthop)))
 			multipath = append(multipath, nexthop...)
 		}
-		body = putAttr(body, unix.RTA_MULTIPATH, multipath)
+		body = netlink.PutAttr(body, unix.RTA_MULTIPATH, multipath)
 	}
 	if _, err := conn.execute(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
 		tb.Fatalf("install the route to %s in table %d: %v", destination, table, err)
@@ -422,7 +423,7 @@ func TestNetlinkRouteGetBatchAnswersWhileADeviceComesAndGoes(t *testing.T) {
 			t.Fatalf("create dummy %d: %v", i, err)
 		}
 	}
-	del := putAttrString(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, churnName)
+	del := netlink.PutAttrString(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, churnName)
 	churn(t, func(conn *nlConn) {
 		_ = createLink(conn, churnName, "dummy")
 		_, _ = conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, del)

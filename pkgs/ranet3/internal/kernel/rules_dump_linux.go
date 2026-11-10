@@ -11,6 +11,8 @@ import (
 	"net/netip"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // DumpRules reads every policy rule of both families through a socket of its
@@ -44,7 +46,7 @@ const (
 
 // decodeDumpedRule reads one rule of either family, whatever its owner and
 // action, and reports false for a message too short to be one
-func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
+func decodeDumpedRule(message netlink.Message) (DumpedRule, bool) {
 	if len(message.Data) < sizeofFibRuleHdr {
 		return DumpedRule{}, false
 	}
@@ -62,7 +64,7 @@ func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
 	rule.Table = uint32(message.Data[4])
 	rule.Action = actionName(message.Data[7])
 	rule.Invert = binary.NativeEndian.Uint32(message.Data[8:])&unix.FIB_RULE_INVERT != 0
-	for kind, value := range message.attributes(sizeofFibRuleHdr) {
+	for kind, value := range message.Attributes(sizeofFibRuleHdr) {
 		switch kind {
 		case unix.FRA_PRIORITY, unix.FRA_TABLE, unix.FRA_FWMARK, unix.FRA_FWMASK, unix.FRA_GOTO, unix.FRA_SUPPRESS_PREFIXLEN:
 			if len(value) != 4 {

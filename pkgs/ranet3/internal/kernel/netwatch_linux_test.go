@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
@@ -35,8 +36,8 @@ func hostAddrMessage(index uint32, prefix netip.Prefix) []byte {
 	}
 	body[1] = uint8(prefix.Bits())
 	binary.NativeEndian.PutUint32(body[4:], index)
-	body = putAttr(body, unix.IFA_LOCAL, addressBytes(prefix.Addr()))
-	return putAttr(body, unix.IFA_ADDRESS, addressBytes(prefix.Addr()))
+	body = netlink.PutAttr(body, unix.IFA_LOCAL, netlink.AddressBytes(prefix.Addr()))
+	return netlink.PutAttr(body, unix.IFA_ADDRESS, netlink.AddressBytes(prefix.Addr()))
 }
 
 // hostRouteMessage is the RTM_NEWROUTE or RTM_DELROUTE body of one IPv4 route out of one device, through gateway where it is valid
@@ -47,15 +48,15 @@ func hostRouteMessage(table, index uint32, destination netip.Prefix, gateway net
 	body[5] = unix.RTPROT_BOOT
 	body[6] = unix.RT_SCOPE_LINK
 	body[7] = unix.RTN_UNICAST
-	body = putAttrU32(body, unix.RTA_TABLE, table)
+	body = netlink.PutAttrU32(body, unix.RTA_TABLE, table)
 	if destination.Bits() > 0 {
-		body = putAttr(body, unix.RTA_DST, addressBytes(destination.Addr()))
+		body = netlink.PutAttr(body, unix.RTA_DST, netlink.AddressBytes(destination.Addr()))
 	}
 	if gateway.IsValid() {
 		body[6] = unix.RT_SCOPE_UNIVERSE
-		body = putAttr(body, unix.RTA_GATEWAY, addressBytes(gateway))
+		body = netlink.PutAttr(body, unix.RTA_GATEWAY, netlink.AddressBytes(gateway))
 	}
-	return putAttrU32(body, unix.RTA_OIF, index)
+	return netlink.PutAttrU32(body, unix.RTA_OIF, index)
 }
 
 // the watch wakes on a link, an address or a main table default outside the mesh's device
@@ -68,20 +69,20 @@ func TestHostWakesOutsideTheMeshAndOtherTables(t *testing.T) {
 		return body
 	}
 	for name, arm := range map[string]struct {
-		message nlMessage
+		message netlink.Message
 		mesh    uint32
 		want    bool
 	}{
-		"an uplink address":                    {nlMessage{Kind: unix.RTM_NEWADDR, Data: hostAddrMessage(uplink, prefix("192.0.2.10/24"))}, mesh, true},
-		"an address on the mesh":               {nlMessage{Kind: unix.RTM_DELADDR, Data: hostAddrMessage(mesh, prefix("10.99.0.1/32"))}, mesh, false},
-		"an uplink link":                       {nlMessage{Kind: unix.RTM_NEWLINK, Data: link(uplink)}, mesh, true},
-		"the mesh's link":                      {nlMessage{Kind: unix.RTM_NEWLINK, Data: link(mesh)}, mesh, false},
-		"a main default":                       {nlMessage{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, uplink, prefix("0.0.0.0/0"), netip.MustParseAddr("192.0.2.1"))}, mesh, true},
-		"a main route on the uplink":           {nlMessage{Kind: unix.RTM_DELROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, uplink, prefix("203.0.113.0/24"), netip.Addr{})}, mesh, false},
-		"a main default out of the mesh":       {nlMessage{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, mesh, prefix("0.0.0.0/0"), netip.Addr{})}, mesh, false},
-		"a default in another table":           {nlMessage{Kind: unix.RTM_DELROUTE, Data: hostRouteMessage(otherTable, uplink, prefix("0.0.0.0/0"), netip.Addr{})}, mesh, false},
-		"a main default on a node without one": {nlMessage{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, mesh, prefix("0.0.0.0/0"), netip.Addr{})}, 0, true},
-		"a rule":                               {nlMessage{Kind: unix.RTM_DELRULE, Data: make([]byte, sizeofFibRuleHdr)}, mesh, false},
+		"an uplink address":                    {netlink.Message{Kind: unix.RTM_NEWADDR, Data: hostAddrMessage(uplink, prefix("192.0.2.10/24"))}, mesh, true},
+		"an address on the mesh":               {netlink.Message{Kind: unix.RTM_DELADDR, Data: hostAddrMessage(mesh, prefix("10.99.0.1/32"))}, mesh, false},
+		"an uplink link":                       {netlink.Message{Kind: unix.RTM_NEWLINK, Data: link(uplink)}, mesh, true},
+		"the mesh's link":                      {netlink.Message{Kind: unix.RTM_NEWLINK, Data: link(mesh)}, mesh, false},
+		"a main default":                       {netlink.Message{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, uplink, prefix("0.0.0.0/0"), netip.MustParseAddr("192.0.2.1"))}, mesh, true},
+		"a main route on the uplink":           {netlink.Message{Kind: unix.RTM_DELROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, uplink, prefix("203.0.113.0/24"), netip.Addr{})}, mesh, false},
+		"a main default out of the mesh":       {netlink.Message{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, mesh, prefix("0.0.0.0/0"), netip.Addr{})}, mesh, false},
+		"a default in another table":           {netlink.Message{Kind: unix.RTM_DELROUTE, Data: hostRouteMessage(otherTable, uplink, prefix("0.0.0.0/0"), netip.Addr{})}, mesh, false},
+		"a main default on a node without one": {netlink.Message{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, mesh, prefix("0.0.0.0/0"), netip.Addr{})}, 0, true},
+		"a rule":                               {netlink.Message{Kind: unix.RTM_DELRULE, Data: make([]byte, sizeofFibRuleHdr)}, mesh, false},
 	} {
 		if got := hostWakes(arm.mesh)(arm.message); got != arm.want {
 			t.Errorf("%s: the watch woke %v, want %v", name, got, arm.want)
@@ -124,7 +125,7 @@ func TestNetworkWatchInNetworkNamespace(t *testing.T) {
 	address, meshAddress := prefix("192.0.2.10/24"), prefix("10.99.0.1/32")
 	gateway := netip.MustParseAddr("192.0.2.1")
 	// the mesh's own default sits behind the uplink's, as an exit node's would in main
-	meshDefault := putAttrU32(hostRouteMessage(unix.RT_TABLE_MAIN, mesh.index, prefix("0.0.0.0/0"), netip.Addr{}), unix.RTA_PRIORITY, 50)
+	meshDefault := netlink.PutAttrU32(hostRouteMessage(unix.RT_TABLE_MAIN, mesh.index, prefix("0.0.0.0/0"), netip.Addr{}), unix.RTA_PRIORITY, 50)
 	// a main route that is no default wakes nothing
 	// the read the uplink default's removal costs meets the mesh's address and default, which no notification of their own reaches
 	uplinkRoute := hostRouteMessage(unix.RT_TABLE_MAIN, uplink.index, prefix("203.0.113.0/24"), netip.Addr{})
@@ -325,7 +326,7 @@ func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 	}
 	setLinkFlags(t, conn, uplink.index, unix.IFF_UP)
 
-	file, err := monitorSocket("rtnetlink-netwatch", watchGroups)
+	file, err := netlink.Subscribe("rtnetlink-netwatch", unix.NETLINK_ROUTE, watchGroups, monitorReceiveBuffer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,17 +540,17 @@ func TestNetworkWatchFollowsLinksInNetworkNamespace(t *testing.T) {
 }
 
 // linkMessage is the RTM_NEWLINK of one named link with its flags
-func linkMessage(index uint32, name string, flags uint32) nlMessage {
+func linkMessage(index uint32, name string, flags uint32) netlink.Message {
 	body := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(body[4:], index)
 	binary.NativeEndian.PutUint32(body[8:], flags)
-	return nlMessage{Kind: unix.RTM_NEWLINK, Data: putAttrString(body, unix.IFLA_IFNAME, name)}
+	return netlink.Message{Kind: unix.RTM_NEWLINK, Data: netlink.PutAttrString(body, unix.IFLA_IFNAME, name)}
 }
 
 // the reader keeps the links that are up and leaves out a down one and the mesh's
 func TestReaderKeepsUpLinksOutsideTheMesh(t *testing.T) {
 	const mesh = 9
-	got := upLinks([]nlMessage{
+	got := upLinks([]netlink.Message{
 		linkMessage(2, "eth0", unix.IFF_UP|unix.IFF_RUNNING),
 		linkMessage(3, "eth1", unix.IFF_RUNNING),
 		linkMessage(mesh, "ranet0", unix.IFF_UP|unix.IFF_RUNNING),
@@ -561,7 +562,7 @@ func TestReaderKeepsUpLinksOutsideTheMesh(t *testing.T) {
 
 // addressMessage is the RTM_NEWADDR of one address under bits, its IFA_LOCAL and IFA_ADDRESS each left out where invalid
 // flags ride in ifa_flags, or in IFA_FLAGS alone where inAttribute is set, as the flags above the first byte do
-func addressMessage(index uint32, local, address netip.Addr, bits uint8, flags uint32, inAttribute bool) nlMessage {
+func addressMessage(index uint32, local, address netip.Addr, bits uint8, flags uint32, inAttribute bool) netlink.Message {
 	body := make([]byte, unix.SizeofIfAddrmsg)
 	body[0] = unix.AF_INET
 	if local.Is6() || address.Is6() {
@@ -570,17 +571,17 @@ func addressMessage(index uint32, local, address netip.Addr, bits uint8, flags u
 	body[1] = bits
 	binary.NativeEndian.PutUint32(body[4:], index)
 	if local.IsValid() {
-		body = putAttr(body, unix.IFA_LOCAL, addressBytes(local))
+		body = netlink.PutAttr(body, unix.IFA_LOCAL, netlink.AddressBytes(local))
 	}
 	if address.IsValid() {
-		body = putAttr(body, unix.IFA_ADDRESS, addressBytes(address))
+		body = netlink.PutAttr(body, unix.IFA_ADDRESS, netlink.AddressBytes(address))
 	}
 	if inAttribute {
-		body = putAttrU32(body, unix.IFA_FLAGS, flags)
+		body = netlink.PutAttrU32(body, unix.IFA_FLAGS, flags)
 	} else {
 		body[2] = uint8(flags)
 	}
-	return nlMessage{Kind: unix.RTM_NEWADDR, Data: body}
+	return netlink.Message{Kind: unix.RTM_NEWADDR, Data: body}
 }
 
 // the reader keeps the global unicast addresses a socket can send from on an up link, the local end of a point-to-point one
@@ -591,7 +592,7 @@ func TestReaderKeepsAddressesASocketCanSendFrom(t *testing.T) {
 	up := map[uint32]string{2: "eth0", 4: "docker0"}
 	addr := netip.MustParseAddr
 	none := netip.Addr{}
-	v4 := upAddresses([]nlMessage{
+	v4 := upAddresses([]netlink.Message{
 		addressMessage(2, addr("198.51.100.10"), addr("198.51.100.10"), 24, 0, false),
 		addressMessage(3, addr("192.0.2.10"), addr("192.0.2.10"), 24, 0, false),
 		addressMessage(2, addr("169.254.1.1"), addr("169.254.1.1"), 16, 0, false),
@@ -610,7 +611,7 @@ func TestReaderKeepsAddressesASocketCanSendFrom(t *testing.T) {
 	if got, want := linkAddresses(v4), addrs("198.51.100.10", "203.0.113.1", "203.0.113.65"); !slices.Equal(got, want) {
 		t.Errorf("the reader takes IPv4's addresses as %v, want %v", got, want)
 	}
-	v6 := upAddresses([]nlMessage{
+	v6 := upAddresses([]netlink.Message{
 		addressMessage(2, none, addr("2001:db8::5"), 64, unix.IFA_F_PERMANENT, false),
 		addressMessage(2, none, addr("2001:db8::6"), 64, unix.IFA_F_TENTATIVE, false),
 		addressMessage(2, none, addr("2001:db8::7"), 64, unix.IFA_F_DADFAILED, true),
@@ -628,11 +629,11 @@ func TestReaderKeepsAddressesASocketCanSendFrom(t *testing.T) {
 }
 
 // defaultMessage is the RTM_NEWROUTE of one IPv4 default in main of a kind and metric out of index, through gateway where it is valid
-func defaultMessage(index uint32, gateway netip.Addr, kind uint8, metric uint32) nlMessage {
+func defaultMessage(index uint32, gateway netip.Addr, kind uint8, metric uint32) netlink.Message {
 	body := hostRouteMessage(unix.RT_TABLE_MAIN, index, prefix("0.0.0.0/0"), gateway)
 	body[6] = unix.RT_SCOPE_UNIVERSE
 	body[7] = kind
-	return nlMessage{Kind: unix.RTM_NEWROUTE, Data: putAttrU32(body, unix.RTA_PRIORITY, metric)}
+	return netlink.Message{Kind: unix.RTM_NEWROUTE, Data: netlink.PutAttrU32(body, unix.RTA_PRIORITY, metric)}
 }
 
 // the reader takes the unicast default of lowest metric, whatever order the dump holds the candidates in
@@ -643,16 +644,16 @@ func TestReaderTakesTheLowestMetricUnicastDefault(t *testing.T) {
 	dock := defaultMessage(2, dockGateway, unix.RTN_UNICAST, 100)
 	wifi := defaultMessage(3, wifiGateway, unix.RTN_UNICAST, 600)
 	unreachable := defaultMessage(1, netip.Addr{}, unix.RTN_UNREACHABLE, 0)
-	nearer := nlMessage{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, 3, prefix("203.0.113.0/24"), netip.Addr{})}
+	nearer := netlink.Message{Kind: unix.RTM_NEWROUTE, Data: hostRouteMessage(unix.RT_TABLE_MAIN, 3, prefix("203.0.113.0/24"), netip.Addr{})}
 	for _, arm := range []struct {
 		name  string
-		dump  []nlMessage
+		dump  []netlink.Message
 		route DefaultRoute
 	}{
-		{"the dock after the wifi", []nlMessage{wifi, dock, unreachable, nearer}, DefaultRoute{Interface: "en7", Gateway: dockGateway}},
-		{"the dock before the wifi", []nlMessage{unreachable, nearer, dock, wifi}, DefaultRoute{Interface: "en7", Gateway: dockGateway}},
-		{"the dock gone", []nlMessage{unreachable, wifi}, DefaultRoute{Interface: "wlan0", Gateway: wifiGateway}},
-		{"no unicast default", []nlMessage{unreachable, nearer}, DefaultRoute{}},
+		{"the dock after the wifi", []netlink.Message{wifi, dock, unreachable, nearer}, DefaultRoute{Interface: "en7", Gateway: dockGateway}},
+		{"the dock before the wifi", []netlink.Message{unreachable, nearer, dock, wifi}, DefaultRoute{Interface: "en7", Gateway: dockGateway}},
+		{"the dock gone", []netlink.Message{unreachable, wifi}, DefaultRoute{Interface: "wlan0", Gateway: wifiGateway}},
+		{"no unicast default", []netlink.Message{unreachable, nearer}, DefaultRoute{}},
 	} {
 		if got := upDefault(arm.dump, unix.AF_INET, up); got != arm.route {
 			t.Errorf("%s: the reader takes %+v, want %+v", arm.name, got, arm.route)
@@ -666,7 +667,7 @@ func nexthop(index uint32, flags uint8, gateway netip.Addr) []byte {
 	hop[2] = flags
 	binary.NativeEndian.PutUint32(hop[4:], index)
 	if gateway.IsValid() {
-		hop = putAttr(hop, unix.RTA_GATEWAY, addressBytes(gateway))
+		hop = netlink.PutAttr(hop, unix.RTA_GATEWAY, netlink.AddressBytes(gateway))
 	}
 	binary.NativeEndian.PutUint16(hop, uint16(len(hop)))
 	return hop
@@ -676,17 +677,17 @@ func nexthop(index uint32, flags uint8, gateway netip.Addr) []byte {
 // a hop whose length does not fit ends the walk, and so does a last hop of unaligned length at the attribute's end
 func TestRouteHopTakesTheFirstLiveHop(t *testing.T) {
 	first, second := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.1")
-	single := func(flags uint32) nlMessage {
+	single := func(flags uint32) netlink.Message {
 		body := hostRouteMessage(unix.RT_TABLE_MAIN, 2, prefix("0.0.0.0/0"), first)
 		binary.NativeEndian.PutUint32(body[8:], flags)
-		return nlMessage{Kind: unix.RTM_NEWROUTE, Data: body}
+		return netlink.Message{Kind: unix.RTM_NEWROUTE, Data: body}
 	}
-	multipath := func(hops ...[]byte) nlMessage {
+	multipath := func(hops ...[]byte) netlink.Message {
 		body := make([]byte, unix.SizeofRtMsg)
 		body[0] = unix.AF_INET
 		body[7] = unix.RTN_UNICAST
-		body = putAttrU32(body, unix.RTA_TABLE, unix.RT_TABLE_MAIN)
-		return nlMessage{Kind: unix.RTM_NEWROUTE, Data: putAttr(body, unix.RTA_MULTIPATH, slices.Concat(hops...))}
+		body = netlink.PutAttrU32(body, unix.RTA_TABLE, unix.RT_TABLE_MAIN)
+		return netlink.Message{Kind: unix.RTM_NEWROUTE, Data: netlink.PutAttr(body, unix.RTA_MULTIPATH, slices.Concat(hops...))}
 	}
 	sized := func(hop []byte, size uint16) []byte {
 		binary.NativeEndian.PutUint16(hop, size)
@@ -697,7 +698,7 @@ func TestRouteHopTakesTheFirstLiveHop(t *testing.T) {
 	}
 	for _, arm := range []struct {
 		name    string
-		message nlMessage
+		message netlink.Message
 		device  uint32
 		gateway netip.Addr
 	}{
@@ -711,7 +712,7 @@ func TestRouteHopTakesTheFirstLiveHop(t *testing.T) {
 		{"a hop shorter than its header", multipath(sized(nexthop(2, 0, first), unix.SizeofRtNexthop-1), nexthop(3, 0, second)), 0, netip.Addr{}},
 		{"a hop longer than the attribute", multipath(sized(nexthop(2, 0, first), 64)), 0, netip.Addr{}},
 		{"a dead last hop of unaligned length", multipath(unaligned(nexthop(2, unix.RTNH_F_DEAD, first))), 0, netip.Addr{}},
-		{"a message shorter than its header", nlMessage{Kind: unix.RTM_NEWROUTE, Data: make([]byte, unix.SizeofRtMsg-1)}, 0, netip.Addr{}},
+		{"a message shorter than its header", netlink.Message{Kind: unix.RTM_NEWROUTE, Data: make([]byte, unix.SizeofRtMsg-1)}, 0, netip.Addr{}},
 	} {
 		if device, gateway := routeHop(arm.message); device != arm.device || gateway != arm.gateway {
 			t.Errorf("%s: the hop is device %d through %v, want %d through %v", arm.name, device, gateway, arm.device, arm.gateway)

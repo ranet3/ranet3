@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -38,7 +39,7 @@ type kernelRule struct {
 // kernelParse is fib_nl2rule (fib_rules.c:568-736) and the backward goto check
 // of fib_nl2rule_locked (:746-750) on one request body
 func kernelParse(body []byte) (kernelRule, error) {
-	attrs := maps.Collect(nlMessage{Data: body}.attributes(sizeofFibRuleHdr))
+	attrs := maps.Collect(netlink.Message{Data: body}.Attributes(sizeofFibRuleHdr))
 	u32 := func(kind uint16) (uint32, bool) {
 		value, ok := attrs[kind]
 		if !ok || len(value) != 4 {
@@ -105,38 +106,38 @@ func kernelParse(body []byte) (kernelRule, error) {
 
 // dump is fib_nl_fill_rule (fib_rules.c:1151-1234) with the address part of
 // fib4_rule_fill or fib6_rule_fill
-func (r kernelRule) dump() nlMessage {
+func (r kernelRule) dump() netlink.Message {
 	body := make([]byte, sizeofFibRuleHdr)
 	body[0], body[1], body[2], body[7] = r.family, r.dstLen, r.srcLen, r.action
 	body[4] = unix.RT_TABLE_COMPAT
 	if r.table < 256 {
 		body[4] = uint8(r.table)
 	}
-	body = putAttrU32(body, unix.FRA_TABLE, r.table)
-	body = putAttrU32(body, unix.FRA_SUPPRESS_PREFIXLEN, uint32(r.suppressPrefixlen))
-	body = putAttr(body, unix.FRA_PROTOCOL, []byte{r.proto})
+	body = netlink.PutAttrU32(body, unix.FRA_TABLE, r.table)
+	body = netlink.PutAttrU32(body, unix.FRA_SUPPRESS_PREFIXLEN, uint32(r.suppressPrefixlen))
+	body = netlink.PutAttr(body, unix.FRA_PROTOCOL, []byte{r.proto})
 	if r.iifname != "" {
-		body = putAttrString(body, unix.FRA_IIFNAME, r.iifname)
+		body = netlink.PutAttrString(body, unix.FRA_IIFNAME, r.iifname)
 	}
 	if r.pref != 0 {
-		body = putAttrU32(body, unix.FRA_PRIORITY, r.pref)
+		body = netlink.PutAttrU32(body, unix.FRA_PRIORITY, r.pref)
 	}
 	if r.mark != 0 {
-		body = putAttrU32(body, unix.FRA_FWMARK, r.mark)
+		body = netlink.PutAttrU32(body, unix.FRA_FWMARK, r.mark)
 	}
 	if r.markMask != 0 || r.mark != 0 {
-		body = putAttrU32(body, unix.FRA_FWMASK, r.markMask)
+		body = netlink.PutAttrU32(body, unix.FRA_FWMASK, r.markMask)
 	}
 	if r.target != 0 {
-		body = putAttrU32(body, unix.FRA_GOTO, r.target)
+		body = netlink.PutAttrU32(body, unix.FRA_GOTO, r.target)
 	}
 	if r.dstLen != 0 {
-		body = putAttr(body, unix.FRA_DST, []byte(r.dst))
+		body = netlink.PutAttr(body, unix.FRA_DST, []byte(r.dst))
 	}
 	if r.srcLen != 0 {
-		body = putAttr(body, unix.FRA_SRC, []byte(r.src))
+		body = netlink.PutAttr(body, unix.FRA_SRC, []byte(r.src))
 	}
-	return nlMessage{Kind: unix.RTM_NEWRULE, Data: body}
+	return netlink.Message{Kind: unix.RTM_NEWRULE, Data: body}
 }
 
 // addresses is fib4_rule_compare's or fib6_rule_compare's test of the

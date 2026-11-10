@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -23,8 +24,8 @@ func ruleAttrs(t *testing.T, body []byte) (hdr []byte, attrs map[uint16][]byte) 
 	if len(body) < sizeofFibRuleHdr {
 		t.Fatalf("a rule message is %d bytes, shorter than its header", len(body))
 	}
-	message := nlMessage{Data: body}
-	attrs = maps.Collect(message.attributes(sizeofFibRuleHdr))
+	message := netlink.Message{Data: body}
+	attrs = maps.Collect(message.Attributes(sizeofFibRuleHdr))
 	return body[:sizeofFibRuleHdr], attrs
 }
 
@@ -124,7 +125,7 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 		"an unreachable":     {Family: FamilyIPv6, IIF: "lo", action: actionUnreachable, Priority: 5450},
 	} {
 		t.Run(name, func(t *testing.T) {
-			conn.replies = []nlMessage{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}
+			conn.replies = []netlink.Message{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}
 			got, err := plat.Rules()
 			if err != nil {
 				t.Fatal(err)
@@ -146,8 +147,8 @@ func TestExactMarkReadsBackAsTheRuleThatWasWritten(t *testing.T) {
 	plat, conn := writePlatform(t)
 	rule := Rule{Family: FamilyIPv4, FWMark: 0x72, Table: 254, Priority: 40}
 	body := plat.ruleMessage(rule)
-	body = putAttrU32(body, unix.FRA_FWMASK, ^uint32(0))
-	conn.replies = []nlMessage{{Kind: unix.RTM_NEWRULE, Data: body}}
+	body = netlink.PutAttrU32(body, unix.FRA_FWMASK, ^uint32(0))
+	conn.replies = []netlink.Message{{Kind: unix.RTM_NEWRULE, Data: body}}
 	got, err := plat.Rules()
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +187,7 @@ func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
 	tableless := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("192.0.2.0/24"), Priority: 103})
 	first := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("198.51.100.0/24"), Table: 200})
 
-	conn.replies = []nlMessage{
+	conn.replies = []netlink.Message{
 		{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(ours)},
 		{Kind: unix.RTM_NEWRULE, Data: other},
 		{Kind: unix.RTM_NEWRULE, Data: blackhole},
@@ -220,10 +221,10 @@ func TestRuleReadBackKeepsWhatNoDerivedRuleHolds(t *testing.T) {
 		kind uint16
 	}{
 		"an inverted match": {body: inverted},
-		"an output device":  {body: putAttrString(plat.ruleMessage(underlay), unix.FRA_OIFNAME, "eth0"), kind: unix.FRA_OIFNAME},
-		"an l3mdev lookup":  {body: putAttr(plat.ruleMessage(underlay), unix.FRA_L3MDEV, []byte{1}), kind: unix.FRA_L3MDEV},
+		"an output device":  {body: netlink.PutAttrString(plat.ruleMessage(underlay), unix.FRA_OIFNAME, "eth0"), kind: unix.FRA_OIFNAME},
+		"an l3mdev lookup":  {body: netlink.PutAttr(plat.ruleMessage(underlay), unix.FRA_L3MDEV, []byte{1}), kind: unix.FRA_L3MDEV},
 	} {
-		got, ok := plat.decodeRule(nlMessage{Kind: unix.RTM_NEWRULE, Data: c.body})
+		got, ok := plat.decodeRule(netlink.Message{Kind: unix.RTM_NEWRULE, Data: c.body})
 		if !ok {
 			t.Errorf("%s: a rule of this reconciler's protocol is read as another writer's", name)
 			continue
@@ -265,11 +266,11 @@ func stripProtocol(t *testing.T, body []byte) []byte {
 func rebuildRule(t *testing.T, body []byte, edit func(uint16, []byte) ([]byte, bool)) []byte {
 	t.Helper()
 	out := slices.Clone(body[:sizeofFibRuleHdr])
-	message := nlMessage{Data: body}
-	for kind, value := range message.attributes(sizeofFibRuleHdr) {
+	message := netlink.Message{Data: body}
+	for kind, value := range message.Attributes(sizeofFibRuleHdr) {
 		replacement, keep := edit(kind, value)
 		if keep {
-			out = putAttr(out, kind, replacement)
+			out = netlink.PutAttr(out, kind, replacement)
 		}
 	}
 	return out

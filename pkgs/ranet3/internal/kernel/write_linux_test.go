@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // fakeNetlink stands in for the socket so what this backend writes can be read
@@ -27,11 +29,11 @@ type fakeNetlink struct {
 		kind, flags uint16
 		body        []byte
 	}
-	replies []nlMessage
+	replies []netlink.Message
 	err     error
 }
 
-func (f *fakeNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
+func (f *fakeNetlink) execute(kind, flags uint16, body []byte) ([]netlink.Message, error) {
 	f.sent = append(f.sent, struct {
 		kind, flags uint16
 		body        []byte
@@ -78,7 +80,7 @@ func TestLinuxInstallsHoldAsUnreachableRoute(t *testing.T) {
 	}
 	// A route that resolves to an error has no output interface: fib_check_nh
 	// is not consulted for one, and naming a device makes the kernel refuse it.
-	for attr := range (nlMessage{Kind: unix.RTM_NEWROUTE, Data: sent.body}).attributes(unix.SizeofRtMsg) {
+	for attr := range (netlink.Message{Kind: unix.RTM_NEWROUTE, Data: sent.body}).Attributes(unix.SizeofRtMsg) {
 		if attr == unix.RTA_OIF {
 			t.Error("the hold names an output interface, which the kernel refuses")
 		}
@@ -108,15 +110,15 @@ func TestLinuxWritesAndReadsAThrowRoute(t *testing.T) {
 			t.Errorf("%s was written as route type %d, want RTN_THROW", thrown, sent[7])
 		}
 		dumped := slices.Clone(sent)
-		for attr := range (nlMessage{Kind: unix.RTM_NEWROUTE, Data: sent}).attributes(unix.SizeofRtMsg) {
+		for attr := range (netlink.Message{Kind: unix.RTM_NEWROUTE, Data: sent}).Attributes(unix.SizeofRtMsg) {
 			if attr == unix.RTA_OIF {
 				t.Errorf("%s names an output device", thrown)
 			}
 		}
 		if thrown.Destination.Addr().Is6() {
-			dumped = putAttrU32(dumped, unix.RTA_OIF, 1)
+			dumped = netlink.PutAttrU32(dumped, unix.RTA_OIF, 1)
 		}
-		got, ok := plat.decodeRoute(nlMessage{Kind: unix.RTM_NEWROUTE, Data: dumped})
+		got, ok := plat.decodeRoute(netlink.Message{Kind: unix.RTM_NEWROUTE, Data: dumped})
 		if !ok || got != thrown {
 			t.Errorf("%s read back as %v (kept %v)", thrown, got, ok)
 		}
@@ -201,7 +203,7 @@ func TestLinuxWithdrawalNamesOurOwnProtocol(t *testing.T) {
 func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 	plat, conn := writePlatform(t)
 	const ourTable, ourProtocol = 200, DefaultProtocol
-	conn.replies = []nlMessage{
+	conn.replies = []netlink.Message{
 		// Somebody else exporting into our table, which this reports.
 		routeDump(ourTable, 187, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 		// Our own routes, which are not foreign.
@@ -253,7 +255,7 @@ func TestLinuxDumpsCarryTheTableFilter(t *testing.T) {
 			t.Errorf("request %d is type %d, flags %#x and protocol %d, want a route dump of protocol %d", i, sent.kind, sent.flags, sent.body[5], protocol)
 		}
 		table := uint32(0)
-		for kind, value := range (nlMessage{Data: sent.body}).attributes(unix.SizeofRtMsg) {
+		for kind, value := range (netlink.Message{Data: sent.body}).Attributes(unix.SizeofRtMsg) {
 			if kind == unix.RTA_TABLE && len(value) == 4 {
 				table = binary.NativeEndian.Uint32(value)
 			}
@@ -264,14 +266,12 @@ func TestLinuxDumpsCarryTheTableFilter(t *testing.T) {
 	}
 }
 
-// endingOn is a socket on which the kernel ends every request with errno
-// the end goes through collect, as every answer of a real socket does
+// endingOn is a socket on which the kernel ends every request with errno, which the leaf's collect returns as the error with
+// no replies
 type endingOn unix.Errno
 
-func (e endingOn) execute(uint16, uint16, []byte) ([]nlMessage, error) {
-	end := nlMessage{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI, Seq: 1, Pid: 1,
-		Data: binary.NativeEndian.AppendUint32(nil, uint32(-int32(e)))}
-	return collect(1, 1, func() ([]nlMessage, error) { return []nlMessage{end}, nil })
+func (e endingOn) execute(uint16, uint16, []byte) ([]netlink.Message, error) {
+	return nil, unix.Errno(e)
 }
 
 func (endingOn) link(uint32, string) (linkInfo, error) { return linkInfo{}, unix.ENODEV }
@@ -328,7 +328,7 @@ func TestLinuxAddressDumpsNameTheTun(t *testing.T) {
 // to its caller, and this asserts the line as printed.
 func TestForeignWriterReportRendersReadably(t *testing.T) {
 	plat, conn := writePlatform(t)
-	conn.replies = []nlMessage{
+	conn.replies = []netlink.Message{
 		routeDump(200, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 		routeDump(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
 	}
@@ -404,8 +404,8 @@ func TestLinuxKeepsTheRefusalRecordThroughAFailedDump(t *testing.T) {
 func TestBatchSendsAReadsMarkOnItsLookupAlone(t *testing.T) {
 	answer := make([]byte, unix.SizeofRtMsg)
 	answer[0], answer[7] = unix.AF_INET, unix.RTN_UNICAST
-	answer = putAttrU32(answer, unix.RTA_OIF, 3)
-	conn := &fakeNetlink{replies: []nlMessage{{Kind: unix.RTM_NEWROUTE, Data: answer}}}
+	answer = netlink.PutAttrU32(answer, unix.RTA_OIF, 3)
+	conn := &fakeNetlink{replies: []netlink.Message{{Kind: unix.RTM_NEWROUTE, Data: answer}}}
 	const mark = 0x72
 	reads := []RouteRead{
 		{Source: netip.MustParseAddr("198.51.100.10"), Destination: netip.MustParseAddr("203.0.113.70"), Mark: mark, Reply: true},
@@ -425,7 +425,7 @@ func TestBatchSendsAReadsMarkOnItsLookupAlone(t *testing.T) {
 	}
 	for i, want := range []uint32{mark, 0, 0} {
 		var got uint32
-		for attr, value := range (nlMessage{Kind: unix.RTM_GETROUTE, Data: lookups[i]}).attributes(unix.SizeofRtMsg) {
+		for attr, value := range (netlink.Message{Kind: unix.RTM_GETROUTE, Data: lookups[i]}).Attributes(unix.SizeofRtMsg) {
 			if attr == unix.RTA_MARK && len(value) == 4 {
 				got = binary.NativeEndian.Uint32(value)
 			}
@@ -449,13 +449,13 @@ type linkedNetlink struct {
 	looked []uint32
 }
 
-func (f *linkedNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
+func (f *linkedNetlink) execute(kind, flags uint16, body []byte) ([]netlink.Message, error) {
 	f.fakeNetlink.execute(kind, flags, body)
 	route := f.route
 	if dst, _ := lookupOf(body); kind == unix.RTM_GETROUTE && f.routes[dst] != nil {
 		route = f.routes[dst]
 	}
-	return []nlMessage{{Kind: unix.RTM_NEWROUTE, Data: route}}, nil
+	return []netlink.Message{{Kind: unix.RTM_NEWROUTE, Data: route}}, nil
 }
 
 func (f *linkedNetlink) link(index uint32, _ string) (linkInfo, error) {
@@ -484,7 +484,7 @@ func (f *linkedNetlink) lookupsSent() []string {
 
 // lookupOf is the RTA_DST and the RTA_OIF of an RTM_GETROUTE's body, 0 where it carries none
 func lookupOf(body []byte) (dst netip.Addr, oif uint32) {
-	for attr, value := range (nlMessage{Kind: unix.RTM_GETROUTE, Data: body}).attributes(unix.SizeofRtMsg) {
+	for attr, value := range (netlink.Message{Kind: unix.RTM_GETROUTE, Data: body}).Attributes(unix.SizeofRtMsg) {
 		switch attr {
 		case unix.RTA_DST:
 			dst, _ = addressFromBytes(value)
@@ -505,7 +505,7 @@ func TestBatchSendsAReadsInterfaceOnItsLookupAlone(t *testing.T) {
 	routeOut := func(index uint32) []byte {
 		route := make([]byte, unix.SizeofRtMsg)
 		route[0], route[7] = unix.AF_INET, unix.RTN_UNICAST
-		return putAttrU32(route, unix.RTA_OIF, index)
+		return netlink.PutAttrU32(route, unix.RTA_OIF, index)
 	}
 	conn := &linkedNetlink{
 		names:  map[uint32]string{2: "eth0", 9: "wg0"},

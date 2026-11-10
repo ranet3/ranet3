@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -44,7 +45,7 @@ func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 		"another writer's rule deleted":  {unix.RTM_DELRULE, replaceProtocol(t, owned, unix.RTPROT_STATIC), false},
 		"a rule without a protocol gone": {unix.RTM_DELRULE, stripProtocol(t, owned), false},
 	} {
-		if got := wakesOn(nlMessage{Kind: arm.kind, Data: arm.body}); got != arm.want {
+		if got := wakesOn(netlink.Message{Kind: arm.kind, Data: arm.body}); got != arm.want {
 			t.Errorf("%s: the monitor woke %v, want %v", name, got, arm.want)
 		}
 	}
@@ -68,7 +69,7 @@ func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 		"an address taken off another link": {unix.RTM_DELADDR, other, false},
 		"an address message cut short":      {unix.RTM_NEWADDR, tun[:4], false},
 	} {
-		if got := wakesOn(nlMessage{Kind: arm.kind, Data: arm.body}); got != arm.want {
+		if got := wakesOn(netlink.Message{Kind: arm.kind, Data: arm.body}); got != arm.want {
 			t.Errorf("%s: the monitor woke %v, want %v", name, got, arm.want)
 		}
 	}
@@ -87,7 +88,7 @@ func notification(kind uint16, body []byte) []byte {
 // does not parse each wake it again, and Close ends the backoff two errors in a row leave it in, its goroutine with it
 func TestRouteMonitorReadsOnAndClosesWhilePaused(t *testing.T) {
 	source := newScriptedSource(nil)
-	monitor := startMonitor("scripted", source, func(message nlMessage) bool { return message.Kind == unix.RTM_NEWADDR })
+	monitor := startMonitor("scripted", source, func(message netlink.Message) bool { return message.Kind == unix.RTM_NEWADDR })
 	t.Cleanup(func() { _ = monitor.Close() })
 	source.queue <- scriptedRead{err: unix.EMSGSIZE}
 	awaitWake(t, monitor.signal, "EMSGSIZE")
@@ -227,7 +228,7 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 			if err != nil {
 				t.Fatalf("dump rules: %v", err)
 			}
-			return slices.ContainsFunc(replies, func(reply nlMessage) bool {
+			return slices.ContainsFunc(replies, func(reply netlink.Message) bool {
 				got, ok := plat.decodeRule(reply)
 				return ok && got == rule
 			})

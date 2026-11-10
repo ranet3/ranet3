@@ -8,241 +8,38 @@ package kernel
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
-	"iter"
 	"net/netip"
-	"slices"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
-// nlConn is one rtnetlink socket used for synchronous request and reply. One
-// goroutine at a time uses each, so it needs no locking. The reconciler's
-// serves its constructor and then its reconcile loop alone, the network
-// watch's serves WatchNetwork and then the watch's own goroutine alone, and
-// RouteGet, RouteGetBatch and DumpRules each dial one for the call.
-// Notifications arrive on a separate socket precisely so an unsolicited
-// message can never be mistaken for a reply.
+// nlConn is one rtnetlink socket used for synchronous request and reply, with
+// the requests that are rtnetlink's own. One goroutine at a time uses each, so
+// it needs no locking. The reconciler's serves its constructor and then its
+// reconcile loop alone, the network watch's serves WatchNetwork and then the
+// watch's own goroutine alone, and RouteGet, RouteGetBatch and DumpRules each
+// dial one for the call.
 type nlConn struct {
-	fd  int
-	pid uint32
-	seq uint32
-	buf []byte
+	socket *netlink.Conn
 }
 
+// dialNetlink opens a strict socket, since the kernel honors the filters a
+// dump carries only on one, and without them a dump of one table reads every
+// route on the host
 func dialNetlink() (*nlConn, error) {
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	socket, err := netlink.Dial(unix.NETLINK_ROUTE, netlink.Options{Strict: true})
 	if err != nil {
-		return nil, fmt.Errorf("kernel: open rtnetlink socket: %w", err)
-	}
-	// binding with no port lets the kernel pick one, so several sockets in
-	// this process and several processes on the box can coexist.
-	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("kernel: bind rtnetlink socket: %w", err)
-	}
-	// the kernel honors the filters a dump carries only on a strict socket
-	// without them a dump of one table reads every route on the host
-	if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_GET_STRICT_CHK, 1); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("kernel: ask rtnetlink for strict checking, which needs linux 4.20 or later: %w", err)
-	}
-	name, err := unix.Getsockname(fd)
-	if err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("kernel: read rtnetlink socket name: %w", err)
-	}
-	local, ok := name.(*unix.SockaddrNetlink)
-	if !ok {
-		_ = unix.Close(fd)
-		return nil, errors.New("kernel: rtnetlink socket is not a netlink socket")
-	}
-	return &nlConn{fd: fd, pid: local.Pid, buf: make([]byte, netlinkReadSize)}, nil
-}
-
-func (c *nlConn) Close() error { return unix.Close(c.fd) }
-
-// nlMessage is one parsed netlink message: the header fields this package
-// uses, plus the body with its fixed struct and trailing attributes.
-type nlMessage struct {
-	Kind  uint16
-	Flags uint16
-	Seq   uint32
-	Pid   uint32
-	Data  []byte
-}
-
-// execute sends a request and collects every reply the kernel sends for it.
-// A dump ends at NLMSG_DONE and a modify request at its NLMSG_ERROR ack, so
-// every modify request must carry NLM_F_ACK or this blocks forever. A dump the
-// kernel flags as interrupted is asked again, dumpAttempts asks in all.
-func (c *nlConn) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
-	return dumpAgainIfInterrupted(flags, func() ([]nlMessage, error) { return c.request(kind, flags, body) })
-}
-
-// dumpAgainIfInterrupted asks again only after collect has read the interrupted dump to its end, so the next ask meets no dump
-// still running on the socket
-func dumpAgainIfInterrupted(flags uint16, ask func() ([]nlMessage, error)) ([]nlMessage, error) {
-	attempts := 1
-	if flags&unix.NLM_F_DUMP == unix.NLM_F_DUMP {
-		attempts = dumpAttempts
-	}
-	for attempt := 1; ; attempt++ {
-		replies, err := ask()
-		if !errors.Is(err, errDumpInterrupted) || attempt == attempts {
-			return replies, err
-		}
-	}
-}
-
-func (c *nlConn) request(kind, flags uint16, body []byte) ([]nlMessage, error) {
-	c.seq++
-	request := make([]byte, unix.SizeofNlMsghdr+len(body))
-	binary.NativeEndian.PutUint32(request[0:], uint32(len(request)))
-	binary.NativeEndian.PutUint16(request[4:], kind)
-	binary.NativeEndian.PutUint16(request[6:], flags|unix.NLM_F_REQUEST)
-	binary.NativeEndian.PutUint32(request[8:], c.seq)
-	binary.NativeEndian.PutUint32(request[12:], c.pid)
-	copy(request[unix.SizeofNlMsghdr:], body)
-	if err := unix.Sendto(c.fd, request, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return nil, err
 	}
-	return collect(c.seq, c.pid, c.receive)
+	return &nlConn{socket: socket}, nil
 }
 
-// errDumpInterrupted is a dump a change interrupted, whose replies may miss or repeat an entry
-var errDumpInterrupted = errors.New("kernel: dump interrupted by a change")
+func (c *nlConn) Close() error { return c.socket.Close() }
 
-// collect reads datagrams until the message ending request seq of port pid, and returns the replies before it
-// NLMSG_DONE carries an errno as an ack does, and a dump the kernel cut short still ends at DONE
-// so a nonzero errno comes back as the error with none of the replies, never as a table that looks complete
-// nor does a dump whose reply or end carries NLM_F_DUMP_INTR, which comes back as errDumpInterrupted
-// it takes the socket's read as a function so any sequence of messages can be decoded without a socket
-func collect(seq, pid uint32, receive func() ([]nlMessage, error)) ([]nlMessage, error) {
-	var replies []nlMessage
-	interrupted := func(message nlMessage) bool { return message.Flags&unix.NLM_F_DUMP_INTR != 0 }
-	finish := func(end nlMessage) ([]nlMessage, error) {
-		if interrupted(end) || slices.ContainsFunc(replies, interrupted) {
-			return nil, errDumpInterrupted
-		}
-		return replies, nil
-	}
-	for {
-		messages, err := receive()
-		if err != nil {
-			return nil, err
-		}
-		for _, message := range messages {
-			if message.Seq != seq || message.Pid != pid {
-				continue // a late reply to an abandoned request
-			}
-			switch message.Kind {
-			case unix.NLMSG_NOOP:
-			case unix.NLMSG_DONE, unix.NLMSG_ERROR:
-				if len(message.Data) < 4 {
-					return nil, errors.New("kernel: truncated netlink errno")
-				}
-				if code := int32(binary.NativeEndian.Uint32(message.Data)); code != 0 {
-					return nil, unix.Errno(-code)
-				}
-				return finish(message)
-			default:
-				replies = append(replies, message)
-				if message.Flags&unix.NLM_F_MULTI == 0 {
-					return finish(message)
-				}
-			}
-		}
-	}
-}
-
-// receive reads one datagram whole. MSG_PEEK with MSG_TRUNC reports the real
-// length first, so a dump larger than the current buffer grows it instead of
-// silently losing the tail.
-func (c *nlConn) receive() ([]nlMessage, error) {
-	for {
-		n, _, err := unix.Recvfrom(c.fd, c.buf, unix.MSG_PEEK|unix.MSG_TRUNC)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if n <= len(c.buf) {
-			break
-		}
-		c.buf = make([]byte, n)
-	}
-	for {
-		n, from, err := unix.Recvfrom(c.fd, c.buf, 0)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if sender, ok := from.(*unix.SockaddrNetlink); !ok || sender.Pid != 0 {
-			return nil, errors.New("kernel: rtnetlink reply did not come from the kernel")
-		}
-		// parsed messages point into the buffer they came from, and a
-		// multipart dump arrives as several datagrams, so each one gets its
-		// own copy rather than being overwritten by the next.
-		return parseMessages(slices.Clone(c.buf[:n]))
-	}
-}
-
-// parseMessages splits one datagram into messages. A length running past the
-// buffer is an error rather than a short read, so a truncated dump can never
-// look like a complete one.
-func parseMessages(buf []byte) ([]nlMessage, error) {
-	var out []nlMessage
-	for len(buf) >= unix.SizeofNlMsghdr {
-		length := int(binary.NativeEndian.Uint32(buf[0:]))
-		if length < unix.SizeofNlMsghdr || length > len(buf) {
-			return nil, errors.New("kernel: malformed netlink message length")
-		}
-		out = append(out, nlMessage{
-			Kind:  binary.NativeEndian.Uint16(buf[4:]),
-			Flags: binary.NativeEndian.Uint16(buf[6:]),
-			Seq:   binary.NativeEndian.Uint32(buf[8:]),
-			Pid:   binary.NativeEndian.Uint32(buf[12:]),
-			Data:  buf[unix.SizeofNlMsghdr:length],
-		})
-		next := nlmsgAlign(length)
-		if next >= len(buf) {
-			break
-		}
-		buf = buf[next:]
-	}
-	return out, nil
-}
-
-// attributes iterates the rtnetlink attributes that follow a fixed header of
-// offset bytes. A malformed attribute ends the iteration: the kernel never
-// emits one, and a half-decoded message fails the ownership checks that follow
-// rather than being acted on.
-func (m nlMessage) attributes(offset int) iter.Seq2[uint16, []byte] {
-	return func(yield func(uint16, []byte) bool) {
-		if len(m.Data) < offset {
-			return
-		}
-		buf := m.Data[offset:]
-		for len(buf) >= unix.SizeofRtAttr {
-			length := int(binary.NativeEndian.Uint16(buf[0:]))
-			kind := binary.NativeEndian.Uint16(buf[2:])
-			if length < unix.SizeofRtAttr || length > len(buf) {
-				return
-			}
-			if !yield(kind, buf[unix.SizeofRtAttr:length]) {
-				return
-			}
-			next := rtaAlign(length)
-			if next >= len(buf) {
-				return
-			}
-			buf = buf[next:]
-		}
-	}
+func (c *nlConn) execute(kind, flags uint16, body []byte) ([]netlink.Message, error) {
+	return c.socket.Execute(kind, flags, body)
 }
 
 // linkInfo holds the fields of one RTM_NEWLINK this package reads
@@ -257,7 +54,7 @@ func (c *nlConn) link(index uint32, name string) (linkInfo, error) {
 	body := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(body[4:], index)
 	if index == 0 {
-		body = putAttrString(body, unix.IFLA_IFNAME, name)
+		body = netlink.PutAttrString(body, unix.IFLA_IFNAME, name)
 	}
 	replies, err := c.execute(unix.RTM_GETLINK, 0, body)
 	if err != nil {
@@ -273,52 +70,14 @@ func (c *nlConn) link(index uint32, name string) (linkInfo, error) {
 
 // decodeLink reads one RTM_NEWLINK, a lookup's reply or a dump's entry alike
 // the caller has checked that it holds a whole ifinfomsg
-func decodeLink(reply nlMessage) linkInfo {
+func decodeLink(reply netlink.Message) linkInfo {
 	link := linkInfo{index: binary.NativeEndian.Uint32(reply.Data[4:])}
-	for kind, value := range reply.attributes(unix.SizeofIfInfomsg) {
+	for kind, value := range reply.Attributes(unix.SizeofIfInfomsg) {
 		if kind == unix.IFLA_IFNAME {
 			link.name = unix.ByteSliceToString(value)
 		}
 	}
 	return link
-}
-
-// putAttr appends one rtnetlink attribute, padded the way the kernel's own
-// RTA_ALIGN pads it. The length field stays unpadded, as the kernel expects.
-func putAttr(buf []byte, kind uint16, value []byte) []byte {
-	length := unix.SizeofRtAttr + len(value)
-	start := len(buf)
-	buf = append(buf, make([]byte, rtaAlign(length))...)
-	binary.NativeEndian.PutUint16(buf[start:], uint16(length))
-	binary.NativeEndian.PutUint16(buf[start+2:], kind)
-	copy(buf[start+unix.SizeofRtAttr:], value)
-	return buf
-}
-
-func putAttrU32(buf []byte, kind uint16, value uint32) []byte {
-	var raw [4]byte
-	binary.NativeEndian.PutUint32(raw[:], value)
-	return putAttr(buf, kind, raw[:])
-}
-
-func putAttrString(buf []byte, kind uint16, value string) []byte {
-	return putAttr(buf, kind, append([]byte(value), 0))
-}
-
-func nlmsgAlign(n int) int { return (n + unix.NLMSG_ALIGNTO - 1) &^ (unix.NLMSG_ALIGNTO - 1) }
-
-func rtaAlign(n int) int { return (n + unix.RTA_ALIGNTO - 1) &^ (unix.RTA_ALIGNTO - 1) }
-
-// addressBytes is the wire form of an address: four bytes for IPv4 and sixteen
-// otherwise. A 4-in-6 address stays sixteen bytes, because sadr keeps such a
-// prefix in its IPv6 table and the kernel would too.
-func addressBytes(address netip.Addr) []byte {
-	if address.Is4() {
-		raw := address.As4()
-		return raw[:]
-	}
-	raw := address.As16()
-	return raw[:]
 }
 
 // addressFromBytes decides the family from the attribute length, exactly as

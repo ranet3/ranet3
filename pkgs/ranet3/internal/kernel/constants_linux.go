@@ -12,18 +12,12 @@ import "time"
 const (
 	// Loopback is the name of the loopback link, whose index every lookup of the host's own traffic carries
 	Loopback = "lo"
-	// netlinkReadSize is the first receive buffer of the request socket, in bytes
-	// the kernel caps a dump datagram at 32 KiB
-	// a dump then reads into it without the buffer growing
-	netlinkReadSize = 64 << 10
-	// monitorReceiveBuffer is the route monitor's SO_RCVBUF, in bytes
+	// monitorReceiveBuffer is the route monitor's receive buffer, in bytes
 	// a route flood that overflows it costs an ENOBUFS, survivable but a full resync
 	monitorReceiveBuffer = 1 << 20
 	// monitorReadSize is one read of the route monitor, in bytes
 	// it is larger than any notification datagram the kernel sends
 	monitorReadSize = 64 << 10
-	// dumpAttempts is how many times a dump a change keeps interrupting is asked before the read fails
-	dumpAttempts = 3
 	// resolvedWait bounds one question to systemd-resolved, which answers from
 	// its own state without a query of its own
 	resolvedWait = time.Second

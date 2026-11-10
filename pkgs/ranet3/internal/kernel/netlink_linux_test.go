@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -500,83 +501,13 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 	}
 }
 
-// a dump whose reply or end carries NLM_F_DUMP_INTR comes back as errDumpInterrupted with none of its replies, and one that carries it
-// nowhere comes back whole
-func TestCollectRefusesAnInterruptedDump(t *testing.T) {
-	reply := func(flags uint16) nlMessage {
-		return nlMessage{Kind: unix.RTM_NEWADDR, Flags: unix.NLM_F_MULTI | flags, Seq: 1, Pid: 1, Data: []byte{1, 2, 3, 4}}
-	}
-	done := func(flags uint16) nlMessage {
-		return nlMessage{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI | flags, Seq: 1, Pid: 1, Data: make([]byte, 4)}
-	}
-	for name, arm := range map[string]struct {
-		messages    []nlMessage
-		interrupted bool
-	}{
-		"the flag on a reply":       {[]nlMessage{reply(0), reply(unix.NLM_F_DUMP_INTR), done(0)}, true},
-		"the flag on the end alone": {[]nlMessage{reply(0), reply(0), done(unix.NLM_F_DUMP_INTR)}, true},
-		"the flag nowhere":          {[]nlMessage{reply(0), reply(0), done(0)}, false},
-	} {
-		got, err := collect(1, 1, func() ([]nlMessage, error) { return arm.messages, nil })
-		switch {
-		case arm.interrupted && (err != errDumpInterrupted || got != nil):
-			t.Errorf("%s: the dump read as %d replies and %v, want none and %v", name, len(got), err, errDumpInterrupted)
-		case !arm.interrupted && (err != nil || len(got) != 2):
-			t.Errorf("%s: the dump read as %d replies and %v, want both", name, len(got), err)
-		}
-	}
-}
-
-// a dump a change interrupts twice and leaves whole on the third ask comes back whole, one it interrupts three times is refused after
-// the third ask, and a keyed request a change interrupts or a dump that fails otherwise is asked once
-func TestInterruptedDumpIsAskedAgain(t *testing.T) {
-	for name, arm := range map[string]struct {
-		flags       uint16
-		interrupted int
-		failure     error
-		asks        int
-		want        error
-	}{
-		"a dump interrupted twice":       {flags: unix.NLM_F_DUMP, interrupted: 2, asks: 3},
-		"a dump interrupted three times": {flags: unix.NLM_F_DUMP, interrupted: 3, asks: 3, want: errDumpInterrupted},
-		"a keyed request interrupted":    {interrupted: 1, asks: 1, want: errDumpInterrupted},
-		"a dump that fails otherwise":    {flags: unix.NLM_F_DUMP, failure: unix.ENOBUFS, asks: 1, want: unix.ENOBUFS},
-	} {
-		asks := 0
-		got, err := dumpAgainIfInterrupted(arm.flags, func() ([]nlMessage, error) {
-			asks++
-			if arm.failure != nil {
-				return nil, arm.failure
-			}
-			seq, flags := uint32(asks), uint16(0)
-			if asks <= arm.interrupted {
-				flags = unix.NLM_F_DUMP_INTR
-			}
-			messages := []nlMessage{
-				{Kind: unix.RTM_NEWADDR, Flags: unix.NLM_F_MULTI | flags, Seq: seq, Pid: 1, Data: []byte{1, 2, 3, 4}},
-				{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI, Seq: seq, Pid: 1, Data: make([]byte, 4)},
-			}
-			return collect(seq, 1, func() ([]nlMessage, error) { return messages, nil })
-		})
-		if asks != arm.asks {
-			t.Errorf("%s: asked %d times, want %d", name, asks, arm.asks)
-		}
-		switch {
-		case arm.want != nil && (!errors.Is(err, arm.want) || got != nil):
-			t.Errorf("%s: read as %d replies and %v, want none and %v", name, len(got), err, arm.want)
-		case arm.want == nil && (err != nil || len(got) != 1):
-			t.Errorf("%s: read as %d replies and %v, want the whole dump", name, len(got), err)
-		}
-	}
-}
-
 // dumpedAddresses is how many addresses a test dumps while another address comes and goes, more than one datagram of a dump holds
 // interruptedDumps is how many dumps it takes
 // churnBiteDumps is how many dumps a test takes at most waiting for its churn to interrupt one
 const dumpedAddresses, interruptedDumps, churnBiteDumps = 512, 100, 1000
 
 // an address dump that another address coming and going keeps interrupting comes back whole, with no reply the kernel flagged, or as
-// errDumpInterrupted, and never as a table that may miss or repeat an entry
+// netlink.ErrDumpInterrupted, and never as a table that may miss or repeat an entry
 func TestAddressDumpUnderChurnIsWholeOrRefused(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
@@ -609,7 +540,7 @@ func TestAddressDumpUnderChurnIsWholeOrRefused(t *testing.T) {
 	refused := 0
 	for range interruptedDumps {
 		replies, err := conn.execute(unix.RTM_GETADDR, unix.NLM_F_DUMP, body)
-		if errors.Is(err, errDumpInterrupted) {
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
 			refused++
 			continue
 		}
@@ -770,20 +701,20 @@ func churn(t *testing.T, step func(conn *nlConn)) {
 	})
 }
 
-// awaitInterruptedDump takes dumps of kind with body until the kernel flags one as interrupted, at most churnBiteDumps of them,
-// so a test counts only once its churn bites
+// awaitInterruptedDump takes dumps of kind with body until the kernel flags every ask of one as interrupted, at most churnBiteDumps
+// of them, so a test counts only once its churn bites
 func awaitInterruptedDump(t *testing.T, conn *nlConn, kind uint16, body []byte) {
 	t.Helper()
 	for range churnBiteDumps {
-		replies, err := conn.request(kind, unix.NLM_F_DUMP, body)
-		if errors.Is(err, errDumpInterrupted) || slices.ContainsFunc(replies, func(reply nlMessage) bool { return reply.Flags&unix.NLM_F_DUMP_INTR != 0 }) {
+		_, err := conn.execute(kind, unix.NLM_F_DUMP, body)
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
 			return
 		}
 		if err != nil {
 			t.Fatalf("dump: %v", err)
 		}
 	}
-	t.Fatalf("the churn interrupted none of %d dumps, so it proved nothing", churnBiteDumps)
+	t.Fatalf("the churn interrupted every ask of none of %d dumps, so it proved nothing", churnBiteDumps)
 }
 
 func createTUN(t *testing.T, name string) {
@@ -819,10 +750,10 @@ func setLinkFlags(t testing.TB, conn *nlConn, index uint32, flags uint32) {
 // createLink is test scaffolding, not part of the reconciler: the daemon never
 // creates a link through netlink.
 func createLink(conn *nlConn, name, kind string) error {
-	info := putAttrString(nil, unix.IFLA_INFO_KIND, kind)
+	info := netlink.PutAttrString(nil, unix.IFLA_INFO_KIND, kind)
 	body := make([]byte, unix.SizeofIfInfomsg)
-	body = putAttrString(body, unix.IFLA_IFNAME, name)
-	body = putAttr(body, unix.IFLA_LINKINFO, info)
+	body = netlink.PutAttrString(body, unix.IFLA_IFNAME, name)
+	body = netlink.PutAttr(body, unix.IFLA_LINKINFO, info)
 	flags := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
 	_, err := conn.execute(unix.RTM_NEWLINK, flags, body)
 	return err
@@ -831,10 +762,10 @@ func createLink(conn *nlConn, name, kind string) error {
 // replyRecorder keeps every reply a request drew, the messages the kernel sent before any decoding filtered them
 type replyRecorder struct {
 	netlinkConn
-	replies []nlMessage
+	replies []netlink.Message
 }
 
-func (r *replyRecorder) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
+func (r *replyRecorder) execute(kind, flags uint16, body []byte) ([]netlink.Message, error) {
 	replies, err := r.netlinkConn.execute(kind, flags, body)
 	r.replies = append(r.replies, replies...)
 	return replies, err
@@ -847,27 +778,6 @@ func drain(signal <-chan struct{}) {
 		default:
 			return
 		}
-	}
-}
-
-// a dump the kernel ends early still ends at NLMSG_DONE, with the errno it ended on as that message's payload
-// a rule dump for a family with no rules engine ends that way on its first call, with no privileges and nothing written
-func TestExecuteReportsTheErrnoADumpEndedOn(t *testing.T) {
-	conn, err := dialNetlink()
-	if err != nil {
-		t.Fatalf("dial rtnetlink: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	rules := make([]byte, sizeofFibRuleHdr)
-	rules[0] = unix.AF_BRIDGE
-	if replies, err := conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, rules); !errors.Is(err, unix.EAFNOSUPPORT) || replies != nil {
-		t.Errorf("a rule dump the kernel ended on EAFNOSUPPORT read as %d replies and %v", len(replies), err)
-	}
-	// the socket is still in step, so the next request is answered as its own
-	routes := make([]byte, unix.SizeofRtMsg)
-	routes[0] = unix.AF_INET
-	if _, err := conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, routes); err != nil {
-		t.Errorf("a dump after the one the kernel ended early failed: %v", err)
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"net/netip"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 const routeGetTakesSource = true
@@ -120,34 +122,34 @@ func routeRequest(src, dst netip.Addr, arrival, leaving, mark, flags uint32) []b
 		body[2] = uint8(src.BitLen())
 	}
 	binary.NativeEndian.PutUint32(body[8:], flags)
-	body = putAttr(body, unix.RTA_DST, addressBytes(dst))
+	body = netlink.PutAttr(body, unix.RTA_DST, netlink.AddressBytes(dst))
 	if src.IsValid() {
-		body = putAttr(body, unix.RTA_SRC, addressBytes(src))
+		body = netlink.PutAttr(body, unix.RTA_SRC, netlink.AddressBytes(src))
 	}
 	if arrival != 0 {
-		body = putAttrU32(body, unix.RTA_IIF, arrival)
+		body = netlink.PutAttrU32(body, unix.RTA_IIF, arrival)
 	}
 	if leaving != 0 {
-		body = putAttrU32(body, unix.RTA_OIF, leaving)
+		body = netlink.PutAttrU32(body, unix.RTA_OIF, leaving)
 	}
 	if mark != 0 {
-		body = putAttrU32(body, unix.RTA_MARK, mark)
+		body = netlink.PutAttrU32(body, unix.RTA_MARK, mark)
 	}
 	return body
 }
 
 // routeAnswer asks body and answers the route message the kernel replied with
-func routeAnswer(c netlinkConn, body []byte, dst netip.Addr) (nlMessage, error) {
+func routeAnswer(c netlinkConn, body []byte, dst netip.Addr) (netlink.Message, error) {
 	replies, err := c.execute(unix.RTM_GETROUTE, 0, body)
 	if err != nil {
-		return nlMessage{}, fmt.Errorf("kernel: look up the route to %s: %w", dst, err)
+		return netlink.Message{}, fmt.Errorf("kernel: look up the route to %s: %w", dst, err)
 	}
 	for _, reply := range replies {
 		if reply.Kind == unix.RTM_NEWROUTE && len(reply.Data) >= unix.SizeofRtMsg {
 			return reply, nil
 		}
 	}
-	return nlMessage{}, fmt.Errorf("kernel: the route to %s was not answered", dst)
+	return netlink.Message{}, fmt.Errorf("kernel: the route to %s was not answered", dst)
 }
 
 // rtaNHID is RTA_NH_ID of linux/rtnetlink.h, which x/sys does not carry
@@ -155,7 +157,7 @@ const rtaNHID = 30
 
 // decodeMatchedRoute answers each next hop's interface index at its place in
 // NextHops, whose Device it leaves empty
-func decodeMatchedRoute(reply nlMessage) (MatchedRoute, []uint32, error) {
+func decodeMatchedRoute(reply netlink.Message) (MatchedRoute, []uint32, error) {
 	family, dstLen, srcLen := reply.Data[0], int(reply.Data[1]), int(reply.Data[2])
 	route := MatchedRoute{
 		Prefix: netip.PrefixFrom(unspecified(family), 0),
@@ -163,7 +165,7 @@ func decodeMatchedRoute(reply nlMessage) (MatchedRoute, []uint32, error) {
 		Type:   routeTypeName(reply.Data[7]),
 	}
 	var object uint32
-	for attr, value := range reply.attributes(unix.SizeofRtMsg) {
+	for attr, value := range reply.Attributes(unix.SizeofRtMsg) {
 		switch attr {
 		case unix.RTA_DST:
 			if address, ok := addressFromBytes(value); ok {
@@ -212,7 +214,7 @@ type routeNextHop struct {
 
 // routeNextHops yields the hop of RTA_OIF with rtm_flags, then each hop of
 // RTA_MULTIPATH with its rtnh_flags, and ends on an error at a malformed one
-func routeNextHops(message nlMessage) iter.Seq2[routeNextHop, error] {
+func routeNextHops(message netlink.Message) iter.Seq2[routeNextHop, error] {
 	return func(yield func(routeNextHop, error) bool) {
 		if len(message.Data) < unix.SizeofRtMsg {
 			yield(routeNextHop{}, errors.New("kernel: truncated route message"))
@@ -220,7 +222,7 @@ func routeNextHops(message nlMessage) iter.Seq2[routeNextHop, error] {
 		}
 		first := routeNextHop{flags: binary.NativeEndian.Uint32(message.Data[8:])}
 		var multipath []byte
-		for attr, value := range message.attributes(unix.SizeofRtMsg) {
+		for attr, value := range message.Attributes(unix.SizeofRtMsg) {
 			switch attr {
 			case unix.RTA_OIF:
 				if len(value) == 4 {
@@ -247,17 +249,17 @@ func routeNextHops(message nlMessage) iter.Seq2[routeNextHop, error] {
 				return
 			}
 			hop := routeNextHop{index: binary.NativeEndian.Uint32(multipath[4:]), flags: uint32(multipath[2])}
-			hop.gateway, hop.via = gatewaysOf(nlMessage{Data: multipath[:size]}, unix.SizeofRtNexthop)
+			hop.gateway, hop.via = gatewaysOf(netlink.Message{Data: multipath[:size]}, unix.SizeofRtNexthop)
 			if !yield(hop, nil) {
 				return
 			}
-			multipath = multipath[min(rtaAlign(size), len(multipath)):]
+			multipath = multipath[min(netlink.AttrAlign(size), len(multipath)):]
 		}
 	}
 }
 
-func gatewaysOf(message nlMessage, offset int) (gateway, via netip.Addr) {
-	for attr, value := range message.attributes(offset) {
+func gatewaysOf(message netlink.Message, offset int) (gateway, via netip.Addr) {
+	for attr, value := range message.Attributes(offset) {
 		switch attr {
 		case unix.RTA_GATEWAY:
 			gateway, _ = addressFromBytes(value)

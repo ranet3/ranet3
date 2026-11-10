@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -23,7 +24,7 @@ func TestEveryOwnedRuleReadsBackFromItsOwnMessage(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		rule := hegel.Draw(ht, ownedRules())
 		plat, conn := writePlatform(t)
-		conn.replies = []nlMessage{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}
+		conn.replies = []netlink.Message{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}
 		got, err := plat.Rules()
 		if err != nil {
 			ht.Fatal(err)

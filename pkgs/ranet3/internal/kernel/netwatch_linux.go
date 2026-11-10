@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // WatchNetwork opens the network watch over rtnetlink, one socket for its notifications and one for its reads
@@ -48,8 +50,8 @@ const watchGroups = unix.RTMGRP_LINK | unix.RTMGRP_IPV4_IFADDR | unix.RTMGRP_IPV
 // hostWakes takes a notification that can change what hostReader reads
 // a route outside main, which holds the reconciler's own table whenever that is another one, and anything on the mesh's device never wakes it
 // nor does a route that is no default, since the read looks at no other and main may hold a full table
-func hostWakes(mesh uint32) func(nlMessage) bool {
-	return func(message nlMessage) bool {
+func hostWakes(mesh uint32) func(netlink.Message) bool {
+	return func(message netlink.Message) bool {
 		switch message.Kind {
 		case unix.RTM_NEWLINK, unix.RTM_DELLINK:
 			return len(message.Data) >= unix.SizeofIfInfomsg && outsideMesh(binary.NativeEndian.Uint32(message.Data[4:]), mesh)
@@ -94,7 +96,7 @@ func (h hostReader) read() (NetworkState, error) {
 		}
 		body = make([]byte, unix.SizeofRtMsg)
 		body[0] = family.af
-		routes, err := h.conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, putAttrU32(body, unix.RTA_TABLE, unix.RT_TABLE_MAIN))
+		routes, err := h.conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, netlink.PutAttrU32(body, unix.RTA_TABLE, unix.RT_TABLE_MAIN))
 		// main holding nothing yet ends its dump on ENOENT, as dumpTable reads an unwritten table
 		if err != nil && !errors.Is(err, unix.ENOENT) {
 			return NetworkState{}, fmt.Errorf("kernel: dump the main table: %w", err)
@@ -107,7 +109,7 @@ func (h hostReader) read() (NetworkState, error) {
 }
 
 // upLinks names every link of a link dump that is up, the mesh's device left out
-func upLinks(replies []nlMessage, mesh uint32) map[uint32]string {
+func upLinks(replies []netlink.Message, mesh uint32) map[uint32]string {
 	up := make(map[uint32]string)
 	for _, reply := range replies {
 		if reply.Kind != unix.RTM_NEWLINK || len(reply.Data) < unix.SizeofIfInfomsg {
@@ -124,7 +126,7 @@ func upLinks(replies []nlMessage, mesh uint32) map[uint32]string {
 // upAddresses is each link in up with every global unicast address of one family an address dump holds on it, under the length ifa_prefixlen gives,
 // apart from an IPv4 point-to-point address, held as a host with its far end's network in Peers
 // an address still proving itself unique is not one a socket can send from yet
-func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []Link {
+func upAddresses(replies []netlink.Message, family uint8, up map[uint32]string) []Link {
 	held := make(map[uint32][]netip.Prefix, len(up))
 	peers := make(map[uint32][]netip.Prefix)
 	for _, reply := range replies {
@@ -138,7 +140,7 @@ func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []Link
 		}
 		flags := uint32(reply.Data[2])
 		var local, address netip.Addr
-		for attr, value := range reply.attributes(unix.SizeofIfAddrmsg) {
+		for attr, value := range reply.Attributes(unix.SizeofIfAddrmsg) {
 			switch attr {
 			case unix.IFA_LOCAL:
 				local, _ = addressFromBytes(value)
@@ -180,7 +182,7 @@ func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []Link
 }
 
 // upDefault is the default of one family a dump of main holds leaving by a link in up, the one of lowest metric where there are several
-func upDefault(replies []nlMessage, family uint8, up map[uint32]string) DefaultRoute {
+func upDefault(replies []netlink.Message, family uint8, up map[uint32]string) DefaultRoute {
 	var best DefaultRoute
 	var bestMetric uint32
 	for _, reply := range replies {
@@ -197,7 +199,7 @@ func upDefault(replies []nlMessage, family uint8, up map[uint32]string) DefaultR
 			continue
 		}
 		var metric uint32
-		for attr, value := range reply.attributes(unix.SizeofRtMsg) {
+		for attr, value := range reply.Attributes(unix.SizeofRtMsg) {
 			if attr == unix.RTA_PRIORITY && len(value) == 4 {
 				metric = binary.NativeEndian.Uint32(value)
 			}
@@ -211,7 +213,7 @@ func upDefault(replies []nlMessage, family uint8, up map[uint32]string) DefaultR
 
 // routeHop is the device and gateway of one route, the first live hop of a multipath one
 // a hop the kernel marks dead or without carrier answers device 0, and so does a malformed one
-func routeHop(message nlMessage) (uint32, netip.Addr) {
+func routeHop(message netlink.Message) (uint32, netip.Addr) {
 	for hop, err := range routeNextHops(message) {
 		if err != nil {
 			break

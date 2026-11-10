@@ -23,6 +23,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -272,11 +273,11 @@ func writeOtherRule(t *testing.T, conn *nlConn, kind uint16, other otherRule) {
 	full := (&netlinkPlatform{table: Table{Proto: unix.RTPROT_BOOT}}).ruleMessage(other.rule)
 	body := slices.Clone(full[:sizeofFibRuleHdr])
 	body[7] = other.action
-	for attr, value := range (nlMessage{Data: full}).attributes(sizeofFibRuleHdr) {
+	for attr, value := range (netlink.Message{Data: full}).Attributes(sizeofFibRuleHdr) {
 		if attr == unix.FRA_PRIORITY && !other.pref || attr == unix.FRA_TABLE && other.action != unix.FR_ACT_TO_TBL {
 			continue
 		}
-		body = putAttr(body, attr, value)
+		body = netlink.PutAttr(body, attr, value)
 	}
 	flags := uint16(unix.NLM_F_ACK)
 	if kind == unix.RTM_NEWRULE {

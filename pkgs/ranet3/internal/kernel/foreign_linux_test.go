@@ -11,12 +11,14 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // routeReply builds one RTM_NEWROUTE the way a dump delivers it. The table
 // goes in the byte when it fits and in RTA_TABLE when it does not, which is
 // the same split the kernel makes.
-func routeReply(table uint32, protocol, kind uint8) nlMessage {
+func routeReply(table uint32, protocol, kind uint8) netlink.Message {
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0] = unix.AF_INET
 	if table <= 255 {
@@ -24,8 +26,8 @@ func routeReply(table uint32, protocol, kind uint8) nlMessage {
 	}
 	body[5] = protocol
 	body[7] = kind
-	body = putAttrU32(body, unix.RTA_TABLE, table)
-	return nlMessage{Kind: unix.RTM_NEWROUTE, Data: body}
+	body = netlink.PutAttrU32(body, unix.RTA_TABLE, table)
+	return netlink.Message{Kind: unix.RTM_NEWROUTE, Data: body}
 }
 
 // The report exists because an install asks for its key exclusively, so a
@@ -34,21 +36,21 @@ func routeReply(table uint32, protocol, kind uint8) nlMessage {
 func TestForeignWritersReportsOnlyOurOwnTable(t *testing.T) {
 	const ours = DefaultProtocol
 	for name, test := range map[string]struct {
-		replies []nlMessage
+		replies []netlink.Message
 		want    []uint8
 	}{
 		"another protocol in our table": {
-			replies: []nlMessage{routeReply(200, unix.RTPROT_BIRD, unix.RTN_UNICAST)},
+			replies: []netlink.Message{routeReply(200, unix.RTPROT_BIRD, unix.RTN_UNICAST)},
 			want:    []uint8{unix.RTPROT_BIRD},
 		},
 		"our own routes are not foreign": {
-			replies: []nlMessage{routeReply(200, ours, unix.RTN_UNICAST)},
+			replies: []netlink.Message{routeReply(200, ours, unix.RTN_UNICAST)},
 		},
 		"a route that is not unicast is not a writer": {
-			replies: []nlMessage{routeReply(200, unix.RTPROT_BIRD, unix.RTN_LOCAL)},
+			replies: []netlink.Message{routeReply(200, unix.RTPROT_BIRD, unix.RTN_LOCAL)},
 		},
 		"the kernel's own routes in our table are a writer": {
-			replies: []nlMessage{routeReply(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST)},
+			replies: []netlink.Message{routeReply(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST)},
 			want:    []uint8{unix.RTPROT_KERNEL},
 		},
 	} {

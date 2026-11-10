@@ -31,6 +31,7 @@ let
       go test -c -o registry-tests ./internal/registry/
       go test -c -o daemon-tests ./cmd/ranet3/
       go test -c -o netnstest-tests ./internal/netnstest/
+      go test -c -o socket-tests ./internal/netlink/
     '';
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
@@ -43,6 +44,7 @@ let
       install -Dm755 registry-tests "$out/bin/registry-tests"
       install -Dm755 daemon-tests "$out/bin/daemon-tests"
       install -Dm755 netnstest-tests "$out/bin/netnstest-tests"
+      install -Dm755 socket-tests "$out/bin/socket-tests"
     '';
   });
   wireguardTests = wireguard.overrideAttrs (prev: {
@@ -113,6 +115,7 @@ testers.runNixOSTest {
         "registry-tests": ("${netlinkTests}/bin/registry-tests", "${ranet3.src}/internal/registry"),
         "daemon-tests": ("${netlinkTests}/bin/daemon-tests", "${ranet3.src}/cmd/ranet3"),
         "netnstest-tests": ("${netlinkTests}/bin/netnstest-tests", "${ranet3.src}/internal/netnstest"),
+        "socket-tests": ("${netlinkTests}/bin/socket-tests", "${ranet3.src}/internal/netlink"),
         "tun-tests": ("${wireguardTests}/bin/tun-tests", "${wireguard.src}/tun"),
     }
     # the tests that pass in no run here, each with the reason, by binary
@@ -156,7 +159,7 @@ testers.runNixOSTest {
         """the -test.run pattern of command"""
         return re.findall(r"-test\.run '([^']*)'", command)[0]
 
-    for binary in ["netlink-tests", "egress-tests", "nftables-tests", "suite-tests", "netstack-tests", "transport-tests", "netnstest-tests", "tun-tests"]:
+    for binary in ["netlink-tests", "egress-tests", "nftables-tests", "suite-tests", "netstack-tests", "transport-tests", "netnstest-tests", "socket-tests", "tun-tests"]:
         ran(binary)
 
     # every goroutine of a node of these opens sockets and tuns, so the whole process runs in a namespace of its own

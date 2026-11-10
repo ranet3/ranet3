@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -79,37 +80,37 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 	if rule.invert {
 		binary.NativeEndian.PutUint32(body[8:], unix.FIB_RULE_INVERT)
 	}
-	body = putAttrU32(body, unix.FRA_PRIORITY, rule.Priority)
+	body = netlink.PutAttrU32(body, unix.FRA_PRIORITY, rule.Priority)
 	switch rule.action {
 	case actionLookup:
-		body = putAttrU32(body, unix.FRA_TABLE, uint32(rule.Table))
+		body = netlink.PutAttrU32(body, unix.FRA_TABLE, uint32(rule.Table))
 	case actionGoto:
-		body = putAttrU32(body, unix.FRA_GOTO, rule.target)
+		body = netlink.PutAttrU32(body, unix.FRA_GOTO, rule.target)
 	}
 	if bits, ok := rule.suppress.Bits(); ok {
-		body = putAttrU32(body, unix.FRA_SUPPRESS_PREFIXLEN, uint32(bits))
+		body = netlink.PutAttrU32(body, unix.FRA_SUPPRESS_PREFIXLEN, uint32(bits))
 	}
-	body = putAttr(body, unix.FRA_PROTOCOL, []byte{p.table.Proto})
+	body = netlink.PutAttr(body, unix.FRA_PROTOCOL, []byte{p.table.Proto})
 	if rule.To.IsValid() {
-		body = putAttr(body, unix.FRA_DST, addressBytes(rule.To.Addr()))
+		body = netlink.PutAttr(body, unix.FRA_DST, netlink.AddressBytes(rule.To.Addr()))
 	}
 	if rule.From.IsValid() {
-		body = putAttr(body, unix.FRA_SRC, addressBytes(rule.From.Addr()))
+		body = netlink.PutAttr(body, unix.FRA_SRC, netlink.AddressBytes(rule.From.Addr()))
 	}
 	if rule.FWMark != 0 {
-		body = putAttrU32(body, unix.FRA_FWMARK, rule.FWMark)
+		body = netlink.PutAttrU32(body, unix.FRA_FWMARK, rule.FWMark)
 		if rule.FWMask != 0 {
-			body = putAttrU32(body, unix.FRA_FWMASK, rule.FWMask)
+			body = netlink.PutAttrU32(body, unix.FRA_FWMASK, rule.FWMask)
 		}
 	}
 	if rule.IIF != "" {
-		body = putAttrString(body, unix.FRA_IIFNAME, rule.IIF)
+		body = netlink.PutAttrString(body, unix.FRA_IIFNAME, rule.IIF)
 	}
 	if rule.oif != "" {
-		body = putAttrString(body, unix.FRA_OIFNAME, rule.oif)
+		body = netlink.PutAttrString(body, unix.FRA_OIFNAME, rule.oif)
 	}
 	if rule.l3mdev {
-		body = putAttr(body, unix.FRA_L3MDEV, []byte{1})
+		body = netlink.PutAttr(body, unix.FRA_L3MDEV, []byte{1})
 	}
 	return body
 }
@@ -139,7 +140,7 @@ func (p *netlinkPlatform) Rules() ([]Rule, error) {
 // Everything it accepts has to compare equal to the rule it came from, or
 // each pass deletes the rule and installs it again, and a rule of ours it
 // drops is never withdrawn.
-func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
+func (p *netlinkPlatform) decodeRule(message netlink.Message) (Rule, bool) {
 	held, ok := decodeDumpedRule(message)
 	if !ok || held.Protocol != p.table.Proto || held.Priority == 0 {
 		return Rule{}, false

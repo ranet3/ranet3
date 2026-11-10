@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // The ownership filter stands between this reconciler and another
@@ -29,7 +31,7 @@ func TestLinuxDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 
 	for _, test := range []struct {
 		name    string
-		message nlMessage
+		message netlink.Message
 		want    bool
 	}{
 		{"ours", routeDump(ourTable, ourProtocol, unix.RTN_UNICAST, ourIndex, ours), true},
@@ -65,7 +67,7 @@ func TestLinuxDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 }
 
 // routeDump builds the RTM_NEWROUTE the kernel emits for one route.
-func routeDump(table uint32, protocol, kind uint8, oif int, destination netip.Prefix) nlMessage {
+func routeDump(table uint32, protocol, kind uint8, oif int, destination netip.Prefix) netlink.Message {
 	body := make([]byte, unix.SizeofRtMsg)
 	family := uint8(unix.AF_INET)
 	if !destination.Addr().Is4() {
@@ -84,7 +86,7 @@ func routeDump(table uint32, protocol, kind uint8, oif int, destination netip.Pr
 	tableValue := make([]byte, 4)
 	binary.NativeEndian.PutUint32(tableValue, table)
 	body = append(body, attribute(unix.RTA_TABLE, tableValue)...)
-	return nlMessage{Kind: unix.RTM_NEWROUTE, Data: body}
+	return netlink.Message{Kind: unix.RTM_NEWROUTE, Data: body}
 }
 
 func attribute(kind uint16, value []byte) []byte {

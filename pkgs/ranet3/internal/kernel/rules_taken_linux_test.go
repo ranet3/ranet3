@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -101,7 +102,7 @@ func openTakenLab(t *testing.T) *takenLab {
 		if route.Addr().Is4() {
 			body[0] = unix.AF_INET
 		}
-		body = putAttr(body, unix.RTA_DST, addressBytes(route.Addr()))
+		body = netlink.PutAttr(body, unix.RTA_DST, netlink.AddressBytes(route.Addr()))
 		if _, err := conn.execute(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
 			t.Fatalf("install the %d route to %s: %v", kind, route, err)
 		}
@@ -358,7 +359,7 @@ func TestNetlinkRouteGetAnswersARouteOfNoTableEntryAsTheKernelsOwn(t *testing.T)
 	unreachable := prefix("203.0.113.64/27")
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0], body[1], body[4], body[5], body[6], body[7] = unix.AF_INET, uint8(unreachable.Bits()), unix.RT_TABLE_MAIN, unix.RTPROT_STATIC, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNREACHABLE
-	body = putAttr(body, unix.RTA_DST, addressBytes(unreachable.Addr()))
+	body = netlink.PutAttr(body, unix.RTA_DST, netlink.AddressBytes(unreachable.Addr()))
 	if _, err := conn.execute(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
 		t.Fatalf("install the unreachable route to %s: %v", unreachable, err)
 	}
@@ -619,7 +620,7 @@ func TestNetlinkRouteGetWalksAnInvertedRuleOfASelectorItDoesNotRead(t *testing.T
 		listed bool
 	}{{"not ipproto tcp lookup 77", netip.Prefix{}, true}, {"not to 198.51.100.0/24 ipproto tcp lookup 77", prefix("198.51.100.0/24"), false}} {
 		body := (&netlinkPlatform{table: Table{Proto: 99}}).ruleMessage(Rule{Family: FamilyIPv4, Priority: 100, To: schema.PrefixFrom(c.to), Table: 77, invert: true})
-		body = putAttr(body, unix.FRA_IP_PROTO, []byte{unix.IPPROTO_TCP})
+		body = netlink.PutAttr(body, unix.FRA_IP_PROTO, []byte{unix.IPPROTO_TCP})
 		if _, err := lab.conn.execute(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
 			t.Fatalf("install %s: %v", c.name, err)
 		}
