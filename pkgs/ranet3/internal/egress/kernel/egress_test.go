@@ -655,10 +655,10 @@ func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 	}
 }
 
-// Each family's rules are read back apart from the other's, so
-// the rules a pass asks for have to be grouped by family. A list ordered any
-// other way never compares equal to its own readback, and the ruleset is
-// rewritten on every pass for the life of the node.
+// Each family's rules are read back apart from the other's, so the rules a
+// pass asks for have to be grouped by family. A list ordered any other way
+// never compares equal to its own readback, and the ruleset is rewritten on
+// every pass for the life of the node.
 func TestRulesAreGroupedByFamilyAsTheyAreReadBack(t *testing.T) {
 	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "2001:db8:1::/48")}
 	rt := Runtime{MeshAddresses: []netip.Addr{

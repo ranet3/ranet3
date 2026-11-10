@@ -330,8 +330,8 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 // The entry chain lets a packet leave by the tun only as a reply, toward a
 // link-local or multicast IPv6 destination, from a source this node owns or
 // toward a none class's destination, family by family, and drops the rest,
-// counted. A node with no overlay holds the entry chain alone, and its chains and sets are
-// made again whole on every rewrite with or without one.
+// counted. A node with no overlay holds the entry chain alone, and its chains
+// and sets are made again whole on every rewrite with or without one.
 func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 	want := []string{
 		"return via other than ranet0",
@@ -855,8 +855,8 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 }
 
 // A filter closed before it ran reports itself not ready, withdraws its chains and sets
-// its first pass made, and leaves one the pass found, whether it took that
-// over as it was or rewrote it
+// its first pass made, and leaves those the pass found, whether it took them
+// over as they were or rewrote them
 func TestBorderClosedBeforeItRanLeavesOnlyTheTableItFound(t *testing.T) {
 	for _, one := range []struct {
 		name      string
@@ -1154,7 +1154,7 @@ func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 }
 
 // A filter stopped for the mesh's failure reports itself not ready and leaves
-// its chains and sets, and one stopped for any other cause withdraws it
+// its chains and sets, and one stopped for any other cause withdraws them
 func TestBorderLeavesItsTableOnlyWhenStoppedForTheMeshsFailure(t *testing.T) {
 	for _, cause := range []error{meshkernel.ErrMeshFailed, fmt.Errorf("stop: %w", meshkernel.ErrMeshFailed), nil, errors.New("another cause")} {
 		bus := events.New()

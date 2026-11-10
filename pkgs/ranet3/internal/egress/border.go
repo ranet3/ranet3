@@ -354,8 +354,7 @@ type BorderSetReading struct {
 // BorderDebug is the filter as a debug read finds it: each chain's rules the
 // configuration asks for in order, each with the counters read now through a
 // socket of its own, then any its own chains, or its pf anchor, hold that it
-// does not ask for, and
-// the sets as the last pass asked for them
+// does not ask for, and the sets as the last pass asked for them
 type BorderDebug struct {
 	Where string
 	// PassAt is the last pass, whose readback Ready and Unready report

@@ -17,8 +17,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// encodedTable encodes the chains and sets the filter asks for over cfg and sets, the
-// mesh tun ranet3 and lo: its rules in order and the batch writing them
+// encodedTable encodes the chains and sets the filter asks for over cfg and
+// sets, the mesh tun ranet3 and lo: its rules in order and the batch writing
+// them
 func encodedTable(t testing.TB, cfg *egress.Border, sets egress.BorderSets) ([]BorderRule, []nftables.Request) {
 	t.Helper()
 	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func(*egress.Border) egress.BorderSets { return sets }}

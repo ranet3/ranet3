@@ -78,7 +78,7 @@ func TestEachOwnersMonitorWakesForItsOwnNamesAlone(t *testing.T) {
 		kind := kinds[hegel.Draw(ht, pbt.Spanning(0, len(kinds)-1))]
 		name := hegel.Draw(ht, hegel.SampledFrom(names))
 		// the family, the table and the port each message is checked under are swept, since a message wakes
-		// in one of each alone, and the flags beside them
+		// in one of each alone, and the flags are swept beside them
 		for _, family := range []uint8{unix.NFPROTO_INET, unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_BRIDGE} {
 			for _, table := range []string{nftables.Table, "nat", nftables.Table + "x"} {
 				for _, pid := range []uint32{own, other} {

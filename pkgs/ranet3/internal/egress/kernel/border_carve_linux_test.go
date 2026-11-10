@@ -132,7 +132,7 @@ func siteRead(t *testing.T, receiver *net.UDPConn, wait time.Duration) []string 
 	}
 }
 
-// borderPackets is the packets the rule spec of f's table counted, as a debug
+// borderPackets is the packets the rule spec of f's chains counted, as a debug
 // read finds them now
 func borderPackets(t *testing.T, f *BorderFilter, spec string) uint64 {
 	t.Helper()
