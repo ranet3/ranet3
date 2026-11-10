@@ -36,8 +36,8 @@ func routeRule(family string, priority, table uint32, protocol uint8, owned bool
 // to the limited broadcast, and an arrival to a group beyond the link with
 // multicast routing off, on and unread and to one on the link. A session's
 // packet the mesh forwards, delivers with the kernel's step, to an address,
-// to a subnet's broadcast, refused with EINVAL, to a group not joined and by an
-// unreachable route with forwarding unread, egresses and answers for a hold, one at each kind of segment admitted and refused, and a read into the
+// to a subnet's broadcast, refused with EINVAL and by an
+// unreachable route with forwarding unread, drops for a group, egresses and answers for a hold, one at each kind of segment admitted and refused, and a read into the
 // tun steered and forwarded, and one answered.
 func routeFixtures() map[string][]RouteInfo {
 	own := RouteInfo{Dst: netip.MustParseAddr("203.0.113.200"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
@@ -264,14 +264,9 @@ func routeFixtures() map[string][]RouteInfo {
 		Err: "kernel: look up the route to 192.0.2.2: invalid argument", Errno: "EINVAL",
 		Settings: []RouteSetting{{Name: "net/ipv4/conf/all/rp_filter", Value: "0"}, {Name: "net/ipv4/conf/ranet0/rp_filter", Value: "0"}},
 	}
-	// the kernel's EINVAL for a group arriving on the tun
-	groupDelivered := delivered
-	groupDelivered.Dst = netip.MustParseAddr("239.1.2.4")
-	groupDelivered.Mesh = &RouteMesh{Decision: "deliver"}
-	groupDelivered.Kernel = &RouteKernel{
-		Err: "kernel: look up the route to 239.1.2.4: invalid argument", Errno: "EINVAL",
-		Settings: []RouteSetting{{Name: "net/ipv4/conf/all/rp_filter", Value: "0"}, {Name: "net/ipv4/conf/ranet0/rp_filter", Value: "0"}},
-	}
+	groupDropped := session
+	groupDropped.Dst = netip.MustParseAddr("239.1.2.4")
+	groupDropped.Mesh = &RouteMesh{Decision: "drop", Reason: "session_multicast"}
 	candidateDelivered := refusedDelivered
 	candidateDelivered.Kernel = &RouteKernel{
 		Candidate: &PolicyRule{Family: "ipv4", Priority: 40000, To: netip.MustParsePrefix("192.0.2.0/24"), Action: "blackhole", Protocol: 99},
@@ -329,7 +324,7 @@ func routeFixtures() map[string][]RouteInfo {
 		NextHops: []RouteNextHop{{Dev: "ranet0"}}, IntoTun: true,
 	}, Mesh: &RouteMesh{Decision: "answer", Reason: "no_route", Answer: "host_unreachable"}}
 	return map[string][]RouteInfo{
-		"route-session":        {session, delivered, broadcastDelivered, refusedDelivered, candidateDelivered, groupDelivered, unreachableDelivered, unsupportedDelivered, egressed, held},
+		"route-session":        {session, delivered, broadcastDelivered, refusedDelivered, candidateDelivered, groupDropped, unreachableDelivered, unsupportedDelivered, egressed, held},
 		"route-segment":        {allowed, unlisted, toMesh, stranger, waypoint},
 		"route-read":           {read, answered, alongPath},
 		"route-unread":         {behind},
