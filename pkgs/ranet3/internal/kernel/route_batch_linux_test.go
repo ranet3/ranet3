@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // the lab's devices: a dummy standing for the tun, an uplink, a second uplink
@@ -145,13 +147,12 @@ func openBatchLab(tb testing.TB, prefixes int) {
 	if os.Getuid() != 0 {
 		tb.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(tb)
+	netnstest.EnterEmpty(tb)
 	conn, err := dialNetlink()
 	if err != nil {
 		tb.Fatalf("dial rtnetlink: %v", err)
 	}
 	tb.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(tb, conn)
 	// a new namespace takes its IPv4 settings from the host's, reverse path
 	// filtering and the lookup's skipping of a link-down hop among them
 	for _, setting := range []string{"rp_filter", "ignore_routes_with_linkdown"} {
@@ -400,13 +401,12 @@ func TestNetlinkRouteGetBatchAnswersWhileADeviceComesAndGoes(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const uplinkName, churnName = "ranetup0", "ranetflap0"
 	if err := createLink(conn, uplinkName, "dummy"); err != nil {
 		t.Fatalf("create the dummy %s: %v", uplinkName, err)

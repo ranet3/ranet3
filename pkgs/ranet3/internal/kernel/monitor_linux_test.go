@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -117,13 +118,12 @@ func TestNetlinkFollowsAnotherWritersAddressOnTheTun(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device = "ranetaddr0"
 	createTUN(t, device)
 
@@ -203,13 +203,12 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device = "ranetrule0"
 	createTUN(t, device)
 

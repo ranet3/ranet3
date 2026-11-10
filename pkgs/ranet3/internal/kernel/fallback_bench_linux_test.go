@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -50,13 +51,12 @@ func newBenchSwitch(b *testing.B) *benchSwitch {
 	if os.Getuid() != 0 {
 		b.Skip("the table's arms need root on linux")
 	}
-	enterThrowawayNamespace(b)
+	netnstest.EnterEmpty(b)
 	conn, err := dialNetlink()
 	if err != nil {
 		b.Fatalf("dial rtnetlink: %v", err)
 	}
 	b.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(b, conn)
 	s := &benchSwitch{fds: map[string]int{}}
 	index := map[string]uint32{}
 	for _, name := range []string{benchMesh, benchUplink, benchForwarded} {

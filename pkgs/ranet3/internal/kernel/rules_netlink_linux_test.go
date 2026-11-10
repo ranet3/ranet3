@@ -23,6 +23,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -34,13 +35,12 @@ func rootRulePlatform(t *testing.T, device string) *netlinkPlatform {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	createTUN(t, device)
 	tbl, rt := platformFor(device)
 	opened, err := newPlatform(tbl, rt)

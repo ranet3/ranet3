@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // otherTable is a table another routing daemon writes, the reconciler's own among them when it is not main
@@ -93,13 +95,12 @@ func TestNetworkWatchInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const uplinkName, meshName = "ranetuplink0", "ranetwatch0"
 	createTUN(t, uplinkName)
 	createTUN(t, meshName)
@@ -186,13 +187,12 @@ func TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const uplinkName = "ranetuplink0"
 	createTUN(t, uplinkName)
 	uplink, err := conn.link(0, uplinkName)
@@ -311,13 +311,12 @@ func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const uplinkName = "ranetuplink0"
 	createTUN(t, uplinkName)
 	uplink, err := conn.link(0, uplinkName)
@@ -422,13 +421,12 @@ func TestNetworkWatchFollowsLinksInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const meshName, linkName = "ranetwatch0", "ranetlink0"
 	createTUN(t, meshName)
 	mesh, err := conn.link(0, meshName)

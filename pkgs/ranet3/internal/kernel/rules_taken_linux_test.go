@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -55,13 +56,12 @@ func openTakenLab(t *testing.T) *takenLab {
 	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	index := map[string]uint32{}
 	for _, name := range []string{"up0", "lan0", "mesh0"} {
 		if err := createLink(conn, name, "dummy"); err != nil {
@@ -291,13 +291,12 @@ func TestNetlinkRouteGetNamesLocalForALocalRouteOfOneTrie(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	if err := createLink(conn, "up0", "dummy"); err != nil {
 		t.Fatalf("create the dummy up0: %v", err)
 	}
@@ -339,13 +338,12 @@ func TestNetlinkRouteGetAnswersARouteOfNoTableEntryAsTheKernelsOwn(t *testing.T)
 	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	if err := createLink(conn, "up0", "dummy"); err != nil {
 		t.Fatalf("create the dummy up0: %v", err)
 	}
@@ -470,13 +468,12 @@ func TestNetlinkRouteGetNamesTheRuleAnExceptionTook(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	fd := takenTUN(t, "up0")
 	if err := createLink(conn, "mesh0", "dummy"); err != nil {
 		t.Fatalf("create mesh0: %v", err)

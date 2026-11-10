@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -31,14 +32,13 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 
 	const device = "ranettest0"
 	createTUN(t, device)
@@ -205,13 +205,12 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	// the namespace's own loopback needs no optional link driver
 	const device = "lo"
 	lo, err := conn.link(0, device)
@@ -253,13 +252,12 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device = "ranetreload0"
 	createTUN(t, device)
 	tun, err := conn.link(0, device)
@@ -349,13 +347,12 @@ func TestNetlinkRouteOfAnOverlayPrefixWinsOverItsHold(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device = "ranethold0"
 	createTUN(t, device)
 	tun, err := conn.link(0, device)
@@ -430,13 +427,12 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 		"another IPv6 prefix length": {Table{Addresses: prefixes(host6)}, Table{Addresses: prefixes(subnet6)}, subnet6, "0", "0", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			enterThrowawayNamespace(t)
+			netnstest.EnterEmpty(t)
 			conn, err := dialNetlink()
 			if err != nil {
 				t.Fatalf("dial rtnetlink: %v", err)
 			}
 			t.Cleanup(func() { _ = conn.Close() })
-			requireEmptyNamespace(t, conn)
 			const device = "ranetrenumber0"
 			createTUN(t, device)
 			tun, err := conn.link(0, device)
@@ -586,13 +582,12 @@ func TestAddressDumpUnderChurnIsWholeOrRefused(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const dumpedName, churnName = "ranetdump0", "ranetchurn0"
 	createTUN(t, dumpedName)
 	createTUN(t, churnName)
@@ -647,13 +642,12 @@ func TestNetlinkReadsTheTunsAddressesWhileAnotherDeviceChurns(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device, churnName = "ranetaddrs0", "ranetchurn0"
 	createTUN(t, device)
 	tun, err := conn.link(0, device)
@@ -698,13 +692,12 @@ func TestNetlinkReadsATunTheKernelNoLongerHoldsAsEmpty(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device = "ranetclosed0"
 	createTUN(t, device)
 	tun, err := conn.link(0, device)
@@ -792,47 +785,6 @@ func awaitInterruptedDump(t *testing.T, conn *nlConn, kind uint16, body []byte) 
 		}
 	}
 	t.Fatalf("the churn interrupted none of %d dumps, so it proved nothing", churnBiteDumps)
-}
-
-// enterThrowawayNamespace moves this test's thread into a fresh network
-// namespace. The thread is never unlocked, so the Go runtime destroys it when
-// this goroutine exits and takes the namespace with it.
-func enterThrowawayNamespace(t testing.TB) {
-	t.Helper()
-	runtime.LockOSThread()
-	before := namespaceID(t)
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		t.Fatalf("unshare a network namespace: %v", err)
-	}
-	if namespaceID(t) == before {
-		t.Fatal("refusing to continue: the network namespace did not change")
-	}
-}
-
-func namespaceID(t testing.TB) uint64 {
-	t.Helper()
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
-		t.Fatalf("stat this thread's network namespace: %v", err)
-	}
-	return st.Ino
-}
-
-// requireEmptyNamespace is the second guard. A namespace that already holds a
-// route is somebody's real one, whatever the inode said.
-func requireEmptyNamespace(t testing.TB, conn *nlConn) {
-	t.Helper()
-	body := make([]byte, unix.SizeofRtMsg)
-	body[0] = unix.AF_UNSPEC
-	replies, err := conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, body)
-	if err != nil {
-		t.Fatalf("dump every route: %v", err)
-	}
-	for _, reply := range replies {
-		if reply.Kind == unix.RTM_NEWROUTE {
-			t.Fatal("refusing to continue: this network namespace already holds routes")
-		}
-	}
 }
 
 func createTUN(t *testing.T, name string) {
@@ -927,13 +879,12 @@ func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 	const device = "ranethold0"
 	createTUN(t, device)
 	tun, err := conn.link(0, device)
@@ -983,14 +934,13 @@ func TestNetlinkRulesInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmpty(t)
 
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requireEmptyNamespace(t, conn)
 
 	const device = "ranettest0"
 	createTUN(t, device)
