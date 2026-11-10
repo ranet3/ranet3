@@ -218,7 +218,6 @@ func TestBudgetHoldsItsLimitUnderConcurrentReservers(t *testing.T) {
 }
 
 const (
-	// raceLosses is how many swaps of their own the reservers racing for one budget lose before they stop
 	raceLosses = 50
 	// raceTimeout bounds the race on a host where the reservers' swaps lose rarely
 	raceTimeout = 30 * time.Second
