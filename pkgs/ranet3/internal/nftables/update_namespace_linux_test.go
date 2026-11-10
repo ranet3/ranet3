@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // updateMoves is how many moves the kernel test makes in each family
@@ -34,7 +36,7 @@ func TestNftablesUpdateMovesASetInTheKernel(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn := dial(t)
 	random := rand.New(rand.NewPCG(1, 2))
 	draw := func(size int) netip.Prefix {
@@ -131,7 +133,7 @@ func TestNftablesUpdateJoinsTwoIntervalsAndSplitsThemInTheKernel(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn := dial(t)
 	s := Set{Table: "split", Name: "split6", ID: 1, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL}
 	made, err := s.Create(unix.NFPROTO_INET)

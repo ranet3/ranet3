@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // The tests of this file read a real kernel's notifications through the
@@ -48,7 +50,7 @@ func TestMonitorWakesOnceForATransactionAfterAnOverflowDrains(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	owner, another := dial(t), dial(t)
 	monitor, err := openMonitor(owner, Scope{Sets: []string{keysSet}})
 	if err != nil {

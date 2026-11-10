@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // writeOwners writes a chain of each owner's at forward and a named set of
@@ -70,7 +72,7 @@ func TestNftablesWithdrawalDeletesTheTableForItsLastOwner(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn := dial(t)
 	writeOwners(t, conn, true)
 	for _, step := range []struct {
@@ -114,7 +116,7 @@ func TestNftablesWithdrawalOfASetAnotherWriterUsesFails(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn := dial(t)
 	writeOwners(t, conn, true, "other")
 	lan4 := Set{Table: Table, Name: "lan4"}
@@ -143,7 +145,7 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	const owner, persist = 0x2, 0x4
 	setter, err := Dial()
 	if err != nil {

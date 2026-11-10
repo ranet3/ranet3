@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // The tests of this file write into a real kernel, each in a network
@@ -61,8 +63,7 @@ func TestNftablesFilterExpressionsActOnPackets(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
-	loopbackUp(t)
+	netnstest.EnterEmpty(t)
 	conn := dial(t)
 	const table = "acts"
 	chain := Chain{Table: table, Name: "post", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
@@ -177,7 +178,7 @@ func TestNftablesSetElementsReadBackAndWakeOnAnothersChange(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn := dial(t)
 	const table = Table
 	sets, elements := filterSets(table)
@@ -277,7 +278,7 @@ func TestNftablesBatchFillsASetOfTenThousandIntervals(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	enterThrowawayNamespace(t)
+	netnstest.EnterEmptyLoopbackDown(t)
 	conn := dial(t)
 	set := Set{Table: "large", Name: "large6", ID: 1, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL}
 	prefixes := make([]netip.Prefix, 0, largeSetIntervals)
@@ -340,50 +341,6 @@ func dial(t *testing.T) *Conn {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
-}
-
-// enterThrowawayNamespace moves this test's thread into a fresh network
-// namespace. The thread is never unlocked, so the Go runtime destroys it when
-// this goroutine exits and takes the namespace with it.
-func enterThrowawayNamespace(t *testing.T) {
-	t.Helper()
-	runtime.LockOSThread()
-	before := namespaceID(t)
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		t.Fatalf("unshare a network namespace: %v", err)
-	}
-	if namespaceID(t) == before {
-		t.Fatal("refusing to continue: the network namespace did not change")
-	}
-}
-
-func namespaceID(t *testing.T) uint64 {
-	t.Helper()
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
-		t.Fatalf("stat this thread's network namespace: %v", err)
-	}
-	return st.Ino
-}
-
-func loopbackUp(t *testing.T) {
-	t.Helper()
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(fd)
-	ifr, err := unix.NewIfreq("lo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
-		t.Fatal(err)
-	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
-	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		t.Fatalf("bring loopback up: %v", err)
-	}
 }
 
 func sockaddr(to netip.AddrPort) (int, unix.Sockaddr) {
