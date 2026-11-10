@@ -184,12 +184,11 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 // carries it, so on every platform a socket binds the address its connection
 // leaves from before its connect. Under auto a later server whose route picks
 // another address, by another interface or as a source of its own, gets the
-// leaf's mapping on that address, on Linux and on darwin alike, and no
-// connection leaves under another route's source. A connection the mapping's
-// endpoint cannot carry, its four-tuple held by the host or its port taken by
-// a listener of the host's, leaves from a port the host gives on that address
-// that no mapping holds, for that connection alone. The socket passes the
-// platform's Prepare before it binds.
+// leaf's mapping on that address, and no connection leaves under another
+// route's source. A dial for the leaf's mapping that fails with an error
+// portTaken reads is made once more from a port the host gives on that address,
+// for that connection alone. The protocol deviations page lists its cases under
+// The userspace exit.
 func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.TCPConn, *tcpMapping, dialFailure) {
 	network := "tcp4"
 	if server.Addr().Is6() {
