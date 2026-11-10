@@ -667,16 +667,18 @@ func (m *Mesh) noteDeviceGone(err error) {
 	})
 }
 
-// reportedCount counts one kind of trouble in the packets the mesh handles and spaces the reports about it, a warning or an event, an interval apart
-// a report whose count is kept elsewhere spaces itself with claim alone, or with claim and since where it gives the count since the last report
+// reportedCount spaces the reports of one kind of trouble, a warning or an event, an interval apart
+// add counts the trouble in total and claims the report, and a report whose count is kept elsewhere uses claim, with since where it gives the count since the last report
 type reportedCount struct {
 	total atomic.Uint64
 	// next is the earliest the next report may go out
-	// in nanoseconds since segmentsStarted, which keeps it on the monotonic clock
+	// in nanoseconds since its owner's start, segmentsStarted or Peer.started, which keeps it on the monotonic clock
 	// zero lets the first one report at once
 	next atomic.Int64
 	// reported is total as the last report gave it
 	reported atomic.Uint64
+	// interval is the least time between two reports, zero meaning reportInterval
+	interval time.Duration
 }
 
 // add counts one at now, in nanoseconds since segmentsStarted
@@ -701,7 +703,11 @@ func (c *reportedCount) since(total uint64) uint64 {
 // a reading of a clock no constructor started saturates, so the first claim's now+interval wraps below now
 // and every claim whose next was loaded after it succeeds, swapping next for the value it already holds
 func (c *reportedCount) claim(now, next int64) bool {
-	return now >= next && c.next.CompareAndSwap(next, now+int64(reportInterval))
+	interval := c.interval
+	if interval == 0 {
+		interval = reportInterval
+	}
+	return now >= next && c.next.CompareAndSwap(next, now+int64(interval))
 }
 
 // a reservation takes its peer's reserveMu alone

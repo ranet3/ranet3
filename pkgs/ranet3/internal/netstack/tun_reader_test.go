@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/netip"
 	"os"
 	"regexp"
@@ -280,26 +281,64 @@ func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
 }
 
 // readers that cut a read at the same moment can all load the same time for the next warning
-// and only the first of them to claim it writes the line
+// and only the first of them to claim it writes the line, which puts the next one an interval later, reportInterval where the count names none
 // the claims are made one after another here, so the check holds on one cpu as on many
 func TestOnlyOneReaderClaimsAWarning(t *testing.T) {
-	m := startedMesh()
-	now, next := int64(time.Since(m.segmentsStarted)), m.readsTruncated.next.Load()
-	if !m.readsTruncated.claim(now, next) {
-		t.Fatal("the first reader to cut a read did not get to warn")
+	for _, c := range []struct{ interval, want time.Duration }{
+		{0, reportInterval},
+		{sendErrReportInterval, sendErrReportInterval},
+	} {
+		t.Run(fmt.Sprintf("interval %s", c.interval), func(t *testing.T) {
+			m := startedMesh()
+			m.readsTruncated.interval = c.interval
+			now, next := int64(time.Since(m.segmentsStarted)), m.readsTruncated.next.Load()
+			if !m.readsTruncated.claim(now, next) {
+				t.Fatal("the first reader to cut a read did not get to warn")
+			}
+			if m.readsTruncated.claim(now, next) {
+				t.Fatal("a second reader warned as well, with the time it had loaded before the first claim")
+			}
+			later := m.readsTruncated.next.Load()
+			if later != now+int64(c.want) {
+				t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), c.want)
+			}
+			if m.readsTruncated.claim(later-1, later) {
+				t.Error("a reader warned before the interval had passed")
+			}
+			if !m.readsTruncated.claim(later, later) {
+				t.Error("the first reader once the interval had passed did not get to warn")
+			}
+		})
 	}
-	if m.readsTruncated.claim(now, next) {
-		t.Fatal("a second reader warned as well, with the time it had loaded before the first claim")
+}
+
+// a count whose clock no constructor started reads time.Since of a zero time, which saturates
+// so its first claim's now+interval wraps below now, and every claim whose next was loaded after it succeeds
+// while one whose next was loaded before it fails, as on any clock
+func TestClaimsOnASaturatedClockSucceedAfterTheFirst(t *testing.T) {
+	saturated := int64(time.Since(time.Time{}))
+	if saturated != math.MaxInt64 {
+		t.Fatalf("time.Since of a zero time reads %d, not the saturated %d this test is about", saturated, int64(math.MaxInt64))
 	}
-	later := m.readsTruncated.next.Load()
-	if later != now+int64(reportInterval) {
-		t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), reportInterval)
-	}
-	if m.readsTruncated.claim(later-1, later) {
-		t.Error("a reader warned before the interval had passed")
-	}
-	if !m.readsTruncated.claim(later, later) {
-		t.Error("the first reader once the interval had passed did not get to warn")
+	for _, interval := range []time.Duration{0, sendErrReportInterval} {
+		var c reportedCount
+		c.interval = interval
+		stale := c.next.Load()
+		if !c.claim(saturated, c.next.Load()) {
+			t.Fatalf("the first claim at the saturated reading with interval %s did not succeed", interval)
+		}
+		wrapped := c.next.Load()
+		if wrapped >= saturated {
+			t.Errorf("the first claim with interval %s put next at %d, not below the reading", interval, wrapped)
+		}
+		if c.claim(saturated, stale) {
+			t.Errorf("a claim with interval %s whose next was loaded before the first claim succeeded", interval)
+		}
+		for claim := range 2 {
+			if !c.claim(saturated, wrapped) {
+				t.Errorf("claim %d with the next loaded after the first claim, at the saturated reading with interval %s, did not succeed", claim, interval)
+			}
+		}
 	}
 }
 

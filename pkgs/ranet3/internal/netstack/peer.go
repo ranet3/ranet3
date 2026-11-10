@@ -56,15 +56,10 @@ type Peer struct {
 	// actually left is not knowable from here, but for a bare path report,
 	// which refused only the packets past the path it names.
 	sendFailed atomic.Uint64
-	// sendErrReported is nanoseconds since started, read through time.Since so
-	// it comes off the monotonic clock, and primed one interval in the past so
-	// the first failure is still said out loud. A peer that deleted its Child
-	// SA and kept the IKE SA, which RFC 7296 section 1.4.1 permits and this
-	// tree stays connected for, fails every reservation from then on: without
-	// this that is one synchronous log write per TUN batch, for as long as the
-	// peer stays in that state. Dropped is the exact count.
-	sendErrReported atomic.Int64
-	started         time.Time
+	// sendErrorReport spaces the warnings of failed sends sendErrReportInterval apart
+	sendErrorReport reportedCount
+	// started is the start of the peer's clock, read through time.Since, which keeps it monotonic
+	started time.Time
 	// closeGrace overrides defaultCloseGrace, and zero means the default.
 	closeGrace time.Duration
 
@@ -98,9 +93,8 @@ type BatchSealer func(raw [][]byte, nextHeaders []byte, reuse [][]byte) ([][]byt
 // events records the peer's changes of state under its ID, nil recording nothing
 func NewPeer(id string, reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
 	p := &Peer{ID: id, reserveFn: reserveFn, transmitBatchFn: transmitBatchFn,
-		events: events, started: time.Now()}
+		events: events, started: time.Now(), sendErrorReport: reportedCount{interval: sendErrReportInterval}}
 	p.mtu.Store(DefaultMTU)
-	p.sendErrReported.Store(-int64(sendErrReportInterval))
 	p.dataBudget.limit = peerDataBudget
 	p.controlBudget.limit = controlQueueSize
 	p.queued = make(chan struct{}, 1)
@@ -573,9 +567,7 @@ func (p *Peer) noteSendError(err error, sealed bool) {
 		slog.Debug("netstack send batch ended at a closed mux or past the path", "peer", p.ID, "err", err)
 		return
 	}
-	now := int64(time.Since(p.started))
-	previous := p.sendErrReported.Load()
-	if now-previous < int64(sendErrReportInterval) || !p.sendErrReported.CompareAndSwap(previous, now) {
+	if !p.sendErrorReport.claim(int64(time.Since(p.started)), p.sendErrorReport.next.Load()) {
 		return
 	}
 	if sealed {

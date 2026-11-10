@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -205,6 +206,29 @@ func TestSendAtAClosedMuxOrPastThePathWarnsNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// a peer warns of its first failed send at once and of the next one sendErrReportInterval after it, and of none between
+func TestFailedSendWarningsAreASendErrorIntervalApart(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		var logs bytes.Buffer
+		logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+		peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
+		defer peer.Close()
+		failure := errors.New("sendto: network is unreachable")
+		warned := func() int { return bytes.Count(logs.Bytes(), []byte("netstack send batch failed")) }
+		peer.noteSendError(failure, true)
+		time.Sleep(sendErrReportInterval - time.Nanosecond)
+		peer.noteSendError(failure, true)
+		if got := warned(); got != 1 {
+			t.Fatalf("two failures within %s warned %d times, want once", sendErrReportInterval, got)
+		}
+		time.Sleep(time.Nanosecond)
+		peer.noteSendError(failure, true)
+		if got := warned(); got != 2 {
+			t.Errorf("a failure %s after the first warning left %d warnings in all, want two", sendErrReportInterval, got)
+		}
+	})(t)
 }
 
 // a batch whose seal failed never reached the transport, and its warning names the peer's dropped count, which counts it

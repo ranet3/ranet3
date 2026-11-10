@@ -45,7 +45,7 @@ const (
 // a read needs none, the device laying out the slab it reads into
 const TUNHeadroom = 16
 
-// reportInterval is the least time between two reports of one reportedCount
+// reportInterval is the least time between two reports of a reportedCount that names no interval of its own
 // the counter keeps the exact count, and the report only has to point at it
 const reportInterval = 30 * time.Second
 
@@ -107,8 +107,7 @@ const controlQueueSize = 256
 // outlives Close rather than a use after free.
 const defaultCloseGrace = 5 * time.Second
 
-// sendErrReportInterval bounds how often a batch the transport refused is said
-// out loud. See Peer.sendErrReported.
+// sendErrReportInterval is the least time between two warnings of a peer's failed sends
 const sendErrReportInterval = 10 * time.Second
 
 // egressPairs is how many source and destination pairs a batch keeps the egress check's answers for, each pair past them looked up again
