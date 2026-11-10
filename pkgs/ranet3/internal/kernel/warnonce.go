@@ -7,7 +7,7 @@ package kernel
 // a key that stays costs one warning and the record holds no key gone for a
 // whole window. A window ends only where its input was read whole, since a
 // window that ends with nothing marked empties the record. Two marks of one key
-// in one window both answer new.
+// in one window answer alike.
 //
 // The zero value is an empty record. It belongs to one goroutine.
 type warnOnce[K comparable] struct {
