@@ -349,6 +349,9 @@ into the mesh holds its own.
   not counted and its flows are not limited, until every flow of some source has
   ended and
   [the kernel collects its count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_set_hash.c?id=940de590b839f71d6dc846160534bf202401b8b7#n393).
+- **What its count misses.** The kernel's count of a source's flows can leave a
+  flow open and uncounted, past the share, as the row for the flows the kernel
+  exit's count misses in [limits](design/limits.md#dataplane-and-sockets) gives.
 - **What it bounds.** The open flows a source holds through this node. A mesh
   source's flows to this node itself, to its mesh or uplink address, take
   entries in the same table and are not counted, as

@@ -11,6 +11,7 @@
 let
   behavior = ../../pkgs/ranet3/internal/egress/kernel/behavior_linux_test.go;
   deviations = ../../pkgs/raweb3/pages/docs/design/protocol-deviations.md;
+  limits = ../../pkgs/raweb3/pages/docs/design/limits.md;
 in
 lib.mkPackageCheck {
   package = raweb3.generator;
@@ -29,6 +30,21 @@ lib.mkPackageCheck {
       count="$(printf '%s\n' "$cells" | grep -c -x -F -e "$row" || true)"
       if [ "$count" != 1 ]; then
         echo "the kernel exit declares a limit under '$row', the first cell of $count rows of protocol-deviations.md, want 1" >&2
+        exit 1
+      fi
+    done <<< "$rows"
+    # and each row it declares its count misses flows under is the first cell
+    # of one row of the limits page
+    rows="$(grep -o 'LimitsRow: *"[^"]*"' ${behavior} | cut -d '"' -f 2 | sort -u || true)"
+    if [ -z "$rows" ]; then
+      echo "the kernel exit's behavior suite declares no row its count misses flows under" >&2
+      exit 1
+    fi
+    cells="$(awk -F '|' '/^\|/ { cell = $2; gsub(/^ +| +$/, "", cell); print cell }' ${limits})"
+    while IFS= read -r row; do
+      count="$(printf '%s\n' "$cells" | grep -c -x -F -e "$row" || true)"
+      if [ "$count" != 1 ]; then
+        echo "the kernel exit declares its count misses flows under '$row', the first cell of $count rows of limits.md, want 1" >&2
         exit 1
       fi
     done <<< "$rows"
