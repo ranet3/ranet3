@@ -5,7 +5,6 @@ package userspace
 
 import (
 	"encoding/binary"
-	"net"
 	"net/netip"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -96,14 +95,14 @@ func readQuotedError(message []byte, ipv6 bool, offender netip.Addr, routeMTU fu
 // relayQuoted relays q, an error about a UDP datagram, to the leaf of the
 // mapping whose socket toward the quoted destination sent it from the quoted
 // source, as relayErrors relays one the socket queued, and reports whether a
-// socket of the exit's sent it. An error quoting the mapping's port from
-// another address is about another program's socket.
+// socket of the exit's sent it. An error quoting a port from an address no
+// mapping holds it on is about another program's socket.
 func (u *udpRelay) relayQuoted(q quotedError) bool {
 	if q.protocol != 17 {
 		return false
 	}
 	u.mu.RLock()
-	m := u.holding(q.from.Addr(), q.from.Port())
+	m := u.ports[q.from]
 	u.mu.RUnlock()
 	if m == nil {
 		return false
@@ -111,7 +110,7 @@ func (u *udpRelay) relayQuoted(q quotedError) bool {
 	m.mu.RLock()
 	dst := m.destinations[q.to]
 	m.mu.RUnlock()
-	if dst == nil || dst.conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap() != q.from.Addr() {
+	if dst == nil {
 		return false
 	}
 	dst.mu.Lock()

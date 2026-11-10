@@ -12,19 +12,13 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// destinationLive is whether leaf's mapping holds its socket toward to
+// destinationLive is whether a mapping of leaf's holds its socket toward to
 func destinationLive(x *Exit, leaf, to netip.AddrPort) bool {
-	x.udp.mu.RLock()
-	m := x.udp.mappings[leaf]
-	x.udp.mu.RUnlock()
-	if m == nil {
-		return false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.destinations[to] != nil
+	_, dst := x.udp.opened(leaf, to)
+	return dst != nil
 }
 
 // An error about a leaf's datagram is answered to the leaf from its offender
@@ -178,6 +172,122 @@ func TestLeafErrorReachesItsServerFromTheMapping(t *testing.T) {
 	}
 }
 
+// A leaf's error about a server's datagram leaves from the mapping holding the
+// socket toward that server, by address and port, where the leaf's two
+// mappings each hold a socket toward the server's address, as two classes in
+// turn give them (RFC 5508 REQ-5 (a))
+func TestLeafErrorLeavesFromTheMappingHoldingItsServer(t *testing.T) {
+	first, second := netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.3")
+	_, _ = loopbackServer(t, first), loopbackServer(t, second)
+	host := netip.MustParseAddr("127.0.0.1")
+	earlier, server := loopbackServer(t, host), loopbackServer(t, host)
+	raw := &fakeRaw{}
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Raw = raw })
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPortOn(t, first, second))
+	h.x.cfg.Translate = classed(first).Translate
+	h.x.udp.take(udpDatagram(leaf, serverAt(earlier), []byte("earlier")), false)
+	readDatagramFrom(t, earlier, []byte("earlier"))
+	h.x.cfg.Translate = classed(second).Translate
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("request")), false)
+	outside := readDatagramFrom(t, server, []byte("request"))
+	if mappings := h.mappingsOf(leaf); len(mappings) != 2 || outside.Addr() != second {
+		t.Fatalf("%s holds %d mappings and reached the server from %s, want two and %s", leaf, len(mappings), outside, second)
+	}
+	reply := []byte("a reply the leaf refuses")
+	if _, err := server.WriteToUDPAddrPort(reply, outside); err != nil {
+		t.Fatal(err)
+	}
+	laid := h.waitLaid(t, "reply", func(pkt []byte) bool { return isDatagram(pkt, serverAt(server), leaf, reply) })
+	h.x.udp.leafError(leafRefusal(leaf.Addr(), host, 3, 3, laid))
+	sent := raw.sentSoFar()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d through the raw socket, want 1", len(sent))
+	}
+	checkServerError(t, sent[0], outside, serverAt(server), 3, 3, reply)
+}
+
+// A leaf's error about a datagram from a port of a server's address no
+// destination holds leaves from the one mapping of the leaf holding a socket
+// toward that address, and where two do, as two classes in turn give them,
+// is dropped and counted as about no mapping, since the quote holds the
+// leaf's address and port and nothing of the mapping
+func TestLeafErrorAboutAnotherPortOfItsServer(t *testing.T) {
+	for _, mappings := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d mappings", mappings), func(t *testing.T) {
+			first, second := netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.3")
+			_, _ = loopbackServer(t, first), loopbackServer(t, second)
+			host := netip.MustParseAddr("127.0.0.1")
+			server, later, other := loopbackServer(t, host), loopbackServer(t, host), loopbackServer(t, host)
+			raw := &fakeRaw{}
+			h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Raw = raw })
+			leaf := netip.AddrPortFrom(leaf4, freeUDPPortOn(t, first, second))
+			h.x.cfg.Translate = classed(first).Translate
+			h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("request")), false)
+			outside := readDatagramFrom(t, server, []byte("request"))
+			if mappings == 2 {
+				h.x.cfg.Translate = classed(second).Translate
+				h.x.udp.take(udpDatagram(leaf, serverAt(later), []byte("later")), false)
+				readDatagramFrom(t, later, []byte("later"))
+			}
+			reply := []byte("from another port")
+			if _, err := other.WriteToUDPAddrPort(reply, outside); err != nil {
+				t.Fatal(err)
+			}
+			laid := h.waitLaid(t, "reply from another port", func(pkt []byte) bool { return isDatagram(pkt, serverAt(other), leaf, reply) })
+			before := h.count(false, reasonLeafErrorUnmapped)
+			h.x.udp.leafError(leafRefusal(leaf.Addr(), host, 3, 3, laid))
+			sent := raw.sentSoFar()
+			if mappings == 2 {
+				if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 1 || len(sent) != 0 {
+					t.Errorf("dropped %d errors as about no mapping and sent %d, want the one dropped and none sent", got, len(sent))
+				}
+				return
+			}
+			if len(sent) != 1 {
+				t.Fatalf("sent %d through the raw socket, want 1", len(sent))
+			}
+			checkServerError(t, sent[0], outside, serverAt(other), 3, 3, reply)
+		})
+	}
+}
+
+// Where two of a leaf's mappings sent to one server's address, from two of
+// its ports, a datagram from the port the first holds a socket toward that
+// came in through the second still has the leaf's error about it leave from
+// the first: the leaf sees one address and port for both, and its own
+// datagrams to that port and its answer leave from the first
+func TestLeafErrorAboutAServerPortLeavesFromItsHolder(t *testing.T) {
+	first, second := netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.3")
+	_, _ = loopbackServer(t, first), loopbackServer(t, second)
+	host := netip.MustParseAddr("127.0.0.1")
+	server, later := loopbackServer(t, host), loopbackServer(t, host)
+	raw := &fakeRaw{}
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Raw = raw })
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPortOn(t, first, second))
+	h.x.cfg.Translate = classed(first).Translate
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("to the server")), false)
+	atFirst := readDatagramFrom(t, server, []byte("to the server"))
+	h.x.cfg.Translate = classed(second).Translate
+	h.x.udp.take(udpDatagram(leaf, serverAt(later), []byte("to its other port")), false)
+	atSecond := readDatagramFrom(t, later, []byte("to its other port"))
+	if mappings := h.mappingsOf(leaf); len(mappings) != 2 || atFirst.Addr() != first || atSecond.Addr() != second {
+		t.Fatalf("%s holds %d mappings and reached the server from %s and %s", leaf, len(mappings), atFirst, atSecond)
+	}
+	payload := []byte("the server's port to the second mapping")
+	if _, err := server.WriteToUDPAddrPort(payload, atSecond); err != nil {
+		t.Fatal(err)
+	}
+	laid := h.waitLaid(t, "the server's datagram through the second mapping", func(pkt []byte) bool {
+		return isDatagram(pkt, serverAt(server), leaf, payload)
+	})
+	h.x.udp.leafError(leafRefusal(leaf.Addr(), host, 3, 3, laid))
+	sent := raw.sentSoFar()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d through the raw socket, want 1", len(sent))
+	}
+	checkServerError(t, sent[0], atFirst, serverAt(server), 3, 3, payload)
+}
+
 // a leaf's error whose ICMP checksum or quoted IPv4 header's checksum fails is
 // dropped and counted before the relay writes any checksum anew (RFC 5508
 // REQ-3 (a) and (b)), and one that holds carries the leaf's diffserv class to
@@ -256,20 +366,20 @@ func TestLeafErrorIsCheckedAndCarriesItsDiffservClass(t *testing.T) {
 // destination after the translation, at the host's TTL and with an
 // identification of its own (RFC 5508 REQ-7 and REQ-7 (a))
 func TestLeafErrorAboutAHairpinnedDatagramReachesItsSender(t *testing.T) {
-	host := netip.MustParseAddr("198.51.100.9")
+	host := netip.MustParseAddr("127.0.0.1")
+	_ = loopbackServer(t, host)
 	raw := &fakeRaw{}
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
 		holdOnly(rt, host)
 		rt.Platform.Raw = raw
 	})
 	h.x.SetHopLimits(hostTTL, hostHopLimit)
-	anchor := h.anchor(t)
 	listener := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
-	port := h.unpaired(t, listener, host, anchor)
+	port := h.hairpinning(t, listener, host)
 	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
-	senderPort := h.unpaired(t, sender, host, anchor)
-	h.x.handle(h.lane, udpDatagram(listener, netip.AddrPortFrom(host, senderPort), []byte("lets the host's address in")))
-	h.x.handle(h.lane, udpDatagram(sender, netip.AddrPortFrom(host, port), []byte("hairpinned")))
+	senderPort := h.hairpinning(t, sender, host)
+	h.x.udp.take(udpDatagram(listener, netip.AddrPortFrom(host, senderPort), []byte("lets the host's address in")), false)
+	h.x.udp.take(udpDatagram(sender, netip.AddrPortFrom(host, port), []byte("hairpinned")), false)
 	laid := h.waitLaid(t, "hairpinned datagram", func(pkt []byte) bool {
 		return isDatagram(pkt, netip.AddrPortFrom(host, senderPort), listener, []byte("hairpinned"))
 	})
@@ -278,7 +388,7 @@ func TestLeafErrorAboutAHairpinnedDatagramReachesItsSender(t *testing.T) {
 	refusal[1] = class
 	binary.BigEndian.PutUint16(refusal[10:12], 0)
 	binary.BigEndian.PutUint16(refusal[10:12], fold(sum(0, refusal[:20])))
-	h.x.handle(h.lane, refusal)
+	h.x.udp.leafError(refusal)
 	out := h.waitLaid(t, "error to the sender", func(pkt []byte) bool {
 		p, ok := parse(pkt)
 		return ok && p.protocol == icmpProtocol(host) && p.dst == sender.Addr()
@@ -298,34 +408,213 @@ func TestLeafErrorAboutAHairpinnedDatagramReachesItsSender(t *testing.T) {
 	}
 }
 
-// A leaf's error quoting a datagram from a mapping that hairpins, at an
-// address of the host that mapping never sent to, is about no datagram that
-// mapping hairpinned to it, and is dropped and counted rather than carried to
-// that mapping's leaf. Each mapping is opened unpaired, so the forger's
-// mapping sends from that address, and once the sender has sent there the same
-// error reaches the sender's leaf: the drop comes from the sender's filter.
-func TestLeafErrorAboutAnUnhairpinnedAddressIsDropped(t *testing.T) {
-	host, other, spare := netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("198.51.100.11")
+// A leaf's error about a datagram a sender hairpinned to it, where the sender
+// hairpinned to both of the leaf's mappings and only the one on the sender's
+// address let it in, reaches the sender from that mapping's address and port,
+// quoting the datagram as sent to it (RFC 5508 REQ-7, REQ-5 (a)). Once both
+// mappings let the sender's address in, the quote names neither, and the
+// error is dropped and counted.
+func TestLeafErrorAboutAHairpinnedDatagramComesFromTheMappingItWentTo(t *testing.T) {
+	one, two := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")
+	_, _ = loopbackServer(t, one), loopbackServer(t, two)
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
-		holdOnly(rt, host, other, spare)
+		holdOnly(rt, one, two)
 		rt.Platform.Raw = &fakeRaw{}
 	})
-	anchor := h.anchor(t)
+	target := netip.AddrPortFrom(leaf4, freeUDPPortOn(t, one, two))
+	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
+	onOne := h.hairpinning(t, target, one)
+	h.x.cfg.Translate = classed(two).Translate
+	onTwo := h.hairpinning(t, target, two)
+	h.x.cfg.Translate = nil
+	senderPort := h.hairpinning(t, sender, one)
+	atOne, atTwo, atSender := netip.AddrPortFrom(one, onOne), netip.AddrPortFrom(two, onTwo), netip.AddrPortFrom(one, senderPort)
+	h.x.udp.take(udpDatagram(target, atSender, []byte("lets one in")), false)
+	h.x.udp.take(udpDatagram(sender, atOne, []byte("to one")), false)
+	laid := h.waitLaid(t, "to one", func(raw []byte) bool { return isDatagram(raw, atSender, target, []byte("to one")) })
+	filtered := h.count(false, reasonFiltered)
+	h.x.udp.take(udpDatagram(sender, atTwo, []byte("to two")), false)
+	if got := h.count(false, reasonFiltered) - filtered; got != 1 {
+		t.Fatalf("filtered %d datagrams to the mapping on %s, which never sent to %s, want 1", got, two, one)
+	}
+	h.x.udp.leafError(leafRefusal(target.Addr(), one, 3, 3, laid))
+	out := h.waitLaid(t, "the target's error to the sender", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoICMP && p.dst == sender.Addr()
+	})
+	checkServerError(t, out, atOne, sender, 3, 3, []byte("to one"))
+
+	h.x.cfg.Translate = classed(two).Translate
+	h.x.udp.take(udpDatagram(target, atSender, []byte("lets one in on two")), false)
+	h.x.cfg.Translate = nil
+	h.waitLaid(t, "the target's datagram from two", func(raw []byte) bool {
+		return isDatagram(raw, atTwo, sender, []byte("lets one in on two"))
+	})
+	h.x.udp.take(udpDatagram(sender, atTwo, []byte("to two again")), false)
+	laid = h.waitLaid(t, "to two again", func(raw []byte) bool { return isDatagram(raw, atSender, target, []byte("to two again")) })
+	h.drainLaid()
+	before := h.count(false, reasonLeafErrorUnmapped)
+	h.x.udp.leafError(leafRefusal(target.Addr(), one, 3, 3, laid))
+	if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 1 {
+		t.Errorf("dropped %d errors as about no mapping, want the one whose datagram either of two mappings could have let in", got)
+	}
+	time.Sleep(stackSettle)
+	for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
+		view := pkt.ToView()
+		p, ok := parse(view.AsSlice())
+		view.Release()
+		h.x.link.release(pkt)
+		if ok && p.protocol == protoICMP && p.dst == sender.Addr() {
+			t.Errorf("laid %s toward the sender, want nothing", p)
+		}
+	}
+}
+
+// A leaf's error about a hairpinned datagram finds the mapping the datagram
+// went to by the address and port the sender hairpinned to, not the address
+// alone: where the sender also hairpinned to a third leaf's mapping on the
+// address of the leaf's other mapping, and both of the leaf's mappings let the
+// sender in, the error still reaches the sender from the one it hairpinned to
+func TestLeafErrorAboutAHairpinnedDatagramMatchesItsAddressAndPort(t *testing.T) {
+	one, two := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")
+	_, _ = loopbackServer(t, one), loopbackServer(t, two)
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+		holdOnly(rt, one, two)
+		rt.Platform.Raw = &fakeRaw{}
+	})
+	target := netip.AddrPortFrom(leaf4, freeUDPPortOn(t, one, two))
+	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
+	third := netip.AddrPortFrom(leaf4.Next(), freeUDPPort(t, leaf4))
+	h.hairpinning(t, target, one)
+	h.x.cfg.Translate = classed(two).Translate
+	onTwo := h.hairpinning(t, target, two)
+	h.x.cfg.Translate = nil
+	atSender := netip.AddrPortFrom(one, h.hairpinning(t, sender, one))
+	atThird := netip.AddrPortFrom(one, h.hairpinning(t, third, one))
+	atTwo := netip.AddrPortFrom(two, onTwo)
+	h.x.udp.take(udpDatagram(target, atSender, []byte("lets one in on one")), false)
+	translate := classed(two).Translate
+	translate[0].From = schema.PrefixFrom(netip.PrefixFrom(target.Addr(), 32))
+	h.x.cfg.Translate = translate
+	h.x.udp.take(udpDatagram(target, atSender, []byte("lets one in on two")), false)
+	h.x.cfg.Translate = nil
+	h.x.udp.take(udpDatagram(sender, atThird, []byte("to the third leaf")), false)
+	h.x.udp.take(udpDatagram(sender, atTwo, []byte("to two")), false)
+	laid := h.waitLaid(t, "to two", func(raw []byte) bool { return isDatagram(raw, atSender, target, []byte("to two")) })
+	for _, m := range h.mappingsOf(target) {
+		if !m.admits(one) {
+			t.Fatalf("the target's mapping %s does not let %s in", m.external(), one)
+		}
+	}
+	h.x.udp.leafError(leafRefusal(target.Addr(), one, 3, 3, laid))
+	out := h.waitLaid(t, "the target's error to the sender", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoICMP && p.dst == sender.Addr()
+	})
+	checkServerError(t, out, atTwo, sender, 3, 3, []byte("to two"))
+}
+
+// A leaf's error about a datagram a sender hairpinned to the first of the
+// leaf's two mappings, both letting the sender in, goes by the sender's
+// record: after hairpinRecord-2 other peers the record names both mappings,
+// the quote neither, and the error is dropped and counted, and after one more
+// the record no longer names the first, and the error leaves from the second,
+// quoting its address and port. Both lead to the one leaf port that refused.
+func TestLeafErrorAboutAHairpinnedDatagramGoesByTheMappingsTheRecordStillNames(t *testing.T) {
+	for _, peers := range []int{hairpinRecord - 2, hairpinRecord - 1} {
+		t.Run(fmt.Sprintf("%d peers", peers), func(t *testing.T) {
+			one, two := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")
+			_, _ = loopbackServer(t, one), loopbackServer(t, two)
+			h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+				holdOnly(rt, one, two)
+				rt.Platform.Raw = &fakeRaw{}
+			})
+			target := netip.AddrPortFrom(leaf4, freeUDPPortOn(t, one, two))
+			sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
+			onOne := h.hairpinning(t, target, one)
+			h.x.cfg.Translate = classed(two).Translate
+			onTwo := h.hairpinning(t, target, two)
+			h.x.cfg.Translate = nil
+			atOne, atTwo := netip.AddrPortFrom(one, onOne), netip.AddrPortFrom(two, onTwo)
+			atSender := netip.AddrPortFrom(one, h.hairpinning(t, sender, one))
+			h.x.udp.take(udpDatagram(target, atSender, []byte("lets one in on one")), false)
+			h.x.cfg.Translate = classed(two).Translate
+			h.x.udp.take(udpDatagram(target, atSender, []byte("lets one in on two")), false)
+			h.x.cfg.Translate = nil
+			h.x.udp.take(udpDatagram(sender, atOne, []byte("to one")), false)
+			laid := h.waitLaid(t, "to one", func(raw []byte) bool { return isDatagram(raw, atSender, target, []byte("to one")) })
+			h.x.udp.take(udpDatagram(sender, atTwo, []byte("to two")), false)
+			h.waitLaid(t, "to two", func(raw []byte) bool { return isDatagram(raw, atSender, target, []byte("to two")) })
+			for i := range peers {
+				peer := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(10 + i)}), freeUDPPort(t, leaf4))
+				at := netip.AddrPortFrom(one, h.hairpinning(t, peer, one))
+				h.x.udp.take(udpDatagram(sender, at, []byte("to a peer")), false)
+			}
+			h.drainLaid()
+			s := on(h.mappingsOf(sender), one)
+			if named := s.hairpinnedToward(atOne); named != (peers < hairpinRecord-1) {
+				t.Fatalf("the sender's record names %s %t after %d peers", atOne, named, peers)
+			}
+			before := h.count(false, reasonLeafErrorUnmapped)
+			h.x.udp.leafError(leafRefusal(target.Addr(), one, 3, 3, laid))
+			dropped := h.count(false, reasonLeafErrorUnmapped) - before
+			if peers < hairpinRecord-1 {
+				if dropped != 1 {
+					t.Errorf("dropped %d errors as about no mapping, want the one the record names two mappings for", dropped)
+				}
+				time.Sleep(stackSettle)
+				for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
+					view := pkt.ToView()
+					p, ok := parse(view.AsSlice())
+					view.Release()
+					h.x.link.release(pkt)
+					if ok && p.protocol == protoICMP && p.dst == sender.Addr() {
+						t.Errorf("laid %s toward the sender, want nothing", p)
+					}
+				}
+				return
+			}
+			if dropped != 0 {
+				t.Errorf("dropped %d errors as about no mapping, want none", dropped)
+			}
+			out := h.waitLaid(t, "the target's error to the sender", func(raw []byte) bool {
+				p, ok := parse(raw)
+				return ok && p.protocol == protoICMP && p.dst == sender.Addr()
+			})
+			checkServerError(t, out, atTwo, sender, 3, 3, []byte("to one"))
+		})
+	}
+}
+
+// A leaf's error quoting a datagram from a mapping that hairpins, sent by a
+// leaf whose mapping the sender never hairpinned to, is about no datagram
+// that mapping hairpinned to it, and is dropped and counted rather than
+// carried to that mapping's leaf. So is the same error once the sender
+// hairpinned to the leaf's mapping, which filtered it, never having sent to
+// the sender's address. Once that mapping has, the error reaches the sender's
+// leaf from it.
+func TestLeafErrorAboutAnUnhairpinnedAddressIsDropped(t *testing.T) {
+	host, other := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")
+	_, _ = loopbackServer(t, host), loopbackServer(t, other)
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+		holdOnly(rt, host, other)
+		rt.Platform.Raw = &fakeRaw{}
+	})
 	listener := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
 	forger := netip.AddrPortFrom(leaf4.Next(), freeUDPPort(t, leaf4))
-	port, senderPort := h.unpaired(t, listener, spare, anchor), h.unpaired(t, sender, spare, anchor)
-	forgerPort := h.unpaired(t, forger, spare, anchor)
-	h.x.handle(h.lane, udpDatagram(listener, netip.AddrPortFrom(host, senderPort), []byte("lets the host's address in")))
-	h.x.handle(h.lane, udpDatagram(sender, netip.AddrPortFrom(host, port), []byte("hairpinned")))
+	port, senderPort := h.hairpinning(t, listener, host), h.hairpinning(t, sender, host)
+	forgerPort := h.hairpinning(t, forger, other)
+	h.x.udp.take(udpDatagram(listener, netip.AddrPortFrom(host, senderPort), []byte("lets the host's address in")), false)
+	h.x.udp.take(udpDatagram(sender, netip.AddrPortFrom(host, port), []byte("hairpinned")), false)
 	h.waitLaid(t, "hairpinned datagram", func(pkt []byte) bool {
 		return isDatagram(pkt, netip.AddrPortFrom(host, senderPort), listener, []byte("hairpinned"))
 	})
 	before := h.count(false, reasonLeafErrorUnmapped)
-	quoted := udpDatagram(netip.AddrPortFrom(other, senderPort), forger, []byte("never sent"))
-	h.x.handle(h.lane, leafRefusal(forger.Addr(), other, 3, 3, quoted))
+	quoted := udpDatagram(netip.AddrPortFrom(host, senderPort), forger, []byte("never sent"))
+	h.x.udp.leafError(leafRefusal(forger.Addr(), host, 3, 3, quoted))
 	if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 1 {
-		t.Errorf("dropped %d errors as about no datagram a mapping delivered, want the one about %s, which the sender never sent to", got, other)
+		t.Errorf("dropped %d errors as about no datagram a mapping delivered, want the one from %s, whose mapping's address %s the sender never sent to", got, forger, other)
 	}
 	time.Sleep(stackSettle)
 	for _, pkt := range h.mesh.laidPackets() {
@@ -333,14 +622,19 @@ func TestLeafErrorAboutAnUnhairpinnedAddressIsDropped(t *testing.T) {
 			t.Fatalf("laid %s toward the sender's leaf, want nothing", p)
 		}
 	}
-	h.x.handle(h.lane, udpDatagram(sender, netip.AddrPortFrom(other, forgerPort), []byte("lets the sender send to other")))
-	h.x.handle(h.lane, leafRefusal(forger.Addr(), other, 3, 3, quoted))
-	h.waitLaid(t, "error to the sender once it sent to "+other.String(), func(pkt []byte) bool {
+	h.x.udp.take(udpDatagram(sender, netip.AddrPortFrom(other, forgerPort), []byte("filtered at other")), false)
+	h.x.udp.leafError(leafRefusal(forger.Addr(), host, 3, 3, quoted))
+	if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 2 {
+		t.Errorf("dropped %d errors as about no datagram a mapping delivered, want both, the forger's mapping having let in no datagram from %s", got, host)
+	}
+	h.x.udp.take(udpDatagram(forger, netip.AddrPortFrom(host, senderPort), []byte("lets the host's address in")), false)
+	h.x.udp.leafError(leafRefusal(forger.Addr(), host, 3, 3, quoted))
+	h.waitLaid(t, "error to the sender once the mapping on "+other.String()+" sent to "+host.String(), func(pkt []byte) bool {
 		p, ok := parse(pkt)
 		return ok && p.protocol == protoICMP && p.src == other && p.dst == sender.Addr()
 	})
-	if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 1 {
-		t.Errorf("dropped %d errors as about no datagram a mapping delivered, want only the first", got)
+	if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 2 {
+		t.Errorf("dropped %d errors as about no datagram a mapping delivered, want only the first two", got)
 	}
 }
 

@@ -40,26 +40,12 @@ func shareDialPort(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 }
 
-// shareMappingPort lets the sockets of a mapping toward each server bind the
-// port fd, its receiving socket, holds: by SO_REUSEPORT where fd is bound to
-// one address, which another user cannot share (see shareDialPort), and by
-// nothing on the wildcard address, which XNU lets a socket bound to one
-// address with SO_REUSEADDR sit beside, as the transport's listener does
-func shareMappingPort(fd int, specific bool) error {
-	if !specific {
-		return nil
-	}
-	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-}
-
-// shareDestinationPort lets fd, a mapping's socket toward one server bound
-// to one address, bind the mapping's port: SO_REUSEADDR beside a receiving
-// socket on the wildcard address, and SO_REUSEPORT beside one on the same
-// address. XNU refuses a bind of an address and port another socket holds
-// unconnected, so a mapping connects its sockets one at a time under its lock.
-func shareDestinationPort(fd int) error {
-	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
-		return err
-	}
+// shareMappingPort lets fd, a socket of a mapping, its receiving socket or
+// one toward a server, share the mapping's address and port with the
+// mapping's other sockets, by SO_REUSEPORT, which another user cannot share on
+// one address (see shareDialPort). XNU refuses a bind of an address and port
+// another socket holds unconnected, so a mapping connects its sockets one at a
+// time under its lock.
+func shareMappingPort(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 }

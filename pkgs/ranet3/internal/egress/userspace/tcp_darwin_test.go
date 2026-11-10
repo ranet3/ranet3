@@ -81,33 +81,23 @@ func TestDialsShareTheLeafsPortFromTheRoutesAddress(t *testing.T) {
 	}
 }
 
-// A mapping's receiving socket on the wildcard address holds no SO_REUSEPORT,
-// which would let a process of any user bind its port beside it, and
-// one bound to a class's address holds it, which only the exit's own sockets
-// toward each server share
-func TestWildcardMappingSocketSharesNoPort(t *testing.T) {
-	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
-	for _, c := range []struct {
-		name  string
-		cfg   egress.Egress
-		share bool
-	}{
-		{"auto", egress.Egress{}, false},
-		{"an address", classed(netip.MustParseAddr("127.0.0.1")), true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			h := newRelayHarness(t, nil)
-			h.x.cfg.Translate = c.cfg.Translate
-			leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
-			h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte(c.name)), false)
-			readDatagramFrom(t, server, []byte(c.name))
-			h.x.udp.mu.RLock()
-			m := h.x.udp.mappings[leaf]
-			h.x.udp.mu.RUnlock()
-			if got := socketOption(t, m.wildcard, unix.SOL_SOCKET, unix.SO_REUSEPORT) != 0; got != c.share {
-				t.Errorf("the mapping's receiving socket holds SO_REUSEPORT %t, want %t", got, c.share)
-			}
-		})
+// A mapping's receiving socket is bound to one address, the one the route to
+// its destination picks, never the wildcard address, beside which XNU would
+// let a process of any user bind its port, and holds SO_REUSEPORT, which only
+// the exit's own sockets toward each server share
+func TestMappingSocketSharesItsPortOnOneAddress(t *testing.T) {
+	loopback := netip.MustParseAddr("127.0.0.1")
+	server := loopbackServer(t, loopback)
+	h := newRelayHarness(t, nil)
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens a mapping")), false)
+	readDatagramFrom(t, server, []byte("opens a mapping"))
+	m := h.mappingsOf(leaf)[0]
+	if got := m.receiving.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(); got != loopback {
+		t.Errorf("the mapping's receiving socket is bound to %s, want %s", got, loopback)
+	}
+	if socketOption(t, m.receiving, unix.SOL_SOCKET, unix.SO_REUSEPORT) == 0 {
+		t.Error("the mapping's receiving socket holds no SO_REUSEPORT, so no socket toward a server binds its port")
 	}
 }
 

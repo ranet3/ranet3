@@ -58,13 +58,15 @@ func (x *Exit) flowsStatus() *egress.Flows {
 	x.tcp.mu.Unlock()
 	f.TimeWait = x.tcp.closed.waiting()
 	x.udp.mu.RLock()
-	for leaf, m := range x.udp.mappings {
-		m.mu.RLock()
-		f.UDP[family(leaf.Addr().Is6())] += len(m.destinations)
-		if m.hairpinned {
-			f.UDP[family(leaf.Addr().Is6())]++
+	for leaf, mappings := range x.udp.mappings {
+		for _, m := range mappings {
+			m.mu.RLock()
+			f.UDP[family(leaf.Addr().Is6())] += len(m.destinations)
+			if m.hairpinned {
+				f.UDP[family(leaf.Addr().Is6())]++
+			}
+			m.mu.RUnlock()
 		}
-		m.mu.RUnlock()
 	}
 	x.udp.mu.RUnlock()
 	x.echo.mu.Lock()

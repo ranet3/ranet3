@@ -28,6 +28,9 @@ const (
 	reasonUDPChecksum = "udp checksum"
 	reasonFiltered    = "udp filtered"
 	reasonTruncated   = "udp truncated"
+	// a datagram its socket refused for a reason of the host's own, such as
+	// an address the host no longer holds
+	reasonUnsent      = "udp unsent"
 	reasonDescriptors = "descriptors"
 	reasonSocket      = "socket"
 	reasonWithdrawn   = "withdrawn"
@@ -40,22 +43,31 @@ const (
 )
 
 // udpRelay carries the leaves' UDP outside gVisor's endpoints, as RFC 4787
-// has a NAT carry it: one mapping per leaf address and port, shared by every
-// destination (REQ-1), on the leaf's port where the host holds it free and
+// has a NAT carry it: one mapping per leaf address and port and address its
+// datagrams leave from, shared by every destination they leave from that
+// address toward (REQ-1), on the leaf's port where the host holds it free and
 // never on another mapping's (REQ-3), letting in what comes back only from an
-// address the mapping sent to (REQ-8), hairpinning a leaf's datagram to
-// another mapping (REQ-9), and kept past its last datagram out alone (REQ-5,
-// REQ-6). Every socket it opens passes the platform's Prepare.
+// address the mapping itself sent or hairpinned to (REQ-8), hairpinning a
+// leaf's datagram to another mapping (REQ-9), and kept past its last datagram
+// that left alone (REQ-5, REQ-6). The address is the one the leaf's class
+// names, or under auto the one the route to each new destination picks. A
+// source address belongs to its uplink, whose network or tunnel peer may drop
+// another uplink's (RFC 2827), so under auto a leaf port whose destinations'
+// routes pick two addresses keeps a mapping on each rather than send one
+// route's source by another. Every socket it opens passes the platform's
+// Prepare.
 type udpRelay struct {
 	x   *Exit
 	now func() time.Time
 
 	mu sync.RWMutex
-	// mappings holds each mapping by its leaf's address and port, and ports
-	// each by its address and port on the host, which a hairpinned datagram
-	// names
-	mappings map[netip.AddrPort]*mapping
-	ports    map[externalPort]*mapping
+	// mappings holds each leaf address and port's mappings, one on each
+	// address, oldest first, each slice replaced whole on a change so that a
+	// reader keeps it past the lock, and ports each mapping by its address and
+	// port on the host, which a hairpinned datagram, an error quoting it and a
+	// leaf's error about it name
+	mappings map[netip.AddrPort][]*mapping
+	ports    map[netip.AddrPort]*mapping
 	// withdrawn refuses every datagram from a withdrawal until resume
 	withdrawn bool
 
@@ -63,45 +75,35 @@ type udpRelay struct {
 	readers sync.WaitGroup
 }
 
-// externalPort is a mapping's address and port on the host: its class's
-// address, or under auto the unspecified address of its family, which its
-// receiving socket binds. Two classes' mappings may hold one port, each on its
-// own address.
-type externalPort struct {
-	address netip.Addr
-	port    uint16
+// external is m's address and port on the host, which its receiving socket
+// binds. Two mappings may hold one port, each on its own address.
+func (m *mapping) external() netip.AddrPort {
+	return netip.AddrPortFrom(m.source, m.port)
 }
 
-// external is m's address and port on the host
-func (m *mapping) external() externalPort {
-	if m.source.IsValid() {
-		return externalPort{m.source, m.port}
+// on is the mapping of mappings, one leaf's, on source, nil where none is
+func on(mappings []*mapping, source netip.Addr) *mapping {
+	for _, m := range mappings {
+		if m.source == source {
+			return m
+		}
 	}
-	return externalPort{unspecified(m.leaf.Addr()), m.port}
+	return nil
 }
 
-// holding is the mapping holding port on address: the one whose class names
-// address, else the one under auto holding port on every address, nil where
-// neither does. u.mu is held.
-func (u *udpRelay) holding(address netip.Addr, port uint16) *mapping {
-	if m := u.ports[externalPort{address, port}]; m != nil {
-		return m
-	}
-	return u.ports[externalPort{unspecified(address), port}]
-}
-
-// mapping is one leaf address and port's: a socket on the mapping's port that
-// only receives, and a socket per destination on the same port connected to
-// it. source is the address the leaf's class names, which every socket of the
-// mapping binds, and the zero Addr under auto, where the receiving socket
-// binds the wildcard address and each destination's paired.
+// mapping is one leaf address and port's on one address, source: a socket on
+// source and the mapping's port that only receives, and a socket per
+// destination on the same address and port connected to it. source is the
+// address the leaf's class names, or under auto the one the route to each of
+// the mapping's destinations picked.
 type mapping struct {
-	leaf     netip.AddrPort
-	source   netip.Addr
-	port     uint16
-	wildcard *net.UDPConn
-	// deadline is when the mapping ends, in unix nanoseconds, which each
-	// datagram out moves later and nothing coming in moves
+	leaf      netip.AddrPort
+	source    netip.Addr
+	port      uint16
+	receiving *net.UDPConn
+	// deadline is when the mapping ends once no destination of it is left, in
+	// unix nanoseconds: a sweep's spacing after it opened, or later where a
+	// hairpinned datagram moved it. Nothing coming in moves it.
 	deadline atomic.Int64
 
 	mu           sync.RWMutex
@@ -111,13 +113,18 @@ type mapping struct {
 	// hairpinned is the flow the mapping's hairpinned datagrams hold, from
 	// the first on, which close gives back
 	hairpinned bool
-	// hairpinnedTo is each of the host's addresses the mapping's hairpinned
-	// datagrams went to, which its filter lets in as a destination's
-	hairpinnedTo []netip.Addr
-	// paired is the address every socket toward a destination binds under
-	// auto, the one the route to the first destination picked, so the
-	// mapping leaves from one address (RFC 4787 REQ-2)
-	paired netip.Addr
+	// hairpinnedAddresses is every host address a hairpinned datagram of the
+	// mapping went to, each once, none leaving before the mapping ends, which
+	// the mapping's filter lets in as a destination's. Each was the address of
+	// a mapping that held it when the datagram went, so the host's addresses
+	// bound it.
+	hairpinnedAddresses []netip.Addr
+	// hairpinnedTo is the host's addresses and ports the mapping's last
+	// hairpinRecord distinct hairpinned datagrams went to, the latest last. A
+	// leaf hairpinning to the mapping picks first its own mapping one of them
+	// names (known), and an error about a hairpinned datagram finds its target
+	// mapping by them (hairpinTarget).
+	hairpinnedTo []netip.AddrPort
 }
 
 // destination is a mapping's socket connected to one server
@@ -139,7 +146,7 @@ type destination struct {
 }
 
 func newUDPRelay(x *Exit) *udpRelay {
-	return &udpRelay{x: x, now: time.Now, mappings: map[netip.AddrPort]*mapping{}, ports: map[externalPort]*mapping{}}
+	return &udpRelay{x: x, now: time.Now, mappings: map[netip.AddrPort][]*mapping{}, ports: map[netip.AddrPort]*mapping{}}
 }
 
 // datagram is a UDP datagram as take reads it from its packet: the leaf's
@@ -262,12 +269,18 @@ func (u *udpRelay) take(raw []byte, dontFragment bool) {
 		u.refuse(raw, reason)
 		return
 	}
-	// the deadlines move before the send, so whoever sees the datagram
-	// arrive reads the deadlines it set
-	now := u.now()
-	dst.deadline.Store(now.Add(timeoutFor(d.to)).UnixNano())
-	m.refresh(now, d.to)
-	u.send(raw, d, dst, dontFragment)
+	if u.send(raw, d, dst, dontFragment) && u.gone(m) {
+		u.end(m)
+	}
+}
+
+// gone is whether m sits under auto on an address the host no longer holds,
+// asked once a connect or a send on m failed, and of a mapping a hairpinned
+// datagram would leave from on another address than the one it went to. Under
+// a class the class names the address, and the mapping ends by its timer
+// alone.
+func (u *udpRelay) gone(m *mapping) bool {
+	return !u.x.sourceFor(m.leaf.Addr()).IsValid() && !u.x.rt.Platform.Held(m.source, "")
 }
 
 // timeoutFor is how long a datagram to to keeps its mapping
@@ -290,11 +303,16 @@ func (m *mapping) refresh(now time.Time, to netip.AddrPort) {
 }
 
 // open is the mapping of leaf and its socket toward to, each opened where it
-// is not open yet, and why it refused where it did. Each destination is one
+// is not open yet, and why it refused where it did. A destination not open
+// yet takes the leaf's mapping on the address it leaves from: the one its
+// class names, else the one the route to to picks now. Each destination is one
 // flow of the source's share and of the exit's total, RFC 6888 REQ-4 counting
-// flows, and the mapping rides with its first: the flow is admitted before
+// flows, and a mapping rides with its first: the flow is admitted before
 // either opens, and a mapping this call opened that ends up with no
-// destination is closed again, so a refused source holds no socket.
+// destination is closed again, so a refused source holds no socket. A mapping
+// this call did not open whose connect fails on an address the host no longer
+// holds (gone) is ended, and the route read again. One this call opened is
+// never ended so, which ends the loop.
 func (u *udpRelay) open(leaf, to netip.AddrPort) (*mapping, *destination, string) {
 	if m, dst := u.opened(leaf, to); dst != nil {
 		return m, dst, ""
@@ -303,12 +321,18 @@ func (u *udpRelay) open(leaf, to netip.AddrPort) (*mapping, *destination, string
 		return nil, nil, reason
 	}
 	for {
-		m, created, reason := u.mapping(leaf)
+		source, err := u.x.sourceToward(leaf.Addr(), to)
+		if err != nil {
+			u.x.flows.release(leaf.Addr())
+			return nil, nil, socketReason(err)
+		}
+		m, created, reason := u.mapping(leaf, source)
 		if m == nil {
 			u.x.flows.release(leaf.Addr())
 			return nil, nil, reason
 		}
-		dst, closed, opened, gone, reason := u.destination(m, to)
+		dst, closed, opened, err := u.destination(m, to)
+		gone := !created && err != nil && u.gone(m)
 		if gone {
 			u.end(m)
 		}
@@ -321,28 +345,38 @@ func (u *udpRelay) open(leaf, to netip.AddrPort) (*mapping, *destination, string
 		if dst == nil && created {
 			u.drop(m)
 		}
-		return m, dst, reason
+		if err != nil {
+			return m, nil, socketReason(err)
+		}
+		return m, dst, ""
 	}
 }
 
-// opened is leaf's mapping and its socket toward to where both are open
+// opened is leaf's mapping holding a socket toward to and that socket, where
+// one is open
 func (u *udpRelay) opened(leaf, to netip.AddrPort) (*mapping, *destination) {
 	u.mu.RLock()
-	m, withdrawn := u.mappings[leaf], u.withdrawn
+	mappings, withdrawn := u.mappings[leaf], u.withdrawn
 	u.mu.RUnlock()
-	if m == nil || withdrawn {
+	if withdrawn {
 		return nil, nil
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m, m.destinations[to]
+	for _, m := range mappings {
+		m.mu.RLock()
+		dst := m.destinations[to]
+		m.mu.RUnlock()
+		if dst != nil {
+			return m, dst
+		}
+	}
+	return nil, nil
 }
 
-// mapping is leaf's mapping, opened where it has none, whether this call
-// opened it, and why it refused
-func (u *udpRelay) mapping(leaf netip.AddrPort) (*mapping, bool, string) {
+// mapping is leaf's mapping on source, opened where it has none, whether this
+// call opened it, and why it refused
+func (u *udpRelay) mapping(leaf netip.AddrPort, source netip.Addr) (*mapping, bool, string) {
 	u.mu.RLock()
-	m, withdrawn := u.mappings[leaf], u.withdrawn
+	m, withdrawn := on(u.mappings[leaf], source), u.withdrawn
 	u.mu.RUnlock()
 	switch {
 	case withdrawn:
@@ -352,24 +386,40 @@ func (u *udpRelay) mapping(leaf netip.AddrPort) (*mapping, bool, string) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	switch m := u.mappings[leaf]; {
+	switch m := on(u.mappings[leaf], source); {
 	case u.withdrawn:
 		return nil, false, reasonWithdrawn
 	case m != nil:
 		return m, false, ""
 	}
-	source := u.x.sourceFor(leaf.Addr())
-	wildcard, err := u.listen(leaf, source)
+	receiving, err := u.listen(leaf, source)
 	if err != nil {
 		return nil, false, socketReason(err)
 	}
-	m = &mapping{leaf: leaf, source: source, port: uint16(wildcard.LocalAddr().(*net.UDPAddr).Port), wildcard: wildcard, destinations: map[netip.AddrPort]*destination{}}
+	m = &mapping{leaf: leaf, source: source, port: uint16(receiving.LocalAddr().(*net.UDPAddr).Port), receiving: receiving, destinations: map[netip.AddrPort]*destination{}}
 	m.deadline.Store(u.now().Add(mappingSweep).UnixNano())
-	u.mappings[leaf] = m
+	u.mappings[leaf] = append(slices.Clip(u.mappings[leaf]), m)
 	u.ports[m.external()] = m
 	u.readers.Add(1)
-	go u.read(m, wildcard, nil)
+	go u.read(m, receiving, nil)
 	return m, true, ""
+}
+
+// remove takes m out of the tables, and reports whether they still held it.
+// u.mu is held.
+func (u *udpRelay) remove(m *mapping) bool {
+	mappings := u.mappings[m.leaf]
+	i := slices.Index(mappings, m)
+	switch {
+	case i < 0:
+		return false
+	case len(mappings) == 1:
+		delete(u.mappings, m.leaf)
+	default:
+		u.mappings[m.leaf] = slices.Concat(mappings[:i], mappings[i+1:])
+	}
+	delete(u.ports, m.external())
+	return true
 }
 
 // drop ends m, which open opened and could give no destination, unless
@@ -380,56 +430,38 @@ func (u *udpRelay) drop(m *mapping) {
 	m.mu.RLock()
 	empty := len(m.destinations) == 0
 	m.mu.RUnlock()
-	if !empty || u.mappings[m.leaf] != m {
-		return
+	if empty && u.remove(m) {
+		u.close(m)
 	}
-	delete(u.mappings, m.leaf)
-	delete(u.ports, m.external())
-	u.close(m)
 }
 
 // destination is m's socket toward to, opened where it has none, whether this
-// call opened it, and why it refused. closed reports m ended before it could
-// take the destination, and gone that the host no longer holds the address m
-// leaves from under auto, which ends m rather than let it leave from another.
-// The caller has admitted the flow a new one is.
-func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination, closed, opened, gone bool, reason string) {
+// call opened it, and why it failed. closed reports m ended before it could
+// take the destination. The caller has admitted the flow a new one is.
+func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination, closed, opened bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if dst := m.destinations[to]; dst != nil || m.closed {
-		return dst, m.closed, false, false, ""
+		return dst, m.closed, false, nil
 	}
-	source := m.source
-	if !source.IsValid() {
-		source = m.paired
-	}
-	conn, err := u.connect(m.port, source, to)
+	conn, err := u.connect(m.port, m.source, to)
 	if err != nil {
-		if m.paired.IsValid() && errors.Is(err, syscall.EADDRNOTAVAIL) {
-			return nil, false, false, true, ""
-		}
-		return nil, false, false, false, socketReason(err)
-	}
-	if !m.source.IsValid() && !m.paired.IsValid() {
-		m.paired = conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()
+		return nil, false, false, err
 	}
 	dst = &destination{to: to, conn: conn}
 	m.destinations[to] = dst
 	u.readers.Add(1)
 	go u.read(m, conn, dst)
-	return dst, false, true, false, ""
+	return dst, false, true, nil
 }
 
-// end ends m where it is still its leaf's mapping
+// end ends m where the tables still hold it
 func (u *udpRelay) end(m *mapping) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.mappings[m.leaf] != m {
-		return
+	if u.remove(m) {
+		u.close(m)
 	}
-	delete(u.mappings, m.leaf)
-	delete(u.ports, m.external())
-	u.close(m)
 }
 
 // socketReason is why a socket's failure refused a flow: the descriptors where
@@ -451,21 +483,17 @@ func (u *udpRelay) refuse(raw []byte, reason string) {
 	}
 }
 
-// listen opens leaf's mapping's receiving socket on source, the wildcard
-// address where source is the zero Addr, on a port of mappingPorts' that the
-// host holds free, the first, so a leaf's port is kept where free and a port
-// below 1024 stays below 1024 where one of the lowPortSearch after it is
-// free, else on one the host gives. A port the process may not bind ends the
-// search at one the host gives, since every other low port is refused alike.
-// No other socket holds the port taken, since the socket binds without
-// sharing it and shares it only once bound (shareMappingPort), so the
-// mapping's destination sockets may bind the port too.
+// listen opens leaf's mapping's receiving socket on source, on a port of
+// mappingPorts' that the host holds free, the first, so a leaf's port is kept
+// where free and a port below 1024 stays below 1024 where one of the
+// lowPortSearch after it is free, else on one the host gives. A port the
+// process may not bind ends the search at one the host gives, since every
+// other low port is refused alike. No other socket holds the port taken, since
+// the socket binds without sharing it and shares it only once bound
+// (shareMappingPort), so the mapping's destination sockets may bind the port
+// too.
 func (u *udpRelay) listen(leaf netip.AddrPort, source netip.Addr) (*net.UDPConn, error) {
 	network := udpNetwork(leaf.Addr())
-	specific := source.IsValid()
-	if !specific {
-		source = unspecified(leaf.Addr())
-	}
 	var conn *net.UDPConn
 	var err error
 	refused := false
@@ -489,7 +517,7 @@ func (u *udpRelay) listen(leaf netip.AddrPort, source netip.Addr) (*net.UDPConn,
 	if err != nil {
 		return nil, err
 	}
-	if err := onSocket(conn, func(fd int) error { return shareMappingPort(fd, specific) }); err != nil {
+	if err := onSocket(conn, shareMappingPort); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -510,11 +538,10 @@ func mappingPorts(leaf uint16) []uint16 {
 	return append(ports, 0)
 }
 
-// connect opens a mapping's socket toward to, on source, or the address the
-// route to to picks where source is the zero Addr, and the mapping's port,
-// connected, as the transport binds its pairs: beside the receiving socket,
-// the kernel hands it to's datagrams alone, and the ICMP errors about them,
-// which it queues
+// connect opens a mapping's socket toward to, on source and the mapping's
+// port, connected, as the transport binds its pairs: beside the receiving
+// socket, the kernel hands it to's datagrams alone, and the ICMP errors about
+// them, which it queues
 func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*net.UDPConn, error) {
 	prepare := func(network, _ string, raw syscall.RawConn) error {
 		if err := u.x.rt.Platform.Prepare(network, to, raw); err != nil {
@@ -522,7 +549,7 @@ func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*
 		}
 		var set error
 		if err := raw.Control(func(fd uintptr) {
-			if set = shareDestinationPort(int(fd)); set == nil {
+			if set = shareMappingPort(int(fd)); set == nil {
 				set = watchErrors(int(fd), to.Addr().Is6())
 			}
 		}); err != nil {
@@ -530,18 +557,22 @@ func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*
 		}
 		return set
 	}
-	if !source.IsValid() {
-		var err error
-		if source, err = u.x.routeSource(to); err != nil {
-			return nil, err
-		}
-	}
 	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(source, port)), Control: prepare}
 	conn, err := dialer.Dial(udpNetwork(to.Addr()), to.String())
 	if err != nil {
 		return nil, err
 	}
 	return conn.(*net.UDPConn), nil
+}
+
+// sourceToward is the address leaf's flow to to leaves from: the one leaf's
+// class names, else under auto the one the host's route to to picks now
+func (x *Exit) sourceToward(leaf netip.Addr, to netip.AddrPort) (netip.Addr, error) {
+	if source := x.sourceFor(leaf); source.IsValid() {
+		return source, nil
+	}
+	source, err := x.routeSource(to)
+	return source.Unmap(), err
 }
 
 // routeSource is the address the host's route to to picks, read from a UDP
@@ -565,13 +596,6 @@ func udpNetwork(address netip.Addr) string {
 	return "udp6"
 }
 
-func unspecified(address netip.Addr) netip.Addr {
-	if address.Is4() {
-		return netip.IPv4Unspecified()
-	}
-	return netip.IPv6Unspecified()
-}
-
 // onSocket runs set on conn's descriptor
 func onSocket(conn *net.UDPConn, set func(fd int) error) error {
 	raw, err := conn.SyscallConn()
@@ -592,22 +616,29 @@ func onSocket(conn *net.UDPConn, set func(fd int) error) error {
 // relays the errors the socket queued and is sent again, since the error
 // belongs to an earlier datagram, and a send that fails empties the queue of
 // what its failure queued. The datagram's IP and UDP header is kept for the
-// errors about it.
-func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment bool) {
+// errors about it. dst's deadline moves before the write, so whoever sees the
+// datagram arrive reads the deadline it set, and is put back where the
+// datagram did not leave (RFC 4787 section 4.3 counts a packet that crosses).
+// A datagram refused for a reason of the host's own, neither its size, nor an
+// ICMP error the socket was told of, nor a socket the exit closed since open
+// handed it over, is counted, and send reports it.
+func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment bool) (refused bool) {
 	dst.mu.Lock()
 	defer dst.mu.Unlock()
 	if !dst.fragmentSet || dontFragment != dst.dontFragment {
 		if err := onSocket(dst.conn, func(fd int) error { return setDontFragment(fd, d.to.Addr().Is6(), dontFragment) }); err != nil {
-			return
+			return u.unsent(err)
 		}
 		dst.dontFragment, dst.fragmentSet = dontFragment, true
 	}
+	before := dst.deadline.Swap(u.now().Add(timeoutFor(d.to)).UnixNano())
 	_, err := dst.conn.Write(d.payload())
 	if err != nil && !errors.Is(err, syscall.EMSGSIZE) && icmpErrno(err) {
 		u.relayErrors(dst)
 		_, err = dst.conn.Write(d.payload())
 	}
 	if err != nil {
+		dst.deadline.Store(before)
 		u.relayErrors(dst)
 	}
 	if errors.Is(err, syscall.EMSGSIZE) && dontFragment {
@@ -620,6 +651,20 @@ func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment b
 		header = int(raw[0]&0x0f) * 4
 	}
 	dst.keptLen = copy(dst.kept[:], raw[:header+8])
+	// an error the socket was told of is read and the datagram sent again
+	// above, so one still failing is the host's own
+	return err != nil && !errors.Is(err, syscall.EMSGSIZE) && u.unsent(err)
+}
+
+// unsent counts a datagram whose socket refused it with err, and reports it,
+// where the exit did not close the socket itself since open handed it over,
+// as a sweep or an ended mapping does
+func (u *udpRelay) unsent(err error) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	u.x.counts.drop(reasonUnsent)
+	return true
 }
 
 // pathMTU is the MTU of the path dst's socket sends by, as the kernel learned
@@ -645,13 +690,13 @@ func icmpErrno(err error) bool {
 	return false
 }
 
-// read hands m's leaf each datagram conn receives, conn being m's wildcard
-// socket, dst nil, or dst's socket, until conn closes. The wildcard socket
-// lets in only a datagram from an address m has a destination at, any port,
-// and drops the rest. A pooled buffer is held only while a datagram moves, so
-// a mapping at rest holds none. An ICMP error dst's socket was told of is
-// relayed to the leaf with the rest its socket queued, and ends no mapping
-// (RFC 4787 REQ-12).
+// read hands m's leaf each datagram conn receives, conn being m's receiving
+// socket, dst nil, or dst's socket, until conn closes. The receiving socket
+// lets in only a datagram from an address m itself sent or hairpinned to
+// (admits), and drops the rest. A pooled buffer is held only while a datagram
+// moves, so a mapping at rest holds none. An ICMP error dst's socket was told
+// of is relayed to the leaf with the rest its socket queued, and ends no
+// mapping (RFC 4787 REQ-12).
 func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 	defer u.readers.Done()
 	raw, err := conn.SyscallConn()
@@ -697,7 +742,7 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 				u.relayErrors(dst)
 				dst.mu.Unlock()
 			}
-		case dst == nil && !m.admits(from):
+		case dst == nil && !m.admits(from.Addr()):
 			u.x.counts.drop(reasonFiltered)
 		default:
 			ident := u.x.ident.Add(1)
@@ -757,32 +802,49 @@ func relayedError(kept []byte, e icmpError, prefix []byte, hops uint8) []byte {
 	return nil
 }
 
-// admits is whether m lets in a datagram from from: from an address it holds
-// a destination at, or one of the host's its hairpinned datagrams went to,
-// whatever the port, RFC 4787 REQ-8's address dependent filtering, which a
-// hairpinned datagram meets as one from outside does
-func (m *mapping) admits(from netip.AddrPort) bool {
+// admits is whether m lets in a datagram from address: m itself holds a
+// destination at it, or ever hairpinned a datagram to it, one of the host's
+// (hairpinnedAddresses), whatever the port, RFC 4787 REQ-8's address
+// dependent filtering, which a hairpinned datagram meets as one from outside
+// does. The filter is m's and not its leaf's, which RFC 4787 section 5 defines
+// it on, since the leaf's answer to a datagram another mapping let in leaves
+// by the route, from that other mapping's address, and its error about it
+// would quote that mapping.
+func (m *mapping) admits(address netip.Addr) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if slices.Contains(m.hairpinnedTo, from.Addr()) {
-		return true
-	}
-	for to := range m.destinations {
-		if to.Addr() == from.Addr() {
-			return true
-		}
-	}
-	return false
+	return m.lets(address)
 }
 
-// hairpinTo records address, the host's address a datagram m hairpins went
-// to, for m's filter. The host's addresses bound what it holds.
-func (m *mapping) hairpinTo(address netip.Addr) {
+// lets is whether m lets in a datagram from address, the one predicate admits
+// reads. m.mu is held.
+func (m *mapping) lets(address netip.Addr) bool {
+	return slices.Contains(m.hairpinnedAddresses, address) || m.sendsTo(address)
+}
+
+// hairpinTo records to, the host's address and port a datagram m hairpins
+// went to: its address in m's filter where absent, and to as the latest of
+// m's record, the oldest record giving way past hairpinRecord
+func (m *mapping) hairpinTo(to netip.AddrPort) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !slices.Contains(m.hairpinnedTo, address) {
-		m.hairpinnedTo = append(m.hairpinnedTo, address)
+	if !slices.Contains(m.hairpinnedAddresses, to.Addr()) {
+		m.hairpinnedAddresses = append(m.hairpinnedAddresses, to.Addr())
 	}
+	if i := slices.Index(m.hairpinnedTo, to); i >= 0 {
+		m.hairpinnedTo = append(m.hairpinnedTo[:i], m.hairpinnedTo[i+1:]...)
+	} else if len(m.hairpinnedTo) == hairpinRecord {
+		m.hairpinnedTo = append(m.hairpinnedTo[:0], m.hairpinnedTo[1:]...)
+	}
+	m.hairpinnedTo = append(m.hairpinnedTo, to)
+}
+
+// hairpinnedToward is whether m hairpinned a datagram to to, the host's
+// address and port, as m's record still holds it
+func (m *mapping) hairpinnedToward(to netip.AddrPort) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return slices.Contains(m.hairpinnedTo, to)
 }
 
 func sockaddrPort(sa unix.Sockaddr) netip.AddrPort {
@@ -872,32 +934,16 @@ func (x *Exit) toLeaf(pkt []byte, ident uint32) {
 	x.link.send(pkt)
 }
 
-// outsideOr is the address m's datagrams leave the host from: its class's, or
-// under auto paired, the one its first destination's route picked. Under auto
-// before its first destination it is address, the host's address its datagram
-// went to.
-func (m *mapping) outsideOr(address netip.Addr) netip.Addr {
-	if m.source.IsValid() {
-		return m.source
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.paired.IsValid() {
-		return m.paired
-	}
-	return address
-}
-
 // hairpin carries d, a datagram toward an address the host holds, to the
-// mapping holding its port there, from the sender's own mapping's address and
-// port (RFC 4787 REQ-9 (a)), where that mapping's filter lets the address in,
-// as it would a datagram from outside, and drops and counts it otherwise.
-// The sender's filter lets the address in from then on. It refuses d as toward
-// the host itself where no mapping holds the port, so no leaf reaches the
-// host's own services.
+// mapping holding its port there, from the address and port of the sender's
+// mapping hairpinner picks (RFC 4787 REQ-9 (a)), where the target mapping lets
+// that address in, as it would a datagram from outside, and drops and counts
+// it otherwise. The sender's mapping records where d went, and lets its
+// address in from then on. It refuses d as toward the host itself where no
+// mapping holds the port, so no leaf reaches the host's own services.
 func (u *udpRelay) hairpin(raw []byte, d datagram) {
 	u.mu.RLock()
-	target := u.holding(d.to.Addr(), d.to.Port())
+	target := u.ports[d.to]
 	u.mu.RUnlock()
 	if target == nil {
 		u.x.refused(raw, reasonDestination)
@@ -909,15 +955,15 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 		u.x.counts.drop(reasonTruncated)
 		return
 	}
-	sender, reason := u.hairpinFrom(d.from)
+	sender, reason := u.hairpinFrom(d.from, d.to, target.leaf)
 	if sender == nil {
 		u.refuse(raw, reason)
 		return
 	}
 	sender.refresh(u.now(), d.to)
-	from := netip.AddrPortFrom(sender.outsideOr(d.to.Addr()), sender.port)
-	sender.hairpinTo(d.to.Addr())
-	if !target.admits(from) {
+	from := sender.external()
+	sender.hairpinTo(d.to)
+	if !target.admits(from.Addr()) {
 		u.x.counts.drop(reasonFiltered)
 		return
 	}
@@ -928,23 +974,114 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 	u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, target.leaf, uint16(ident), u.x.hops(target.leaf.Addr().Is6())), ident)
 }
 
-// hairpinFrom is leaf's mapping for a datagram it hairpins, opened where it
-// has none, its hairpinned datagrams holding one flow of the source's share
-// and of the exit's total from the first on, and why it refused
-func (u *udpRelay) hairpinFrom(leaf netip.AddrPort) (*mapping, string) {
-	if m, _ := u.opened(leaf, netip.AddrPort{}); m != nil {
-		m.mu.RLock()
-		held := m.hairpinned
-		m.mu.RUnlock()
-		if held {
-			return m, ""
+// hairpinner is the address leaf's datagram to to, the host's address and
+// port a mapping of targets' leaf holds, hairpins from, mappings being leaf's
+// and targets the target leaf's as one reading took them, passing over the
+// mappings of passed (RFC 4787 REQ-9 (a)):
+//  1. the address leaf's class names, as every flow of leaf takes it
+//  2. else the address of leaf's mapping the target's leaf knows (known):
+//     one the target mapping hairpinned to by address and port, else one
+//     whose address the target mapping's filter lets in, else one another
+//     mapping of targets hairpinned to by address and port
+//  3. else to's address where leaf holds a mapping on it
+//  4. else under auto the oldest mapping's, which a hairpinned datagram
+//     carries off no uplink
+//  5. else to's address, as the route to the host's own address picks it
+func (u *udpRelay) hairpinner(mappings, targets, passed []*mapping, leaf netip.Addr, to netip.AddrPort) netip.Addr {
+	if source := u.x.sourceFor(leaf); source.IsValid() {
+		return source
+	}
+	if m := known(mappings, targets, passed, to); m != nil {
+		return m.source
+	}
+	if on(mappings, to.Addr()) != nil {
+		return to.Addr()
+	}
+	for _, m := range mappings {
+		if !slices.Contains(passed, m) {
+			return m.source
 		}
 	}
-	if reason, ok := u.x.flows.admit(leaf.Addr()); !ok {
-		return nil, reason
+	return to.Addr()
+}
+
+// known is the mapping of mappings, one leaf's, but those of passed, the
+// target leaf's mappings (targets) know, nil where none does: first one whose
+// address and port the target mapping, the one holding to, hairpinned to as
+// its record still holds, else one whose address the target mapping's filter
+// lets in, else one whose address and port another mapping of targets
+// hairpinned to as its record holds. Of equals it is the one on to's address,
+// then the oldest. Where the target mapping lets in any mapping of mappings
+// but those of passed, the one known picks is such a mapping.
+func known(mappings, targets, passed []*mapping, to netip.AddrPort) *mapping {
+	best, rank := -1, -1
+	for _, target := range targets {
+		own := target.external() == to
+		target.mu.RLock()
+		for i, m := range mappings {
+			if slices.Contains(passed, m) {
+				continue
+			}
+			named := slices.Contains(target.hairpinnedTo, m.external())
+			r := 0
+			switch {
+			case own && named:
+				r = 4
+			case own && target.lets(m.source):
+				r = 2
+			case !named:
+				continue
+			}
+			if m.source == to.Addr() {
+				r++
+			}
+			if r > rank || r == rank && i < best {
+				best, rank = i, r
+			}
+		}
+		target.mu.RUnlock()
 	}
+	if best < 0 {
+		return nil
+	}
+	return mappings[best]
+}
+
+// hairpinFrom is leaf's mapping for a datagram it hairpins to to, the host's
+// address and port a mapping of targetLeaf holds, on the address hairpinner
+// picks from one reading of both leaves' mappings, opened where it has none,
+// its hairpinned datagrams holding one flow of the source's share and of the
+// exit's total from the first on, and why it refused. A mapping the order
+// picks on an address the host does not answer for (gone) is passed over and
+// the order asked again without it, so no hairpinned datagram leaves from it
+// or refreshes it, and nothing here ends it: its timers do, or a send that
+// fails. A mapping on to's address, which the caller found held, is not asked.
+func (u *udpRelay) hairpinFrom(leaf, to, targetLeaf netip.AddrPort) (*mapping, string) {
+	admitted := false
+	var passed []*mapping
 	for {
-		m, _, reason := u.mapping(leaf)
+		u.mu.RLock()
+		mappings, targets := u.mappings[leaf], u.mappings[targetLeaf]
+		u.mu.RUnlock()
+		source := u.hairpinner(mappings, targets, passed, leaf.Addr(), to)
+		m := on(mappings, source)
+		if m != nil && source != to.Addr() && u.gone(m) {
+			passed = append(passed, m)
+			continue
+		}
+		if m.hairpins() {
+			if admitted {
+				u.x.flows.release(leaf.Addr())
+			}
+			return m, ""
+		}
+		if !admitted {
+			if reason, ok := u.x.flows.admit(leaf.Addr()); !ok {
+				return nil, reason
+			}
+			admitted = true
+		}
+		m, _, reason := u.mapping(leaf, source)
 		if m == nil {
 			u.x.flows.release(leaf.Addr())
 			return nil, reason
@@ -982,15 +1119,26 @@ func fastLeafError(raw []byte) bool {
 }
 
 // leafError carries raw, an ICMP error a leaf sent about a datagram one of
-// its mappings delivered, to that datagram's server from the address the
-// mapping's socket toward the server sends from, quoting the server's
-// datagram as the mapping received it: the quoted destination that address
-// at the mapping's port, the UDP checksum moved with them (RFC 5508 REQ-5).
-// It goes through the platform's raw socket and ends no mapping. An error
-// whose ICMP checksum or quoted IPv4 header's checksum fails is dropped and
-// counted before any checksum is written anew (RFC 5508 REQ-3 (a) and (b)),
-// as is one about no live mapping, or one the platform has no raw socket to
-// send.
+// its mappings delivered, to that datagram's server through the platform's
+// raw socket, and ends no mapping. The quote names the server and the leaf's
+// address and port, nothing of the mapping, so the error goes from the
+// mapping toward (RFC 5508 REQ-5 (a)) picks: the one holding the socket
+// toward the quoted server's address and port, else the one mapping of the
+// leaf holding a socket toward the server's address. It quotes the server's
+// datagram as that mapping received it, the quoted destination the mapping's
+// address and port, the UDP checksum moved with them. An error about a
+// datagram one mapping hairpinned to the leaf goes back to the sender's leaf
+// (hairpinError) from the one mapping of the leaf whose address and port the
+// sender's record still names and which lets the sender's address in
+// (hairpinTarget). The error is dropped and counted as about no mapping
+// (rfc5508.txt:767-769) where no mapping answers either way, where several
+// of the leaf's mappings sent to the server's address and none holds its
+// address and port, or several of the target leaf's mappings match a
+// hairpinned error, since the quote names the leaf's address and port and
+// nothing of the mapping, and where its source is not the quoted
+// destination. An error whose ICMP checksum or quoted IPv4 header's checksum
+// fails is dropped and counted before any checksum is written anew (RFC 5508
+// REQ-3 (a) and (b)), as is one the platform has no raw socket to send.
 func (u *udpRelay) leafError(raw []byte) {
 	raw, version := packet.Payload(raw)
 	header, quotedHeader := 40, 40
@@ -1025,66 +1173,55 @@ func (u *udpRelay) leafError(raw []byte) {
 	leaf := netip.AddrPortFrom(quotedTo, binary.BigEndian.Uint16(udp[2:4]))
 	held := u.x.heldDestination(quotedFrom)
 	u.mu.RLock()
-	m := u.mappings[leaf]
+	mappings := u.mappings[leaf]
 	var sender *mapping
 	if held {
-		sender = u.holding(quotedFrom, server.Port())
+		sender = u.ports[server]
 	}
 	u.mu.RUnlock()
-	var source netip.Addr
-	ok := m != nil && quotedTo == leafAddress && quotedFrom == serverAddress
-	if ok && sender.hairpinnedFrom(quotedFrom) && sender.sentToward(m, quotedFrom) {
-		u.hairpinError(message, quotedHeader, m, sender, quotedFrom, diffserv(raw), u.x.hops(version == 6))
-		return
+	ok := quotedTo == leafAddress && quotedFrom == serverAddress
+	if ok && sender.hairpins() {
+		if target := hairpinTarget(mappings, sender); target != nil {
+			u.hairpinError(message, quotedHeader, target, sender, diffserv(raw), u.x.hops(version == 6))
+			return
+		}
 	}
+	var m *mapping
 	if ok {
-		source, ok = m.sourceToward(server.Addr())
+		m = toward(mappings, server)
 	}
 	switch {
-	case !ok:
+	case m == nil:
 		u.x.counts.dropUntracked(version == 6, reasonLeafErrorUnmapped)
 	case u.x.rt.Platform.Raw == nil:
 		u.x.counts.drop(reasonLeafErrorUnsent)
 	default:
-		if err := u.x.rt.Platform.Raw.Send(serverError(message, quotedHeader, server.Addr(), netip.AddrPortFrom(source, m.port), diffserv(raw), u.x.hops(version == 6))); err != nil {
+		if err := u.x.rt.Platform.Raw.Send(serverError(message, quotedHeader, server.Addr(), m.external(), diffserv(raw), u.x.hops(version == 6))); err != nil {
 			u.x.counts.drop(reasonLeafErrorUnsent)
 		}
 	}
 }
 
 // hairpinError carries message, a leaf's ICMP error about a datagram that
-// sender's mapping hairpinned to target's leaf from the host's address from,
-// back to sender's leaf through the pump's lane, as RFC 5508 REQ-7 has a NAT
-// carry a hairpinned error: the quote translated to the datagram the sender
-// sent, from its leaf address and port to target's port on the address it
-// sent to, and the error from that address to the sender's leaf, the quote's
-// source after the translation (REQ-7 (a)). The address the sender sent to is
-// target's own, its class's or the one it paired with, else from, the one the
-// hairpinned datagram left from, which target's own hairpinned datagrams went
-// to. It carries ds and hops as serverError does.
-func (u *udpRelay) hairpinError(message []byte, quotedHeader int, target, sender *mapping, from netip.Addr, ds, hops byte) {
-	outside := target.outsideOr(from)
+// sender's mapping hairpinned to target's leaf, back to sender's leaf through
+// the pump's lane, as RFC 5508 REQ-7 has a NAT carry a hairpinned error: the
+// quote translated to the datagram the sender sent, from its leaf address and
+// port to target's address and port, and the error from target's address to
+// the sender's leaf, the quote's source after the translation (REQ-7 (a)). It
+// carries ds and hops as serverError does.
+func (u *udpRelay) hairpinError(message []byte, quotedHeader int, target, sender *mapping, ds, hops byte) {
 	ident := u.x.ident.Add(1)
-	u.x.toLeaf(rebuiltError(message, quotedHeader, sender.leaf, netip.AddrPortFrom(outside, target.port), outside, sender.leaf.Addr(), ds, hops, uint16(ident)), ident)
+	u.x.toLeaf(rebuiltError(message, quotedHeader, sender.leaf, target.external(), target.source, sender.leaf.Addr(), ds, hops, uint16(ident)), ident)
 }
 
-// sentToward is whether m, a mapping that hairpins, sent to the host's address
-// a datagram of m's reached target at, from being the address it came from,
-// as m's filter holds it: target's own address, as hairpinError names it
-func (m *mapping) sentToward(target *mapping, from netip.Addr) bool {
-	return m.admits(netip.AddrPortFrom(target.outsideOr(from), 0))
-}
-
-// hairpinnedFrom is whether m, where not nil, hairpins its datagrams and
-// sends them from address, as hairpin picks it
-func (m *mapping) hairpinnedFrom(address netip.Addr) bool {
+// hairpins is whether m, where not nil, hairpins its leaf's datagrams
+func (m *mapping) hairpins() bool {
 	if m == nil {
 		return false
 	}
 	m.mu.RLock()
-	held := m.hairpinned
-	m.mu.RUnlock()
-	return held && m.outsideOr(address) == address
+	defer m.mu.RUnlock()
+	return m.hairpinned
 }
 
 // packetAddresses is the source and destination of raw, an IPv4 or IPv6
@@ -1096,17 +1233,57 @@ func packetAddresses(raw []byte) (from, to netip.Addr) {
 	return netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40]))
 }
 
-// sourceToward is the address m's socket toward address sends from, false
-// where m holds none toward it
-func (m *mapping) sourceToward(address netip.Addr) (netip.Addr, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for to, dst := range m.destinations {
-		if to.Addr() == address {
-			return dst.conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), true
+// toward is the mapping of mappings, one leaf's, a leaf's error about server's
+// datagram leaves from (RFC 5508 REQ-5 (a)): the one holding the socket toward
+// server, else the one mapping holding a socket toward server's address, nil
+// where none or several do. Where two mappings sent to server's address the
+// datagram may have come in through the one not holding server's socket, but
+// the leaf sees one address and port for both, its own datagrams to server
+// and its answer leave from the holder, and so does its error.
+func toward(mappings []*mapping, server netip.AddrPort) *mapping {
+	var near *mapping
+	holders := 0
+	for _, m := range mappings {
+		m.mu.RLock()
+		exact, address := m.destinations[server] != nil, m.sendsTo(server.Addr())
+		m.mu.RUnlock()
+		if exact {
+			return m
+		}
+		if address {
+			near, holders = m, holders+1
 		}
 	}
-	return netip.Addr{}, false
+	if holders != 1 {
+		return nil
+	}
+	return near
+}
+
+// hairpinTarget is the one mapping of mappings, one leaf's, whose address and
+// port sender's record still names and which lets sender's address in, nil
+// where none or several are
+func hairpinTarget(mappings []*mapping, sender *mapping) *mapping {
+	var target *mapping
+	for _, m := range mappings {
+		if sender.hairpinnedToward(m.external()) && m.admits(sender.source) {
+			if target != nil {
+				return nil
+			}
+			target = m
+		}
+	}
+	return target
+}
+
+// sendsTo is whether m holds a socket toward address. m.mu is held.
+func (m *mapping) sendsTo(address netip.Addr) bool {
+	for to := range m.destinations {
+		if to.Addr() == address {
+			return true
+		}
+	}
+	return false
 }
 
 // diffserv is the diffserv class of raw, an IPv4 or IPv6 packet: the DS
@@ -1184,27 +1361,30 @@ func moved(checksum uint16, from, to []byte) uint16 {
 	return checksum
 }
 
-// expire ends each destination and each mapping past its time at now
+// expire ends each destination past its time at now, and each mapping left
+// with none whose own deadline is past too, so a mapping ends with the last of
+// its destinations and its hairpinned datagrams
 func (u *udpRelay) expire(now time.Time) {
 	at := now.UnixNano()
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	for leaf, m := range u.mappings {
-		if m.deadline.Load() <= at {
-			delete(u.mappings, leaf)
-			delete(u.ports, m.external())
-			u.close(m)
-			continue
-		}
-		m.mu.Lock()
-		for to, dst := range m.destinations {
-			if dst.deadline.Load() <= at {
-				delete(m.destinations, to)
-				_ = dst.conn.Close()
-				u.x.flows.release(leaf.Addr())
+	for _, mappings := range u.mappings {
+		for _, m := range mappings {
+			m.mu.Lock()
+			for to, dst := range m.destinations {
+				if dst.deadline.Load() <= at {
+					delete(m.destinations, to)
+					_ = dst.conn.Close()
+					u.x.flows.release(m.leaf.Addr())
+				}
+			}
+			idle := len(m.destinations) == 0 && m.deadline.Load() <= at
+			m.mu.Unlock()
+			if idle {
+				u.remove(m)
+				u.close(m)
 			}
 		}
-		m.mu.Unlock()
 	}
 }
 
@@ -1221,18 +1401,20 @@ func (u *udpRelay) close(m *mapping) {
 	if m.hairpinned {
 		u.x.flows.release(m.leaf.Addr())
 	}
-	_ = m.wildcard.Close()
+	_ = m.receiving.Close()
 }
 
 func (u *udpRelay) withdraw() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.withdrawn = true
-	for leaf, m := range u.mappings {
-		delete(u.mappings, leaf)
-		delete(u.ports, m.external())
-		u.close(m)
+	for _, mappings := range u.mappings {
+		for _, m := range mappings {
+			u.close(m)
+		}
 	}
+	clear(u.mappings)
+	clear(u.ports)
 }
 
 func (u *udpRelay) resume() {

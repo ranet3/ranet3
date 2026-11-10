@@ -50,15 +50,10 @@ func shareDialPort(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 }
 
-// shareMappingPort lets the sockets of a mapping toward each server bind the
-// port fd, its receiving socket, holds. Linux shares a port by SO_REUSEPORT
-// among the sockets of one user alone, so the wildcard address takes it too.
-func shareMappingPort(fd int, _ bool) error {
-	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-}
-
-// shareDestinationPort lets fd, a mapping's socket toward one server, bind
-// the mapping's port beside its receiving socket
-func shareDestinationPort(fd int) error {
+// shareMappingPort lets fd, a socket of a mapping, its receiving socket or
+// one toward a server, share the mapping's address and port with the
+// mapping's other sockets. Linux shares a port by SO_REUSEPORT among the
+// sockets of one user alone.
+func shareMappingPort(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 }

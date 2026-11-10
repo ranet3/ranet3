@@ -194,13 +194,9 @@ func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.
 	if server.Addr().Is6() {
 		network = "tcp6"
 	}
-	address := r.x.sourceFor(leaf.Addr())
-	if !address.IsValid() {
-		var err error
-		if address, err = r.x.routeSource(server); err != nil {
-			return nil, nil, dialFailure{err: err}
-		}
-		address = address.Unmap()
+	address, err := r.x.sourceToward(leaf.Addr(), server)
+	if err != nil {
+		return nil, nil, dialFailure{err: err}
 	}
 	inside := tcpInside{leaf, address}
 	var failure dialFailure

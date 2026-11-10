@@ -67,6 +67,10 @@ const (
 	// for a leaf's port below 1024 that the host holds, so one datagram costs
 	// at most this many binds past the leaf's own and the host's
 	lowPortSearch = 16
+	// hairpinRecord bounds the distinct host addresses and ports a mapping
+	// keeps of its hairpinned datagrams, the oldest giving way to a new one,
+	// as echo keeps its last destinations
+	hairpinRecord = 16
 	// echoIdle ends an echo mapping with no request out or reply in for this
 	// long, the least RFC 5508 REQ-2 allows
 	echoIdle = time.Minute

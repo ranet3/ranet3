@@ -89,24 +89,34 @@ func relayEndOf(t *testing.T, packets [][]byte) relayEnd {
 	return relayEnd{prepared: h.preparedSoFar(), refused: maps.Clone(h.x.counts.refused), dropped: maps.Clone(h.x.counts.dropped)}
 }
 
-// mappingModel is RFC 4787's NAT as the relay's mappings must behave: one
-// mapping per leaf address and port, shared by every destination it sent to
-// (REQ-1), each on a port no other live mapping holds (REQ-3), letting in a
-// datagram from any port of an address it sent to and nothing else (REQ-8),
-// each destination kept 5 minutes past its last datagram out, 30 seconds
-// toward port 53, and the mapping as long as any of them, nothing coming in
-// moving either (REQ-5, REQ-6), a new mapping held a sweep's spacing before
-// its first datagram's time, and every source within its share of the flows,
-// each destination one flow and its mapping riding with it, so a datagram
-// past the share opens nothing
+// mappingModel is RFC 4787's NAT as the relay's mappings must behave under
+// auto: one mapping per leaf address and port and address the routes to its
+// destinations pick, shared by every destination whose route picks that
+// address (REQ-1 from each address), leaving from that address, each on an
+// address and port no other live mapping holds (REQ-3), letting in a datagram
+// from any port of an address it sent to and nothing else (REQ-8), each
+// destination kept 5 minutes past its last datagram out, 30 seconds toward
+// port 53, and the mapping as long as any of them, nothing coming in moving
+// either (REQ-5, REQ-6), a new mapping held a sweep's spacing before its first
+// datagram's time, and every source within its share of the flows, each
+// destination one flow and its mapping riding with it, so a datagram past the
+// share opens nothing
 type mappingModel struct {
 	now      time.Duration
 	share    int
-	mappings map[netip.AddrPort]*modelMapping
+	mappings map[modelKey]*modelMapping
+}
+
+// modelKey is a leaf address and port and the address its mapping leaves from
+type modelKey struct {
+	leaf    netip.AddrPort
+	address netip.Addr
 }
 
 type modelMapping struct {
-	port         uint16
+	// outside is the address and port its first datagram reached a server
+	// from
+	outside      netip.AddrPort
 	deadline     time.Duration
 	destinations map[netip.AddrPort]time.Duration
 }
@@ -121,33 +131,33 @@ func (m *mappingModel) timeout(to netip.AddrPort) time.Duration {
 // held is the flows source holds
 func (m *mappingModel) held(source netip.Addr) int {
 	n := 0
-	for leaf, mapping := range m.mappings {
-		if leaf.Addr() == source {
+	for key, mapping := range m.mappings {
+		if key.leaf.Addr() == source {
 			n += len(mapping.destinations)
 		}
 	}
 	return n
 }
 
-// send is the refusal a datagram from leaf to to meets, empty where it goes,
-// and moves the model as the datagram does
-func (m *mappingModel) send(leaf, to netip.AddrPort) string {
-	mapping := m.mappings[leaf]
-	if (mapping == nil || mapping.destinations[to] == 0) && m.held(leaf.Addr()) >= m.share {
+// send is the refusal a datagram from key's leaf to to, whose route picks key's
+// address, meets, empty where it goes, and moves the model as the datagram does
+func (m *mappingModel) send(key modelKey, to netip.AddrPort) string {
+	mapping := m.mappings[key]
+	if (mapping == nil || mapping.destinations[to] == 0) && m.held(key.leaf.Addr()) >= m.share {
 		return reasonShare
 	}
 	if mapping == nil {
 		mapping = &modelMapping{deadline: m.now + 5*time.Second, destinations: map[netip.AddrPort]time.Duration{}}
-		m.mappings[leaf] = mapping
+		m.mappings[key] = mapping
 	}
 	mapping.destinations[to] = m.now + m.timeout(to)
 	mapping.deadline = max(mapping.deadline, m.now+m.timeout(to))
 	return ""
 }
 
-// admits is whether leaf's mapping lets in a datagram from from
-func (m *mappingModel) admits(leaf, from netip.AddrPort) bool {
-	for to := range m.mappings[leaf].destinations {
+// admits is whether key's mapping lets in a datagram from from
+func (m *mappingModel) admits(key modelKey, from netip.AddrPort) bool {
+	for to := range m.mappings[key].destinations {
 		if to.Addr() == from.Addr() {
 			return true
 		}
@@ -155,12 +165,25 @@ func (m *mappingModel) admits(leaf, from netip.AddrPort) bool {
 	return false
 }
 
+// reached is leaf's live mappings whose first datagram reached its server, by
+// address
+func (m *mappingModel) reached(leaf netip.AddrPort) []modelKey {
+	var keys []modelKey
+	for key, mapping := range m.mappings {
+		if key.leaf == leaf && mapping.outside.IsValid() {
+			keys = append(keys, key)
+		}
+	}
+	slices.SortFunc(keys, func(a, b modelKey) int { return a.address.Compare(b.address) })
+	return keys
+}
+
 // advance moves the clock and ends what is past its time
 func (m *mappingModel) advance(d time.Duration) {
 	m.now += d
-	for leaf, mapping := range m.mappings {
+	for key, mapping := range m.mappings {
 		if mapping.deadline <= m.now {
-			delete(m.mappings, leaf)
+			delete(m.mappings, key)
 			continue
 		}
 		for to, deadline := range mapping.destinations {
@@ -174,25 +197,42 @@ func (m *mappingModel) advance(d time.Duration) {
 // for any order of datagrams out from a few leaf addresses and ports to a few
 // servers, replies, datagrams from other ports and addresses toward the
 // mappings, and time passing, the relay's mappings are the model's: the same
-// leaves and destinations live, each leaf seen from one port by every server,
-// no two live mappings on one port, a datagram coming in carried to the leaf
-// exactly where the model lets it in and dropped and counted otherwise, and
-// each refusal the model's. Servers and strangers are sockets on addresses of
-// the loopback's network.
+// leaves, addresses and destinations live, each leaf seen from one address
+// and port by every server whose route picks that address, that address, no
+// two live mappings on one address and port, a datagram coming in carried to
+// the leaf exactly where the model lets it in and dropped and counted
+// otherwise, and each refusal the model's. Servers and strangers are sockets
+// on addresses of the loopback's network.
 func TestMappingsAreTheModels(t *testing.T) {
 	addresses := []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.3")}
 	stranger := netip.MustParseAddr("127.0.0.4")
-	port := freeUDPPort(t, leaf4)
-	leaves := []netip.AddrPort{netip.AddrPortFrom(leaf4, port), netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4)), netip.AddrPortFrom(other4, port)}
-	delays := []time.Duration{time.Second, 25 * time.Second, 31 * time.Second, 2 * time.Minute, 5*time.Minute + time.Second}
 	// a namespace whose loopback is down carries no datagram, and a host whose
 	// loopback holds 127.0.0.1 alone serves on none but the first
 	for _, address := range append(addresses, stranger) {
 		_ = loopbackServer(t, address)
 	}
+	mappingsAreTheModels(t, addresses, stranger, nil)
+}
+
+// mappingsAreTheModels checks TestMappingsAreTheModels' property with servers
+// on addresses and a stranger on stranger, change readying each case's
+// runtime where given
+func mappingsAreTheModels(t *testing.T, addresses []netip.Addr, stranger netip.Addr, change func(*Runtime)) {
+	port := freeUDPPort(t, leaf4)
+	leaves := []netip.AddrPort{netip.AddrPortFrom(leaf4, port), netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4)), netip.AddrPortFrom(other4, port)}
+	delays := []time.Duration{time.Second, 25 * time.Second, 31 * time.Second, 2 * time.Minute, 5*time.Minute + time.Second}
+	routes := map[netip.Addr]netip.Addr{}
+	for _, address := range addresses {
+		routes[address] = routeAddress(t, netip.AddrPortFrom(address, 9))
+	}
 	pbt.Check(t, func(ht *hegel.T) {
 		share := hegel.Draw(ht, pbt.Spanning(1, 6))
-		h := newRelayHarness(t, func(_ *Runtime, cfg *egress.Egress) { cfg.FlowsPerSource = uint32(share) })
+		h := newRelayHarness(t, func(rt *Runtime, cfg *egress.Egress) {
+			cfg.FlowsPerSource = uint32(share)
+			if change != nil {
+				change(rt)
+			}
+		})
 		defer closeWithin(t, h.x)
 		var opened []*net.UDPConn
 		defer func() {
@@ -214,7 +254,7 @@ func TestMappingsAreTheModels(t *testing.T) {
 		}
 		dns := netip.AddrPortFrom(addresses[0], 53)
 		others := []*net.UDPConn{listen(addresses[0]), listen(stranger)}
-		model := &mappingModel{share: share, mappings: map[netip.AddrPort]*modelMapping{}}
+		model := &mappingModel{share: share, mappings: map[modelKey]*modelMapping{}}
 		steps := hegel.Draw(ht, hegel.Integers(1, 24))
 		for step := range steps {
 			leaf := leaves[hegel.Draw(ht, hegel.Integers(0, len(leaves)-1))]
@@ -226,8 +266,9 @@ func TestMappingsAreTheModels(t *testing.T) {
 				if pick < len(servers) {
 					to = serverAt(servers[pick])
 				}
+				key := modelKey{leaf, routes[to.Addr()]}
 				answered := len(h.mesh.answered())
-				want := model.send(leaf, to)
+				want := model.send(key, to)
 				h.x.udp.take(udpDatagram(leaf, to, payload), false)
 				if want != "" {
 					answers := h.mesh.answered()
@@ -243,18 +284,19 @@ func TestMappingsAreTheModels(t *testing.T) {
 					break
 				}
 				from := readDatagramFrom(ht, servers[pick], payload)
-				mapping := model.mappings[leaf]
-				if mapping.port == 0 {
-					mapping.port = from.Port()
+				mapping := model.mappings[key]
+				if !mapping.outside.IsValid() {
+					mapping.outside = from
 				}
-				if from.Port() != mapping.port {
-					ht.Fatalf("step %d: %s read %s from port %d, its mapping's other servers from %d", step, to, leaf, from.Port(), mapping.port)
+				if from != mapping.outside || from.Addr() != key.address {
+					ht.Fatalf("step %d: %s read %s from %s, its mapping's other servers from %s, its route picking %s", step, to, leaf, from, mapping.outside, key.address)
 				}
 			case 1, 2:
-				mapping := model.mappings[leaf]
-				if mapping == nil || mapping.port == 0 {
+				keys := model.reached(leaf)
+				if len(keys) == 0 {
 					break
 				}
+				key := keys[hegel.Draw(ht, hegel.Integers(0, len(keys)-1))]
 				var conn *net.UDPConn
 				if hegel.Draw(ht, hegel.Booleans()) {
 					conn = servers[hegel.Draw(ht, hegel.Integers(0, len(servers)-1))]
@@ -262,19 +304,15 @@ func TestMappingsAreTheModels(t *testing.T) {
 					conn = others[hegel.Draw(ht, hegel.Integers(0, len(others)-1))]
 				}
 				from := serverAt(conn)
-				admitted := model.admits(leaf, from)
+				admitted := model.admits(key, from)
 				filtered := h.count(false, reasonFiltered)
-				if _, err := conn.WriteToUDPAddrPort(payload, netip.AddrPortFrom(from.Addr(), mapping.port)); err != nil {
+				if _, err := conn.WriteToUDPAddrPort(payload, model.mappings[key].outside); err != nil {
 					ht.Fatalf("step %d: %s sending to %s's mapping: %v", step, from, leaf, err)
 				}
 				if admitted {
 					deadline := time.Now().Add(exitWait)
 					for laid := false; !laid; {
-						if pkt := h.x.link.poll(); pkt != nil {
-							view := pkt.ToView()
-							raw := bytes.Clone(view.AsSlice())
-							view.Release()
-							h.x.link.release(pkt)
+						if raw := nextLaidDatagram(h); raw != nil {
 							if !isDatagram(raw, from, leaf, payload) {
 								p, _ := parse(raw)
 								ht.Fatalf("step %d: laid %s, want the datagram from %s to %s", step, p, from, leaf)
@@ -294,8 +332,7 @@ func TestMappingsAreTheModels(t *testing.T) {
 				}
 				deadline := time.Now().Add(exitWait)
 				for h.count(false, reasonFiltered) == filtered {
-					if pkt := h.x.link.poll(); pkt != nil {
-						h.x.link.release(pkt)
+					if raw := nextLaidDatagram(h); raw != nil {
 						ht.Fatalf("step %d: the datagram from %s, an address %s's mapping never sent to, was carried to the leaf", step, from, leaf)
 					}
 					if time.Now().After(deadline) {
@@ -313,41 +350,63 @@ func TestMappingsAreTheModels(t *testing.T) {
 	})
 }
 
+// nextLaidDatagram is the next UDP datagram the exit laid toward a leaf, nil
+// where it laid none, past the ICMP errors it relays on their own, such as one
+// about a datagram toward port 53 where nothing serves
+func nextLaidDatagram(h *relayHarness) []byte {
+	for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
+		view := pkt.ToView()
+		raw := bytes.Clone(view.AsSlice())
+		view.Release()
+		h.x.link.release(pkt)
+		if p, ok := parse(raw); !ok || p.protocol == protoUDP {
+			return raw
+		}
+	}
+	return nil
+}
+
 // checkMappings fails ht where the relay's live mappings and destinations are
-// not the model's, two live mappings hold one port, or the flows held are not
-// the destinations
+// not the model's, two live mappings hold one address and port, or the flows
+// held are not the destinations
 func checkMappings(ht *hegel.T, step int, h *relayHarness, model *mappingModel) {
 	h.x.udp.mu.RLock()
 	defer h.x.udp.mu.RUnlock()
-	ports := map[uint16]netip.AddrPort{}
-	flows := 0
-	for leaf, m := range h.x.udp.mappings {
-		want := model.mappings[leaf]
-		if want == nil {
-			ht.Fatalf("step %d: %s holds a mapping the model ended", step, leaf)
+	ports := map[netip.AddrPort]netip.AddrPort{}
+	flows, live := 0, 0
+	for leaf, mappings := range h.x.udp.mappings {
+		for _, m := range mappings {
+			live++
+			want := model.mappings[modelKey{leaf, m.source}]
+			switch {
+			case want == nil:
+				ht.Fatalf("step %d: %s holds a mapping on %s the model does not", step, leaf, m.source)
+			case want.outside.IsValid() && m.external() != want.outside:
+				ht.Fatalf("step %d: %s's mapping is on %s, its servers read it from %s", step, leaf, m.external(), want.outside)
+			}
+			if other, taken := ports[m.external()]; taken {
+				ht.Fatalf("step %d: %s and %s both hold %s", step, leaf, other, m.external())
+			}
+			ports[m.external()] = leaf
+			m.mu.RLock()
+			var got, wanted []netip.AddrPort
+			for to := range m.destinations {
+				got = append(got, to)
+			}
+			m.mu.RUnlock()
+			for to := range want.destinations {
+				wanted = append(wanted, to)
+			}
+			slices.SortFunc(got, netip.AddrPort.Compare)
+			slices.SortFunc(wanted, netip.AddrPort.Compare)
+			if !slices.Equal(got, wanted) {
+				ht.Fatalf("step %d: %s's mapping on %s holds destinations %v, the model %v", step, leaf, m.source, got, wanted)
+			}
+			flows += len(got)
 		}
-		if other, taken := ports[m.port]; taken {
-			ht.Fatalf("step %d: %s and %s both hold port %d", step, leaf, other, m.port)
-		}
-		ports[m.port] = leaf
-		m.mu.RLock()
-		var got, wanted []netip.AddrPort
-		for to := range m.destinations {
-			got = append(got, to)
-		}
-		m.mu.RUnlock()
-		for to := range want.destinations {
-			wanted = append(wanted, to)
-		}
-		slices.SortFunc(got, netip.AddrPort.Compare)
-		slices.SortFunc(wanted, netip.AddrPort.Compare)
-		if !slices.Equal(got, wanted) {
-			ht.Fatalf("step %d: %s's mapping holds destinations %v, the model %v", step, leaf, got, wanted)
-		}
-		flows += len(got)
 	}
-	if len(h.x.udp.mappings) != len(model.mappings) {
-		ht.Fatalf("step %d: %d mappings live, the model %d", step, len(h.x.udp.mappings), len(model.mappings))
+	if live != len(model.mappings) {
+		ht.Fatalf("step %d: %d mappings live, the model %d", step, live, len(model.mappings))
 	}
 	h.x.flows.mu.Lock()
 	defer h.x.flows.mu.Unlock()

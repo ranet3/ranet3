@@ -711,12 +711,14 @@ func tableOf(x *Exit) []egresstest.Flow {
 	}
 	x.tcp.mu.Unlock()
 	x.udp.mu.RLock()
-	for _, m := range x.udp.mappings {
-		m.mu.RLock()
-		for to, dst := range m.destinations {
-			flows = append(flows, egresstest.Flow{Protocol: syscall.IPPROTO_UDP, From: m.leaf, To: to, Left: time.Unix(0, dst.deadline.Load()).Sub(now).Truncate(time.Second)})
+	for _, mappings := range x.udp.mappings {
+		for _, m := range mappings {
+			m.mu.RLock()
+			for to, dst := range m.destinations {
+				flows = append(flows, egresstest.Flow{Protocol: syscall.IPPROTO_UDP, From: m.leaf, To: to, Left: time.Unix(0, dst.deadline.Load()).Sub(now).Truncate(time.Second)})
+			}
+			m.mu.RUnlock()
 		}
-		m.mu.RUnlock()
 	}
 	x.udp.mu.RUnlock()
 	x.echo.mu.Lock()

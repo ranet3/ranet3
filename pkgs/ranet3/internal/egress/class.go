@@ -44,14 +44,17 @@ type Translation struct {
 }
 
 // ClassOf is the class address leaves the mesh under, auto with no From where
-// no class covers it
+// no class covers it: the covering class with the longest From, the first
+// Classes gives that covers it, found with no copy, since the userspace exit
+// asks it for each hairpinned datagram
 func (e Egress) ClassOf(address netip.Addr) Class {
-	for _, class := range e.Classes(AddressFamily(address)) {
-		if class.From.Contains(address) {
-			return class
+	found, bits := Class{To: Translation{Auto: true}}, -1
+	for _, class := range e.Translate {
+		if class.From.Bits() > bits && AddressFamily(class.From.Addr()) == AddressFamily(address) && class.From.Contains(address) {
+			found, bits = class, class.From.Bits()
 		}
 	}
-	return Class{To: Translation{Auto: true}}
+	return found
 }
 
 // Classes is family's classes in the order a packet meets them, the longest
