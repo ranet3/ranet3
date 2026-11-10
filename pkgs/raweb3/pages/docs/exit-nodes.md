@@ -951,14 +951,15 @@ family not ready as not ready.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host carries out is: on Linux each family the host
-forwards, and on macOS each family the host routes out of the mesh, as its
-[readiness](#readiness) pass reads the routes. A leaf reads the `/128` as the
-exit's liveness. An exit carrying out a single family still serves that family,
-and an exit whose translation broke in a family it carries out withdraws the
-SID. Each pass reads forwarding again on Linux, and those routes on macOS, so a
-family the host starts or stops carrying out moves the `/128` on the next pass
-even where readiness stays as it was. `cap.route` may not announce the SID's
-`/128`, since it would hold the route up whatever readiness says.
+forwards, and on macOS each family the host routes out of the mesh or whose
+route lookup failed, as its [readiness](#readiness) pass reads the routes. A
+leaf reads the `/128` as the exit's liveness. An exit carrying out a single
+family still serves that family, and an exit whose translation broke in a family
+it carries out withdraws the SID. Each pass reads forwarding again on Linux, and
+those routes on macOS, so a family the host starts or stops carrying out moves
+the `/128` on the next pass even where readiness stays as it was. `cap.route`
+may not announce the SID's `/128`, since it would hold the route up whatever
+readiness says.
 
 ## Reloads, down and up
 
@@ -1027,7 +1028,7 @@ kernel exit's on Linux:
 
 | Log line                                                            | Level | When                                                                                                                                     |
 | ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's table and chains and left empty by the userspace exit                     |
+| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's table and chains, and `userspace` under the userspace exit                |
 | `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                             |
 | `egress ready`                                                      | info  | a family went ready, with `family`                                                                                                       |
 | `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                                   |
