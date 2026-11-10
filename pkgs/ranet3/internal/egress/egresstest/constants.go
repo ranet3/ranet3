@@ -144,8 +144,10 @@ const (
 	// the server's a TCP mapping is opened toward, the other it connects to the
 	// mapping from, the exit's port no mapping holds, the server's of the port
 	// ranges, the fragments and the errors, the server's a simultaneous open
-	// learns its mapping at and opens from, and the leaf's ports of each, the
-	// low and high source ports of the port ranges among them
+	// learns its mapping at and opens from, the port both servers of the port
+	// clash listen on, and the leaf's ports of each, the port the clash's two
+	// inside endpoints send from and the low and high source ports of the port
+	// ranges among them
 	hairpinTCPPort          = 10204
 	filteringTCPPort        = 10205
 	filteringOtherTCPPort   = 10206
@@ -157,12 +159,14 @@ const (
 	keepsTCPPort            = 10212
 	simultaneousMappingPort = 10213
 	simultaneousPort        = 10214
+	clashPort               = 10216
 	leafHairpinTCPPort      = 40702
 	leafFilteringTCPPort    = 40703
 	leafFragmentsPort       = 40704
 	leafKeepsPort           = 40705
 	leafKeepsTCPPort        = 40706
 	leafSimultaneousPort    = 40707
+	leafClashPort           = 40708
 	spareHairpinTCPPort     = 40903
 	// a port below 1024 and one above, RFC 4787 REQ-3a's two ranges
 	lowRangePort  = 500

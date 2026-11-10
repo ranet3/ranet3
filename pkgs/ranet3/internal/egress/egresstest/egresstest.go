@@ -204,6 +204,16 @@ const (
 	// NoLowPorts gives a leaf's port below 1024 a port of 1024 or above, where
 	// RFC 4787 REQ-3 recommends one below 1024
 	NoLowPorts
+	// OverloadsPorts gives two inside endpoints' UDP flows from one port one
+	// external endpoint toward two destinations, the port overloading RFC 4787
+	// section 4.2.1 REQ-3 rules out. The suite checks it in UDP alone.
+	OverloadsPorts
+	// RemapsOnClash takes another external port for an inside endpoint's UDP
+	// flow toward a destination that another inside endpoint's flow from the
+	// same port reached first, where RFC 4787 section 4.1 REQ-1 and section 8
+	// REQ-11 have one mapping serve the endpoint toward every destination. The
+	// suite checks it in UDP alone.
+	RemapsOnClash
 )
 
 func (l Limit) String() string {
@@ -226,6 +236,10 @@ func (l Limit) String() string {
 		return "unrelayed leaf errors"
 	case NoLowPorts:
 		return "no low ports"
+	case OverloadsPorts:
+		return "overloads ports"
+	case RemapsOnClash:
+		return "remaps on a clash"
 	}
 	return fmt.Sprintf("limit %d", int(l))
 }
@@ -239,8 +253,8 @@ type Declared struct{ Reason, Row string }
 // refusing those it cannot, to carrying no ICMP message RFC 5508 rules out, to
 // Egress from several sessions at once, to the mappings, port ranges,
 // fragments, errors and simultaneous open of RFC 4787 and RFC 5382, to
-// filtering, hairpinning and the unsolicited SYN as those RFCs ask or as its
-// arm declares it does instead, to a withdrawal and a restore by SetEnabled,
+// filtering, hairpinning, the unsolicited SYN and one UDP port of two inside
+// endpoints as those RFCs ask or as its arm declares it does instead, to a withdrawal and a restore by SetEnabled,
 // and to the share of flows its capability names, and an arm that reads its
 // flows to the idle timers it keeps them to.
 type Arm struct {
@@ -368,7 +382,7 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					r.steps(func(name string, step func(*testing.T)) { family.run(name, r.judged(step)) })
 					// a family runs the steps of every class, the packets into the mesh for an arm that returns them, the quench in
 					// IPv4 alone, the idle timers for an arm that reads its flows, and the steps of a class that translates
-					family.holds(9 + ones(!arm.Terminates, !v6, arm.Flows != nil) + 9*ones(class != None))
+					family.holds(9 + ones(!arm.Terminates, !v6, arm.Flows != nil) + 10*ones(class != None))
 				})
 			}
 			under.run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
@@ -447,6 +461,7 @@ func (r *rows) steps(step func(name string, run func(*testing.T))) {
 		step("simultaneous open", r.simultaneousOpen)
 		step("unsolicited syn", r.unsolicitedSYN)
 		step("port ranges", r.portRanges)
+		step("one port of two inside endpoints", r.portClash)
 		step("out of order fragments", r.fragments)
 		step("a mapping surviving an error", r.errorKeepsMapping)
 	}

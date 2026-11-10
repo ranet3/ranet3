@@ -46,13 +46,15 @@ func (r *rows) unsolicitedSYN(t *testing.T) {
 	r.verdict()
 }
 
-// portRanges is RFC 4787 REQ-3 and REQ-3a: the leaf's datagram and one from
-// another address of the overlay, from one port to one server endpoint, are
-// read from two endpoints, since REQ-3 rules out port overloading, from ports
-// below 1024 where they left from port 500, and from ports of 1024 or above
-// where they left from port 40000. The other address is one no node holds, so
-// row 6's spare holds nothing more. Where the arm declares NoLowPorts, every
-// datagram is read from a port of 1024 or above.
+// portRanges is RFC 4787 REQ-3 toward one server endpoint and REQ-3a: the
+// leaf's datagram and one from another address of the overlay, from one port
+// to one server endpoint, are read from two endpoints, since one endpoint for
+// both is REQ-3's port overloading, from ports below 1024 where they left from
+// port 500, and from ports of 1024 or above where they left from port 40000,
+// REQ-3a's ranges. The other address is one no node holds, so row 6's spare
+// holds nothing more. Where the arm declares NoLowPorts, every datagram is read
+// from a port of 1024 or above. Toward two destinations, REQ-3's port
+// overloading is portClash's.
 func (r *rows) portRanges(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, rangesPort)
 	server := r.listenUDP(t, to)
@@ -72,10 +74,52 @@ func (r *rows) portRanges(t *testing.T) {
 				t.Errorf("the server read the datagram from %s from %s, want a port of its range on %s", from, read, r.seen())
 			}
 			if read == first {
-				t.Errorf("the server read the datagrams from the leaf's and from %s, both from port %d, from one endpoint %s, the port overloading RFC 4787 REQ-3 rules out", other, port, read)
+				t.Errorf("the server read the datagrams from the leaf's and from %s, both from port %d toward one server, from one endpoint %s, the port overloading RFC 4787 REQ-3 rules out", other, port, read)
 			}
 			first = read
 		}
+	}
+	r.verdict()
+}
+
+// portClash is RFC 4787 REQ-1 and REQ-3 for two inside endpoints on one port:
+// the leaf's datagram from the port to the server, then one from another
+// address of the overlay from the same port to the second server, then the
+// leaf's from the port to the second server. The first two are read from two
+// endpoints, since REQ-3 rules out port overloading, and the third from the
+// first's endpoint, since REQ-1 and REQ-11 rule out a mapping that changes.
+// Where the arm declares OverloadsPorts, the first two are read from one
+// endpoint, and where it declares RemapsOnClash, the third from another than
+// the first's.
+func (r *rows) portClash(t *testing.T) {
+	first, second := netip.AddrPortFrom(r.family.Server, clashPort), netip.AddrPortFrom(r.family.Second, clashPort)
+	servers := map[netip.AddrPort]*net.UDPConn{first: r.listenUDP(t, first), second: r.listenUDP(t, second)}
+	leaf, other := netip.AddrPortFrom(r.family.Leaf, leafClashPort), netip.AddrPortFrom(r.unheld(), leafClashPort)
+	read := func(from, to netip.AddrPort) netip.AddrPort {
+		data := []byte(fmt.Sprintf("from %s to %s over %s", from, to, r.family.Name))
+		sent := datagram(from, to, leafTTL, data)
+		got := receiveFrom(t, udpReader(servers[to]), data, func() { r.exit.hand([][]byte{sent}) })
+		if got.Addr() != r.seen() {
+			t.Errorf("%s read the datagram from %s from %s, want %s", to, from, got, r.seen())
+		}
+		return got
+	}
+	opened, shared, moved := read(leaf, first), read(other, second), read(leaf, second)
+	if declared, overloads := r.limits[OverloadsPorts]; overloads {
+		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
+		if shared != opened {
+			t.Errorf("the servers read the leaf's port from %s and %s's from %s, want one endpoint, as the arm declares", opened, other, shared)
+		}
+	} else if shared == opened {
+		t.Errorf("the servers read the leaf's port and %s's from one endpoint %s, the port overloading RFC 4787 REQ-3 rules out", other, opened)
+	}
+	if declared, remaps := r.limits[RemapsOnClash]; remaps {
+		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
+		if moved == opened {
+			t.Errorf("once %s held the port toward the second server the leaf's port reached it from %s, its endpoint toward the server, want another, as the arm declares", other, moved)
+		}
+	} else if moved != opened {
+		t.Errorf("once %s held the port toward the second server the leaf's port reached it from %s and the server from %s, the changed mapping RFC 4787 REQ-1 and REQ-11 rule out", other, moved, opened)
 	}
 	r.verdict()
 }
