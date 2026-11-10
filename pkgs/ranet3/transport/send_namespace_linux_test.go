@@ -25,6 +25,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -239,25 +240,7 @@ func TestKernelFragmentsPastALockedPathOnlyWhileTheFamilyAsks(t *testing.T) {
 // WANT would set DF on the datagram there
 // a raw socket reads the datagram's IP header as it arrives, in a network namespace of the test's own
 func TestKernelSendsWithoutDFWhatTheRouteCarriesWhileIPv4Fragments(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("a network namespace and a raw socket need root on linux")
-	}
-	runtime.LockOSThread()
-	if err := unshareEmptyNamespace(); err != nil {
-		t.Fatal(err)
-	}
-	netlink, err := openRouteNetlink()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer netlink.close()
-	loopback, err := net.InterfaceByName("lo")
-	if err != nil {
-		t.Fatalf("look up loopback: %v", err)
-	}
-	if err := netlink.request(unix.RTM_NEWLINK, 0, linkMessage(loopback.Index, unix.IFF_UP)); err != nil {
-		t.Fatalf("bring loopback up: %v", err)
-	}
+	netnstest.EnterEmpty(t)
 	raw, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_UDP)
 	if err != nil {
 		t.Fatalf("open a raw socket: %v", err)
@@ -352,13 +335,7 @@ func vethPair(t *testing.T, peers int, addresses []netip.Prefix) (farEnd, *net.I
 // vethPairTo is vethPair with a far end that holds far
 func vethPairTo(t *testing.T, peers int, addresses, far []netip.Prefix) (farEnd, *net.Interface, routeNetlink) {
 	t.Helper()
-	if os.Getuid() != 0 {
-		t.Skip("building a veth pair needs root on linux")
-	}
-	runtime.LockOSThread()
-	if err := unshareEmptyNamespace(); err != nil {
-		t.Fatal(err)
-	}
+	netnstest.EnterEmpty(t)
 	near, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		t.Fatalf("open this namespace: %v", err)
@@ -592,7 +569,7 @@ func (f farEnd) reassembled() (ipv4, ipv6 uint64, err error) {
 // nothing else runs in the namespace, which lives on in the listeners' sockets
 func openFarEnd(near, peers int, addresses []netip.Prefix) farEnd {
 	runtime.LockOSThread()
-	if err := unshareEmptyNamespace(); err != nil {
+	if err := netnstest.EnterEmptyNetwork(); err != nil {
 		return farEnd{err: err}
 	}
 	netlink, err := openRouteNetlink()
@@ -643,47 +620,8 @@ func openFarEnd(near, peers int, addresses []netip.Prefix) farEnd {
 	return end
 }
 
-// unshareEmptyNamespace moves the calling thread, which its caller locked, into a new network namespace
-// and refuses to go on unless the namespace changed and holds no route
-func unshareEmptyNamespace() error {
-	before, err := namespaceOf()
-	if err != nil {
-		return err
-	}
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		return fmt.Errorf("unshare a network namespace: %w", err)
-	}
-	after, err := namespaceOf()
-	if err != nil {
-		return err
-	}
-	if after == before {
-		return errors.New("refusing to continue: the network namespace did not change")
-	}
-	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
-	if err != nil {
-		return fmt.Errorf("dump the routes of the new namespace: %w", err)
-	}
-	messages, err := syscall.ParseNetlinkMessage(rib)
-	if err != nil {
-		return fmt.Errorf("parse the route dump: %w", err)
-	}
-	for _, message := range messages {
-		if message.Header.Type == syscall.RTM_NEWROUTE {
-			return errors.New("refusing to continue: this network namespace already holds routes")
-		}
-	}
-	return nil
-}
-
-// namespaceOf is the inode of the calling thread's network namespace
-func namespaceOf() (uint64, error) {
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
-		return 0, fmt.Errorf("stat this thread's network namespace: %w", err)
-	}
-	return st.Ino, nil
-}
+// unshareEmptyNamespace is netnstest.EnterEmptyNetwork, which brings the loopback up
+func unshareEmptyNamespace() error { return netnstest.EnterEmptyNetwork() }
 
 // routeNetlink is a route netlink socket in the network namespace of the thread that opened it
 type routeNetlink int
