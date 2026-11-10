@@ -182,7 +182,8 @@ func TestArmWithNoClassIsRefused(t *testing.T) {
 	}
 }
 
-// a limit is declared with its reason and its deviations row, or Run refuses the arm
+// a limit or a count that misses flows is declared with its reason and its
+// row, or Run refuses the arm
 func TestArmDeclaringALimitWithoutItsReasonOrRowIsRefused(t *testing.T) {
 	for _, c := range []struct {
 		declared Declared
@@ -196,6 +197,11 @@ func TestArmDeclaringALimitWithoutItsReasonOrRowIsRefused(t *testing.T) {
 		err := (Arm{Classes: []Class{Auto}, Limits: map[Limit]Declared{NoHairpinning: c.declared}}).check()
 		if taken := err == nil; taken != c.taken {
 			t.Errorf("an arm declaring %s as %+v was taken %v (%v), want %v", NoHairpinning, c.declared, taken, err, c.taken)
+		}
+		missed := Missed{Reason: c.declared.Reason, LimitsRow: c.declared.Row}
+		err = (Arm{Classes: []Class{Auto}, MissesFlows: &missed}).check()
+		if taken := err == nil; taken != c.taken {
+			t.Errorf("an arm declaring its count misses flows as %+v was taken %v (%v), want %v", missed, taken, err, c.taken)
 		}
 	}
 }

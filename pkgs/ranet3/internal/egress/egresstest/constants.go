@@ -64,6 +64,10 @@ const (
 	// egress.DefaultFlowsPerSource so a backend that kept the default admits
 	// the flow past it, and no whole number of fill batches
 	namedLimit = 200
+	// carriedBound is the most flows past a source's share the limit's row
+	// takes from an arm that declares its count misses flows: one for a count
+	// the kernel drops, and one as margin
+	carriedBound = 2
 )
 
 // the ports of each row and step, the server's and the leaf's, apart so no exchange meets another's state at the exit
@@ -114,11 +118,13 @@ const (
 	leafHairpinPort    = 40701
 	leafWindowPort     = 40800
 	// the spare address's two flows past its limit and its datagram to the
-	// hairpinned mapping, and the first of the ports its admitted flows leave
-	// from, one a flow
+	// hairpinned mapping, the first of the ports of its flows sent past its
+	// limit after one the exit carried, and the first of the ports its admitted
+	// flows leave from, one a flow
 	spareRefusedPort = 40900
 	spareFurtherPort = 40901
 	spareHairpinPort = 40902
+	spareCarriedPort = 40904
 	spareFillPort    = 41000
 
 	// the leaf's port a connection into the mesh no flow is tracked for a

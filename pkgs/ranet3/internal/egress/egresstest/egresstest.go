@@ -261,6 +261,11 @@ func (l Limit) String() string {
 // page that records it, named as the page's first column names it
 type Declared struct{ Reason, Row string }
 
+// Missed is the reason a backend's count of a source's flows can leave a flow
+// open and uncounted, and the row of the limits page that records it, named
+// as the page's first column names it
+type Missed struct{ Reason, LimitsRow string }
+
 // Arm is a backend as the suite runs it. The suite holds every arm to all
 // six rows in both families, to carrying every protocol it can translate and
 // refusing those it cannot, to carrying no ICMP message RFC 5508 rules out, to
@@ -269,14 +274,17 @@ type Declared struct{ Reason, Row string }
 // filtering, hairpinning, the unsolicited SYN and one port of two inside
 // endpoints in UDP and TCP as those RFCs ask or as its arm declares it does
 // instead, to a withdrawal and a restore by SetEnabled, and to the share of
-// flows its capability names, and an arm that reads its flows to the idle
-// timers it keeps them to.
+// flows its capability names, counted exactly or as its arm declares its count
+// misses, and an arm that reads its flows to the idle timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
 	// Limits names each behavior the backend lacks by its nature, with its
 	// reason and deviations row
 	Limits map[Limit]Declared
+	// MissesFlows declares that the backend's count of a source's flows can
+	// leave a flow open and uncounted, nil for a backend whose count is exact
+	MissesFlows *Missed
 	// Terminates is set for a backend that ends the leaf's TCP at the exit and
 	// opens its own toward the server, which forwards none of the leaf's
 	// segments and so owes no too big for them
@@ -327,6 +335,9 @@ func (a Arm) check() error {
 		if declared.Reason == "" || declared.Row == "" {
 			return fmt.Errorf("the arm declares %s without its reason and its deviations row", limit)
 		}
+	}
+	if m := a.MissesFlows; m != nil && (m.Reason == "" || m.LimitsRow == "") {
+		return errors.New("the arm declares its count misses flows without its reason and its limits row")
 	}
 	return nil
 }
@@ -489,6 +500,7 @@ type running struct {
 	cfg    egress.Egress
 	host   Host
 	holds  func(Host) ([]string, error)
+	misses *Missed
 	cancel context.CancelFunc
 	// done is closed once Run has returned err
 	done chan struct{}
@@ -547,7 +559,7 @@ func start(t *testing.T, network Network, arm Arm, class Class, flows uint32) *r
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the capability is refused: %v", err)
 	}
-	r := &running{cfg: cfg, host: network.Exit(), holds: arm.Holds, done: make(chan struct{})}
+	r := &running{cfg: cfg, host: network.Exit(), holds: arm.Holds, misses: arm.MissesFlows, done: make(chan struct{})}
 	r.Exit = arm.New(t, r.host, cfg, egress.Hooks{Ready: r.ready, Republish: r.republish})
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel

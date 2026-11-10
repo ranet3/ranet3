@@ -23,7 +23,9 @@ import (
 // Status counts each refusal. A source under none is held to no share: the
 // exit translates none of its flows, so its flow past the share is carried and
 // counted in Status.Untranslated, never as a refusal. The row will not fill
-// conntrack's table where Status reads it.
+// conntrack's table where Status reads it. An arm whose count misses flows may
+// carry up to carriedBound flows past the share ahead of the one it refuses,
+// and every later check holds it to the share exactly.
 func (r *rows) sourceLimit(t *testing.T) {
 	status := r.exit.Status()
 	limit := status.FlowsPerSource
@@ -55,9 +57,15 @@ func (r *rows) sourceLimit(t *testing.T) {
 		return
 	}
 	refused := []byte("past the limit over " + r.family.Name)
+	next := uint16(spareRefusedPort)
 	t.Run("the next flow refused", func(t *testing.T) {
-		sent := datagram(netip.AddrPortFrom(r.family.Spare, spareRefusedPort), refusedTo, leafTTL, refused)
-		r.answered(t, "refusal from the exit", sent, pastTheLimit, r.fromExit, 0)
+		if missed := r.exit.misses; missed != nil {
+			t.Logf("declared in %s: %s", missed.LimitsRow, missed.Reason)
+		}
+		var err error
+		if next, err = r.nextRefused(refusedServer, refusedTo, refused, status); err != nil {
+			t.Fatal(err)
+		}
 	})
 	t.Run("a later datagram of a flow it holds", func(t *testing.T) { r.later(t, server, to) })
 	t.Run("a further flow refused", func(t *testing.T) {
@@ -75,8 +83,48 @@ func (r *rows) sourceLimit(t *testing.T) {
 			t.Errorf("the server read the leaf's own flow from %s, want %s", from, r.seen())
 		}
 	})
-	t.Run("the refusals counted", func(t *testing.T) { r.counted(t, before, mark) })
+	t.Run("the refusals counted", func(t *testing.T) { r.counted(t, before, mark, next) })
 	r.verdict()
+}
+
+// nextRefused sends the spare address's next flow past its share to to until
+// the exit refuses it, and returns its port. Where the arm declares its count
+// misses flows, the exit may carry the flow instead, which the socket server
+// at to reads, and a fresh flow takes its place, up to carriedBound of them.
+// before is Status before the share was filled.
+func (r *rows) nextRefused(server *net.UDPConn, to netip.AddrPort, data []byte, before egress.Status) (uint16, error) {
+	for carried := 0; ; carried++ {
+		port := uint16(spareRefusedPort)
+		if carried > 0 {
+			port = uint16(spareCarriedPort + carried - 1)
+		}
+		sent := datagram(netip.AddrPortFrom(r.family.Spare, port), to, leafTTL, data)
+		err := r.answeredWithin("refusal from the exit", sent, pastTheLimit, r.fromExit, 0)
+		if err == nil || r.exit.misses == nil {
+			return port, err
+		}
+		if _, read := readOnce(server, data, quietPeriod); !read {
+			return port, fmt.Errorf("%w, and the server read none of it", err)
+		}
+		if carried == carriedBound {
+			return port, fmt.Errorf("the server read the spare address's %d flows past its share of %d, past the %d the row takes from an arm whose count misses flows%s",
+				carried+1, before.FlowsPerSource, carriedBound, conntrackSince(before, r.exit.Status()))
+		}
+		// a copy the server reads later would be taken for the next flow's or meet
+		// the further flow's quiet read
+		for read := true; read; {
+			_, read = readOnce(server, data, quietPeriod)
+		}
+	}
+}
+
+// conntrackSince names the host's conntrack count at before and at now, empty
+// where Status reads none
+func conntrackSince(before, now egress.Status) string {
+	if before.Rules == nil || now.Rules == nil || before.Rules.ConntrackCount == nil || now.Rules.ConntrackCount == nil {
+		return ""
+	}
+	return fmt.Sprintf(", and conntrack held %d entries before the share was filled and holds %d now", *before.Rules.ConntrackCount, *now.Rules.ConntrackCount)
 }
 
 // spareHeld is the flows the spare address holds where Status names a
@@ -200,10 +248,11 @@ func (r *rows) carriedPast(t *testing.T, server *net.UDPConn, to netip.AddrPort,
 }
 
 // counted holds Status to a count of every packet the limit refused since
-// mark, which the backend reads at its next pass
-func (r *rows) counted(t *testing.T, before uint64, mark int) {
+// mark, the next flow's from the port next, which the backend reads at its
+// next pass
+func (r *rows) counted(t *testing.T, before uint64, mark int, next uint16) {
 	for deadline := time.Now().Add(stepBudget); ; time.Sleep(pollInterval) {
-		want, got := before+r.refusedPackets(mark), r.refused(r.exit.Status())
+		want, got := before+r.refusedPackets(mark, next), r.refused(r.exit.Status())
 		if got == want {
 			return
 		}
@@ -214,16 +263,17 @@ func (r *rows) counted(t *testing.T, before uint64, mark int) {
 }
 
 // refusedPackets is how many packets handed from the mark'th on belong to the
-// spare address's flows past its limit: each copy of its refused datagrams and
-// each SYN of its connection
-func (r *rows) refusedPackets(mark int) uint64 {
+// spare address's flows past its limit: each copy of its refused datagrams,
+// the next flow's from the port next and the further flow's, and each SYN of
+// its connection
+func (r *rows) refusedPackets(mark int, next uint16) uint64 {
 	var n uint64
 	for _, packet := range r.exit.handedSince(mark) {
 		p, ok := parse(packet)
 		if !ok || p.src != r.family.Spare || len(p.payload) < 2 {
 			continue
 		}
-		if port := binary.BigEndian.Uint16(p.payload); p.protocol == syscall.IPPROTO_TCP || p.protocol == syscall.IPPROTO_UDP && (port == spareRefusedPort || port == spareFurtherPort) {
+		if port := binary.BigEndian.Uint16(p.payload); p.protocol == syscall.IPPROTO_TCP || p.protocol == syscall.IPPROTO_UDP && (port == next || port == spareFurtherPort) {
 			n++
 		}
 	}

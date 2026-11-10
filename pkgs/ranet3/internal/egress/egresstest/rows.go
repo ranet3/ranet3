@@ -610,13 +610,23 @@ func (r *rows) sessions(t *testing.T) {
 
 func (r *rows) answered(t *testing.T, what string, sent []byte, want message, from func(netip.Addr) bool, mtu int) {
 	t.Helper()
+	if err := r.answeredWithin(what, sent, want, from, mtu); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// answeredWithin hands sent until an answer of want from from, carrying mtu
+// where it is not zero, quotes it, and fails naming what once stepBudget has
+// passed
+func (r *rows) answeredWithin(what string, sent []byte, want message, from func(netip.Addr) bool, mtu int) error {
 	back := len(r.network.Back())
 	if !r.await(func() { r.exit.hand([][]byte{sent}) }, func(packet []byte) bool {
 		a, ok := readAnswer(packet)
 		return ok && a.is(r.v6(), want) && from(a.from) && (mtu == 0 || a.mtu == mtu) && quotes(a.quote, sent)
 	}) {
-		t.Fatalf("no %s quoting the leaf's packet came back within %s, only %s", what, stepBudget, answersIn(r.network.Back()[back:]))
+		return fmt.Errorf("no %s quoting the leaf's packet came back within %s, only %s", what, stepBudget, answersIn(r.network.Back()[back:]))
 	}
+	return nil
 }
 
 func (r *rows) await(send func(), match func(packet []byte) bool) bool {
