@@ -1085,20 +1085,20 @@ cut for the floor at the step as
 [paths under 1280 bytes](#paths-under-1280-bytes) describes. It is sent 7 times,
 at 0, 2, 6, 8, 12, 20 and 36 seconds, and fails after 68 seconds. A request
 whose threshold is already the floor takes no step. That covers an IPv6 path of
-1280 bytes, an IPv4 path of 576 and a path whose MTU the host cannot read, as on
-FreeBSD and OpenBSD. Such a request, where it is too large to go whole, is cut
-for the floor at its first send, and keeps its 5 sends over 62 seconds. Each cut
-again for a path MTU that fell starts its waits over, up to 20 sends, which
-bound the sends of every request this end counts however it is cut. A request is
-sent up to 20 times while the peer's authenticated traffic has arrived within
-the last 10 seconds. The exchange holds the only outstanding request this end
-allows. Rekeys, Deletes and liveness checks wait until it ends. A liveness check
-and a Delete of an IKE SA never take the longer schedule, and neither does an
-exchange still outstanding when its IKE SA reaches its lifetime. A request on
-the session's current IKE SA waits behind the Delete of a replaced or redundant
-IKE SA for at most 6 seconds. Behind a liveness check left on an IKE SA the peer
-rekeyed, it waits for that check's 5 sends, up to 62 seconds, unless the peer's
-Delete of that IKE SA ends the check first.
+1280 bytes, an IPv4 path of 576 and a path whose MTU the host cannot read. Such
+a request, where it is too large to go whole, is cut for the floor at its first
+send, and keeps its 5 sends over 62 seconds. Each cut again for a path MTU that
+fell starts its waits over, up to 20 sends, which bound the sends of every
+request this end counts however it is cut. A request is sent up to 20 times
+while the peer's authenticated traffic has arrived within the last 10 seconds.
+The exchange holds the only outstanding request this end allows. Rekeys, Deletes
+and liveness checks wait until it ends. A liveness check and a Delete of an IKE
+SA never take the longer schedule, and neither does an exchange still
+outstanding when its IKE SA reaches its lifetime. A request on the session's
+current IKE SA waits behind the Delete of a replaced or redundant IKE SA for at
+most 6 seconds. Behind a liveness check left on an IKE SA the peer rekeyed, it
+waits for that check's 5 sends, up to 62 seconds, unless the peer's Delete of
+that IKE SA ends the check first.
 
 Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
 the SA and ignores a resend, as

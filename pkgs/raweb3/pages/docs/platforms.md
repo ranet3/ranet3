@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-09
+updated: 2026-11-10
 order: 100
 ---
 
@@ -55,13 +55,13 @@ that forwards gets the warning. A Mac whose main ruleset does not call
 `anchor "com.apple/*"` for every packet in, or skips an interface outside the
 mesh, does not start with `overlay`, as
 [pf on macOS](coexistence.md#pf-on-macos) says. [Gaps on macOS](#gaps-on-macos)
-lists what `cap.exit` refuses there. The BSDs, Android and iOS refuse `cap.exit`
-at startup and on a reload, as
-`kernel: cap.exit is refused on freebsd, where this build has no exit mode: remove cap.exit, and this host keeps its own default`,
-so a BSD host has no kill switch. On Android and iOS no reconciler runs, and the
-platform's own setting holds the host's traffic to the tunnel: Android's
-always-on VPN with blocking, and iOS's include-all-networks, which only the user
-can turn on. The caller's credentials only name who asked, in the records
+lists what `cap.exit` refuses there. Android and iOS refuse `cap.exit` at
+startup and on a reload, as
+`kernel: cap.exit is refused on android, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
+No reconciler runs there, and the platform's own setting holds the host's
+traffic to the tunnel: Android's always-on VPN with blocking, and iOS's
+include-all-networks, which only the user can turn on. The caller's credentials
+only name who asked, in the records
 [who may use it](control-socket.md#who-may-use-it) describes.
 
 The exit a build carries is chosen when it is built, and no setting names it. A
@@ -72,10 +72,10 @@ and translates it with nftables on the way out of the host: every class of
 source under a class that translates. A macOS build carries the userspace exit,
 which ends each TCP connection the mesh hands it and dials the destination from
 this host's own sockets, relays UDP and echo through them, and carries the
-classes `auto` and an address. Every other build carries none and refuses
+classes `auto` and an address. An Android or iOS build carries none and refuses
 `cap.egress` at startup with
-`egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for freebsd carries no exit`,
-naming its own platform where this one names `freebsd`. The loader is the same
+`egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for android carries no exit`,
+naming its own platform where this one names `android`. The loader is the same
 on every build, so a block it refuses, such as one whose classes leave under
 `none` every IPv4 source a router forwards a packet from, is refused for the
 same reason everywhere, before a build without an exit refuses the block whole.
@@ -265,32 +265,10 @@ exit, and the daemon warns, as
 
 ## Other platforms
 
-On a platform other than Linux, macOS, iOS and Android:
-
-- `cap.table` fails the start with `kernel: unsupported on this platform`.
-- `cap.egress` and `cap.exit` are refused in words that name the platform, and
-  the underlay sockets carry no mark.
-- `overlay` and `cap.antispoof` load, and the antispoof filter is not enforced,
-  as [the antispoof filter's platforms](antispoof.md#platforms) say.
-- An egress segment fails the start, since it needs `cap.egress`, which is
-  refused. A `cap.route` entry that counts as a default is refused at startup
-  and on a reload, as [gaps on macOS](#gaps-on-macos) gives.
-- The node has no network watch, so a moved host waits for each session's own
-  liveness check.
-- Every peer shares the 1 socket of its family, busy or not.
-- The tun takes its MTU only when it opens, so a change to `link.mtu` or to the
-  steering that moves the tun needs a restart. A reload applies one that leaves
-  the tun where it was.
-- The node reads no forwarding setting, so `status` shows forwarding as
-  `unknown` and logs no antispoof warning.
-- The node reads no caller credentials, so its records of who asked name no
-  caller.
-- Datagrams leave without DF, as [path MTU](#path-mtu) below describes.
-- Answers leave from the kernel's choice of source, not the address the request
-  reached.
-- The ECN field of a datagram's outer header is not read, so a CE mark a hop set
-  on the underlay is lost, as [ECN](design/protocol-deviations.md#ecn)
-  describes.
+On FreeBSD and OpenBSD the daemon builds and does not start. The underlay
+refuses with
+`transport: open bind: no underlay transport on freebsd: unsupported operation`,
+naming its own platform where this one names `freebsd`.
 
 iOS and Android build the underlay sockets, the sockets connected to 1 peer, the
 path MTU search, the forwarding read and the caller credentials of macOS and
@@ -304,14 +282,15 @@ forwarding is warned, as [at a glance](#at-a-glance) gives. An Android build,
 which Go makes with the `linux` build tag, and an iOS build, which it makes with
 the `darwin` one, refuse `cap.egress` at startup, and `cap.exit` and a
 `cap.route` entry that counts as a default at startup and on a reload, in the
-same words, naming `android` or `ios`, and load `overlay` with no filter, as the
-BSDs do. `cap.table` fails the start there too, and a moved host waits for each
-session's own liveness check. An iOS build opens no selection, so its underlay
-datagrams name no interface and leave by the host's own routes. A session there
-that sends from the kernel's choice of source reads its path MTU from the
-interface holding the source the kernel picks for a socket connected to the
-peer, and one the peer opened from the interface holding the address it sends
-from.
+same words, naming `android` or `ios`, and load `overlay` with no filter, as
+[the antispoof filter's platforms](antispoof.md#platforms) say. `cap.table`
+fails the start there with `kernel: unsupported on this platform`, and a moved
+host waits for each session's own liveness check. An iOS build opens no
+selection, so its underlay datagrams name no interface and leave by the host's
+own routes. A session there that sends from the kernel's choice of source reads
+its path MTU from the interface holding the source the kernel picks for a socket
+connected to the peer, and one the peer opened from the interface holding the
+address it sends from.
 
 ## Moving hosts
 
@@ -326,8 +305,7 @@ sends from the address the peer's latest fresh request or answer arrived on, on
 Linux and macOS alike, and one that reaches another of this host's addresses
 moves it there. Once that address has gone and the kernel refuses a send from
 it, the session sends from the kernel's choice until a later fresh request or
-answer moves it to the address that one arrived on. On other platforms but iOS
-and Android the kernel always chooses.
+answer moves it to the address that one arrived on.
 
 The session falls back to the kernel's choice whenever the kernel refuses a send
 from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV`,
@@ -533,14 +511,10 @@ narrower hop beyond it.
 A session on a path under the floor fragments on either platform as
 [the design's limits](design/limits.md) describe. While one does, Linux lets the
 host fragment every datagram of that family, and macOS does the same for IPv4.
-On macOS an IPv6 peer under the floor has only its own datagrams fragmented. On
-any other platform but iOS and Android datagrams leave without DF, nothing is
-searched and every session carries `link.mtu`, which leaves a narrower path to
-the host's and the routers' fragmenting.
+On macOS an IPv6 peer under the floor has only its own datagrams fragmented.
 
 ## The control surface
 
 The control surface is an HTTP handler that serves JSON over any listener. The
 `control` package binds it to a Unix socket. On Linux and macOS, and on iOS and
-Android, it also reads each caller's credentials from that socket. Elsewhere it
-reads none, and its records of who asked name no caller.
+Android, it also reads each caller's credentials from that socket.

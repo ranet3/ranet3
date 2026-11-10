@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-08
+updated: 2026-11-10
 order: 65
 ---
 
@@ -91,14 +91,6 @@ that family's socket sends every datagram without DF and the family's other
 searches wait. On macOS the IPv4 socket does the same, and IPv6 clears DF for
 that 1 peer alone. [The design's limits](design/limits.md) describe what this
 costs.
-
-### Platforms without DF
-
-On a platform that cannot set DF, sessions do not search. Each session carries
-`link.mtu`. The tun there takes its MTU only when it opens, so a reload that
-moves the tun is refused, and a restart applies it. A reload whose `link.mtu`
-and steering leave the tun where it was is applied, and each session takes the
-new `link.mtu` at once.
 
 ## Packets that do not fit
 

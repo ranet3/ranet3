@@ -657,10 +657,9 @@ whole.
 Where no antispoof filter runs, a node whose host forwards logs a warning at
 startup and at every reload, naming the families it reads as forwarding and the
 platform, as
-`config: this node forwards IPv4 and IPv6 and freebsd runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source`.
-No filter runs on a Mac with no `overlay` or on a platform with neither nftables
-nor pf, and a node with no `overlay` says `and writes no overlay,` after the
-families.
+`config: this node forwards IPv4 and IPv6 and android runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source`.
+No filter runs on a Mac with no `overlay` or on Android and iOS, and a node with
+no `overlay` says `and writes no overlay,` after the families.
 
 A family whose setting the node cannot read is not named, and a node that can
 read neither logs no warning. The warning is of the inbound side alone, since
@@ -686,11 +685,11 @@ The start and a reload on macOS refuse an exemption under an exact interface
 name the anchor cannot write, one holding a byte other than an ASCII letter, a
 digit or `_`, such as `br-lan`, and the error names it.
 
-Every other platform loads `overlay` and `cap.antispoof`, with every refusal of
-theirs, and enforces neither, so a host on one of its interfaces can reach its
-services under an overlay source. With `overlay` written, `status` reads
-`not enforced on freebsd, 2 overlay prefixes` on the antispoof line and
-`ranet3 debug rules` reads `Antispoof filter, not enforced on freebsd`, naming
+Android and iOS load `overlay` and `cap.antispoof`, with every refusal of
+theirs, and enforce neither, so a host on one of a node's interfaces can reach
+the node's services under an overlay source. With `overlay` written, `status`
+reads `not enforced on android, 2 overlay prefixes` on the antispoof line and
+`ranet3 debug rules` reads `Antispoof filter, not enforced on android`, naming
 the platform, and no pass logs anything. A node there, or on a Mac with no
 `overlay`, that forwards gets
 [the warning above](#nodes-that-forward-without-it).

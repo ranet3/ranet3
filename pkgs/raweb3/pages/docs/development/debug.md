@@ -177,9 +177,9 @@ These commands take flags of their own:
   the daemon's reference with whether pf lists it, the main ruleset's call into
   `com.apple/*`, and every reference `pfctl -s References` lists now by pid and
   process name, as [the antispoof filter](../antispoof.md#watching-it) shows.
-  Another platform with `overlay` written prints
-  `Antispoof filter, not enforced on freebsd` there, naming itself. Then, under
-  `cap.exit.fallback = "none"`, the kill switch's chains and sets in
+  Android and iOS with `overlay` written print
+  `Antispoof filter, not enforced on android` there, naming the platform. Then,
+  under `cap.exit.fallback = "none"`, the kill switch's chains and sets in
   `inet ranet3` as `Fallback` with its two chains, their hooks and priority and
   the switch's state, each line of each chain with the packets and bytes the
   drop counted, and each named set with its elements, or `not held` where the
@@ -299,7 +299,7 @@ These commands take flags of their own:
   [`ip6_forward`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/ip6_output.c#L521).
   A setting it cannot read is shown unread. macOS looks up this host's own
   packets only, with no policy rules and without the source, which its lookup
-  does not take, so its `ENETUNREACH` is no route alone. The BSDs look up none.
+  does not take, so its `ENETUNREACH` is no route alone.
 - `debug egress` is the exit: on Linux its status line as `ranet3 status` gives
   it, each rule of its chains with its counter read now through a socket of its
   own, a rule of the translation's chain counting flows and the bytes of their
@@ -337,24 +337,21 @@ These commands take flags of their own:
   [path MTU](../path-mtu.md#where-answers-come-from) describes. Then for each
   session its path, the peer node it is with, its endpoint and whether its
   datagrams leave with DF, the state of its search, which is `confirming`,
-  `searching up`, `searching down`, `confirmed`, `under the floor`, or
-  `not searched` where datagrams leave without DF, its budget and the MSS it
-  clamps to, the route's MTU when last read and the target it sets, the probe
-  out and how the last one ended, its probes sent, acked and lost, the reports
-  the search took of sends the host refused as too large for the path, a burst
-  of such sends counting once for each report the search takes during it, far
-  fewer than its sends, and the budget's last change with its reason. A session
-  that is `not searched` shows its path, peer, endpoint, state and budget, and
-  no probes. Its budget follows `link.mtu`, and it records no change. A probe
-  whose target the search moves while it is out counts as sent, and as neither
-  acked nor lost. A refusal, the route read lower after a move of the host's
-  default or one of its addresses or `debug probe`, a change of `link.mtu` and a
-  move to another endpoint can each move the target. A probe answered after its
-  wait ran out counts as both acked and lost, so the 3 counts need not add up.
-  `ranet3_pmtu_probes_total` counts acked and lost probes the same way and has
-  no series for probes sent. The peer is named as `rekey` names one, and
-  completes to the nodes of the sessions the daemon holds. The command fails for
-  a peer the node holds no session with.
+  `searching up`, `searching down`, `confirmed` or `under the floor`, its budget
+  and the MSS it clamps to, the route's MTU when last read and the target it
+  sets, the probe out and how the last one ended, its probes sent, acked and
+  lost, the reports the search took of sends the host refused as too large for
+  the path, a burst of such sends counting once for each report the search takes
+  during it, far fewer than its sends, and the budget's last change with its
+  reason. A probe whose target the search moves while it is out counts as sent,
+  and as neither acked nor lost. A refusal, the route read lower after a move of
+  the host's default or one of its addresses or `debug probe`, a change of
+  `link.mtu` and a move to another endpoint can each move the target. A probe
+  answered after its wait ran out counts as both acked and lost, so the 3 counts
+  need not add up. `ranet3_pmtu_probes_total` counts acked and lost probes the
+  same way and has no series for probes sent. The peer is named as `rekey` names
+  one, and completes to the nodes of the sessions the daemon holds. The command
+  fails for a peer the node holds no session with.
 - `debug sender [peer]` is the sender of every session, or of one peer's: for
   each session its path and peer node, the bytes of the data budget and the
   places of the control budget its batches hold of their limits, then 3
