@@ -672,9 +672,10 @@ comes whole with no IPv6 extension header, and otherwise through the stack,
 which reassembles or parses it first:
 
 - **TCP** ends in that stack. The exit dials the server from a socket of the
-  host's, keeping the leaf's port toward every server while the host holds it
-  free, and copies between the two. A half close passes as one and a reset as a
-  reset.
+  host's, from an address and port no connection from another leaf address and
+  port shares, as
+  [the userspace exit](design/protocol-deviations.md#the-userspace-exit) gives,
+  and copies between the two. A half close passes as one and a reset as a reset.
 - **UDP** takes 1 mapping per leaf address and port, with a socket of the host's
   toward each destination. A reply is taken only from a destination the mapping
   sent to, and a datagram to another mapping's address and port is hairpinned to
@@ -734,15 +735,20 @@ for its destination, so none leaves inside the mesh. On macOS a socket scoped to
 one link still read a datagram that arrived on `lo0`, so the exit holds no
 socket that only receives to a link: a UDP mapping's on its port and each ICMP
 socket before its first send. Under `auto` a TCP connection leaves from the
-address the host's route picks, and a UDP mapping from the one the route to its
-first destination picked, which it keeps for every later destination. Once the
-host no longer holds that address, the mapping's sends to the destinations it
-has fail, and it ends at the next destination it opens. Under an address class a
-flow leaves from that address, which the host has to hold: an IPv6 address on
-any link or `lo0`, and an IPv4 address on the link itself, since macOS refused
-every IPv4 flow from an address on `lo0` of a socket scoped to another link,
-where the IPv6 ones carried. A family whose IPv4 class address that link does
-not hold is not ready.
+address the route to its server picks, as on Linux, and a leaf address and port
+keeps a mapping on each address its connections so take. A UDP mapping leaves
+from the address the route to its first destination picked, which it keeps for
+every later destination. Where the platform refuses that address on another link
+([`udp_connect`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c),
+[`in_pcbladdr`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1610)),
+or another uplink drops it, the datagram is lost. Once the host no longer holds
+that address, a UDP mapping's sends to the destinations it has fail, and it ends
+at the next destination it opens, and a TCP connection leaves from the address
+the route picks. Under an address class a flow leaves from that address, which
+the host has to hold: an IPv6 address on any link or `lo0`, and an IPv4 address
+on the link itself, since macOS refused every IPv4 flow from an address on `lo0`
+of a socket scoped to another link, where the IPv6 ones carried. A family whose
+IPv4 class address that link does not hold is not ready.
 
 The exit refuses at startup what it cannot carry:
 
