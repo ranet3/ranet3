@@ -208,12 +208,9 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 	return ed, nil
 }
 
-// ResolveRemote resolves an endpoint's address for dialing, mirroring
-// ranet's src/address.rs `remote`: a literal IP is used directly. A
-// hostname is resolved via DNS and filtered to the endpoint's declared
-// address family. If that fails, ranet falls back to the address family's
-// wildcard, which isn't a dialable address. Callers must treat a failure
-// here as "endpoint not currently reachable", not retry with a wildcard.
+// ResolveRemote resolves an endpoint's address for dialing. A literal IP is
+// used directly, and a hostname is resolved through DNS and filtered to the
+// endpoint's declared address family.
 //
 // The context makes shutdown prompt: a hostname whose resolver is
 // unreachable otherwise holds the dialer for the resolver's own timeout, and
