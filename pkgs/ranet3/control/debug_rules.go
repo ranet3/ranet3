@@ -50,9 +50,9 @@ type RulesInfo struct {
 }
 
 // FallbackTable is the kill switch as a debug read finds it now, beside the
-// state the reconciler's last pass gave it: its chains in the table inet
-// ranet3 with their hook and priority on Linux, and the rejects on lo0 on
-// macOS, which have neither
+// state the reconciler's last pass gave it: its chains in the table inet ranet3
+// with their hook and priority on Linux, and the rejects on lo0 on macOS, which
+// have neither
 type FallbackTable struct {
 	Where    string `json:"where"`
 	Hook     string `json:"hook,omitempty"`

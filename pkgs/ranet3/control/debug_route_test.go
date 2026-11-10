@@ -264,7 +264,7 @@ func routeFixtures() map[string][]RouteInfo {
 		Err: "kernel: look up the route to 192.0.2.2: invalid argument", Errno: "EINVAL",
 		Settings: []RouteSetting{{Name: "net/ipv4/conf/all/rp_filter", Value: "0"}, {Name: "net/ipv4/conf/ranet0/rp_filter", Value: "0"}},
 	}
-	// the mesh delivers a group whatever its table holds
+	// the kernel's EINVAL for a group arriving on the tun
 	groupDelivered := delivered
 	groupDelivered.Dst = netip.MustParseAddr("239.1.2.4")
 	groupDelivered.Mesh = &RouteMesh{Decision: "deliver"}
