@@ -598,8 +598,10 @@ the filter is not ready the pass retries, the log warns,
 
 At startup the daemon refuses to start on Linux when the first pass cannot
 install its chains and sets and read them back, which on a host means a kernel
-without nf_tables or conntrack or a daemon without `CAP_NET_ADMIN`. A node does
-not run without its entry chain.
+without nf_tables or conntrack, a daemon without `CAP_NET_ADMIN`, or other
+programs' nftables changes interrupting one of its reads
+[3 times in a row](design/limits.md#dataplane-and-sockets). A node does not run
+without its entry chain.
 
 On macOS the pass runs every 5 seconds, since pf tells no program of another's
 change, so another program's change to the anchor goes unnoticed for up to 5
