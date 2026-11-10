@@ -209,10 +209,8 @@ Classes that leave under `none` every source of a family that a router forwards
 a packet from are refused at load, however they split it: an exit that
 translates nothing for anyone is an open relay for the overlay's sources onto
 its upstream. A class that translates only sources no router forwards a packet
-from, a `from` inside `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`,
-`224.0.0.0/3`, `::/128`, `::1/128`, `fe80::/10` or `ff00::/8`, is refused as
-well, since the mesh drops those sources before the exit and the class
-translates nothing.
+from is [refused](configuration-reference.md#capegress) as well, since the mesh
+drops those sources before the exit and the class translates nothing.
 
 A flow under `none` is bound to the source it carries in this node's chain, at
 priority 99, ahead of every chain at `srcnat`, so a host's own masquerade there
