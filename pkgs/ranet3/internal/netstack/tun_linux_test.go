@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
@@ -53,7 +54,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 		}},
 	} {
 		t.Run(path.name, func(t *testing.T) {
-			enterEmptyNamespace(t)
+			netnstest.EnterEmpty(t)
 			path.setup(t, path.device)
 			if _, err := net.InterfaceByName(path.device); err == nil {
 				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, path.device))
@@ -83,7 +84,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 // a node whose kernel refused the cap can cut a burst of reads just after it opens the tun and then no more
 // so the first cut read of a mesh NewNamed opened warns at once rather than an interval later
 func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(0, "gsocap0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
@@ -126,7 +127,7 @@ func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 		{"single-queue at one core, link.tun naming it", "ranet3", singleQueueAtOneCore},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
-			enterEmptyNamespace(t)
+			netnstest.EnterEmpty(t)
 			arm.setup(t)
 
 			m, err := NewNamed(0, arm.asked, false, nil)
@@ -152,7 +153,7 @@ func TestTUNLanesJoinTheDeviceTheFirstLaneMade(t *testing.T) {
 	const lanes = 4
 	for _, name := range []string{"ranet3", "gsocap%d"} {
 		t.Run(name, func(t *testing.T) {
-			enterEmptyNamespace(t)
+			netnstest.EnterEmpty(t)
 			device, actualName, err := createTUNQueues(name, DefaultMTU, lanes)
 			if err != nil {
 				t.Fatalf("open %d lanes of %q: %v", lanes, name, err)
@@ -182,7 +183,7 @@ func TestTUNLanesJoinTheDeviceTheFirstLaneMade(t *testing.T) {
 // so a second instance under its name opens lanes on it, one or several
 // a single-queue device would refuse it with EBUSY for one lane and EINVAL for several
 func TestTUNMadeWithOneLaneTakesASecondInstance(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	first, name, err := createTUNQueues("solo0", DefaultMTU, 1)
 	if err != nil {
 		t.Fatalf("open 1 lane: %v", err)
@@ -239,7 +240,7 @@ func TestTUNQueuesStopAtTheMostOneTunTakes(t *testing.T) {
 // rather than failing at the next one with E2BIG
 func TestTUNOpensNoMoreLanesThanTheKernelAttaches(t *testing.T) {
 	const asked = 300
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	device, actualName, err := createTUNQueues("lanes0", DefaultMTU, asked)
 	if err != nil {
 		t.Fatalf("open %d lanes: %v", asked, err)
@@ -254,7 +255,7 @@ func TestTUNOpensNoMoreLanesThanTheKernelAttaches(t *testing.T) {
 // the read hands it to classify, which drops it, and the lane goes on reading
 // the mesh has one lane, so the datagram after the frame is read by the reader that took the frame
 func TestTUNLaneOutlivesAOneByteFrame(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	previous := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 	m, err := NewNamed(DefaultMTU, "onebyte0", false, nil)
@@ -298,7 +299,7 @@ func TestTUNLaneOutlivesAOneByteFrame(t *testing.T) {
 // the lane counts it and goes on reading
 // the mesh has one lane, so the datagram after the frame is read by the reader that refused the frame
 func TestTUNLaneOutlivesARefusedFrame(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	previous := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 	m, err := NewNamed(DefaultMTU, "refused0", false, nil)
@@ -359,7 +360,7 @@ func TestTUNLaneOutlivesARefusedFrame(t *testing.T) {
 // the mesh has several lanes, so every one of their readers has to see the device gone
 func TestTUNLinkDeletedUnderTheMeshIsReportedOnce(t *testing.T) {
 	const lanes = 4
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	previous := runtime.GOMAXPROCS(lanes)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 	var logs bytes.Buffer
@@ -459,7 +460,7 @@ const listenerSettle = 500 * time.Millisecond
 // the mesh's MTU moves more times than the event channel's 5 slots hold
 func TestTUNDeviceQueuesNoLinkEventsAndLeavesNoListener(t *testing.T) {
 	const moves = 10
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(DefaultMTU, "events0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
@@ -497,49 +498,6 @@ func routeListeners() int {
 	buf := make([]byte, 1<<22)
 	stacks := string(buf[:runtime.Stack(buf, true)])
 	return strings.Count(stacks, ".routineNetlinkListener(") + strings.Count(stacks, ".routineHackListener(")
-}
-
-// enterEmptyNamespace moves the test's thread into a network namespace of its own
-// and refuses to go on unless that namespace is new and holds no route
-// a loaded tunnel module puts a fallback device in every new namespace
-// the thread stays locked
-// and the runtime retires it with the test rather than run another goroutine in the namespace
-func enterEmptyNamespace(t *testing.T) {
-	t.Helper()
-	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
-	}
-	runtime.LockOSThread()
-	before := namespaceOf(t)
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		t.Fatalf("unshare a network namespace: %v", err)
-	}
-	if namespaceOf(t) == before {
-		t.Fatal("refusing to continue: the network namespace did not change")
-	}
-	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
-	if err != nil {
-		t.Fatalf("dump the routes of the new namespace: %v", err)
-	}
-	messages, err := syscall.ParseNetlinkMessage(rib)
-	if err != nil {
-		t.Fatalf("parse the route dump: %v", err)
-	}
-	for _, message := range messages {
-		if message.Header.Type == syscall.RTM_NEWROUTE {
-			t.Fatal("refusing to continue: this network namespace already holds routes")
-		}
-	}
-}
-
-// namespaceOf is the inode of the calling thread's network namespace
-func namespaceOf(t *testing.T) uint64 {
-	t.Helper()
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
-		t.Fatalf("stat this thread's network namespace: %v", err)
-	}
-	return st.Ino
 }
 
 // persistTUN leaves a tun the way systemd-networkd does

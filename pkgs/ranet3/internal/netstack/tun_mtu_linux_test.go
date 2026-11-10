@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -40,7 +41,7 @@ var (
 // a steered packet carries its segment list inside the tunnel, the list going in front of the read in a buffer of the packet's own
 // the device runs at link.mtu less the list, so a read as large as the device is steered whole into a packet of link.mtu
 func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	const largest = 9000
 	exit := segAddr("3fff:b:0:206::1")
 	steering, err := srv6.NewSteerTable([]srv6.Steer{{
@@ -95,7 +96,7 @@ func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 		{"attached", func(t *testing.T) { persistTUN(t, "mtutest0", unix.IFF_MULTI_QUEUE) }},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
-			enterEmptyNamespace(t)
+			netnstest.EnterEmpty(t)
 			arm.setup(t)
 			m, err := NewNamed(jumbo, "mtutest0", false, nil)
 			if err != nil {
@@ -125,7 +126,7 @@ func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 // and a datagram of 8 KiB and one filling that MTU each cross the tun whole to the peer its route names
 func TestTUNCarriesAReadAsLargeAsTheSlabHolds(t *testing.T) {
 	const largest = 65535
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(0, "mtutest0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
@@ -329,7 +330,7 @@ func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 	for _, family := range pathFamilies {
 		for _, held := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s with a router-id %t", family.name, held), func(t *testing.T) {
-				enterEmptyNamespace(t)
+				netnstest.EnterEmpty(t)
 				_, waitPathMTU := sendPastTheSession(t, family, "ptbtest0", held, session)
 				waitPathMTU(session)
 			})
@@ -398,7 +399,7 @@ func TestTUNPacketTooBigPassesAReversePathCheck(t *testing.T) {
 		for _, chain := range reversePathChains {
 			for _, held := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s under the %s chain with a router-id %t", family.name, chain.name, held), func(t *testing.T) {
-					enterEmptyNamespace(t)
+					netnstest.EnterEmpty(t)
 					nft, err := exec.LookPath("nft")
 					if err != nil {
 						t.Fatal("the reverse path chain is written through nft, which is not on the path")
@@ -429,7 +430,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 	for _, family := range pathFamilies {
 		for _, held := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s with a router-id %t", family.name, held), func(t *testing.T) {
-				enterEmptyNamespace(t)
+				netnstest.EnterEmpty(t)
 				// no route of the headend's leads back to the router-id below, so the check of reverse paths would drop an answer from it
 				// where the waypoint's router-id is announced, the route the headend learns passes that check
 				if held {
@@ -524,7 +525,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 // where the kernel offered what its 1400 byte device carries
 func TestTUNClampsTheMSSOfASYN(t *testing.T) {
 	const session = 1300
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(DefaultMTU, "msstest0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)

@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 	"weak"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // the stream TestTUNCoalescesFramesIntoAKernelSocket sends, groBursts bursts of groSegments segments of groMSS bytes, one delivery a burst
@@ -174,7 +176,7 @@ func tunPackets(t *testing.T, name string, field int) uint64 {
 // and the socket reads back exactly the bytes sent, so no write and no coalescing reached past a frame into the packet behind it
 func TestTUNCoalescesFramesIntoAKernelSocket(t *testing.T) {
 	const iss = 7000
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(DefaultMTU, "grotest0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
@@ -251,7 +253,7 @@ func laneWrites() []laneWrite {
 
 // a lane's write into the tun allocates nothing, whether its packets go one a writev or coalesce
 func TestTUNWriteAllocatesNothing(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(DefaultMTU, "allocs0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
@@ -282,7 +284,7 @@ func TestTUNWriteAllocatesNothing(t *testing.T) {
 // a lane's write leaves nothing of the frames it wrote reachable from the mesh or its tun
 // so the storage a session's datagrams lie in goes once the packets in it are written, whether they went alone or coalesced
 func TestTUNWriteKeepsNoReferenceToItsFrames(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	m, err := NewNamed(DefaultMTU, "keep0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)

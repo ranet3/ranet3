@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // answeredFamily is one family the host behind the tun sends from, to an address it routes out of the tun
@@ -54,7 +56,7 @@ func TestTUNAnswerToThisHostPassesAReversePathCheck(t *testing.T) {
 	for _, family := range answeredFamilies {
 		for _, chain := range reversePathChains {
 			t.Run(fmt.Sprintf("%s under the %s chain", family.name, chain.name), func(t *testing.T) {
-				enterEmptyNamespace(t)
+				netnstest.EnterEmpty(t)
 				nft, err := exec.LookPath("nft")
 				if err != nil {
 					t.Fatal("the reverse path chain is written through nft, which is not on the path")
