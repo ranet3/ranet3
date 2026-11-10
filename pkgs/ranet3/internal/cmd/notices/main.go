@@ -100,9 +100,14 @@ var targets = []target{{goos: "linux", goarch: "amd64"}, {goos: "darwin", goarch
 // everywhere. It is also the more honest question, since the obligation
 // attaches to what is distributed.
 func linkedModules() ([]module, error) {
+	dir, err := os.MkdirTemp("", "ranet3-notices-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
 	lists := make([][]module, 0, len(targets))
 	for _, t := range targets {
-		modules, err := builtModules(t)
+		modules, err := builtModules(dir, t)
 		if err != nil {
 			return nil, err
 		}
@@ -111,10 +116,9 @@ func linkedModules() ([]module, error) {
 	return union(lists...), nil
 }
 
-// builtModules builds the daemon for t and reads its modules back out of it
-func builtModules(t target) ([]module, error) {
-	binary := filepath.Join(os.TempDir(), "ranet3-notices-subject-"+t.goos+"-"+t.goarch)
-	defer os.Remove(binary)
+// builtModules builds the daemon for t in dir and reads its modules back out of it
+func builtModules(dir string, t target) ([]module, error) {
+	binary := filepath.Join(dir, t.goos+"-"+t.goarch)
 	build := exec.Command("go", "build", "-o", binary, "./cmd/ranet3")
 	build.Env = append(os.Environ(), "GOOS="+t.goos, "GOARCH="+t.goarch, "CGO_ENABLED=0")
 	build.Stderr = os.Stderr

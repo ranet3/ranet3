@@ -13,7 +13,7 @@ import (
 // A module go.mod replaces with a directory ships under its own path, and
 // its license is in that directory rather than in the module cache.
 func TestDirectoryReplacementShipsUnderThePathItReplaces(t *testing.T) {
-	listed := "/tmp/ranet3-notices-subject: go1.26.8\n" +
+	listed := "/tmp/ranet3-notices-1/linux-amd64: go1.26.8\n" +
 		"\tpath\tranet3.com/pkgs/ranet3/cmd/ranet3\n" +
 		"\tmod\tranet3.com/pkgs/ranet3\t(devel)\t\n" +
 		"\tdep\tgithub.com/BurntSushi/toml\tv1.6.0\th1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=\n" +
@@ -37,7 +37,7 @@ func TestDirectoryReplacementShipsUnderThePathItReplaces(t *testing.T) {
 // license read from the fork in the module cache and its notice naming it
 // modified and the fork that replaces it.
 func TestForkShipsUnderThePathItReplacesAsModified(t *testing.T) {
-	listed := "/tmp/ranet3-notices-subject: go1.26.8\n" +
+	listed := "/tmp/ranet3-notices-1/linux-amd64: go1.26.8\n" +
 		"\tpath\tranet3.com/pkgs/ranet3/cmd/ranet3\n" +
 		"\tdep\tgvisor.dev/gvisor\tv0.0.0-20261008000517-3b87f090dbda\th1:AAAA\n" +
 		"\t=>\tgithub.com/stepbrobd/gvisor\tv0.0.0-20261108000000-0123456789ab\th1:BBBB\n" +
