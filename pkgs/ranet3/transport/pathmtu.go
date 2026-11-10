@@ -14,7 +14,7 @@ import (
 // a send that answers it bare sent every datagram no longer than Largest and refused the longer ones
 // but for any that went ahead of the refusal on a path that narrowed while the send ran
 // a send that answers it wrapped with another error lost more than that
-// linux refuses past the route's path MTU and darwin past the interface's MTU, and no other platform sends with DF
+// linux refuses past the route's path MTU and darwin past the interface's MTU
 type PathMTUError struct {
 	Endpoint Endpoint
 	MTU      int
@@ -33,7 +33,6 @@ func (e *PathMTUError) Largest() int {
 }
 
 // pathBind is a bind whose sends carry DF, which lets a probe it sends measure the path
-// the portable bind of freebsd and openbsd sends without DF and is none
 type pathBind interface {
 	// readPathMTU reads the MTU the host holds for the path to ep, the largest IP packet a send to ep may carry
 	readPathMTU(ep Endpoint) (int, error)
@@ -45,7 +44,7 @@ type pathBind interface {
 }
 
 // PathMTU reads the MTU the host holds for the path to the mux's endpoint, the largest IP packet a send may carry
-// it answers errors.ErrUnsupported where sends leave without DF, and a probe there measures nothing
+// it answers errors.ErrUnsupported on a bind without the path MTU methods, where a probe measures nothing
 func (m *Mux) PathMTU() (int, error) {
 	bind, ok := m.hub.bind.(pathBind)
 	if !ok {

@@ -263,9 +263,6 @@ func TestThresholdIsThePathMTUTheHostHolds(t *testing.T) {
 	}
 	s := &Session{mux: mux, current: testContext(), fragments: true}
 	mtu, err := s.mux.PathMTU()
-	if errors.Is(err, errors.ErrUnsupported) {
-		t.Skip("the host sends without DF and holds no path MTU")
-	}
 	if err != nil {
 		t.Fatal(err)
 	}

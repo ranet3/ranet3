@@ -379,7 +379,7 @@ type pathDriver struct {
 	// steering is the steering table in force at the session's start or the one a reload last handed it, whose longest segment list a steered 1280-byte packet carries
 	// the start sets it before serve runs, and serve replaces it under mu
 	steering *srv6.SteerTable
-	// searching is false where the mux sends without DF, and the budget is then link.mtu
+	// searching is false where the mux's bind has no path MTU methods, and the budget is then link.mtu
 	searching bool
 	// mu guards search, endpoint, refusals and changed, which the session's goroutine writes and the debug view reads
 	mu     sync.Mutex

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -103,14 +102,10 @@ func TestTunnelRekeyPreservesInflightKeys(t *testing.T) {
 	}
 }
 
-// each result reaches the emit in receive order beside the outer ECN field its datagram arrived with, with one worker and with four, where the portable bind reads every field Not-ECT
+// each result reaches the emit in receive order beside the outer ECN field its datagram arrived with, with one worker and with four
 // the first datagram's batch is held in decryption until the second's is decrypted, so four workers complete out of order and the emit puts them back
 func TestReceiveESPOrderAndShutdown(t *testing.T) {
 	sent := []packet.ECN{packet.CE, packet.ECT0}
-	arrives := sent
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		arrives = []packet.ECN{packet.NotECT, packet.NotECT}
-	}
 	for _, workers := range []int{1, 4} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
 			remote, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -219,7 +214,7 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 			for id := 1; id <= len(sent); id++ {
 				select {
 				case got := <-delivered:
-					if want := (delivery{uint32(id), arrives[id-1]}); got != want {
+					if want := (delivery{uint32(id), sent[id-1]}); got != want {
 						t.Fatalf("received packet %d with the ECN field %v, want packet %d with %v", got.id, got.ecn, want.id, want.ecn)
 					}
 				case <-time.After(time.Second):

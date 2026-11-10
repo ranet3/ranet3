@@ -31,14 +31,12 @@
 //
 // No setting keeps these sockets off the routes a mesh running over it
 // installs. [Runtime]'s Prepare, which a caller always supplies, readies each
-// socket that carries a datagram before it binds or connects, on linux,
-// android, darwin and ios, the builds with a hook for it. Two darwin and ios
-// sockets that only look a route up pass none: the one reading a pair's source
-// is scoped to the pair's interface, and the one reading the interface a send
-// takes runs only with no [Selection], where Prepare leaves a socket as it is.
-// Elsewhere wireguard's StdNetBind offers no hook and no socket passes it.
-// A linux daemon's Prepare sets schema.UnderlayMark where the process may set
-// it, which the reconciler's derived rules read to keep them off, as
+// socket that carries a datagram before it binds or connects. Two darwin and
+// ios sockets that only look a route up pass none: the one reading a pair's
+// source is scoped to the pair's interface, and the one reading the interface
+// a send takes runs only with no [Selection], where Prepare leaves a socket as
+// it is. A linux daemon's Prepare sets schema.UnderlayMark where the process
+// may set it, which the reconciler's derived rules read to keep them off, as
 // routing.md's "Where a lookup ends on Linux" gives with its scope. A darwin
 // daemon's scopes each socket connected to a peer to the interface its
 // [Selection] names for the peer, and each datagram of the shared socket names
@@ -298,7 +296,7 @@ type packetBind interface {
 // It adds those it read and could not use to refused, and returns an error
 // before it adds any, so an operator can tell a receive path that is
 // discarding from one that is idle.
-// It fills a record for every datagram and an endpoint for every IKE datagram, which the memory and portable binds fill for every datagram.
+// It fills a record for every datagram and an endpoint for every IKE datagram, which the memory bind fills for every datagram.
 // It reads into blocks of pool, the hub's, and a view stays valid until its
 // next call unless a batch retains its block. The datagrams of one block are
 // consecutive in what one call hands out.

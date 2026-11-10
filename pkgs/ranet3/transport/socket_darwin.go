@@ -31,7 +31,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
-// This backend exists for what the portable one cannot offer. The first is
+// This backend carries three things a plain UDP socket does not. The first is
 // naming each datagram's interface, in IP_PKTINFO or IPV6_PKTINFO
 // on the shared socket and in IP_BOUND_IF or IPV6_BOUND_IF on a socket
 // connected to one peer. Nothing else on darwin keeps an underlay out of the
@@ -47,12 +47,8 @@ import (
 // second is the address and interface each datagram reached, and the third its
 // outer ECN field.
 //
-// The portable bind is wireguard's StdNetBind, which keeps its descriptors to
-// itself, so there is no seam to set a socket option through. The socket work
-// here is otherwise the plainest form of what that one does: one datagram per
-// read, one write per packet. darwin has neither recvmmsg nor UDP
-// segmentation, so the batching the linux backend is built around has nothing
-// to stand on here.
+// darwin has neither recvmmsg nor UDP segmentation, so the batching the linux
+// backend is built around has nothing to stand on here.
 
 // darwinEndpoint is one peer address this socket sends to, and for an IKE datagram's sender the address the datagram reached
 // RFC 7296 section 2.11: "It MUST specify the address and port at which the request was received as the source address and port in the response."

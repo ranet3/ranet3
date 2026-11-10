@@ -13,7 +13,7 @@ import (
 )
 
 // pmtuFixture is a steering node at link.mtu 8918 with a session settled under a path that carries 1450 bytes
-// one searching up with a probe out, one under the floor and one its platform does not search
+// one searching up with a probe out, one under the floor and one whose bind has no path MTU methods
 func pmtuFixture() PMTUInfo {
 	return PMTUInfo{
 		LinkMTU: 8918, Steering: 56, DeviceMTU: 8862, TooBigSent: 4, MSSClamped: 1,

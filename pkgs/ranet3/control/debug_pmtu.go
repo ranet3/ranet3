@@ -55,7 +55,7 @@ const (
 	PMTUSearchingDown = "searching down"
 	PMTUConfirmed     = "confirmed"
 	PMTUUnderFloor    = "under the floor"
-	// PMTUNotSearched is a session whose platform sends without DF, which carries link.mtu
+	// PMTUNotSearched is a session whose bind has no path MTU methods, which carries link.mtu
 	PMTUNotSearched = "not searched"
 )
 

@@ -22,5 +22,5 @@ type Prepare func(network string, to netip.AddrPort, raw syscall.RawConn) error
 
 // Unchanged leaves every socket as it is. It is the preparer of the builds
 // that have no way of their own: the android and ios daemons, whose platform's
-// way is an app's to supply, and the BSDs, whose bind takes no preparer.
+// way is an app's to supply, and the builds whose hub refuses to open.
 func Unchanged(string, netip.AddrPort, syscall.RawConn) error { return nil }

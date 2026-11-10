@@ -162,8 +162,8 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 
 	// a platform that runs no filter, where overlay is written, says so in one line
 	out.Reset()
-	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules", Border: &BorderTable{UnenforcedOn: "freebsd"}})
-	if want := "\nAntispoof filter, not enforced on freebsd\n"; !strings.HasSuffix(out.String(), want) {
+	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules", Border: &BorderTable{UnenforcedOn: "android"}})
+	if want := "\nAntispoof filter, not enforced on android\n"; !strings.HasSuffix(out.String(), want) {
 		t.Errorf("a platform with no filter renders\n%s\nwant it to end %q", out.String(), want)
 	}
 }
