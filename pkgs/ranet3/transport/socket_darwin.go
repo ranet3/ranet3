@@ -293,6 +293,18 @@ func (b *darwinBind) Close() error {
 // the first answer for ep and each that names another interface are recorded once, by whichever send kept it
 func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
 	last := ep.selected.Load()
+	s := b.answer(ep, last)
+	if s != last && ep.selected.CompareAndSwap(last, s) && (last == nil || last.index != s.index) {
+		b.selectedNow(ep, s.index)
+	}
+	return s
+}
+
+// lookup is the interface b's Selection names for ep, as selectedFor answers it, keeping and recording nothing
+func (b *darwinBind) lookup(ep *darwinEndpoint) *selected { return b.answer(ep, ep.selected.Load()) }
+
+// answer is the interface b's Selection names for ep under its current generation, last where last, the answer ep keeps, is of that generation
+func (b *darwinBind) answer(ep *darwinEndpoint, last *selected) *selected {
 	if last != nil && last.generation == b.selection.Generation() {
 		return last
 	}
@@ -308,9 +320,6 @@ func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
 	}
 	if index != 0 && ep.addr.Addr().Is6() {
 		s.fragmentingControl = append(slices.Clip(s.control), fragmentControl...)
-	}
-	if ep.selected.CompareAndSwap(last, s) && (last == nil || last.index != index) {
-		b.selectedNow(ep, index)
 	}
 	return s
 }
@@ -376,12 +385,25 @@ var icmpErrnos = []unix.Errno{unix.ECONNREFUSED, unix.EHOSTDOWN, unix.EHOSTUNREA
 // pairOf takes the local address and an IPv6 link-local source's interface from the pin, and otherwise leaves the address to the route
 // and takes the interface the selection names, so a changed selection is a changed pair
 func (b *darwinBind) pairOf(endpoint Endpoint) pairKey {
+	return b.keyOf(endpoint.(*darwinEndpoint), true)
+}
+
+// sendKey is the pair pairOf names, with the selection looked up rather than kept and recorded, and the interface the pin of ep's sends sends by
+func (b *darwinBind) sendKey(endpoint Endpoint) (pairKey, int) {
 	ep := endpoint.(*darwinEndpoint)
+	return b.keyOf(ep, false), b.pinInterface(ep)
+}
+
+// keyOf is the pair of ep, which keeps and records the selection's answer for ep where kept is set
+func (b *darwinBind) keyOf(ep *darwinEndpoint, kept bool) pairKey {
 	k := pairKey{remote: ep.addr}
-	if ep.pin() != nil {
+	switch {
+	case ep.pin() != nil:
 		k.local, k.index = ep.source, ep.index
-	} else if b.selection != nil {
+	case b.selection != nil && kept:
 		k.index = b.selectedFor(ep).index
+	case b.selection != nil:
+		k.index = b.lookup(ep).index
 	}
 	return k
 }
@@ -696,22 +718,6 @@ func (b *darwinBind) heldUnder(generation uint64) (*heldAddresses, error) {
 	}
 	b.held.Store(held)
 	return held, nil
-}
-
-// underlayPath is where sendInterface takes ep's datagrams, false where b names no interface
-func (b *darwinBind) underlayPath(endpoint Endpoint) (UnderlayPath, bool) {
-	ep, ok := endpoint.(*darwinEndpoint)
-	if !ok || b.selection == nil {
-		return UnderlayPath{}, false
-	}
-	path := UnderlayPath{Address: ep.addr.Addr()}
-	if index := b.pinInterface(ep); index != 0 {
-		path.Pin = strconv.Itoa(index)
-		if link, err := net.InterfaceByIndex(index); err == nil {
-			path.Pin = link.Name
-		}
-	}
-	return path, true
 }
 
 // routedInterface is the interface the host routes a datagram to addr by, the one holding the source a socket connected to addr takes,

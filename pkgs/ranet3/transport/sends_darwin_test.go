@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// darwin's mux answers where its datagrams go and leaves the pin to its selection, whose pair key a read must not record
+// a mux of a hub with no selection names no interface for its dialed sends, and for a pinned one the pin, its arrival interface and the pin's interface
 func TestSendsNamesWhatAMuxsDatagramsCarry(t *testing.T) {
 	lo, err := net.InterfaceByName("lo0")
 	if err != nil {
@@ -20,13 +20,20 @@ func TestSendsNamesWhatAMuxsDatagramsCarry(t *testing.T) {
 			hub, peer, dialed := pairHub(t, family.network, family.loopback)
 			at := peer.LocalAddr().(*net.UDPAddr).AddrPort()
 			at = netip.AddrPortFrom(at.Addr().Unmap(), at.Port())
-			pinned, err := hub.NewMuxTo(pinnedEndpoint(at, netip.MustParseAddr(family.loopback), lo.Index))
+			source := netip.MustParseAddr(family.loopback)
+			pinned, err := hub.NewMuxTo(pinnedEndpoint(at, source, lo.Index))
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, mux := range []*Mux{dialed, pinned} {
-				if got, want := mux.Sends(), (Send{Destination: at.Addr()}); got != want {
-					t.Errorf("the mux sends %+v, want %+v", got, want)
+			for _, sent := range []struct {
+				mux  *Mux
+				want Send
+			}{
+				{dialed, Send{Destination: at.Addr()}},
+				{pinned, Send{Destination: at.Addr(), Source: source, Interface: lo.Index, PinInterface: lo.Index}},
+			} {
+				if got := sent.mux.Sends(); got != sent.want {
+					t.Errorf("the mux sends %+v, want %+v", got, sent.want)
 				}
 			}
 		})

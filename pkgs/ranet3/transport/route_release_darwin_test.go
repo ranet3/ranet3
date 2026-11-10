@@ -334,12 +334,8 @@ func TestDarwinHostAddressesAreReadOncePerGeneration(t *testing.T) {
 			if index, err := l.bind.sendInterface(pinned); err != nil || index != moved {
 				t.Errorf("the path MTU of the pin %s is read on interface %d, %v, want %d", source, index, err, moved)
 			}
-			name := strconv.Itoa(moved)
-			if link, err := net.InterfaceByIndex(moved); err == nil {
-				name = link.Name
-			}
-			if path, ok := l.bind.underlayPath(pinned); !ok || path.Pin != name {
-				t.Errorf("the pin %s leaves by %+v, %v, want %s", source, path, ok, name)
+			if _, index := l.bind.sendKey(pinned); index != moved {
+				t.Errorf("the sends from the pin %s name interface %d, want %d", source, index, moved)
 			}
 		})
 	}

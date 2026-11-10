@@ -273,7 +273,7 @@ func (b *udpBind) pairOf(endpoint Endpoint) pairKey {
 	return k
 }
 
-func (b *udpBind) sendKey(endpoint Endpoint) pairKey { return b.pairOf(endpoint) }
+func (b *udpBind) sendKey(endpoint Endpoint) (pairKey, int) { return b.pairOf(endpoint), 0 }
 
 // connectPair binds the hub's port on one address, which keeps the socket out of any reuseport group the listener is in
 // and once connected the kernel prefers it to the wildcard listener for its peer's datagrams to that address

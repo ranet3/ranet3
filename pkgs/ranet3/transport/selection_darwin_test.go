@@ -227,41 +227,79 @@ func TestDarwinSelectionIsRecordedOncePerChange(t *testing.T) {
 	}
 }
 
-// the path a hub gives for an endpoint keeps a link-local endpoint's zone for the selection to answer, names the interface
-// holding a pin, an IPv6 link-local pin's arrival interface or the one holding the pin's address, and leaves a pin no interface
-// holds to the selection, as the sends do, and a hub with no selection gives none
-func TestDarwinUnderlayPathIsWhereTheDatagramsLeave(t *testing.T) {
+// a mux's sends name the interface the selection answers for an endpoint with no pin, a link-local one's asked with its zone,
+// and for one with a pin the pin's own interface, an IPv6 link-local pin's arrival interface or the one holding the pin's address,
+// and none where no interface holds the pin, whose sends then take the selection's
+// reading them neither keeps the selection's answer nor records it, which the first send then does
+// a hub with no selection names no interface for an endpoint with no pin
+func TestDarwinSendsNameTheInterfaceTheDatagramsLeaveBy(t *testing.T) {
 	loopback, err := net.InterfaceByName("lo0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub := selectedHub(t, newTestSelection(loopback.Index))
-	zoned, err := hub.bind.ParseEndpoint("[fe80::9%lo0]:4500")
+	log := &eventLog{}
+	selection := newTestSelection(loopback.Index)
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: selection, Events: log.record})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = hub.Close() })
 	peer, linkLocal := netip.MustParseAddrPort("198.51.100.9:4500"), netip.MustParseAddrPort("[fe80::9%lo0]:4500")
+	host, linkHost, gone := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("fe80::1"), netip.MustParseAddr("198.51.100.77")
+	unpinned := func(at netip.AddrPort) Endpoint {
+		t.Helper()
+		ep, err := hub.bind.ParseEndpoint(at.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ep
+	}
 	for _, test := range []struct {
 		name     string
 		endpoint Endpoint
-		want     UnderlayPath
+		want     Send
 	}{
-		{"a link-local endpoint", zoned, UnderlayPath{Address: linkLocal.Addr()}},
-		{"a pin lo0 holds", pinnedEndpoint(peer, netip.MustParseAddr("127.0.0.1"), 0), UnderlayPath{Address: peer.Addr(), Pin: "lo0"}},
-		{"a link-local pin", pinnedEndpoint(linkLocal, netip.MustParseAddr("fe80::1"), loopback.Index), UnderlayPath{Address: linkLocal.Addr(), Pin: "lo0"}},
-		{"a pin no interface holds", pinnedEndpoint(peer, netip.MustParseAddr("198.51.100.77"), 0), UnderlayPath{Address: peer.Addr()}},
+		{"an endpoint with no pin", unpinned(peer), Send{Destination: peer.Addr(), Interface: loopback.Index}},
+		{"a link-local endpoint", unpinned(linkLocal), Send{Destination: linkLocal.Addr().WithZone(""), Interface: loopback.Index}},
+		{"a pin lo0 holds", pinnedEndpoint(peer, host, 0), Send{Destination: peer.Addr(), Source: host, PinInterface: loopback.Index}},
+		{"a link-local pin", pinnedEndpoint(linkLocal, linkHost, loopback.Index),
+			Send{Destination: linkLocal.Addr().WithZone(""), Source: linkHost, Interface: loopback.Index, PinInterface: loopback.Index}},
+		{"a pin no interface holds", pinnedEndpoint(peer, gone, 0), Send{Destination: peer.Addr(), Source: gone}},
 	} {
-		if got, ok := hub.SendsBy(test.endpoint); !ok || got != test.want {
-			t.Errorf("%s leaves by %+v, %v, want %+v", test.name, got, ok, test.want)
+		mux, err := hub.NewMuxTo(test.endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := mux.Sends(); got != test.want {
+			t.Errorf("%s sends %+v, want %+v", test.name, got, test.want)
 		}
 	}
+	read := unpinned(peer).(*darwinEndpoint)
+	mux, err := hub.NewMuxTo(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux.Sends()
+	if kept, recorded := read.selected.Load(), log.recorded(); kept != nil || len(recorded) != 0 {
+		t.Fatalf("reading where a mux sends kept the selection %+v and recorded %q, want neither", kept, recorded)
+	}
+	_ = hub.bind.Send([][]byte{[]byte("selected")}, read)
+	want := fmt.Sprintf("transport.underlay.selected endpoint=%s interface=lo0 interface_index=%d", read, loopback.Index)
+	if got := log.recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("the send after the read recorded %q, want %q", got, want)
+	}
+
 	unselected, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = unselected.Close() })
-	if got, ok := unselected.SendsBy(zoned); ok {
-		t.Errorf("a hub with no selection gives the path %+v", got)
+	mux, err = unselected.NewMux(peer.Addr().AsSlice(), int(peer.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := mux.Sends(), (Send{Destination: peer.Addr()}); got != want {
+		t.Errorf("a hub with no selection sends %+v, want %+v", got, want)
 	}
 }
 

@@ -24,27 +24,6 @@ type Runtime struct {
 	Events func(kind string, attrs ...slog.Attr)
 }
 
-// UnderlayPath is the interface darwin's datagrams to one endpoint name, or the interface of the pin they carry
-type UnderlayPath struct {
-	// Address is the endpoint's, its zone kept, which the selection answers the interface for
-	Address netip.Addr
-	// Pin is the interface of the endpoint's pin, by name or index, empty where the selection names it
-	Pin string
-}
-
-// underlayPather is a bind that names the interface of each datagram, darwin's
-type underlayPather interface {
-	underlayPath(Endpoint) (UnderlayPath, bool)
-}
-
-// SendsBy is the interface the hub's datagrams to endpoint name, or the interface of the pin they carry, false on a hub that names no interface
-func (h *Hub) SendsBy(endpoint Endpoint) (UnderlayPath, bool) {
-	if bind, ok := h.bind.(underlayPather); ok {
-		return bind.underlayPath(endpoint)
-	}
-	return UnderlayPath{}, false
-}
-
 // Selection answers which interface the host's own routes send a datagram by,
 // the routes of ranet3's own interface left out, as a lookup carrying linux's
 // underlay mark ends past them. internal/kernel implements it on darwin.

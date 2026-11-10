@@ -334,22 +334,25 @@ func (m *Mux) pairFor(endpoint Endpoint) *pair {
 
 // Send is where a mux's datagrams go and the source address and interface index they leave with, invalid and zero where the route picks them
 // Pair says they go on a socket connected to the peer rather than the shared one
+// PinInterface is the interface darwin sends the datagrams' pin by, zero where they carry no pin or no interface holds it
+// linux leaves it zero, since Interface names a pin's interface there
 type Send struct {
 	Destination, Source netip.Addr
 	Interface           int
 	Pair                bool
+	PinInterface        int
 }
 
-// sendKeyer is a bind whose pair key for an endpoint changes nothing, linux's
-// darwin's pairOf selects an interface and records the selection as a send does
+// sendKeyer's sendKey is the pair sends to ep leave on, as pairOf answers it, and the interface of their pin as Send.PinInterface gives it
+// it records nothing
 type sendKeyer interface {
-	sendKey(ep Endpoint) pairKey
+	sendKey(ep Endpoint) (key pairKey, pin int)
 }
 
 // Sends answers where m's datagrams go now and the source and interface of the pair its endpoint names, the source the address its connected socket is bound to while m sends on one
 // an unpinned send to a zoned peer leaves by the zone's interface, which linux names by its index
 // a bind with no sendKey answers the destination alone
-// it takes only the endpoint's read lock, which sends share
+// it takes no lock a send to the endpoint does not take
 func (m *Mux) Sends() Send {
 	endpoint := m.Endpoint()
 	if endpoint == nil {
@@ -360,8 +363,8 @@ func (m *Mux) Sends() Send {
 	if !ok {
 		return send
 	}
-	key := keyer.sendKey(endpoint)
-	send.Source, send.Interface = key.local.WithZone(""), key.index
+	key, pin := keyer.sendKey(endpoint)
+	send.Source, send.Interface, send.PinInterface = key.local.WithZone(""), key.index, pin
 	if zone := key.remote.Addr().Zone(); send.Interface == 0 && zone != "" {
 		send.Interface, _ = strconv.Atoi(zone)
 	}

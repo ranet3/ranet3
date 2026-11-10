@@ -6,8 +6,10 @@ package client
 import (
 	"cmp"
 	"errors"
+	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
@@ -90,39 +92,70 @@ type underlayRoutes interface {
 	Route(addr netip.Addr) (netip.Prefix, string, bool)
 }
 
-// underlayPaths is where the hub sends the datagrams of each live session, its endpoint's zone and pin kept
-func (c *Client) underlayPaths() []transport.UnderlayPath {
-	var paths []transport.UnderlayPath
+// underlayPath is where one live session's datagrams go: the address the selection answers for and the interface of the pin they carry,
+// by name or index, empty where the selection names it
+type underlayPath struct {
+	address netip.Addr
+	pin     string
+}
+
+// underlayPaths is where the hub sends the datagrams of each live session, as its mux answers it
+func (c *Client) underlayPaths() []underlayPath {
+	var paths []underlayPath
 	for _, session := range c.sessions.snapshot() {
-		if endpoint := session.session.Mux().Endpoint(); endpoint != nil {
-			if path, ok := c.hub.SendsBy(endpoint); ok {
-				paths = append(paths, path)
-			}
+		if send := session.session.Mux().Sends(); send.Destination.IsValid() {
+			paths = append(paths, underlayPathOf(send, interfaceName))
 		}
 	}
 	return paths
 }
 
+// underlayPathOf is the path of send, a link-local destination zoned by the interface it leaves by, with name naming an interface by its index
+func underlayPathOf(send transport.Send, name func(int) string) underlayPath {
+	path := underlayPath{address: send.Destination}
+	if path.address.Is6() && path.address.IsLinkLocalUnicast() && send.Interface != 0 {
+		path.address = path.address.WithZone(name(send.Interface))
+	}
+	if send.PinInterface != 0 {
+		path.pin = name(send.PinInterface)
+	}
+	return path
+}
+
+// interfaceName is the name of interface index, or its index where the host names none
+func interfaceName(index int) string {
+	if link, err := net.InterfaceByIndex(index); err == nil {
+		return link.Name
+	}
+	return strconv.Itoa(index)
+}
+
 // underlayLookups is one underlay row per distinct path in address order: the interface of its pin, by name or index,
-// or else the route routes selects its address by and that route's interface, or no route
+// or else the route routes selects its address by and that route's interface,
+// or no route where none holds the address or where it is a link-local address that names no interface
 // never taken, since neither is ranet3's interface
-func underlayLookups(routes underlayRoutes, paths []transport.UnderlayPath) []control.RuleLookup {
+func underlayLookups(routes underlayRoutes, paths []underlayPath) []control.RuleLookup {
 	paths = slices.Clone(paths)
-	slices.SortFunc(paths, func(a, b transport.UnderlayPath) int {
-		return cmp.Or(a.Address.Compare(b.Address), cmp.Compare(a.Pin, b.Pin))
+	slices.SortFunc(paths, func(a, b underlayPath) int {
+		return cmp.Or(a.address.Compare(b.address), cmp.Compare(a.pin, b.pin))
 	})
 	paths = slices.Compact(paths)
 	rows := make([]control.RuleLookup, 0, len(paths))
 	for _, path := range paths {
 		family := kernel.FamilyIPv4
-		if !path.Address.Unmap().Is4() {
+		if !path.address.Unmap().Is4() {
 			family = kernel.FamilyIPv6
 		}
-		row := control.RuleLookup{Lookup: "underlay", Family: string(family), Address: path.Address, Answer: "no route"}
-		if path.Pin != "" {
-			row.Answer = "dev " + path.Pin
-		} else if prefix, device, ok := routes.Route(path.Address); ok {
-			row.Prefix, row.Answer = prefix, "dev "+device
+		row := control.RuleLookup{Lookup: "underlay", Family: string(family), Address: path.address, Answer: "no route"}
+		switch {
+		case path.pin != "":
+			row.Answer = "dev " + path.pin
+		case path.address.Is6() && path.address.IsLinkLocalUnicast() && path.address.Zone() == "":
+			// an unzoned link-local address names no interface, so no route is asked
+		default:
+			if prefix, device, ok := routes.Route(path.address); ok {
+				row.Prefix, row.Answer = prefix, "dev "+device
+			}
 		}
 		rows = append(rows, row)
 	}

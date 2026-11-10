@@ -23,6 +23,7 @@ type Send struct {
 	Destination, Source netip.Addr
 	Interface           int
 	Pair                bool
+	PinInterface        int
 }
 
 // compare orders sends by the lookup they ask, and a pair's send first among
