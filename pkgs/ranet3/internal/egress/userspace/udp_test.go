@@ -185,6 +185,18 @@ func serverAt(conn *net.UDPConn) netip.AddrPort {
 	return netip.AddrPortFrom(at.Addr().Unmap(), at.Port())
 }
 
+// routeAddress is the address the host's route toward to picks, the local
+// address of a UDP socket connected to it
+func routeAddress(t *testing.T, to netip.AddrPort) netip.Addr {
+	t.Helper()
+	conn, err := net.DialUDP(udpNetwork(to.Addr()), nil, net.UDPAddrFromAddrPort(to))
+	if err != nil {
+		t.Fatalf("the host's route toward %s: %v", to, err)
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()
+}
+
 // readDatagramFrom reads the datagram holding payload on conn within
 // exitWait, and reports where it came from
 func readDatagramFrom(t fataler, conn *net.UDPConn, payload []byte) netip.AddrPort {
@@ -509,8 +521,7 @@ func TestMappingUnderAutoLeavesFromItsFirstDestinationsAddress(t *testing.T) {
 	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	h.x.udp.take(udpDatagram(leaf, serverAt(first), []byte("first")), false)
 	from := readDatagramFrom(t, first, []byte("first"))
-	// the address the route to the first destination picked, which on loopback
-	// is the one every route picks, so it stands in for another
+	// stands in for an address the route to the first destination picked
 	paired := netip.MustParseAddr("127.0.0.3")
 	if _, was := h.pairedOf(t, leaf, paired); was != from.Addr() {
 		t.Fatalf("the mapping pairs %s, want %s, the address its first datagram left from", was, from.Addr())
@@ -523,26 +534,30 @@ func TestMappingUnderAutoLeavesFromItsFirstDestinationsAddress(t *testing.T) {
 
 // A mapping under auto whose address the host no longer holds ends at its next
 // destination rather than leave from another address, and the datagram opens
-// a new mapping from the address the route picks
+// a new mapping from the address the host's route toward that destination
+// picks
 func TestMappingWhoseAddressIsGoneEnds(t *testing.T) {
 	first := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
 	later := loopbackServer(t, netip.MustParseAddr("127.0.0.2"))
 	h := newRelayHarness(t, nil)
 	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	h.x.udp.take(udpDatagram(leaf, serverAt(first), []byte("first")), false)
-	from := readDatagramFrom(t, first, []byte("first"))
+	readDatagramFrom(t, first, []byte("first"))
 	// a documentation address no host holds
 	gone, _ := h.pairedOf(t, leaf, netip.MustParseAddr("192.0.2.77"))
+	// the address the host's route toward the later destination picks, which
+	// need not be the one the route toward the first picked
+	route := routeAddress(t, serverAt(later))
 	h.x.udp.take(udpDatagram(leaf, serverAt(later), []byte("later")), false)
-	if got := readDatagramFrom(t, later, []byte("later")); got.Addr() != from.Addr() {
-		t.Errorf("the later destination read the datagram from %s, want an address of %s, the route's", got, from.Addr())
+	if got := readDatagramFrom(t, later, []byte("later")); got.Addr() != route {
+		t.Errorf("the later destination read the datagram from %s, want an address of %s, the one the host's route toward it picks", got, route)
 	}
 	m, paired := h.pairedOf(t, leaf, netip.Addr{})
 	gone.mu.RLock()
 	closed := gone.closed
 	gone.mu.RUnlock()
-	if m == gone || !closed || paired != from.Addr() {
-		t.Errorf("the mapping is the old one %t, the old one closed %t, pairing %s, want a new mapping pairing %s", m == gone, closed, paired, from.Addr())
+	if m == gone || !closed || paired != route {
+		t.Errorf("the mapping is the old one %t, the old one closed %t, pairing %s, want a new mapping pairing %s, the address the host's route toward the later destination picks", m == gone, closed, paired, route)
 	}
 }
 
