@@ -127,8 +127,10 @@ On Linux the suite builds 4 network namespaces, each new and empty and held by a
 thread of its own:
 
 - the leaf, behind a tun of its own whose packets the suite hands the exit, with
-  a second address in each family for each source's share of the flows and
-  hairpinning, which no unbound socket takes as its source
+  a second address in each family, which no unbound socket takes as its source,
+  for each source's share of the flows, for hairpinning, and in TCP for the
+  other inside endpoint sending from the leaf's port, where the suite checks
+  [port overloading and a changed mapping](../design/protocol-deviations.md#exit-translation)
 - the exit, with the mesh's tun, a peer the mesh routes the leaf's addresses to,
   which writes what it carries into the leaf's tun, and an uplink with an MTU of
   1340 to the router
