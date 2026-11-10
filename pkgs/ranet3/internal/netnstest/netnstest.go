@@ -39,7 +39,6 @@ func EnterEmpty(t testing.TB) {
 }
 
 // EnterEmptyLoopbackDown is EnterEmpty with the loopback down, as unshare leaves it
-// for a test that compares a list of the namespace's up links whole, which an up loopback would join
 func EnterEmptyLoopbackDown(t testing.TB) {
 	t.Helper()
 	enterEmpty(t, enterNew)
