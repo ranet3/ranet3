@@ -18,9 +18,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
-// senderHold is how long a test leaves the head of a sender's queue unsealed after the sender ends its release
+// senderHold is the least time a test leaves the head of a sender's queue unsealed after the sender ends its release
 // the wait usually falls past the first bound, but a sender descheduled meanwhile can count less
-// such a run cannot catch a sum 1000 times too small, and no run fails a correct sum
+// a run whose waits all fall under the first bound cannot catch a sum 1000 times too small, and no run fails a correct sum
 const senderHold = time.Millisecond
 
 // clientWith is a client holding a session through each peer given, under the peer's ID as its path
@@ -59,7 +59,7 @@ func senderClient(t *testing.T, paths ...string) *Client {
 	return clientWith(t, peers...)
 }
 
-// waitingPeer is a peer for path whose sender has waited senderHold or more for the head of its queue to be sealed
+// waitingPeer is a peer for path whose sender has counted a wait on the head of its queue, a head the test leaves unsealed for at least senderHold once the sender ends its release
 // it reserves a babel packet's place while its transport holds the one before, and sends it only once the sender waits on it
 // a sender that starts after the first place is reserved waits on that head as well, briefly
 func waitingPeer(t *testing.T, path string) *netstack.Peer {
