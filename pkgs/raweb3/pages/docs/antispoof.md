@@ -671,10 +671,10 @@ the warning.
 
 ## Platforms
 
-Its nftables chains are Linux's alone. On macOS `overlay` turns pf on and the
-filter writes chain `antispoof` into [its anchor](#the-pf-anchor-on-macos), as
-[the chain on macOS](#on-macos) gives, with every carve-out and exemption.
-`status` reads
+The filter's nftables chains are Linux's alone. On macOS `overlay` turns pf on
+and the filter writes chain `antispoof` into
+[its anchor](#the-pf-anchor-on-macos), as [the chain on macOS](#on-macos) gives,
+with every carve-out and exemption. `status` reads
 `pf anchor com.apple/ranet3, inside utun7 lo0, 2 overlay prefixes, carving 192.0.2.128/25 on en0, dropped 11 overlay sources and 1 carved sources`
 on the antispoof line, with no drops entering the mesh, since the anchor holds
 no entry chain. A Mac with no `overlay` leaves pf as it found it, once it gives

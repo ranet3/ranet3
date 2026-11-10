@@ -713,26 +713,25 @@ Each writer reads back, rewrites and deletes only what its names give. Another
 writer's change to one of a writer's chains, a rule in one or one of its sets
 wakes that writer alone. No monitor reads the timeout objects, and the
 translator's next read finds a change to one. A table message wakes every writer
-but its sender unless it is a NEWTABLE whose flags are 0, as one that makes the
-table or clears its flags is, while one that deletes the table wakes every
-writer whatever it carries. A flush of the whole ruleset deletes the table and
-another program setting it dormant sets a flag on it, so each wakes every writer
-once, and the first writer's pass after it makes the table again or clears the
-flag, which wakes no other: the table it makes holds none of their chains, and
-with the flag cleared it bypasses none. No writer's writes wake another. Each
-makes the table where it is missing, and the last to withdraw deletes it, so a
-clean stop leaves no table, while a stop that leaves anything of another
-writer's in it leaves the table holding that. A table another writer gave a flag
-other than dormant, such as `persist`, refuses every writer's pass until
-`nft delete table inet ranet3` clears it. The translator names that command in
-the reason it is not ready, while the antispoof filter and the kill switch
-report the write's refusal, `operation not supported`, and the filter's ends a
-start at its first pass. The translator's nat chain needs Linux 5.2 or later, as
-[Linux](platforms.md#linux) gives. An `inet` nat chain hooks NAT in both
-families, so on an exit that translates one family a flow of the other that no
-chain translates gets the kernel's null binding, which changes no address, and
-its port only where 2 flows would share a tuple, as on any host with a NAT chain
-in that family.
+but its sender, unless it is a `NEWTABLE` whose flags are 0, which makes the
+table or clears its flags. One that deletes the table wakes them whatever it
+carries. A flush of the whole ruleset deletes the table and another program
+setting it dormant sets a flag on it, so each wakes every writer once, and the
+first writer's pass after it makes the table again or clears the flag, which
+wakes no other: the table it makes holds none of their chains, and with the flag
+cleared it bypasses none. No writer's writes wake another. Each makes the table
+where it is missing, and the last to withdraw deletes it, so a clean stop leaves
+no table, while a stop that leaves anything of another writer's in it leaves the
+table holding that. A table another writer gave a flag other than dormant, such
+as `persist`, refuses every writer's pass until `nft delete table inet ranet3`
+clears it. The translator names that command in the reason it is not ready,
+while the antispoof filter and the kill switch report the write's refusal,
+`operation not supported`, and the filter's ends a start at its first pass. The
+translator's nat chain needs Linux 5.2 or later, as [Linux](platforms.md#linux)
+gives. An `inet` nat chain hooks NAT in both families, so on an exit that
+translates one family a flow of the other that no chain translates gets the
+kernel's null binding, which changes no address, and its port only where 2 flows
+would share a tuple, as on any host with a NAT chain in that family.
 
 An older ranet3 wrote the translator's chains in the tables `ip ranet3` and
 `ip6 ranet3`, and the kill switch's in `inet ranet3_fallback`. Its clean stop

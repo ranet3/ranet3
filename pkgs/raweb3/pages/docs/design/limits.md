@@ -475,10 +475,10 @@ has [its own](#the-kill-switch-on-macos).
   LAN's line until `cap.exit.lan` lists its network, and status names the
   network public. It gets of the host's own packets only those another line of
   [the list](../routing.md#the-kill-switch-on-linux) passes.
-- While the table does not read back, a route of main longer than /0, such as a
-  DHCP option 121 pair of `/1`s (TunnelVision), wins at 5410 as in mode 2 and
-  sends the host's traffic out of the uplink. While it holds, the chains' drop
-  takes that traffic beyond the LAN unless another line passes it.
+- While the kill switch's chains do not read back, a route of main longer than
+  /0, such as a DHCP option 121 pair of `/1`s (TunnelVision), wins at 5410 as in
+  mode 2 and sends the host's traffic out of the uplink. While it holds, the
+  chains' drop takes that traffic beyond the LAN unless another line passes it.
 - Postrouting judges a send from a socket bound to the uplink's address or
   device by the link it leaves by
   ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n437),
