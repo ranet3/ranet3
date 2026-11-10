@@ -250,10 +250,8 @@ type darwinBind struct {
 	// selection names each unpinned datagram's interface, and nil names none
 	selection Selection
 	events    func(kind string, attrs ...slog.Attr)
-	// fragmentMu serializes the IPv4 socket's count of muxes letting its sends fragment, and pairs
+	// fragmentMu serializes the IPv4 socket's count of muxes letting its sends fragment
 	fragmentMu sync.Mutex
-	// pairs holds the open sockets connected to one peer, each IPv4 one with its listener's IP_DONTFRAG
-	pairs map[*darwinPair]struct{}
 	// setDontFragment sets or clears a socket's DF, which a test answers in place of darwin
 	setDontFragment func(socket *darwinSocket, on bool) error
 	// dropRoute releases a socket's cached route, which a test counts beside darwin
@@ -423,25 +421,13 @@ func (b *darwinBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
 		_ = conn.Close()
 		return nil, nil, err
 	}
-	pair := &darwinPair{socket: socket, bind: b, address: local}
-	if err := b.join(pair); err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	return pair, retryICMP(socket.receiver()), nil
+	return &darwinPair{socket: socket, bind: b, address: local}, retryICMP(socket.receiver()), nil
 }
 
-// join gives an IPv4 p its listener's IP_DONTFRAG, which fragment then moves it with
-func (b *darwinBind) join(p *darwinPair) error {
-	b.fragmentMu.Lock()
-	defer b.fragmentMu.Unlock()
-	if !p.socket.ipv6 && b.v4 != nil && b.v4.fragmenting.Load() > 0 {
-		if err := b.setDontFragment(p.socket, false); err != nil {
-			return err
-		}
-	}
-	b.pairs[p] = struct{}{}
-	return nil
+// fragments reports whether IPv4 fragments, since IP_DONTFRAG holds for a whole socket
+// an IPv6 mux fragments its own datagrams alone, so an IPv6 pair keeps DF
+func (b *darwinBind) fragments(remote netip.AddrPort) bool {
+	return remote.Addr().Is4() && b.v4 != nil && b.v4.fragmenting.Load() > 0
 }
 
 // darwinPair is a socket connected to one peer, bound to the pin of the endpoints it carries, so its sends name no source
@@ -470,14 +456,11 @@ func (p *darwinPair) transmit(packets [][]byte, endpoint Endpoint) (int, bool, e
 	}, packets)
 }
 
+func (p *darwinPair) setFragmenting(on bool) error { return p.bind.setDontFragment(p.socket, !on) }
+
 func (p *darwinPair) local() netip.Addr { return p.address }
 
-func (p *darwinPair) Close() error {
-	p.bind.fragmentMu.Lock()
-	delete(p.bind.pairs, p)
-	p.bind.fragmentMu.Unlock()
-	return p.socket.conn.Close()
-}
+func (p *darwinPair) Close() error { return p.socket.conn.Close() }
 
 // Send writes one datagram at a time
 // it resends from the kernel's choice of source when the kernel refuses the pin, gone or with no route to the peer, and keeps that choice once it worked
@@ -794,7 +777,6 @@ func readHeldAddresses() (map[netip.Addr]int, error) {
 
 // fragment clears DF on the IPv4 socket while any mux asks, since IP_DONTFRAG holds for a whole socket
 // an IPv6 endpoint clears it on its own datagrams alone
-// the IPv4 sockets connected to one peer move with the IPv4 socket, and one that cannot is closed, which hands its sends to the shared socket
 func (b *darwinBind) fragment(endpoint Endpoint, on bool) error {
 	ep := endpoint.(*darwinEndpoint)
 	if !ep.addr.Addr().Is4() {
@@ -814,12 +796,6 @@ func (b *darwinBind) fragment(endpoint Endpoint, on bool) error {
 	if (count > 0) != (was > 0) {
 		if err := b.setDontFragment(b.v4, count == 0); err != nil {
 			return err
-		}
-		for pair := range b.pairs {
-			if !pair.socket.ipv6 && b.setDontFragment(pair.socket, count == 0) != nil {
-				delete(b.pairs, pair)
-				_ = pair.socket.conn.Close()
-			}
 		}
 	}
 	b.v4.fragmenting.Store(count)
@@ -942,7 +918,7 @@ func openPacketBind(port uint16, prepare underlay.Prepare, selection Selection, 
 
 func listenPacketBind(port uint16, prepare underlay.Prepare, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &darwinBind{
-		selection: selection, events: events, pairs: make(map[*darwinPair]struct{}),
+		selection: selection, events: events,
 		setDontFragment: (*darwinSocket).setDontFragment, dropRoute: (*darwinSocket).dropRoute, readHeld: readHeldAddresses, prepare: prepare,
 	}
 	var receivers []receiveFunc

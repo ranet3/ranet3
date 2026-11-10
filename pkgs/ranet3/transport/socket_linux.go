@@ -103,10 +103,8 @@ type udpBind struct {
 	started time.Time
 	// pathMTU reads the path MTU of the route a send to an endpoint takes, which a test answers in place of linux
 	pathMTU func(*udpEndpoint) (int, error)
-	// fragmentMu serializes each socket's count of the muxes letting its sends fragment, and pairs
+	// fragmentMu serializes each socket's count of the muxes letting its sends fragment
 	fragmentMu sync.Mutex
-	// pairs holds the open sockets connected to one peer, each in its family's path MTU discovery mode
-	pairs map[*udpPair]struct{}
 	// discover sets a socket's path MTU discovery to fragment or back to DO
 	// a test answers it in place of linux
 	discover func(socket *udpSocket, fragment bool) error
@@ -156,7 +154,7 @@ func openPacketBind(port uint16, prepare underlay.Prepare, _ Selection, events f
 
 func listenPacketBind(port uint16, prepare underlay.Prepare, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, prepare) },
-		discover: setDiscovery, cookie: namespaceCookie, prepare: prepare, pairs: make(map[*udpPair]struct{})}
+		discover: setDiscovery, cookie: namespaceCookie, prepare: prepare}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
 		lc := net.ListenConfig{Control: socketControl(i == 1, prepare, netip.AddrPort{}, socketBufferSize, false)}
@@ -316,12 +314,7 @@ func (b *udpBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
 		_ = conn.Close()
 		return nil, nil, err
 	}
-	pair := &udpPair{socket: socket, bind: b, address: local}
-	if err := b.join(pair, listener); err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	return pair, retryICMP(socket.receiver(pairReadMessages)), nil
+	return &udpPair{socket: socket, bind: b, address: local}, retryICMP(socket.receiver(pairReadMessages)), nil
 }
 
 // errOtherNamespace refuses a socket that is not in its listener's network namespace
@@ -387,19 +380,6 @@ func leaveBy(raw syscall.RawConn, ipv6 bool, index int) error {
 	return setErr
 }
 
-// join puts p in the path MTU discovery mode of its family's listener, which fragment then moves it with
-func (b *udpBind) join(p *udpPair, listener *udpSocket) error {
-	b.fragmentMu.Lock()
-	defer b.fragmentMu.Unlock()
-	if listener.fragmenting.Load() > 0 {
-		if err := b.discover(p.socket, true); err != nil {
-			return err
-		}
-	}
-	b.pairs[p] = struct{}{}
-	return nil
-}
-
 // routeSource is the source the route to remote picks for a socket the bind's prepare readied, read off a socket connected there and closed
 func (b *udpBind) routeSource(network string, remote netip.AddrPort) (netip.Addr, error) {
 	dialer := net.Dialer{Control: socketControl(network == "udp6", b.prepare, remote, pairBuffer, false)}
@@ -431,12 +411,7 @@ func (p *udpPair) transmit(packets [][]byte, endpoint Endpoint) (int, bool, erro
 
 func (p *udpPair) local() netip.Addr { return p.address }
 
-func (p *udpPair) Close() error {
-	p.bind.fragmentMu.Lock()
-	delete(p.bind.pairs, p)
-	p.bind.fragmentMu.Unlock()
-	return p.socket.conn.Close()
-}
+func (p *udpPair) Close() error { return p.socket.conn.Close() }
 
 // receiver reads a full recvmmsg vector even when UDP_GRO is enabled. Each
 // message may contain many datagrams. Excess segments are returned on later

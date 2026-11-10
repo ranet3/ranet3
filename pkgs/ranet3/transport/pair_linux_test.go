@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -293,14 +294,6 @@ func TestPairSocketStopsSegmentingOnlyWhenItsSegmentsAreRefusedTwice(t *testing.
 	}
 }
 
-// pairsJoined is how many sockets connected to one peer the bind moves with their families
-func pairsJoined(hub *Hub) int {
-	b := hub.bind.(*udpBind)
-	b.fragmentMu.Lock()
-	defer b.fragmentMu.Unlock()
-	return len(b.pairs)
-}
-
 // discoveryMode reads the path MTU discovery mode of a socket
 func discoveryMode(t *testing.T, socket *udpSocket) int {
 	t.Helper()
@@ -319,9 +312,10 @@ func discoveryMode(t *testing.T, socket *udpSocket) int {
 	return mode
 }
 
-// a pair's socket that cannot take its family's mode closes, and the pair's sends take the shared socket, which can
+// a pair's socket that cannot take its family's mode closes as one that failed does, for the mode's refusal
+// and the pair's sends take the shared socket, which can
 func TestPairSocketThatCannotFollowItsFamilyCloses(t *testing.T) {
-	hub, peer, mux := pairHub(t, "udp4", "127.0.0.1")
+	hub, peer, mux, events := recordingPairHub(t)
 	bind := hub.bind.(*udpBind)
 	p := openNow(mux)
 	if p.socket.Load() == nil {
@@ -336,18 +330,7 @@ func TestPairSocketThatCannotFollowItsFamilyCloses(t *testing.T) {
 	if err := mux.Fragment(true); err != nil {
 		t.Fatal(err)
 	}
-	marker := []byte("once the pair could not follow")
-	if err := mux.SendESP(marker); err != nil {
-		t.Fatal(err)
-	}
-	if from := readFrom(t, peer, marker); from.Port() != hub.port {
-		t.Fatalf("the peer heard from port %d, want the listener's %d", from.Port(), hub.port)
-	}
-	// the marker left the shared socket only once a drop cleared p.socket, and the drop holds the table's lock until it counted the fallback
-	// so the count is read after holdsSocket waited on that lock
-	if holdsSocket(hub, p) || pairsJoined(hub) != 0 || hub.PairFallbacks() != 1 {
-		t.Fatalf("the pair's socket that could not follow its family is still open, or counted %d fallbacks, want 1", hub.PairFallbacks())
-	}
+	cannotFollow(t, hub, peer, mux, p, events)
 }
 
 // a pair's socket takes the mode its family's listener fragments in while a mux of the family fragments, and DO again once the last one stops
@@ -408,5 +391,45 @@ func TestPairSocketFollowsItsFamilysPathMTUDiscovery(t *testing.T) {
 				t.Errorf("once the mux to %s stopped fragmenting, a socket of its family is in mode %d, want %d", fragmenting.loopback, got, fragmenting.do)
 			}
 		}
+	}
+}
+
+// movingWait is how long movingConnector lets a move of the mode run before it answers, far past a move that waits on no lock
+const movingWait = 200 * time.Millisecond
+
+// movingConnector is the bind with mux's Fragment(true) started at the first read of a family's mode,
+// which then answers the mode as it was before that move began, movingWait after it
+type movingConnector struct {
+	pairConnector
+	mux   *Mux
+	once  sync.Once
+	moved chan error
+}
+
+func (c *movingConnector) fragments(remote netip.AddrPort) bool {
+	before := c.pairConnector.fragments(remote)
+	c.once.Do(func() {
+		go func() { c.moved <- c.mux.Fragment(true) }()
+		time.Sleep(movingWait)
+	})
+	return before
+}
+
+// a pair's socket takes a move of its family's mode that falls between the connect's read of the mode and the socket's store
+// openPair reads the mode under the table's lock, so the move's walk waits for the store and then moves the stored socket
+func TestPairSocketConnectingAcrossAMoveTakesIt(t *testing.T) {
+	hub, _, mux := pairHub(t, "udp4", "127.0.0.1")
+	connector := &movingConnector{pairConnector: hub.pairs.connector, mux: mux, moved: make(chan error, 1)}
+	hub.pairs.connector = connector
+	p := openNow(mux)
+	if err := <-connector.moved; err != nil {
+		t.Fatal(err)
+	}
+	socket := p.socket.Load()
+	if socket == nil {
+		t.Fatal("the pair opened no socket")
+	}
+	if got := discoveryMode(t, (*socket).(*udpPair).socket); got != unix.IP_PMTUDISC_DONT {
+		t.Errorf("a pair's socket connected across a move of its family to fragmenting is in mode %d, want %d", got, unix.IP_PMTUDISC_DONT)
 	}
 }

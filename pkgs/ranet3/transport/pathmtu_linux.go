@@ -61,7 +61,6 @@ func (b *udpBind) readPathMTU(ep Endpoint) (int, error) { return b.pathMTU(ep.(*
 // off DO the socket fragments a datagram past the path MTU
 // it still refuses a segment past the path MTU
 // ep's own sends go one datagram to a message while its mux fragments
-// the family's sockets connected to one peer move with it, and one that cannot is closed, which hands its sends to the shared socket
 func (b *udpBind) fragment(ep Endpoint, on bool) error {
 	endpoint := ep.(*udpEndpoint)
 	socket := b.socket(endpoint)
@@ -79,12 +78,6 @@ func (b *udpBind) fragment(ep Endpoint, on bool) error {
 		if err := b.discover(socket, count > 0); err != nil {
 			return err
 		}
-		for pair := range b.pairs {
-			if pair.socket.ipv6 == socket.ipv6 && b.discover(pair.socket, count > 0) != nil {
-				delete(b.pairs, pair)
-				_ = pair.socket.conn.Close()
-			}
-		}
 	}
 	socket.fragmenting.Store(count)
 	endpoint.fragmenting.Store(on)
@@ -95,6 +88,16 @@ func (b *udpBind) dontFragment(ep Endpoint) bool {
 	socket := b.socket(ep.(*udpEndpoint))
 	return socket != nil && socket.fragmenting.Load() == 0
 }
+
+func (b *udpBind) fragments(remote netip.AddrPort) bool {
+	socket := b.v4
+	if remote.Addr().Is6() {
+		socket = b.v6
+	}
+	return socket != nil && socket.fragmenting.Load() > 0
+}
+
+func (p *udpPair) setFragmenting(on bool) error { return p.bind.discover(p.socket, on) }
 
 // discovery is the option and mode that refuse a datagram of the family past its path MTU
 // or the mode that fragments it while the family fragments

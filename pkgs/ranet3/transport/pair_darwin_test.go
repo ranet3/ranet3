@@ -51,14 +51,6 @@ func TestConnectedSocketReceivesItsPeerWhileTheListenerKeepsTheRest(t *testing.T
 	}
 }
 
-// pairsJoined is how many sockets connected to one peer the bind moves with their families
-func pairsJoined(hub *Hub) int {
-	b := hub.bind.(*darwinBind)
-	b.fragmentMu.Lock()
-	defer b.fragmentMu.Unlock()
-	return len(b.pairs)
-}
-
 // pairSocketOf is the socket a pair to a peer of its own on loopback in network opened
 func pairSocketOf(t *testing.T, hub *Hub, network, loopback string) (*Mux, *darwinSocket) {
 	t.Helper()
@@ -218,9 +210,10 @@ func TestPairToALinkLocalPeerConnects(t *testing.T) {
 	}
 }
 
-// a pair's IPv4 socket that cannot take its family's DF closes, and the pair's sends take the shared socket, which can
+// a pair's IPv4 socket that cannot take its family's DF closes as one that failed does, for the refusal
+// and the pair's sends take the shared socket, which can
 func TestPairSocketThatCannotFollowItsFamilyCloses(t *testing.T) {
-	hub, peer, mux := pairHub(t, "udp4", "127.0.0.1")
+	hub, peer, mux, events := recordingPairHub(t)
 	bind := hub.bind.(*darwinBind)
 	p := openNow(mux)
 	if p.socket.Load() == nil {
@@ -235,16 +228,7 @@ func TestPairSocketThatCannotFollowItsFamilyCloses(t *testing.T) {
 	if err := mux.Fragment(true); err != nil {
 		t.Fatal(err)
 	}
-	marker := []byte("once the pair could not follow")
-	if err := mux.SendESP(marker); err != nil {
-		t.Fatal(err)
-	}
-	readFrom(t, peer, marker)
-	// the marker left the shared socket only once a drop cleared p.socket, and the drop holds the table's lock until it counted the fallback
-	// so the count is read after holdsSocket waited on that lock
-	if holdsSocket(hub, p) || pairsJoined(hub) != 0 || hub.PairFallbacks() != 1 {
-		t.Fatalf("the pair's socket that could not follow its family is still open, or counted %d fallbacks, want 1", hub.PairFallbacks())
-	}
+	cannotFollow(t, hub, peer, mux, p, events)
 }
 
 // pairConnectsAtOnce is how many connects run at once in each of pairConnectBatches

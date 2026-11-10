@@ -27,8 +27,10 @@ type pairConnector interface {
 	// pairOf is the pair sends to ep leave on
 	pairOf(ep Endpoint) pairKey
 	// connectPair opens a socket on the hub's port at k's local address, or the route's choice, connected to k's remote
-	// the socket follows the path MTU discovery mode of its family's listener until it closes
+	// the socket starts in the mode of a family that does not fragment
 	connectPair(k pairKey) (pairSocket, receiveFunc, error)
+	// fragments reports whether the family of remote fragments now, the mode every socket connected to one peer of the family takes
+	fragments(remote netip.AddrPort) bool
 }
 
 // pairSocket is a socket on the hub's port connected to one peer
@@ -36,6 +38,8 @@ type pairSocket interface {
 	// transmit sends packets to the connected peer and reports how many left before an error
 	// and whether the socket still carries the pair after it
 	transmit(packets [][]byte, ep Endpoint) (sent int, kept bool, err error)
+	// setFragmenting puts the socket in the mode of its family while it fragments, or out of it
+	setFragmenting(on bool) error
 	// local is the address the socket is bound to
 	local() netip.Addr
 	Close() error
@@ -118,6 +122,7 @@ func (h *Hub) startPair(p *pair) (uint64, bool) {
 }
 
 // openPair connects the socket startPair claimed for p and starts reading it into the hub's receive path
+// a socket that cannot take the mode of its fragmenting family fails as a connect does
 // an open that every socket's drop overtook leaves p free to open again
 func (h *Hub) openPair(p *pair, gen uint64) {
 	t := h.pairs
@@ -125,6 +130,11 @@ func (h *Hub) openPair(p *pair, gen uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p.opening = false
+	if err == nil && t.connector.fragments(p.key.remote) {
+		if err = socket.setFragmenting(true); err != nil {
+			_ = socket.Close()
+		}
+	}
 	if err != nil || p.refs == 0 || t.gen != gen || h.closed.Load() {
 		t.open--
 		if err != nil {
@@ -158,6 +168,30 @@ func (h *Hub) dropPair(p *pair, socket *pairSocket, err error) {
 	t := h.pairs
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.fail(p, socket, err)
+}
+
+// followFragmenting puts every socket connected to one peer in the mode its family runs now, and drops one that cannot take it as dropPair does
+// a mux runs it after each call that may move a family's mode, and openPair reads the mode under the same lock before it stores a socket
+// so whichever of them takes the lock last reads the last move
+func (h *Hub) followFragmenting() {
+	t := h.pairs
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, p := range t.pairs {
+		if socket := p.socket.Load(); socket != nil {
+			if err := (*socket).setFragmenting(t.connector.fragments(p.key.remote)); err != nil {
+				t.fail(p, socket, err)
+			}
+		}
+	}
+}
+
+// fail needs t.mu held
+func (t *pairTable) fail(p *pair, socket *pairSocket, err error) {
 	if !p.socket.CompareAndSwap(socket, nil) {
 		return
 	}

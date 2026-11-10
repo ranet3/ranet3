@@ -66,6 +66,12 @@ func (m *Mux) Fragment(on bool) error {
 	}
 	m.fragmentMu.Lock()
 	defer m.fragmentMu.Unlock()
+	moved := false
+	defer func() {
+		if moved {
+			m.hub.followFragmenting()
+		}
+	}()
 	// a closed mux takes nothing, so Close leaves no family fragmenting behind it
 	endpoint := m.Endpoint()
 	on = on && !m.closed.Load()
@@ -73,13 +79,13 @@ func (m *Mux) Fragment(on bool) error {
 		if err := bind.fragment(m.fragmented, false); err != nil {
 			return err
 		}
-		m.fragmented = nil
+		m.fragmented, moved = nil, true
 	}
 	if on && m.fragmented == nil {
 		if err := bind.fragment(endpoint, true); err != nil {
 			return err
 		}
-		m.fragmented = endpoint
+		m.fragmented, moved = endpoint, true
 	}
 	return nil
 }

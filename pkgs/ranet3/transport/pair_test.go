@@ -62,6 +62,45 @@ func pairHub(t *testing.T, network, loopback string) (*Hub, *net.UDPConn, *Mux) 
 	return hub, peer, mux
 }
 
+// recordingPairHub is pairHub on IPv4 with the hub's events recorded
+func recordingPairHub(t *testing.T) (*Hub, *net.UDPConn, *Mux, *eventLog) {
+	t.Helper()
+	events := &eventLog{}
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	peer := listenPeer(t, "udp4", "127.0.0.1")
+	at := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := hub.NewMux(at.IP, at.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hub, peer, mux, events
+}
+
+// cannotFollow checks that p, whose socket refused its family's mode with ENOPROTOOPT as the mux fragmented, closed as one that failed does
+// by the time the mux's Fragment returned, and that the mux's sends then leave the shared socket
+func cannotFollow(t *testing.T, hub *Hub, peer *net.UDPConn, mux *Mux, p *pair, events *eventLog) {
+	t.Helper()
+	if holdsSocket(hub, p) || hub.PairFallbacks() != 1 {
+		t.Fatalf("the pair's socket that could not follow its family is still open, or counted %d fallbacks, want 1", hub.PairFallbacks())
+	}
+	// the pair binds the source the route to the loopback peer picks
+	want := fmt.Sprintf("transport.pair.closed local=127.0.0.1 remote=%s reason=%s err=%s", p.key.remote, pairFailedClose, unix.ENOPROTOOPT)
+	if got := events.recorded(); !slices.Contains(got, want) {
+		t.Fatalf("the hub recorded %q, want %q among them", got, want)
+	}
+	marker := []byte("once the pair could not follow")
+	if err := mux.SendESP(marker); err != nil {
+		t.Fatal(err)
+	}
+	if from := readFrom(t, peer, marker); from.Port() != hub.port {
+		t.Fatalf("the peer heard from port %d, want the listener's %d", from.Port(), hub.port)
+	}
+}
+
 // hubAddr is where peer reaches hub
 func hubAddr(peer *net.UDPConn, hub *Hub) netip.AddrPort {
 	return netip.AddrPortFrom(peer.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), hub.port)
@@ -225,6 +264,10 @@ type fakePairSocket struct {
 	fails  chan error
 	closed chan struct{}
 	once   sync.Once
+	// fragmenting is the mode setFragmenting last put the socket in, which starts as the mode of a family that does not fragment
+	// and stuck the error a call that would change it fails with where it is not nil
+	fragmenting atomic.Bool
+	stuck       error
 }
 
 func newFakePairSocket(refuse error, keeps bool) *fakePairSocket {
@@ -247,6 +290,14 @@ func (s *fakePairSocket) transmit(packets [][]byte, _ Endpoint) (int, bool, erro
 	}
 	s.sent.Add(int64(len(packets)))
 	return len(packets), true, nil
+}
+
+func (s *fakePairSocket) setFragmenting(on bool) error {
+	if s.stuck != nil && on != s.fragmenting.Load() {
+		return s.stuck
+	}
+	s.fragmenting.Store(on)
+	return nil
 }
 
 func (s *fakePairSocket) local() netip.Addr { return fakeLocal }
@@ -1194,13 +1245,9 @@ func TestPairsLeaveNothingBehindTheHub(t *testing.T) {
 		}
 	}
 	// an open still in flight at the close counts until it sees the hub closed and closes its socket
-	for deadline := time.Now().Add(arrivalBudget); ; time.Sleep(pairPoll) {
-		open, joined := hub.PairSockets(), pairsJoined(hub)
-		if open == 0 && joined == 0 {
-			break
-		}
+	for deadline := time.Now().Add(arrivalBudget); hub.PairSockets() != 0; time.Sleep(pairPoll) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the hub counts %d sockets connected to one peer open and its bind %d once it closed, want none", open, joined)
+			t.Fatalf("the hub counts %d sockets connected to one peer open once it closed, want none", hub.PairSockets())
 		}
 	}
 	if !connected() {

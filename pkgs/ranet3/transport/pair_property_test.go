@@ -35,6 +35,9 @@ const pairModelDatagram = 38
 // errPairModelRead ends a socket's reading when the model fails it
 var errPairModelRead = errors.New("the socket broke")
 
+// errPairModelStuck refuses each change of a stuck socket's mode
+var errPairModelStuck = errors.New("the socket keeps its mode")
+
 // pairOutcome is how a connect the model holds ends
 type pairOutcome int
 
@@ -42,6 +45,8 @@ const (
 	pairCarries pairOutcome = iota
 	pairRefuses
 	pairCannotConnect
+	// pairStuck connects a socket that refuses every change of its mode
+	pairStuck
 )
 
 // modelConnector holds every connect until the model ends it
@@ -83,6 +88,9 @@ func (c *modelConnector) connectPair(k pairKey) (pairSocket, receiveFunc, error)
 		refuse = unix.EADDRNOTAVAIL
 	}
 	s := newFakePairSocket(refuse, false)
+	if outcome == pairStuck {
+		s.stuck = errPairModelStuck
+	}
 	c.mu.Lock()
 	c.sockets = append(c.sockets, s)
 	c.mu.Unlock()
@@ -111,8 +119,8 @@ type pairModel struct {
 	socket  bool
 	// used is whether the socket carried something since the last sweep, held whether another open waits for the next sweep
 	used, held bool
-	// refuses is whether the socket refuses every send
-	refuses bool
+	// refuses is whether the socket refuses every send, and stuck whether it refuses every change of its mode
+	refuses, stuck bool
 	// connect is the connect the hub started for the pair and the model still holds, nil while none waits
 	connect *pendingConnect
 	// hub is the hub's pair, and connected the socket the model last let it connect
@@ -128,11 +136,13 @@ type pendingConnect struct {
 }
 
 // pairMux is one of the model's open muxes, which sends to peer and holds the pair of the peer at once it sent
+// and fragmenting is whether it lets its family fragment
 type pairMux struct {
-	mux    *Mux
-	peer   int
-	joined bool
-	at     int
+	mux         *Mux
+	peer        int
+	joined      bool
+	at          int
+	fragmenting bool
 }
 
 type pairMachine struct {
@@ -165,6 +175,21 @@ func (m *pairMachine) recorded(peer int, kind string, attrs ...slog.Attr) {
 func (m *pairMachine) closed(p *pairModel, reason string, attrs ...slog.Attr) {
 	p.socket = false
 	m.recorded(p.peer, "closed", append([]slog.Attr{slog.String("reason", reason)}, attrs...)...)
+}
+
+// fragments is whether the family of the model's peers fragments, which it does while any open mux lets it
+func (m *pairMachine) fragments() bool {
+	return slices.ContainsFunc(m.muxes, func(mux *pairMux) bool { return mux.fragmenting })
+}
+
+// moved models a move of the family's mode, after which every socket takes it or, where it cannot, closes as a failed one does
+func (m *pairMachine) moved() {
+	for _, p := range m.pairs {
+		if p.socket && p.stuck {
+			m.fallbacks++
+			m.closed(p, pairFailedClose, slog.String("err", errPairModelStuck.Error()))
+		}
+	}
 }
 
 // open is how many sockets the model holds open or connecting
@@ -278,12 +303,31 @@ func (m *pairMachine) RuleDial(tc hegel.TestCase) {
 
 func (m *pairMachine) RuleClose(tc hegel.TestCase) {
 	i, mux := m.pick(tc)
+	fragmented := m.fragments()
 	if err := mux.mux.Close(); err != nil {
 		tc.Errorf("close the mux to %s: %v", m.peers[mux.peer], err)
 	}
 	m.muxes = slices.Delete(m.muxes, i, i+1)
 	if mux.joined {
 		m.leave(mux.at)
+	}
+	if m.fragments() != fragmented {
+		m.moved()
+	}
+	m.settle(tc)
+}
+
+// RuleFragment lets a mux's family fragment or stops that, as a path under the floor does
+func (m *pairMachine) RuleFragment(tc hegel.TestCase) {
+	_, mux := m.pick(tc)
+	on := hegel.Draw(tc, hegel.Booleans())
+	fragmented := m.fragments()
+	if err := mux.mux.Fragment(on); err != nil {
+		tc.Errorf("fragment the sends to %s %v: %v", m.peers[mux.peer], on, err)
+	}
+	mux.fragmenting = on
+	if m.fragments() != fragmented {
+		m.moved()
 	}
 	m.settle(tc)
 }
@@ -330,24 +374,29 @@ func (m *pairMachine) RuleBusy(tc hegel.TestCase) {
 func (m *pairMachine) RuleConnect(tc hegel.TestCase) {
 	tc.Assume(len(m.pending) > 0)
 	i := hegel.Draw(tc, hegel.Integers(0, len(m.pending)-1))
-	outcome := hegel.Draw(tc, hegel.SampledFrom([]pairOutcome{pairCarries, pairRefuses, pairCannotConnect}))
+	outcome := hegel.Draw(tc, hegel.SampledFrom([]pairOutcome{pairCarries, pairRefuses, pairCannotConnect, pairStuck}))
 	pending := m.pending[i]
 	m.pending = slices.Delete(m.pending, i, i+1)
 	m.end(tc, pending, outcome)
 	p := pending.pair
+	// a socket connected while the family fragments takes its mode before the hub keeps it, and one that cannot fails as a connect does
+	failed := map[pairOutcome]error{pairCannotConnect: unix.ECONNREFUSED}
+	if m.fragments() {
+		failed[pairStuck] = errPairModelStuck
+	}
 	switch {
-	case outcome == pairCannotConnect:
+	case failed[outcome] != nil:
 		m.connectsFailed++
 		local := ""
 		if key := m.keys[p.peer]; key.local.IsValid() {
 			local = key.local.String()
 		}
-		m.want = append(m.want, fmt.Sprintf("transport.pair.failed local=%s remote=%s %s", local, m.keys[p.peer].remote, slog.String("err", unix.ECONNREFUSED.Error())))
+		m.want = append(m.want, fmt.Sprintf("transport.pair.failed local=%s remote=%s %s", local, m.keys[p.peer].remote, slog.String("err", failed[outcome].Error())))
 	case p.refs == 0:
 	case pending.gen != m.gen:
 		p.held = false
 	default:
-		p.socket, p.used, p.refuses = true, true, outcome == pairRefuses
+		p.socket, p.used, p.refuses, p.stuck = true, true, outcome == pairRefuses, outcome == pairStuck
 		p.connected = pending.connect.socket
 		m.recorded(p.peer, "connected")
 	}
@@ -473,13 +522,17 @@ func (m *pairMachine) InvariantPairsAgreeWithTheModel(tc hegel.TestCase) {
 			tc.Errorf("the socket of the pair to %s is closed %v and used %v, the model open and used %v",
 				m.peers[peer], (*socket).(*fakePairSocket).isClosed(), p.used.Load(), want.used)
 		}
+		if socket != nil && (*socket).(*fakePairSocket).fragmenting.Load() != m.fragments() {
+			tc.Errorf("the socket of the pair to %s fragments %v while its family fragments %v", m.peers[peer], !m.fragments(), m.fragments())
+		}
 	}
 }
 
 // the hub starts one open for a pair once it carried pairThreshold within one sweep, and none other until the next sweep
 // the connect runs while sends, sweeps, network changes and sessions come and go, and the hub keeps its socket only for a pair a mux still holds and that no drop of every socket overtook
-// a socket closes when it carried nothing for a sweep, when its last mux closes or moves to another peer, when the network changes and when a send or a read fails
-// the last two leave the pair on the shared socket until the next sweep and count a fallback
+// every open socket runs its family's mode, which it takes as it connects and at each move of the mode
+// a socket closes when it carried nothing for a sweep, when its last mux closes or moves to another peer, when the network changes and when a send, a read or a move of its mode fails
+// the last three leave the pair on the shared socket until the next sweep and count a fallback, and a socket that cannot take the mode it connects into fails as a connect does
 // every socket the hub opens or closes is recorded with why, and whatever is open or connecting when the hub closes closes with it
 func TestPairSocketsAgreeWithTheModel(t *testing.T) {
 	var peers []netip.AddrPort
