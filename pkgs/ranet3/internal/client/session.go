@@ -473,9 +473,6 @@ func (s *sessionSet) holds(path string, dialPreferred bool) bool {
 // relink hands every live session's search the link.mtu a reload stored and the steering table in force after the reload
 // installed says the reload installed steering in place of the table the set holds, which stays otherwise
 func (s *sessionSet) relink(link int, installed bool, steering *srv6.SteerTable) {
-	if s == nil {
-		return // a Client built by hand in a test carries no sessions
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if installed {
@@ -489,9 +486,6 @@ func (s *sessionSet) relink(link int, installed bool, steering *srv6.SteerTable)
 // resuite has every live session check its SAs against the cap.crypto lists a reload stored
 // a session adopted after the sweep checks them when its Run starts
 func (s *sessionSet) resuite() {
-	if s == nil {
-		return // a Client built by hand in a test carries no sessions
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, live := range s.live {
@@ -518,12 +512,8 @@ func (s *sessionSet) moved(path string) {
 }
 
 // liveCount is how many paths a session that has recently proved its peer is
-// there serves. A Client built by hand in a test carries no set and reports
-// none.
+// there serves.
 func (s *sessionSet) liveCount() int {
-	if s == nil {
-		return 0
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	count := 0
@@ -554,9 +544,6 @@ func (s *sessionSet) refuses(remote identity.Identity, key ed25519.PublicKey) er
 // revoke closes every live session refuses turns away, one naming no peer or whose peer's node the trust in force no longer admits under the key that verified it
 // a reload is the only moment this node learns a node left the mesh or took another key, and the handshake check alone refuses only the next session
 func (s *sessionSet) revoke() {
-	if s == nil {
-		return // a Client built by hand in a test carries no sessions
-	}
 	type refused struct {
 		path string
 		live *liveSession
@@ -594,9 +581,6 @@ func (s *sessionSet) revoked(path, reason string, sess *ike.Session, peer identi
 // standing down behind a session that is already going. serveSession's own
 // release then finds the path held by nobody and leaves it alone.
 func (s *sessionSet) closeMatching(peer string, all bool) []string {
-	if s == nil {
-		return nil // a Client built by hand in a test carries no sessions
-	}
 	s.mu.Lock()
 	var paths []string
 	var sessions []*ike.Session
@@ -620,9 +604,6 @@ func (s *sessionSet) closeMatching(peer string, all bool) []string {
 
 // matching runs act, nil for none, on every live session naming one peer, or every session at all, and reports their paths sorted
 func (s *sessionSet) matching(peer string, all bool, act func(liveSessionView)) []string {
-	if s == nil {
-		return nil
-	}
 	var paths []string
 	for _, live := range s.snapshot() {
 		if all || identity.Names(live.path, peer) {

@@ -43,8 +43,8 @@ func startedSubsystems() map[control.Subsystem]bool {
 }
 
 // SetConfigPath records where this node's configuration was read from, so the
-// reload verb re-reads the file SIGHUP re-reads. The daemon sets it. A client a
-// test built by hand has none and reloads through ReloadFrom with its own path.
+// reload verb re-reads the file SIGHUP re-reads. The daemon sets it, and a
+// client it was never set on reloads through ReloadFrom with its own path.
 func (c *Client) SetConfigPath(path string) { c.configPath.Store(&path) }
 
 // noteVerb records a verb with the caller the socket reported, and what it came to

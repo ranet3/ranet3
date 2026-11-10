@@ -463,54 +463,24 @@ func unixOrZero(at time.Time) int64 {
 func (c *Client) renderReceiveCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_receive_dropped_total Inbound datagrams refused because their session's receive queue was full or held all its receive buffers.\n")
 	fmt.Fprint(w, "# TYPE ranet3_receive_dropped_total counter\n")
-	fmt.Fprintf(w, "ranet3_receive_dropped_total %d\n", c.hubDropped())
+	fmt.Fprintf(w, "ranet3_receive_dropped_total %d\n", c.hub.Dropped())
 
 	fmt.Fprint(w, "# HELP ranet3_receive_refused_total Inbound datagrams nothing here wanted, by cause.\n")
 	fmt.Fprint(w, "# TYPE ranet3_receive_refused_total counter\n")
-	refusals := c.hubRefusals()
+	refusals := c.hub.Refusals()
 	for i, cause := range transport.RefusalCauses {
 		fmt.Fprintf(w, "ranet3_receive_refused_total{cause=%q} %d\n", cause, refusals[i])
 	}
 
 	fmt.Fprint(w, "# HELP ranet3_receive_keepalives_total Inbound RFC 3948 NAT keepalives, ignored on arrival.\n")
 	fmt.Fprint(w, "# TYPE ranet3_receive_keepalives_total counter\n")
-	fmt.Fprintf(w, "ranet3_receive_keepalives_total %d\n", c.hubKeepalives())
-}
-
-// hubDropped and hubRefused are zero before the hub exists, which is every
-// call from a test that builds a Client by hand.
-func (c *Client) hubDropped() uint64 {
-	if c.hub == nil {
-		return 0
-	}
-	return c.hub.Dropped()
-}
-
-func (c *Client) hubRefused() uint64 {
-	if c.hub == nil {
-		return 0
-	}
-	return c.hub.Refused()
-}
-
-func (c *Client) hubRefusals() (refusals [len(transport.RefusalCauses)]uint64) {
-	if c.hub == nil {
-		return refusals
-	}
-	return c.hub.Refusals()
-}
-
-func (c *Client) hubKeepalives() uint64 {
-	if c.hub == nil {
-		return 0
-	}
-	return c.hub.Keepalives()
+	fmt.Fprintf(w, "ranet3_receive_keepalives_total %d\n", c.hub.Keepalives())
 }
 
 // renderPairSockets writes the sockets the hub holds connected to one busy peer each, under the prefix of their transport.pair events
 // a fallback and a failed connect each leave the peer's sends on the shared socket, which carries them, until the next sweep
 func (c *Client) renderPairSockets(w io.Writer) {
-	sockets, fallbacks, failed := c.hubPairs()
+	sockets, fallbacks, failed := c.hub.PairSockets(), c.hub.PairFallbacks(), c.hub.PairConnectsFailed()
 	fmt.Fprint(w, "# HELP ranet3_transport_pair_sockets Sockets open or opening that are connected to one busy peer each.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transport_pair_sockets gauge\n")
 	fmt.Fprintf(w, "ranet3_transport_pair_sockets %d\n", sockets)
@@ -522,14 +492,6 @@ func (c *Client) renderPairSockets(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_transport_pair_connects_failed_total Connects of a socket to one busy peer that failed, whose pairs stayed on the shared socket.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transport_pair_connects_failed_total counter\n")
 	fmt.Fprintf(w, "ranet3_transport_pair_connects_failed_total %d\n", failed)
-}
-
-// hubPairs is zero before the hub exists, as hubDropped is
-func (c *Client) hubPairs() (sockets int, fallbacks, failed uint64) {
-	if c.hub == nil {
-		return 0, 0, 0
-	}
-	return c.hub.PairSockets(), c.hub.PairFallbacks(), c.hub.PairConnectsFailed()
 }
 
 // MetricsHandler serves Metrics, for mounting next to the pprof endpoint.

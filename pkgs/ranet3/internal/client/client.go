@@ -50,7 +50,7 @@ type Client struct {
 	hub           *transport.Hub
 	// closeUnderlay releases whatever the transport's underlay had to open,
 	// which on darwin is the selection and the watcher it shares with the
-	// network watch. Nil on a Client built by hand in a test.
+	// network watch.
 	closeUnderlay func()
 	// underlayRoutes is the selection the transport names each underlay
 	// datagram's interface from, as the rules view reads it, nil where the
@@ -158,8 +158,8 @@ type Client struct {
 	runningMu sync.Mutex
 	running   map[control.Subsystem]bool
 	// configPath is where the daemon read this node's configuration, so the
-	// reload verb re-reads the same file SIGHUP does. Empty on a client a test
-	// built by hand, where the verb says so rather than guessing at a path.
+	// reload verb re-reads the same file SIGHUP does. Empty until SetConfigPath,
+	// where the verb says so rather than guessing at a path.
 	configPath atomic.Pointer[string]
 	// reloadMu runs one reload at a time, so the reconciler takes each cap.table in the order the node stores the files
 	reloadMu sync.Mutex
@@ -167,10 +167,10 @@ type Client struct {
 	// read it once they hold reloadMu
 	stopBegun atomic.Bool
 
-	// events is the daemon's bus, nil on a Client a test built by hand
+	// events is the daemon's bus
 	events *events.Bus
 	// network is the host's network watch, which Run follows and Close closes
-	// nil on a platform without one and on a Client a test built by hand
+	// nil on a platform without one
 	network networkSource
 
 	inboundPackets atomic.Uint64
@@ -486,9 +486,7 @@ func (c *Client) Close() {
 	if c.network != nil {
 		_ = c.network.Close()
 	}
-	if c.closeUnderlay != nil {
-		c.closeUnderlay()
-	}
+	c.closeUnderlay()
 	c.Mesh.Close()
 }
 
@@ -615,17 +613,15 @@ func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
 		sets.CarveOuts = kernel.CarveOuts(network, overlay)
 		carved, conflicts := kernel.CarvedSets(border, sets.CarveOuts, snapshot)
 		sets.Carved = carved
-		if c.speaker != nil {
-			for i, conflict := range conflicts {
-				if origin, ok := c.speaker.SelectedOrigin(conflict.Prefix); ok {
-					conflicts[i].RouterID = hex.EncodeToString(origin[:])
-				}
+		for i, conflict := range conflicts {
+			if origin, ok := c.speaker.SelectedOrigin(conflict.Prefix); ok {
+				conflicts[i].RouterID = hex.EncodeToString(origin[:])
 			}
-			conflicts = append(conflicts, kernel.OwnCopies(border.Exemptions(), border.Own, func(prefix netip.Prefix) (string, bool) {
-				origin, ok := c.speaker.OfferedOrigin(prefix)
-				return hex.EncodeToString(origin[:]), ok
-			})...)
 		}
+		conflicts = append(conflicts, kernel.OwnCopies(border.Exemptions(), border.Own, func(prefix netip.Prefix) (string, bool) {
+			origin, ok := c.speaker.OfferedOrigin(prefix)
+			return hex.EncodeToString(origin[:]), ok
+		})...)
 		sets.Conflicts = conflicts
 	}
 	return sets
@@ -668,9 +664,6 @@ func (c *Client) LiveSessions() int {
 }
 
 func (c *Client) liveSends() []kernel.Send {
-	if c.sessions == nil {
-		return nil
-	}
 	live := c.sessions.snapshot()
 	out := make([]kernel.Send, 0, len(live))
 	for _, session := range live {

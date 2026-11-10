@@ -36,7 +36,7 @@ import (
 
 // This file runs one configuration file all the way to a running daemon and
 // asks what reached the kernel. Everything else in this package builds a
-// Client by hand and drives one mechanism, so fifteen call sites wiring the
+// Client from a fixture and drives one mechanism, so fifteen call sites wiring the
 // darwin underlay together could each be deleted with the whole suite green:
 // every mechanism was tested and nothing tested that a file turns them on.
 //
