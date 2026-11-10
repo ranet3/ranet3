@@ -4,12 +4,14 @@
 package client
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"strconv"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -76,5 +78,31 @@ func TestUnderlayPathIsWhatTheMuxSends(t *testing.T) {
 		if got := underlayPathOf(test.send, name); got != test.want {
 			t.Errorf("the path of %+v is %+v, want %+v", test.send, got, test.want)
 		}
+	}
+}
+
+// a node the constructor built reads the host's policy rules through the kernel's own dump, and answers as it does when asked alone
+func TestDebugRulesDumpsTheHostsRules(t *testing.T) {
+	c := testClient(t)
+	held, err := kernel.DumpRules()
+	want := ""
+	switch {
+	case errors.Is(err, kernel.ErrUnsupported):
+		want = "this platform has no policy rules"
+	case err != nil:
+		want = err.Error()
+	}
+	if info := c.DebugRules(); info.PolicyErr != want || len(info.Policy) != len(held) {
+		t.Errorf("debug rules read %d rules and %q, want %d and %q", len(info.Policy), info.PolicyErr, len(held), want)
+	}
+}
+
+// a node the constructor built reads the kill switch through the kernel's own read, and answers as it does when asked alone
+func TestDebugRulesReadsTheHostsKillSwitch(t *testing.T) {
+	c := testClient(t)
+	debug, err := kernel.ReadFallback()
+	table := c.fallbackTable(control.KernelFallback{State: "holding"})
+	if table.Where != debug.Where || table.Held != debug.Held || err != nil && table.Err != err.Error() || err == nil && table.Err != "" {
+		t.Errorf("the switch's table read %q held %t erring %q, want %q held %t erring %v", table.Where, table.Held, table.Err, debug.Where, debug.Held, err)
 	}
 }

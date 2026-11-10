@@ -143,11 +143,7 @@ func meshOf(e netstack.Explanation, dst netip.Addr) *control.RouteMesh {
 // routeKernel is the kernel's answer for a packet from src to dst arriving
 // on iif, or this host's own where iif is empty
 func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKernel {
-	routeGet := c.routeGet
-	if routeGet == nil {
-		routeGet = kernel.RouteGet
-	}
-	route, err := routeGet(src, dst, iif)
+	route, err := c.routeGet(src, dst, iif)
 	k := &control.RouteKernel{}
 	if errors.Is(err, kernel.ErrUnsupported) {
 		k.Err, k.Why = err.Error(), control.WhyUnsupported
@@ -179,11 +175,7 @@ func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKern
 		}
 	}
 	c.explainRoute(k, dst, iif, route, err)
-	dump := c.ruleDump
-	if dump == nil {
-		dump = kernel.DumpRules
-	}
-	rules, dumpErr := dump()
+	rules, dumpErr := c.ruleDump()
 	switch {
 	case errors.Is(dumpErr, kernel.ErrUnsupported):
 		k.RuleErr = "this platform has no policy rules"
@@ -218,16 +210,12 @@ func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKern
 // cannot read is reported unread and explains nothing, but for
 // force_forwarding, which kernels before 6.17 lack.
 func (c *Client) explainRoute(k *control.RouteKernel, dst netip.Addr, iif string, route kernel.MatchedRoute, err error) {
-	sysctl := c.sysctl
-	if sysctl == nil {
-		sysctl = Sysctl
-	}
 	// read records the setting at path and answers its number, or why it has
 	// none, empty naming an empty read
 	read := func(empty string, path ...string) (int, string) {
 		name := strings.Join(path, "/")
 		setting := control.RouteSetting{Name: name}
-		value := sysctl(name)
+		value := c.sysctl(name)
 		number, err := strconv.Atoi(value)
 		switch {
 		case value == "":

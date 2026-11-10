@@ -35,12 +35,8 @@ func (c *Client) lookups() []kernel.Lookup {
 // interface each live session's datagrams name, or the interface of the pin
 // they carry
 func (c *Client) DebugRules() control.RulesInfo {
-	dump := c.ruleDump
-	if dump == nil {
-		dump = kernel.DumpRules
-	}
 	info := control.RulesInfo{Policy: []control.PolicyRule{}, Missing: []control.PolicyRule{}}
-	held, err := dump()
+	held, err := c.ruleDump()
 	switch {
 	case errors.Is(err, kernel.ErrUnsupported):
 		info.PolicyErr = "this platform has no policy rules"
@@ -165,11 +161,7 @@ func underlayLookups(routes underlayRoutes, paths []underlayPath) []control.Rule
 // fallbackTable is the kill switch as a read apart from the reconciler's
 // finds it, beside the state the reconciler's last pass gave it
 func (c *Client) fallbackTable(state control.KernelFallback) *control.FallbackTable {
-	read := c.fallbackRead
-	if read == nil {
-		read = kernel.ReadFallback
-	}
-	debug, err := read()
+	debug, err := c.fallbackRead()
 	table := &control.FallbackTable{
 		Where: debug.Where, Hook: debug.Hook, Priority: debug.Priority, State: state.State, Reason: state.Reason, Held: debug.Held,
 		Rules: []control.FallbackTableRule{}, Sets: []control.FallbackTableSet{},

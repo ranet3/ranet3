@@ -439,3 +439,31 @@ func TestDebugRouteNamesAMeshRouteBeneathTheHosts(t *testing.T) {
 		}
 	}
 }
+
+// a node the constructor built asks the kernel's own route lookup, and answers as it does when asked alone
+func TestRouteViewAsksTheKernelsRouteLookup(t *testing.T) {
+	c := testClient(t)
+	dst := netip.MustParseAddr("::1")
+	route, err := kernel.RouteGet(netip.Addr{}, dst, "")
+	k := c.routeKernel(netip.Addr{}, dst, "")
+	if err != nil && k.Err != err.Error() || err == nil && (k.Err != "" || k.Route != route.Prefix) {
+		t.Errorf("the route view read %q and %v, want %v and %v", k.Err, k.Route, err, route.Prefix)
+	}
+}
+
+// a node the constructor built reads the settings that explain an arrival through Sysctl, the empty read reported unread
+func TestRouteViewReadsTheHostsSettings(t *testing.T) {
+	c := testClient(t)
+	c.routeGet = func(netip.Addr, netip.Addr, string) (kernel.MatchedRoute, error) {
+		return kernel.MatchedRoute{Type: "unicast"}, nil
+	}
+	const name = "net/ipv6/conf/all/forwarding"
+	want := control.RouteSetting{Name: name, Value: Sysctl(name)}
+	if want.Value == "" {
+		want.Err = "unreadable"
+	}
+	k := c.routeKernel(netip.Addr{}, netip.MustParseAddr("2001:db8::1"), "lo")
+	if len(k.Settings) == 0 || k.Settings[0] != want {
+		t.Errorf("the route view read the settings %+v, want %+v first", k.Settings, want)
+	}
+}

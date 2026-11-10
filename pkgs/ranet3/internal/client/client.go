@@ -135,16 +135,16 @@ type Client struct {
 	// filter through its SetConfig.
 	borderNetwork chan struct{}
 	// borderRefusal refuses an exemption's interface name that the antispoof
-	// filter's backend cannot write, and nil means kernelexit.RefuseBorder
+	// filter's backend cannot write
 	borderRefusal func(*egress.Border) error
-	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
+	// ruleDump reads every policy rule the host holds
 	ruleDump func() ([]kernel.DumpedRule, error)
-	// routeGet asks the kernel for one packet's route, and nil means kernel.RouteGet
+	// routeGet asks the kernel for one packet's route
 	routeGet func(src, dst netip.Addr, iif string) (kernel.MatchedRoute, error)
 	// sysctl reads a setting by its path under /proc/sys, the empty string
-	// where it cannot, and nil means Sysctl
+	// where it cannot
 	sysctl func(path string) string
-	// fallbackRead reads the kill switch, and nil means kernel.ReadFallback
+	// fallbackRead reads the kill switch
 	fallbackRead func() (kernel.FallbackDebug, error)
 	// unresolved is each endpoint name whose last lookup failed
 	unresolved names
@@ -338,6 +338,11 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		memory: memoryLimit{given: debug.SetMemoryLimit(-1)},
 
 		borderNetwork: make(chan struct{}, 1),
+		borderRefusal: kernelexit.RefuseBorder,
+		ruleDump:      kernel.DumpRules,
+		routeGet:      kernel.RouteGet,
+		sysctl:        Sysctl,
+		fallbackRead:  kernel.ReadFallback,
 	}
 	c.sessions.events = bus
 	c.sessions.trust = liveTrust{c}

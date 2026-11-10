@@ -959,3 +959,21 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		t.Errorf("debug rules carries the table over pf %+v, want its pf block %+v, the enablers %+v and its table", table, block, enablers)
 	}
 }
+
+// a node the constructor built refuses a reload through the filter backend's own refusal, which on darwin refuses an exemption
+// under a name pf cannot write
+// on linux the backend writes every name, and where no filter runs nothing is refused, so there the test guards only that the node holds a refusal to call
+func TestReloadAsksTheFilterBackendsOwnRefusal(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) {
+		cfg.Cap.Table = &kernel.Table{}
+		cfg.Overlay = overlayOf("3fff::/20")
+	})
+	next := *c.config()
+	next.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"br-lan": {Exempt: overlayOf("3fff:a::/36")}}}
+	writeConfig(t, path, &next)
+	want := kernelexit.RefuseBorder(next.Border())
+	err := c.ReloadFrom(path)
+	if want != nil && (err == nil || !strings.Contains(err.Error(), want.Error())) || want == nil && err != nil {
+		t.Errorf("the reload answered %v, want the backend's own answer %v", err, want)
+	}
+}

@@ -117,7 +117,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns, carriesEgress); err != nil {
 		return err
 	}
-	if err := refuseBorderHere(cfg, c.borderRefusal); err != nil {
+	// ahead of retable, the last refusal, so a refused file changes nothing
+	if err := c.borderRefusal(cfg.Border()); err != nil {
 		return err
 	}
 	if err := refuseForwardedHere(cfg, c.Mesh.Name, c.network); err != nil {

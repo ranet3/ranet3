@@ -61,15 +61,6 @@ func refuseExitUnentered(cfg *config.Config, entryRuns, carriesEgress bool) erro
 	return fmt.Errorf("config: cap.route announces %s, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for %s carries no exit, since it runs no entry chain to pass that traffic's replies into the mesh", announced, runtime.GOOS)
 }
 
-// refuseBorderHere refuses, through refuse, an exemption's interface name that the antispoof filter's backend here cannot write
-// nil refuse is kernelexit.RefuseBorder, and the reload checks it ahead of retable, the last refusal, so a refused file changes nothing
-func refuseBorderHere(cfg *config.Config, refuse func(*egress.Border) error) error {
-	if refuse == nil {
-		refuse = kernelexit.RefuseBorder
-	}
-	return refuse(cfg.Border())
-}
-
 // refuseForwardedHere refuses a cap.exit forward entry naming the tun or a link a default leaves by, as the watch reads the host now
 func refuseForwardedHere(cfg *config.Config, tun string, network networkSource) error {
 	if cfg.Cap.Exit == nil || network == nil {
@@ -87,7 +78,7 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns, carriesEgress); err != nil {
 		return err
 	}
-	if err := refuseBorderHere(cfg, nil); err != nil {
+	if err := kernelexit.RefuseBorder(cfg.Border()); err != nil {
 		return err
 	}
 	families, err := validateLocalConfig(cfg, privateKey, x)
