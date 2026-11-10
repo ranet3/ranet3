@@ -22,7 +22,8 @@ import (
 func TestHeldAddressIsWhatTheWatchReadLast(t *testing.T) {
 	v4, v6 := netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("2001:db8::9")
 	other4, other6 := netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("2001:db8::10")
-	c := &Client{}
+	c := testClient(t)
+	c.network = nil
 	if c.HeldAddress(v4, "") || c.HeldAddress(v6, "") || c.HeldAddress(v4, "lo0") {
 		t.Fatal("an address is held with no watch")
 	}

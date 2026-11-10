@@ -85,7 +85,7 @@ func kindsOf(recorded []control.Event) []string {
 
 // the daemon applies a query to the recorder and to every event after it, so the view answers with what was asked alone
 func TestEventsViewKeepsToItsQuery(t *testing.T) {
-	c := &Client{events: events.New()}
+	c := testClient(t)
 	c.events.Emit("babel.route.selected", "example/relay:0@0")
 	c.events.Emit("dial.attempt", "example/gateway:0@0")
 	dials := control.EventQuery{Kinds: []string{"dial"}}
@@ -170,7 +170,7 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 
 // a window keeps the recorded events that recent, in the recorder and at the start of a follow
 func TestEventsViewKeepsToItsWindow(t *testing.T) {
-	c := &Client{events: events.New()}
+	c := testClient(t)
 	c.events.Emit("dial.attempt", "example/gateway:0@0")
 	time.Sleep(2 * windowGap)
 	c.events.Emit("dial.failed", "example/gateway:0@0")
@@ -194,7 +194,7 @@ func TestEventsViewKeepsToItsWindow(t *testing.T) {
 // a match that joined a kind named and a dot to compare with the start of a longer kind would allocate here
 // Go builds a joined string longer than 32 bytes on the heap
 func TestFollowMatchAllocatesNothing(t *testing.T) {
-	c := &Client{events: events.New()}
+	c := testClient(t)
 	stamp := time.Date(2026, 10, 6, 4, 0, 0, 0, time.UTC)
 	emit := func() {
 		c.events.Emit("babel.a-thing-with-a-long-name.a-change-with-a-long-name", "an-organization-with-a-long-name/a-gateway-with-a-long-name:0@0",
@@ -225,7 +225,7 @@ const burst = 4096
 
 // a follow queues only the events its query takes, so a burst of other events of its kind leaves room for the one it waits for
 func TestFollowQueuesOnlyWhatItTakes(t *testing.T) {
-	c := &Client{events: events.New()}
+	c := testClient(t)
 	_, sub := c.DebugFollow(control.EventQuery{Kinds: []string{"babel.route.selected"}, Attrs: map[string]string{"route": "fd00:ffff::/64"}, Follow: true})
 	defer sub.Close()
 	for n := range burst {

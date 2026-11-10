@@ -144,7 +144,7 @@ func TestInboundBatchOrderKeepsEachResultsOuterECN(t *testing.T) {
 	<-emitterDone
 }
 
-func runtimeFixture(t *testing.T) (*config.Config, ed25519.PrivateKey, registry.Registry) {
+func runtimeFixture(t testing.TB) (*config.Config, ed25519.PrivateKey, registry.Registry) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -168,6 +168,44 @@ func runtimeFixture(t *testing.T) (*config.Config, ed25519.PrivateKey, registry.
 		Dial: config.Dial{To: []identity.Identity{identity.MustParse("example/gateway:1")}},
 	}
 	return cfg, privateKey, reg
+}
+
+// testClientOn is testClient recording on bus, for a test whose other parts record there already
+func testClientOn(tb testing.TB, bus *events.Bus) *Client {
+	tb.Helper()
+	cfg, privateKey, reg := runtimeFixture(tb)
+	return buildTestClient(tb, cfg, privateKey, reg, netstack.NewRoutesOnly(), bus)
+}
+
+// testClientOf is testClient built from the configuration, key and registry a test holds
+func testClientOf(tb testing.TB, cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry) *Client {
+	tb.Helper()
+	return buildTestClient(tb, cfg, privateKey, reg, netstack.NewRoutesOnly(), events.New())
+}
+
+// buildTestClient is newClient around mesh recording on bus, closed and its loops waited for when the test ends
+// its hub listens on a port of the host's choosing whatever cfg's link.port, which the client still holds, since a reload refuses a
+// change of the port and two tests listening on one would collide
+func buildTestClient(tb testing.TB, cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry, mesh *netstack.Mesh, bus *events.Bus) *Client {
+	tb.Helper()
+	ephemeral := *cfg
+	ephemeral.Link.Port = 0
+	c, err := newClient(&ephemeral, privateKey, trust(tb, reg), mesh, nil, bus)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	c.cfg.Store(cfg)
+	hub, network := c.hub, c.network
+	tb.Cleanup(func() {
+		c.Close()
+		c.peers.Wait()
+		_ = hub.Close()
+		if network != nil {
+			_ = network.Close()
+		}
+		mesh.Close()
+	})
+	return c
 }
 
 // unusedKeyPEM is a key no test signs with, for a block that names nodes no handshake reaches
@@ -450,9 +488,9 @@ func TestValidateESPTunnelPayload(t *testing.T) {
 }
 
 func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
+	c := testClient(t)
+	// a memory hub, so the dialers' handshakes to a port nothing answers on never reach the host's sockets
+	c.hub = testHub(t)
 	c.cfg.Store(&config.Config{
 		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
@@ -498,7 +536,7 @@ func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 	if hasDialer(c, "example/b@0") {
 		t.Fatal("the removed peer's dialer is still tracked")
 	}
-	cancel()
+	c.cancel()
 	c.peers.Wait()
 }
 
@@ -695,17 +733,7 @@ func TestReloadRefusesARotatedPrivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
-	defer func() { cancel(); c.peers.Wait() }()
+	c := testClientOf(t, cfg, privateKey, reg)
 
 	if err := c.ReloadFrom(configPath); err != nil {
 		t.Fatalf("reloading on the key this node started with: %v", err)
@@ -739,6 +767,12 @@ func announce(prefixes ...string) []schema.Announce {
 
 func reloadFixture(t *testing.T) (*Client, string) {
 	t.Helper()
+	return reloadFixtureOf(t, func(*config.Config) {})
+}
+
+// reloadFixtureOf is reloadFixture with its configuration changed by start before the client is built, so the speaker carries it
+func reloadFixtureOf(t *testing.T, start func(*config.Config)) (*Client, string) {
+	t.Helper()
 	cfg, privateKey, reg := runtimeFixture(t)
 	dir := t.TempDir()
 	cfg.Link.Port = 13000
@@ -746,27 +780,13 @@ func reloadFixture(t *testing.T) (*Client, string) {
 	cfg.Auth.Trust = filepath.Join(dir, "registry.json")
 	writeKey(t, cfg.Auth.Key, privateKey)
 	writeRegistry(t, cfg.Auth.Trust, reg)
-	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &Client{
-		ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer), Mesh: netstack.NewRoutesOnly(),
-	}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
-	t.Cleanup(func() { cancel(); c.peers.Wait() })
-	return c, filepath.Join(dir, "config.yaml")
+	start(cfg)
+	return testClientOf(t, cfg, privateKey, reg), filepath.Join(dir, "config.yaml")
 }
 
 func TestMetricsExposesBabelAndSessionState(t *testing.T) {
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := testClient(t)
+	speaker := c.speaker
 	speaker.SetOriginated([]babel.OriginatedRoute{{Destination: netip.MustParsePrefix("192.0.2.5/32")}})
 	// A neighbor and a session, or every per-peer and per-path line below is
 	// a loop over nothing and only the scalars are ever written.
@@ -795,19 +815,12 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	if _, err := peer.ReserveRawOrDrop([]byte("one more"), 41); err == nil {
 		t.Fatal("the peer took a packet past its budget, so its drop counter proves nothing")
 	}
-	// A real hub with its unclaimed queue filled, so the refused counter reads
+	// The node's hub with its unclaimed queue filled, so the refused counter reads
 	// something: nothing else in this test would give it a value other than
 	// the zero it has with the counting deleted. Overflowing that queue is not
 	// this node falling behind on receive, which the other counter reports,
 	// so it is the refused one this drives.
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hub.Close()
-	c := &Client{speaker: speaker, sessions: newSessionSet(), hub: hub, Mesh: mesh}
-	// New always stores a configuration, which the antispoof status reads
-	c.cfg.Store(&config.Config{})
+	hub := c.hub
 	if fillUnclaimedQueue(t, hub) == 0 {
 		t.Fatal("the queue refused nothing, so the counter would read zero either way")
 	}
@@ -1098,9 +1111,9 @@ func TestSessionSetKeepsActivePreferredSession(t *testing.T) {
 // briefly not in it is ordinary, and an entry that still says "running"
 // makes every later reload skip that peer until the process restarts.
 func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
+	c := testClient(t)
+	// a memory hub, so the dialer's handshakes to a port nothing answers on never reach the host's sockets
+	c.hub = testHub(t)
 	// A serial number sends runPeer through the pre-checks, which fail against
 	// an empty registry and return rather than looping.
 	c.cfg.Store(&config.Config{
@@ -1134,7 +1147,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 	if started := dialerCount(c); started != 1 {
 		t.Errorf("a reload started %d dialers for a peer that had given up, want 1", started)
 	}
-	cancel()
+	c.cancel()
 	c.peers.Wait()
 }
 
@@ -1143,9 +1156,9 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 // change at all, and Reload reported success while the old dialer kept using
 // the value it captured when it started.
 func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
+	c := testClient(t)
+	// a memory hub, so the dialers' handshakes to a port nothing answers on never reach the host's sockets
+	c.hub = testHub(t)
 	base := func(serial string) *config.Config {
 		return &config.Config{
 			Node: identity.MustParse("example/node"),
@@ -1185,7 +1198,7 @@ func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 	if !updated {
 		t.Error("no dialer was started for the new endpoint serial, so the change was dropped")
 	}
-	cancel()
+	c.cancel()
 	c.peers.Wait()
 }
 
@@ -1215,25 +1228,10 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	cfg.Auth.Key = filepath.Join(dir, "key.pem")
 	writeKey(t, cfg.Auth.Key, privateKey)
 
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{
-		ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh,
-		// A dialer that resolves its peer asks the set whether that path is
-		// already held, and this fixture's organization carries a public key,
-		// so a dialer gets that far.
-		sessions: newSessionSet(), hub: testHub(t),
-	}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	// a memory hub, so the dialers' handshakes to a port nothing answers on never reach the host's sockets
+	c.hub = testHub(t)
 	c.syncPeers()
-	defer func() { cancel(); c.peers.Wait() }()
 
 	// A second node joins and this node starts announcing another prefix,
 	// the shape of a registry rewrite together with a config edit.
@@ -1268,7 +1266,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	// And the announcements reached the speaker, rather than only the copy of
 	// the configuration the client holds. A reload that stored the new set and
 	// never applied it would report success and announce the old one forever.
-	if got := speaker.Stats().Originated; got != 3 {
+	if got := c.speaker.Stats().Originated; got != 3 {
 		t.Errorf("the speaker announces %d prefixes after the reload, want the two plain ones and the source-specific one", got)
 	}
 	c.dialersMu.Lock()
@@ -1577,25 +1575,11 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	})
 	writeRegistry(t, registryPath, joined)
 
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{
-		ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh,
-	}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, joined))
+	c := testClientOf(t, cfg, privateKey, joined)
 	// A live session for the node the rewrite below drops. The registry is the
 	// trust root, so a reload has to close it: refusing the next handshake
 	// leaves the tunnel it already holds carrying traffic until every other
 	// node restarts.
-	c.sessions = newSessionSet()
-	c.sessions.trust = liveTrust{c}
 	c.sessions.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
 	var revoked []*ike.Session
 	c.sessions.close = func(sess *ike.Session) { revoked = append(revoked, sess) }
@@ -1606,7 +1590,6 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 		t.Fatal("the session for the node about to be dropped was not adopted")
 	}
 	c.syncPeers()
-	defer func() { cancel(); c.peers.Wait() }()
 
 	// "third" is decommissioned and a fourth node joins in the same rewrite.
 	// Nothing about this node's own configuration changed.
@@ -1678,17 +1661,9 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	// A port nothing listens on, so a dial that happens anyway cannot succeed
 	// and cannot be mistaken for the stand-down.
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hub.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c := testClientOf(t, cfg, privateKey, reg)
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
 
@@ -1698,7 +1673,7 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	}
 
 	start := time.Now()
-	err = c.connectPeer(ctx, dialTo(t, cfg, cfg.Dial.To[0]), slog.LevelInfo)
+	err := c.connectPeer(ctx, dialTo(t, cfg, cfg.Dial.To[0]), slog.LevelInfo)
 	if !errors.Is(err, errSessionEstablished) {
 		t.Fatalf("the dialer reported %v, want the stand-down", err)
 	}
@@ -1718,17 +1693,9 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 	loopback := "127.0.0.1"
 	// a port nothing listens on, so the dial once the session ends fails without a session
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hub.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c := testClientOf(t, cfg, privateKey, reg)
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
 	c.sessions.close = func(*ike.Session) {}
 	// the session the gateway dialed has stopped proving the gateway is there, as after the gateway restarted
 	c.sessions.active = func(*ike.Session) bool { return false }
@@ -1766,11 +1733,6 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 // every reconnect delay for the life of the process.
 func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, sessions: newSessionSet()}
-	c.cfg.Store(cfg)
-
 	// "wrong family" is a node that exists and simply cannot be reached from
 	// this local endpoint, which on a dual-stack node with single-stack peers
 	// is the ordinary configuration rather than a mistake.
@@ -1778,7 +1740,8 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 		CommonName: "v6only",
 		Endpoints:  []registry.Endpoint{{SerialNumber: "1", AddressFamily: "ip6", Port: 13000}},
 	})
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	ctx := c.ctx
 	for name, peer := range map[string]identity.Identity{
 		"pinned to a serial":  identity.MustParse("example/gone:1"),
 		"pinned to none":      identity.MustParse("example/gone"),
@@ -1888,17 +1851,10 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 
 	// And the rendered line carries it, so nothing above the helper reaches
 	// for %q again.
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := testClient(t)
 	peer := &netstack.Peer{ID: "gate\tway"}
-	handle := speaker.AddPeer(peer, identity.Identity{})
+	handle := c.speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
-	c := &Client{speaker: speaker, sessions: newSessionSet(), Mesh: mesh}
-	// New always stores a configuration, which the antispoof status reads
-	c.cfg.Store(&config.Config{})
 	// A live session too: the path label is the other value built from a name
 	// a peer chooses, and with no sessions its line is never rendered.
 	c.sessions.close = func(*ike.Session) {}
@@ -2000,24 +1956,20 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	unresolvable := "gateway.onion."
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	c.dialRetry = time.Millisecond
 
 	written := capturedLog(t)
 
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
-	go func() { c.runPeer(ctx, d, nil); close(done) }()
+	go func() { c.runPeer(c.ctx, d, nil); close(done) }()
 	deadline := time.Now().Add(2 * time.Second)
 	for written.count("reconnecting in") == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	time.Sleep(100 * time.Millisecond)
-	cancel()
+	c.cancel()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -2194,12 +2146,9 @@ func revocations(t *testing.T, bus *events.Bus, want map[string]string, paths ..
 // recognize it before the loop.
 func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	c.dialRetry = time.Millisecond
+	ctx := c.ctx
 
 	// The registry names the node and the address family matches this local
 	// endpoint. Only the address is absent.
@@ -2288,12 +2237,8 @@ func TestUnderlayHoldsTheEndpointsADialerWouldTake(t *testing.T) {
 			{SerialNumber: "4", AddressFamily: "ip4", Address: &wrongFamily, Port: 13000},
 		},
 	}}}}
-	c := &Client{}
-	if got := c.Underlay(); len(got) != 0 {
-		t.Errorf("a client with no registry answered %v, and the reconciler asks before one is stored", got)
-	}
-	c.storeIndex(trust(t, reg))
-	got := c.Underlay()
+	cfg, privateKey, _ := runtimeFixture(t)
+	got := testClientOf(t, cfg, privateKey, reg).Underlay()
 	if len(got) != 1 || got[0].String() != literal {
 		t.Errorf("the underlay set is %v, want just %s: a name needs a resolver and the rest cannot be dialed", got, literal)
 	}
@@ -2313,12 +2258,8 @@ func dialedClient(t *testing.T, address string) (*Client, *config.Config, *atomi
 	t.Helper()
 	cfg, privateKey, reg := runtimeFixture(t)
 	reg[0].Nodes[1].Endpoints[0].Address = &address
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, sessions: newSessionSet(), events: events.New(),
-		dialers: make(map[string]*dialer), dialRetry: dialedPoll}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	c.dialRetry = dialedPoll
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	if _, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, false, nil); !adopted {
@@ -2529,26 +2470,21 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 // the process while Reload's "so nothing will dial it" is not true.
 func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
-	c.cfg.Store(cfg)
-
-	d := dialTo(t, cfg, cfg.Dial.To[0])
 	// A name the dialer takes and the resolver refuses, so the loop comes
-	// round again without the dial reaching the transport this fixture has no
-	// hub for. RFC 6761 reserves .invalid for exactly this. An endpoint the
+	// round again without the dial reaching the transport. RFC 6761 reserves .invalid for exactly this. An endpoint the
 	// registry itself disqualifies is given up on before the loop, which is
 	// the case above this one.
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	c.dialRetry = time.Millisecond
+
+	d := dialTo(t, cfg, cfg.Dial.To[0])
 	if _, err := c.index().Key(d.peer.Node()); err != nil {
 		t.Fatal("the fixture's own peer is not in its registry, so this proves nothing")
 	}
 	done := make(chan struct{})
-	go func() { c.runPeer(ctx, d, nil); close(done) }()
+	go func() { c.runPeer(c.ctx, d, nil); close(done) }()
 
 	// Still dialing while the registry names it.
 	select {

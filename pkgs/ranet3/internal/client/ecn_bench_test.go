@@ -26,7 +26,7 @@ func BenchmarkEmitECN(b *testing.B) {
 		{"ce", slices.Repeat([]inboundECN{packet.CE}, batch)},
 	} {
 		b.Run(arm.name, func(b *testing.B) {
-			c := &Client{}
+			c := testClient(b)
 			inner := make([][]byte, batch)
 			for i := range inner {
 				inner[i] = make([]byte, size)

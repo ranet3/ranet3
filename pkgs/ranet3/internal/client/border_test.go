@@ -144,9 +144,8 @@ func overlayOf(prefixes ...string) []schema.Prefix {
 // not ready
 func TestEgressFollowsTheTranslatorWhileTheBordersChainIsMissing(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	c.SetBorder(&borderRecord{missing: true})
 	c.SetExit(&fakeExit{status: egress.Status{Ready4: true, Ready6: true}})
 	for _, serves := range []bool{true, false, true} {
@@ -168,9 +167,8 @@ func TestEgressFollowsTheTranslatorWhileTheBordersChainIsMissing(t *testing.T) {
 // withdrawn
 func TestRepublishRacingAFallLeavesTheSIDWithdrawn(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	h := holdRepublish(c)
 	c.SetEgressReady(true, true, true)
 	if !sidOriginated(c, sid) {
@@ -342,12 +340,6 @@ func TestBorderSetsCarveAnotherNodesPrefixAndKeepTheGatewaysRange(t *testing.T) 
 		cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf("203.0.113.0/25")}}}
 	})
 	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange)}
-	// the fixture's speaker writes a table of its own, and this one the node's
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, c.Mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.speaker = speaker
 	peer := sinkPeer(t, "example/gateway:1@0")
 	defer c.speaker.AddPeer(peer, identity.MustParse("example/gateway:1")).Close()
 	update := func(prefix string) babel.RawTLV {
@@ -738,7 +730,7 @@ func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 					egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"))
 				}
 			})
-			c.Mesh = &netstack.Mesh{Name: "ranet3"}
+			c.Mesh.Name = "ranet3"
 			if got := c.BorderInside(); !slices.Equal(got, node.want) {
 				t.Errorf("the antispoof filter accepts %v, want %v", got, node.want)
 			}

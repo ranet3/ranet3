@@ -18,10 +18,8 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
-	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -39,10 +37,10 @@ func (w countingWriter) Write(b []byte) (int, error) { w.n.Add(1); return len(b)
 // withdraws this node's routes from the mesh rather than merely wasting its
 // time. The count has to stay exact: only the saying of it is bounded.
 func TestRefusedESPPacketsAreCountedExactlyAndSaidRarely(t *testing.T) {
+	c := testClient(t)
 	var lines atomic.Int64
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
 
-	c := &Client{started: time.Now()}
 	c.dropReported.Store(-int64(espDropReportInterval))
 	const batches = 20000
 	for range batches {
@@ -68,38 +66,64 @@ func TestRefusedESPPacketsAreCountedExactlyAndSaidRarely(t *testing.T) {
 // metric is the only way an operator tells that from silence. It is its own
 // series because ranet3_receive_dropped_total, of datagrams refused because
 // their session's receive queue was full or held all its receive buffers, means
-// something else entirely.
+// something else entirely. The scrape carries the counts of the hub the
+// client receives on.
 func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hub.Close()
+	c := testClient(t)
+	hub := c.hub
 	sender, err := net.Dial("udp", net.JoinHostPort("127.0.0.1",
 		strconv.Itoa(hub.LocalAddr().(*net.UDPAddr).Port)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sender.Close()
-	// An ESP SPI no Mux holds, which anyone who can reach the port can send
-	// and which an operator needs to be able to see.
-	if _, err := sender.Write([]byte{9, 9, 9, 9, 0, 0, 0, 1, 0, 0, 0, 0}); err != nil {
+	// a session nothing reads from, so once its receive queue is full the hub drops what comes for it
+	queue, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4500)
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer queue.Close()
+	if err := queue.RegisterESP(0x07070707); err != nil {
+		t.Fatal(err)
+	}
+	flood := append([]byte{7, 7, 7, 7}, make([]byte, 60)...)
 	deadline := time.Now().Add(10 * time.Second)
-	for hub.Refused() == 0 {
+	for hub.Dropped() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("the hub refused nothing, so this proves nothing")
+			t.Fatal("the hub dropped nothing for the full queue, so this proves nothing")
+		}
+		if _, err := sender.Write(flood); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An ESP SPI no Mux holds, which anyone who can reach the port can send
+	// and which an operator needs to be able to see, and an RFC 3948 NAT
+	// keepalive, which the hub counts on a counter of its own.
+	for _, datagram := range [][]byte{{9, 9, 9, 9, 0, 0, 0, 1, 0, 0, 0, 0}, {0xff}} {
+		if _, err := sender.Write(datagram); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for hub.Refused() == 0 || hub.Keepalives() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the hub refused or ignored nothing, so this proves nothing")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	c := &Client{sessions: newSessionSet(), hub: hub}
+	// the flood's last datagrams may still be dropping, so the line holds a count between the two reads
 	var out strings.Builder
+	before := hub.Dropped()
 	c.renderReceiveCounters(&out)
+	after := hub.Dropped()
+	_, line, _ := strings.Cut(out.String(), "\nranet3_receive_dropped_total ")
+	var dropped uint64
+	if _, err := fmt.Sscanf(line, "%d", &dropped); err != nil || dropped < before || dropped > after {
+		t.Errorf("the scrape's dropped line reads %d (%v), want the hub's count, from %d to %d:\n%s", dropped, err, before, after, out.String())
+	}
 	want := []string{
 		"# TYPE ranet3_receive_refused_total counter",
-		"ranet3_receive_dropped_total 0",
+		fmt.Sprintf("ranet3_receive_keepalives_total %d\n", hub.Keepalives()),
 	}
 	// every cause is a series, the unknown ESP SPI's the one the datagram raised
 	for i, cause := range transport.RefusalCauses {
@@ -116,10 +140,9 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 // the scrape counts the sockets connected to one busy peer each, those a send or a read failed on and handed back to the shared socket, and the connects that failed
 // a change of the network closes the socket and counts no fallback
 func TestMetricsCountTheSocketsConnectedToOnePeer(t *testing.T) {
-	bus := events.New()
-	hub := recordingHub(t, bus)
-	busyPeer(t, hub, bus)
-	c := &Client{sessions: newSessionSet(), hub: hub}
+	c := testClient(t)
+	hub := c.hub
+	busyPeer(t, hub, c.events)
 	scrape := func(want ...string) {
 		t.Helper()
 		var out strings.Builder
@@ -143,7 +166,7 @@ func TestMetricsCountTheSocketsConnectedToOnePeer(t *testing.T) {
 // BIRD. Neither was exported here until a live run went looking for a steered
 // path that had stopped working and found the counter only on a socket.
 func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
-	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	c := testClient(t)
 	var segments strings.Builder
 	c.renderSegmentCounters(&segments)
 	for _, want := range []string{
@@ -208,7 +231,7 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 // a family it asked in, and writes no series for a family or a kind of lookup
 // it did not ask
 func TestMetricsCountTheLookupsTakenInEachFamilyAsked(t *testing.T) {
-	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	c := testClient(t)
 	status := func() control.KernelStatus { return control.KernelStatus{Enabled: true} }
 	c.SetReconciler(Reconciler{Status: status})
 	var none strings.Builder
@@ -250,7 +273,7 @@ func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	writeTransitCounters(&out, control.TransitCounters{Forwarded: 1200, Delivered: 340, Expired: 1, NoRoute: 2, Held: 3, Refused: 4, Invalid: 5, Martian: 6, SourceRoute: 7, UnroutedSource: 12, NotReady: 13, TooBig: 8, SessionMulticast: 21, Multicast: 9, Forged: 14, RoutingHeader: 15, SID: 16, UnownedSource: 17, Nested: 18, Looped: 19, Answered: 10, Unanswered: 11, Unsent: 20})
 	verbGolden(t, "metrics-transit.txt", []byte(out.String()))
-	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	c := testClient(t)
 	var zero strings.Builder
 	c.renderTransitCounters(&zero)
 	if want := `ranet3_transit_packets_total{decision="dropped",reason="no_route"} 0`; !strings.Contains(zero.String(), want) {
@@ -265,7 +288,7 @@ func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
 // packets it dropped with no tracked flow and the host's connection table, the
 // table's series left out where the pass could not read it.
 func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
-	c := &Client{Mesh: &netstack.Mesh{}}
+	c := testClient(t)
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)
 	carried := netip.MustParsePrefix("198.51.100.0/24")
 	withheld := netip.MustParsePrefix("2001:db8:1::/48")
@@ -327,7 +350,7 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 	// A node that carries nothing for anybody writes none of it, rather than
 	// zeroes that read as an exit node translating nothing.
 	var off strings.Builder
-	(&Client{}).renderEgress(&off)
+	testClient(t).renderEgress(&off)
 	if off.Len() != 0 {
 		t.Errorf("a node with no egress capability wrote %q", off.String())
 	}
@@ -337,7 +360,7 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 // of the rules', the translation's or connection tracking's, whose zeros
 // would read as an exit installing nothing
 func TestMetricsOfTheUserspaceExitWriteNoRulesSeries(t *testing.T) {
-	c := &Client{Mesh: &netstack.Mesh{}}
+	c := testClient(t)
 	c.SetExit(&fakeExit{status: egress.Status{
 		Backend: "userspace", Ready4: true, Ready6: true, Refused4: 3,
 		Flows: &egress.Flows{TCP: [2]int{4, 1}, Limits: egress.FlowLimits{Budget: 16 << 20, From: egress.BudgetGoLimit, Connections: 23}},

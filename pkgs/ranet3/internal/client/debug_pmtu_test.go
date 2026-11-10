@@ -25,8 +25,9 @@ import (
 )
 
 // pmtuClient is a client at link.mtu link holding the session d searches under its peer's name, with d's bus as its own
-func pmtuClient(d *pathDriver, link uint16) *Client {
-	c := &Client{events: d.events, sessions: newSessionSet(), Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+func pmtuClient(t *testing.T, d *pathDriver, link uint16) *Client {
+	t.Helper()
+	c := testClientOn(t, d.events)
 	c.cfg.Store(&config.Config{Link: config.Link{MTU: link}})
 	c.sessions.live[d.peer.ID] = &liveSession{pmtu: d}
 	return c
@@ -39,7 +40,7 @@ func pmtuClient(d *pathDriver, link uint16) *Client {
 func TestPMTUViewShowsTheSearchAndItsLastChange(t *testing.T) {
 	const link, carries = 1500, 1450
 	r := newPathRig(t, loopbackHub(t), "127.0.0.1:4500", link, math.MaxInt, carries)
-	c := pmtuClient(r.driver, link)
+	c := pmtuClient(t, r.driver, link)
 	r.waitBudget(t, carries)
 	waitFor(t, pathWait, "the search to settle", func() bool {
 		return c.DebugPMTU("").Sessions[0].State == control.PMTUConfirmed
@@ -86,7 +87,7 @@ func TestPMTUViewShowsNoChangeOfAnEarlierSession(t *testing.T) {
 	r := newPathRig(t, loopbackHub(t), "127.0.0.1:4500", netstack.DefaultMTU, math.MaxInt, math.MaxInt)
 	r.bus.Emit("pmtu.changed", r.driver.peer.ID, slog.String("endpoint", "127.0.0.1:4500"),
 		slog.Int("budget", floor), slog.Int("budget_was", netstack.DefaultMTU), slog.String("reason", movedByProbe))
-	c := pmtuClient(r.driver, netstack.DefaultMTU)
+	c := pmtuClient(t, r.driver, netstack.DefaultMTU)
 	waitFor(t, pathWait, "the search to settle", func() bool {
 		return c.DebugPMTU("").Sessions[0].State == control.PMTUConfirmed
 	})
@@ -103,7 +104,7 @@ func TestProbeThatNeverLeftIsNotCountedLost(t *testing.T) {
 	})
 	r.serve(t, 1400, math.MaxInt)
 	waitFor(t, pathWait, "the search to try its probe again", func() bool { return r.probes.Load() > maxProbes })
-	s := pmtuClient(r.driver, 1400).DebugPMTU("").Sessions[0]
+	s := pmtuClient(t, r.driver, 1400).DebugPMTU("").Sessions[0]
 	if s.Sent != 0 || s.Lost != 0 || s.Last != nil || r.totals.lost.Load() != 0 {
 		t.Errorf("a probe tried %d times and never sent reads as %d sent and %d lost, the last %+v, the totals %d lost",
 			r.probes.Load(), s.Sent, s.Lost, s.Last, r.totals.lost.Load())
@@ -121,7 +122,7 @@ func TestRefusedRetryOfAProbeIsNotCountedLost(t *testing.T) {
 	})
 	r.serve(t, 1400, math.MaxInt)
 	waitFor(t, pathWait, "the search to try its probe again and again", func() bool { return r.probes.Load() > maxProbes+1 })
-	s := pmtuClient(r.driver, 1400).DebugPMTU("").Sessions[0]
+	s := pmtuClient(t, r.driver, 1400).DebugPMTU("").Sessions[0]
 	if s.Sent != 1 || s.Lost != 1 || r.totals.lost.Load() != 1 {
 		t.Errorf("a probe tried %d times that left once unanswered reads as %d sent and %d lost, the totals %d lost, want 1 each",
 			r.probes.Load(), s.Sent, s.Lost, r.totals.lost.Load())
@@ -141,7 +142,7 @@ func TestProbeDroppedByARefusalIsNotCountedLost(t *testing.T) {
 	r.serve(t, link, math.MaxInt)
 	waitFor(t, pathWait, "a probe past what the path carries to go out", func() bool { return int(largest.Load()) > carries })
 	r.driver.reports <- &transport.PathMTUError{Endpoint: r.driver.endpoint, MTU: link}
-	c := pmtuClient(r.driver, link)
+	c := pmtuClient(t, r.driver, link)
 	waitFor(t, pathWait, "the search to settle on what the path carries", func() bool {
 		s := c.DebugPMTU("").Sessions[0]
 		return s.State == control.PMTUConfirmed && s.Budget == carries
@@ -165,7 +166,7 @@ func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
 	d := newPathDriver(mux, nil, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
 	d.peer, d.endpoint = sinkPeer(t, "example/peer:0@0"), mux.Endpoint()
 	d.start(1400, nil, math.MaxInt)
-	c := pmtuClient(d, 1400)
+	c := pmtuClient(t, d, 1400)
 	s := c.DebugPMTU("").Sessions[0]
 	if s.State != control.PMTUNotSearched || s.Budget != 1400 || s.Sent != 0 || s.Probe != nil || s.Target != 0 {
 		t.Errorf("the view reads %+v for a session it does not search", s)
@@ -194,7 +195,7 @@ func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
 		d.peer = sinkPeer(t, path)
 		return d
 	}
-	c := pmtuClient(session("example/bravo:2@1"), 1400)
+	c := pmtuClient(t, session("example/bravo:2@1"), 1400)
 	c.sessions.live["example/bravo2:3@1"] = &liveSession{pmtu: session("example/bravo2:3@1")}
 	for _, peer := range []string{"example/bravo:2@1", "example/bravo:2", "example/bravo", "bravo"} {
 		var shown []string
@@ -209,7 +210,7 @@ func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
 
 // the probe totals, the answers, the answers withheld and the clamps reach a scrape under the names the docs give them
 func TestMetricsCountProbesAnswersAndClamps(t *testing.T) {
-	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	c := testClient(t)
 	c.probes.acked.Add(7)
 	c.probes.lost.Add(3)
 	var out strings.Builder

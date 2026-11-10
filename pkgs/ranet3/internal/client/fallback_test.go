@@ -24,7 +24,6 @@ import (
 // "uplink" neither names the switch, and a read that fails is reported.
 func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
-	c.sessions = newSessionSet()
 	switchState := &control.KernelFallback{State: "holding", Dropped: &control.FallbackDrops{Packets: 3, Bytes: 180}}
 	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
 		return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: switchState}}
@@ -86,7 +85,6 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 // once a read found them, and one under "uplink" carries neither series
 func TestMetricsCarryTheSwitchUnderFallbackNone(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
-	c.sessions = newSessionSet()
 	for _, test := range []struct {
 		fallback *control.KernelFallback
 		holding  int
@@ -131,7 +129,6 @@ func TestMetricsCarryTheSwitchUnderFallbackNone(t *testing.T) {
 // read, which name none, ask nothing
 func TestOnlyAStatusReadAsksSystemdResolved(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
-	c.sessions = newSessionSet()
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, nil }
 	c.fallbackRead = func() (kernel.FallbackDebug, error) { return kernel.FallbackDebug{Held: true}, nil }
 	asked := 0

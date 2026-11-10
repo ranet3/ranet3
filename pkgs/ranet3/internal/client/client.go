@@ -208,11 +208,7 @@ func (c *Client) storeIndex(x *registry.Index) {
 // have to reach and each running dialer's last resolved address, a name's
 // among them
 func (c *Client) Underlay() []netip.Addr {
-	var out []netip.Addr
-	if x := c.index(); x != nil {
-		out = slices.Clone(x.Underlay())
-	}
-	return append(out, c.dialed.list()...)
+	return append(slices.Clone(c.index().Underlay()), c.dialed.list()...)
 }
 
 // readsOwnedOnly is the mesh's ownedOnly for this build

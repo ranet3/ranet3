@@ -230,7 +230,7 @@ func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 
 // the pmtu view shows the router-id of each family and the answer SID as the mesh holds them
 func TestPMTUViewShowsTheRouterIDsAndTheAnswerSID(t *testing.T) {
-	c := &Client{sessions: newSessionSet(), Mesh: netstack.NewRoutesOnly()}
+	c := testClient(t)
 	c.cfg.Store(&config.Config{})
 	held := netstack.AnswerSources{Router4: netip.MustParseAddr("100.64.0.1"), Router6: netip.MustParseAddr("3fff:c::1"), SID: netip.MustParseAddr("3fff:b:0:106::1")}
 	c.Mesh.SetAnswerSources(held)

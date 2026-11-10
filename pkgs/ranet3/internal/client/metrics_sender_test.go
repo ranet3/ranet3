@@ -31,7 +31,7 @@ func clientWith(t *testing.T, peers ...*netstack.Peer) *Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mux.Close() })
-	c := &Client{sessions: newSessionSet(), Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	c := testClient(t)
 	for _, peer := range peers {
 		d := newPathDriver(mux, nil, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
 		d.peer = peer

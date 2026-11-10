@@ -13,7 +13,6 @@ import (
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/babel"
-	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
@@ -96,11 +95,8 @@ func fragmentsOf(raw []byte, id uint32, at int) [][]byte {
 // the metrics name each neighbor whose session sent a Babel packet in fragments, how large the largest was once whole, and the datagrams dropped and why
 // a neighbor that sent none has no samples
 func TestMetricsNameTheNeighborsThatSendBabelPacketsInFragments(t *testing.T) {
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := testClient(t)
+	speaker := c.speaker
 	peers := make(map[string]*netstack.Peer)
 	for _, id := range []string{"cutting", "whole"} {
 		peers[id] = sinkPeer(t, id)
@@ -116,9 +112,6 @@ func TestMetricsNameTheNeighborsThatSendBabelPacketsInFragments(t *testing.T) {
 	speaker.Receive(peers["cutting"], fragmentsOf(raw, 2, 8)[1])
 	speaker.Receive(peers["whole"], babelFrom(netip.MustParseAddr("fe80::3"), 1443))
 
-	c := &Client{speaker: speaker, sessions: newSessionSet(), Mesh: mesh}
-	// New always stores a configuration, which the antispoof status reads
-	c.cfg.Store(&config.Config{})
 	var out bytes.Buffer
 	c.Metrics(&out)
 	var got []string

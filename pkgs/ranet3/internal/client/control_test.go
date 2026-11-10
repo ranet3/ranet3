@@ -216,7 +216,7 @@ func TestAnnouncementTakesTheEgressPrefixesFromTheTranslator(t *testing.T) {
 	cfg := &config.Config{Cap: config.Caps{
 		Route: &babel.Routes{Announce: []schema.Announce{{Prefix: schema.MustPrefix("10.88.0.2/32")}}},
 	}}
-	c := &Client{Mesh: &netstack.Mesh{}}
+	c := testClient(t)
 	if routes := c.announced(cfg, c.egressAdvertised()); len(routes) != 1 {
 		t.Fatalf("announced %v with no exit, want cap.route alone", routes)
 	}
@@ -269,14 +269,12 @@ func TestAssignedAddressesAreThisNodesOwnFromTheStart(t *testing.T) {
 // a node with none reports none rather than leaving the field out
 func TestStatusReportsTheMeshAddressesTheEgressTakes(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 		egressNode(cfg, egressSegment(sid, "3fff:a::/32"))
 		cfg.Cap.Route = &babel.Routes{Announce: announce("203.0.113.0/24", "3fff:a::1/128")}
 		cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("203.0.113.10/32"), schema.MustPrefix("3fff:a::1/128")}}
 	})
-	c.sessions = newSessionSet()
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	c.SetEgressReady(true, true, true)
 	status := c.Status()
 	if !slices.Contains(status.Originate, control.Originated{Prefix: netip.MustParsePrefix(sid + "/128")}) {
@@ -382,8 +380,7 @@ func TestPeersMatchSessionsByNodeAndLocalEndpoint(t *testing.T) {
 		}
 		return out
 	}
-	c := &Client{sessions: newSessionSet()}
-	c.sessions.trust = liveTrust{c}
+	c := testClient(t)
 	c.storeIndex(trust(t, registry.Registry{{Organization: "example", Nodes: []registry.Node{
 		{CommonName: "local", Endpoints: endpoints("0", "1")},
 		{CommonName: "gateway", Endpoints: endpoints("1", "2")},

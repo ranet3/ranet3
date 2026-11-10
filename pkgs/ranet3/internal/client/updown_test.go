@@ -327,7 +327,7 @@ func TestStateDirectoryIsMadeAtItsModeAndAFileInItsPlaceRefusesTheStart(t *testi
 		t.Fatal(err)
 	}
 	for name, path := range map[string]string{"a file": file, "a flag that is a directory": flagDir} {
-		if err := (&Client{}).SetStateDir(path); err == nil {
+		if err := testClient(t).SetStateDir(path); err == nil {
 			t.Errorf("a state directory at %s was taken", name)
 		}
 	}

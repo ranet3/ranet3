@@ -26,7 +26,9 @@ var _ interface {
 // the view carries the watch's reading per family and the last change by what moved in it
 // a node without a watch says so, and a watch that signaled nothing yet has no last change
 func TestNetmonViewReportsTheWatchAndItsLastChange(t *testing.T) {
-	if info := (&Client{}).DebugNetmon(); info.Watching || info.LastChange != nil {
+	c := testClient(t)
+	c.network = nil
+	if info := c.DebugNetmon(); info.Watching || info.LastChange != nil {
 		t.Errorf("a node without a watch reports %+v", info)
 	}
 	wifi := kernel.DefaultRoute{Interface: "en0", Gateway: netip.MustParseAddr("192.168.1.1")}
@@ -34,7 +36,7 @@ func TestNetmonViewReportsTheWatchAndItsLastChange(t *testing.T) {
 	before := kernel.NetworkState{IPv4: kernel.NetworkFamily{Default: wifi}, IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{netip.MustParseAddr("2001:db8::20")}}}
 	after := kernel.NetworkState{IPv4: kernel.NetworkFamily{Default: dock}, IPv6: before.IPv6}
 	network := &fakeNetwork{current: after}
-	c := &Client{network: network}
+	c.network = network
 	if info := c.DebugNetmon(); !info.Watching || info.LastChange != nil || len(info.Families) != 2 || info.Families[0].Default.Interface != "en7" {
 		t.Errorf("a watch that signaled nothing reports %+v", info)
 	}

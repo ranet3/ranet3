@@ -593,9 +593,8 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 // mesh's word read by what it egresses into the device it writes to, with the
 // border's chain missing
 func TestSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(labSID.String(), labLeaves...)) })
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(labSID.String(), labLeaves...)) })
 	carried := meshCarrying(t, c)
-	speakerRecording(t, c, bus)
 	// a border whose chain is missing holds neither family back, since the egress segments wait on the translator alone
 	c.SetBorder(&borderRecord{missing: true})
 	var rebuiltWith [2]bool
@@ -633,13 +632,12 @@ func TestSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 // the device the mesh writes to
 func TestAdvertisedEgressWaitsOnReadyAndTheAnnouncement(t *testing.T) {
 	both := []netip.Prefix{labDefaults[4], labDefaults[6]}
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 		cfg.Cap.Egress = &egress.Egress{}
 		for _, prefix := range both {
 			cfg.Cap.Egress.Advertise = append(cfg.Cap.Egress.Advertise, schema.PrefixFrom(prefix))
 		}
 	})
-	speakerRecording(t, c, bus)
 	sent := meshSending(t, c, both)
 	var announced []netip.Prefix
 	var rebuiltWith [2]bool

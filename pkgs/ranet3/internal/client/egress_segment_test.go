@@ -93,9 +93,8 @@ func TestEgressSegmentsComeAndGoOnlyByRestart(t *testing.T) {
 // SID's /128, which its word withdraws again once the host forwards IPv4
 func TestSIDFollowsTheTranslatorsWordWhileTheReadinessPairStays(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	for _, serves := range []bool{false, true, false} {
 		c.SetEgressReady(false, true, serves)
 		if got := sidOriginated(c, sid); got != serves {
@@ -149,9 +148,8 @@ func joined(t *testing.T, what string, done <-chan struct{}) {
 // on the moved SID
 func TestReadinessRacingAReloadEndsOnTheMovedSID(t *testing.T) {
 	const old, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
-	c, path, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(old, "3fff:a::/32")) })
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(old, "3fff:a::/32")) })
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	h := holdRepublish(c)
 	c.SetEgressReady(false, true, true)
 	if !sidOriginated(c, old) {
@@ -192,9 +190,8 @@ func TestReadinessRacingAReloadEndsOnTheMovedSID(t *testing.T) {
 // stays withdrawn
 func TestReloadRacingAWithdrawalLeavesTheSIDWithdrawn(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
-	c, path, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	h := holdRepublish(c)
 	c.SetEgressReady(true, true, true)
 	if !sidOriginated(c, sid) {
@@ -231,9 +228,8 @@ func TestReloadRacingAWithdrawalLeavesTheSIDWithdrawn(t *testing.T) {
 // stored while it waited, never the one it found on arrival
 func TestRepublishWaitingOnAnotherPublishesTheConfigurationStoredMeanwhile(t *testing.T) {
 	const old, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(old, "3fff:a::/32")) })
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(old, "3fff:a::/32")) })
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	h := holdRepublish(c)
 	c.SetEgressReady(true, true, false)
 
@@ -265,7 +261,6 @@ func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
 		egressNode(cfg, egressSegment(old, "3fff:a::/32", "203.0.113.0/25"))
 	})
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	c.SetEgressReady(true, true, true)
 	if !sidOriginated(c, old) {
 		t.Fatal("ready egress segments left their SID unoriginated")
@@ -296,11 +291,10 @@ func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
 // translator says the SIDs are served, and neither once it says they are not
 func TestEveryEgressSIDIsOriginatedWhileServed(t *testing.T) {
 	const first, second = "3fff:b:0:106::3", "3fff:b:0:106::4"
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 		egressNode(cfg, egressSegment(first, "3fff:a::/32"), egressSegment(second, "3fff:c::/32", "203.0.113.0/25"))
 	})
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
 	for _, serves := range []bool{true, false, true} {
 		c.SetEgressReady(true, true, serves)
 		for _, sid := range []string{first, second} {
@@ -315,7 +309,7 @@ func TestEveryEgressSIDIsOriginatedWhileServed(t *testing.T) {
 // word, so the announcement is cap.route's alone
 func TestNodeWithNoEgressSegmentOriginatesNoSID(t *testing.T) {
 	cfg := &config.Config{Cap: config.Caps{Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}}}}}
-	c := &Client{}
+	c := testClient(t)
 	c.egressServes.Store(true)
 	if routes := c.announced(cfg, c.egressAdvertised()); len(routes) != 0 {
 		t.Errorf("a waypoint originated %v", routes)

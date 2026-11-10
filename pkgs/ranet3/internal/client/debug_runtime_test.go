@@ -52,8 +52,10 @@ func TestResolverFollowsTheNetPackage(t *testing.T) {
 // the view counts what the runtime and the kernel hold for this very process
 // a collection runs first, so the collector has a cycle and a last one to report
 func TestDebugRuntimeCountsThisProcess(t *testing.T) {
+	c := testClient(t)
+	c.started = time.Now().Add(-time.Minute)
 	runtime.GC()
-	info := (&Client{started: time.Now().Add(-time.Minute)}).DebugRuntime()
+	info := c.DebugRuntime()
 	if info.GoVersion != runtime.Version() || info.Goroutines < 1 || info.Threads < 1 ||
 		info.GOMAXPROCS != runtime.GOMAXPROCS(0) || info.CPUs != runtime.NumCPU() {
 		t.Errorf("the runtime reads %+v", info)
@@ -87,8 +89,8 @@ func TestDebugRuntimeStopsNoGoroutine(t *testing.T) {
 		}
 		return count
 	}
+	client := testClient(t)
 	before := pauses()
-	client := &Client{started: time.Now()}
 	for range 10 {
 		client.DebugRuntime()
 	}
@@ -101,7 +103,7 @@ func TestDebugRuntimeStopsNoGoroutine(t *testing.T) {
 func TestDebugRuntimeNamesThePassedRevision(t *testing.T) {
 	defer func(previous string) { version.Revision = previous }(version.Revision)
 	version.Revision = "ed50ac2-dirty"
-	if info := (&Client{started: time.Now()}).DebugRuntime(); info.Revision != "ed50ac2" || !info.Modified {
+	if info := testClient(t).DebugRuntime(); info.Revision != "ed50ac2" || !info.Modified {
 		t.Errorf("a build given ed50ac2-dirty reports revision %q modified %v", info.Revision, info.Modified)
 	}
 }

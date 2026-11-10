@@ -494,7 +494,7 @@ func TestSweepHandsTheSearchTheSteeringTable(t *testing.T) {
 	if carries >= need || carries < srv6.MinimumIPv6MTU {
 		t.Fatalf("a path of %d against a need of %d proves nothing", carries, need)
 	}
-	c := &Client{events: events.New(), sessions: newSessionSet(), Mesh: netstack.NewRoutesOnly()}
+	c := testClient(t)
 	r := steeredRig(t, loopbackHub(t), nil, link, carries)
 	r.waitBudget(t, carries)
 	r.waitSettled(t)
@@ -672,7 +672,7 @@ func TestSessionSetHandsMovesAndAcksToTheirSearch(t *testing.T) {
 	local := identity.MustParse("example/alpha:1")
 	remote := identity.MustParse("example/bravo:2")
 	other := identity.MustParse("example/charlie:3")
-	c := &Client{events: events.New(), sessions: newSessionSet()}
+	c := testClient(t)
 	var searches []*pathDriver
 	for _, path := range []string{identity.Path(remote, local), identity.Path(other, local)} {
 		search := newPathDriver(nil, nil, c.events, &c.probes, driverProbeTimeout, confirmInterval)

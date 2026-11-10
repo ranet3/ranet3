@@ -28,12 +28,6 @@ func TestBorderSetsNameAnExactCopyOfTheGatewaysRangeAndCarveNothingMore(t *testi
 		cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf(site.String())}}}
 	})
 	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange)}
-	// the fixture's speaker writes a table of its own, and this one the node's
-	speaker, err := babel.New(babel.Config{}, *c.config().Cap.Route, babel.Runtime{}, c.Mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.speaker = speaker
 	peer := sinkPeer(t, "example/gateway:1@0")
 	defer c.speaker.AddPeer(peer, identity.MustParse("example/gateway:1")).Close()
 	update := func(prefix netip.Prefix) babel.RawTLV {

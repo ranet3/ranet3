@@ -37,7 +37,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // reconcilerStandIn is the reconciler a reload hands cap.table to, answering with refusal
@@ -55,15 +54,13 @@ func (s *reconcilerStandIn) setTable(t kernel.Table, overlay []schema.Prefix, an
 	return s.refusal
 }
 
-// reloadOf is reloadFixture with a stand-in reconciler and a bus, its configuration changed by start
+// reloadOf is reloadFixtureOf with a stand-in reconciler and the client's bus
 func reloadOf(t *testing.T, start func(*config.Config)) (*Client, string, *reconcilerStandIn, *events.Bus) {
 	t.Helper()
-	c, path := reloadFixture(t)
-	start(c.config())
-	reconciler, bus := &reconcilerStandIn{}, events.New()
+	c, path := reloadFixtureOf(t, start)
+	reconciler := &reconcilerStandIn{}
 	c.SetReconciler(Reconciler{Table: reconciler.setTable})
-	c.events = bus
-	return c, path, reconciler, bus
+	return c, path, reconciler, c.events
 }
 
 // lastReload is the attributes of the last daemon.reload recorded
@@ -502,8 +499,6 @@ func TestReloadRecordsTheOwnKeysItMoves(t *testing.T) {
 		old.Cap.Route = &babel.Routes{Announce: announce("fd00:1::/64", "fd00:2::/64")}
 		old.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.5/32")}}
 	})
-	speakerRecording(t, c, bus)
-	c.speaker.SetAssigned(assignedAddresses(c.config()))
 	next := *c.config()
 	next.Cap.Route = &babel.Routes{Announce: announce("fd00:2::/64", "fd00:3::/64")}
 	next.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.6/24")}}
@@ -638,15 +633,7 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 		old.Overlay = overlayOf("3fff::/20")
 	})
 	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { hub.Close() })
-	c.hub = hub
 	// a live session whose budget is link.mtu, which a reload hands the new link.mtu at once
-	c.sessions = newSessionSet()
 	search := newPathDriver(nil, nil, c.events, &c.probes, defaultProbeTimeout, confirmInterval)
 	search.peer = sinkPeer(t, "example/bravo:2@1")
 	search.peer.SetMTU(c.config().Link.SessionMTU())
@@ -782,16 +769,6 @@ func TestReloadRefusesAnnouncingAPrefixCapEgressAdvertises(t *testing.T) {
 	changedNothing(t, c, old, bus)
 }
 
-// speakerRecording gives c a speaker of its configuration that records on bus
-func speakerRecording(t *testing.T, c *Client, bus *events.Bus) {
-	t.Helper()
-	speaker, err := babel.New(c.config().Babel(), c.config().Routes(), babel.Runtime{Events: bus}, netstack.NewRoutesOnly())
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.speaker = speaker
-}
-
 // steering is a cap.segment steering one source through via, which sizes the tun by the length of via
 func steering(via ...string) *srv6.Segments {
 	addresses := make([]schema.Addr, 0, len(via))
@@ -816,7 +793,6 @@ func segmentsOf(t *testing.T, c *Client) {
 
 func TestReloadHandsTheSpeakerAChangedCapBabel(t *testing.T) {
 	c, path, _, bus := reloadOf(t, func(*config.Config) {})
-	speakerRecording(t, c, bus)
 	next := *c.config()
 	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
 	writeConfig(t, path, &next)

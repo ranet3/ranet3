@@ -18,10 +18,8 @@ import (
 // traceClient is a client of a mesh with no tun, recording its events on its own bus
 func traceClient(t *testing.T) (*Client, *events.Bus) {
 	t.Helper()
-	bus := events.New()
-	c := &Client{Mesh: netstack.NewRoutesOnly(), events: bus}
-	t.Cleanup(c.Mesh.Close)
-	return c, bus
+	c := testClient(t)
+	return c, c.events
 }
 
 // a trace is recorded as it opens, with its filter, rate and payload, and as it closes, with why and what it took and refused
