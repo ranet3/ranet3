@@ -39,8 +39,8 @@ const noTranslationPerEndpoint = "an external endpoint can name several leaves a
 // of its own under the address class, and leaving the leaf's own address under
 // none, carries every protocol it can translate and refuses DCCP and UDP-Lite
 // under a class that translates, holding each source to the share of flows
-// its capability names, the default or another, with no total of its own
-// beside conntrack's table
+// its capability names, the default or another, but for the flows its count
+// misses, with no total of its own beside conntrack's table
 // its stop leaves no table of its name
 // another writer's deletion of its table is the change it is held to notice
 // the second owner of its table is the antispoof filter, and the reload a host firewall's flush of the ruleset
@@ -83,6 +83,10 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 				Row:    "RFC 4787 sections 4.1 and 8, RFC 5382 section 4.1",
 			},
 		}),
+		MissesFlows: &egresstest.Missed{
+			Reason:    "the kernel's count of a source's flows can leave a flow open and uncounted",
+			LimitsRow: "Flows of 1 mesh source the kernel exit's count misses",
+		},
 		New:        newKernelExit,
 		Holds:      kernelExitTables,
 		Remove:     deleteKernelExitTables,

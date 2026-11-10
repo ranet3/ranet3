@@ -8,12 +8,17 @@ package kernel
 import (
 	"bytes"
 	_ "embed"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -84,6 +89,57 @@ func everyTranslation() []Rule {
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::/48"), Timeouts: TCPTimeouts},
 		{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet3", From: netip.MustParsePrefix("3fff::1/128"), Timeouts: UDPTimeouts},
 	}
+}
+
+// The count a limit rule's line holds each source to is the rule's limit, in
+// each family
+func TestLimitLineCountsToItsRulesLimit(t *testing.T) {
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		for _, limit := range []int{1, 300, egress.DefaultFlowsPerSource} {
+			line, err := translatorLine(Rule{Family: family, Direction: Out, Interface: "ranet3", Limit: limit}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := connlimitCounts(line.Expressions); !slices.Equal(got, []uint32{uint32(limit)}) {
+				t.Errorf("the %s line of a limit of %d holds each source to the counts %v, want [%d]", egress.FamilyName(family), limit, got, limit)
+			}
+		}
+	}
+}
+
+// connlimitCounts reads the count of each connlimit a dynset among expressions
+// attaches to its keys, NFTA_CONNLIMIT_COUNT being attribute 1 of its data
+func connlimitCounts(expressions [][]byte) []uint32 {
+	var counts []uint32
+	for _, expression := range expressions {
+		for _, element := range nftables.Nested(expression) {
+			if name, data := expressionParts(element.Value); name == "dynset" {
+				for _, attr := range nftables.Nested(data) {
+					if name, data := expressionParts(attr.Value); attr.Kind == unix.NFTA_DYNSET_EXPR && name == "connlimit" {
+						for _, field := range nftables.Nested(data) {
+							if field.Kind == 1 && len(field.Value) == 4 {
+								counts = append(counts, binary.BigEndian.Uint32(field.Value))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return counts
+}
+
+// expressionParts is an expression's name and data
+func expressionParts(body []byte) (name string, data []byte) {
+	for _, attr := range nftables.Nested(body) {
+		switch attr.Kind {
+		case unix.NFTA_EXPR_NAME:
+			name = strings.TrimRight(string(attr.Value), "\x00")
+		case unix.NFTA_EXPR_DATA:
+			data = attr.Value
+		}
+	}
+	return name, data
 }
 
 // Every request the translator and the border send, in the order each

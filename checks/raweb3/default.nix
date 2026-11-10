@@ -19,7 +19,7 @@ lib.mkPackageCheck {
   command = ''
     # each row the kernel exit's behavior suite declares a limit under is the
     # first cell of one row of the deviations page
-    rows="$(grep -o 'Row: *"[^"]*"' ${behavior} | cut -d '"' -f 2 | sort -u)"
+    rows="$(grep -o '\<Row: *"[^"]*"' ${behavior} | cut -d '"' -f 2 | sort -u)"
     if [ -z "$rows" ]; then
       echo "the kernel exit's behavior suite declares no row" >&2
       exit 1
