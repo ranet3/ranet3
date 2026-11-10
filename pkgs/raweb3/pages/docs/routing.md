@@ -1293,9 +1293,10 @@ changes ([debugging](development/debug.md#events)). `ranet3 debug rules` lists
 as `underlay` rows each address live sessions send to, with the interface of the
 pin their sends carry where that pin has one
 ([debugging](development/debug.md#commands)). A row with a pin's interface shows
-that interface in its answer, and the others the interface the selection names
-with the route it matched, or `no route`. Each row's `Source` and `Interface`
-columns, which Linux's lookups fill, read `-`.
+that interface in its answer, a zoned link-local row without one its zone's
+interface with no matched route, and the others the interface the selection
+names with the route it matched, or `no route`. Each row's `Source` and
+`Interface` columns, which Linux's lookups fill, read `-`.
 
 ### The zero-free cover on macOS
 

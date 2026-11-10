@@ -550,9 +550,9 @@ judgment condition by condition with the lookups the last pass read, as
 On macOS a family is ready while the exit's stack runs, a link outside the mesh
 reaches each prefix the family advertises, or its default where it advertises
 none, and the host holds every address its classes name, as
-[the exit on macOS](#the-exit-on-macos) gives. A prefix none of whose candidate
-read addresses, below, a router forwards a packet from, such as `224.0.0.0/3`,
-holds its family not ready there, with
+[the exit on macOS](#the-exit-on-macos) gives. A prefix such as `224.0.0.0/3`,
+none of whose candidate read addresses a router forwards a packet from, holds
+its family not ready there, with
 `cap.egress advertises 224.0.0.0/3, which holds no unicast address to look its route up for`.
 The lookups below are the kernel exit's.
 
