@@ -91,7 +91,7 @@ func probeCarrier(t testing.TB, carrier *net.UDPConn) {
 // exit on the host at the carrier's far end
 func TestUserspaceExitPassesTheSuiteOverTheCarrier(t *testing.T) {
 	if os.Getenv(rigCarried) == "" {
-		t.Skipf("%s names no carrier and wire the rig's runner opened", rigCarried)
+		t.Skipf("%s is unset, so no two-host rig handed this test its carrier socket on descriptor 3 and its control connection on descriptor 4", rigCarried)
 	}
 	carrier, err := net.FileConn(os.NewFile(3, "carrier"))
 	if err != nil {
