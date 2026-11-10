@@ -115,7 +115,7 @@ func holdSessions(c *Client) *heldSessions {
 func (h *heldSessions) adopt(t testing.TB, c *Client, path string) *ike.Session {
 	t.Helper()
 	sess := &ike.Session{}
-	release, adopted := c.sessions.adoptPreferred(path, sess, true, func() func() {
+	release, adopted := c.sessions.adoptPreferred(t, path, sess, true, func() func() {
 		return c.speaker.AddPeer(sinkPeer(t, path), identity.Identity{}).Close
 	})
 	if !adopted {

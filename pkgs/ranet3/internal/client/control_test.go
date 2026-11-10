@@ -397,7 +397,7 @@ func TestPeersMatchSessionsByNodeAndLocalEndpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, adopted := c.sessions.adopt(identity.Path(remote, local), &ike.Session{}, local, remote, key, true, nil, nil); !adopted {
+		if _, adopted := c.sessions.adoptAt(t, identity.Path(remote, local), &ike.Session{}, local, remote, key, true); !adopted {
 			t.Fatalf("the session with %s was not adopted", held.remote)
 		}
 	}

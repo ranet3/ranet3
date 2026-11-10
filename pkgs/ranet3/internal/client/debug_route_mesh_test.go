@@ -48,9 +48,8 @@ func meshRouteClient(t *testing.T, answer kernel.MatchedRoute, lookup error, set
 		asked = append(asked, iif)
 		return answer, lookup
 	}
-	c.sessions = newSessionSet()
-	c.sessions.live[routeGateway] = &liveSession{}
-	c.sessions.live[routeGatewayAgain] = &liveSession{}
+	c.sessions.live[routeGateway] = &liveSession{pmtu: testDriver(t, routeGateway)}
+	c.sessions.live[routeGatewayAgain] = &liveSession{pmtu: testDriver(t, routeGatewayAgain)}
 	m := c.Mesh
 	m.SetTransit(true)
 	m.SetOverlay([]schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")})

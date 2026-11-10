@@ -844,7 +844,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	release, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	release, adopted := c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
 	if !adopted {
 		t.Fatal("the session was not adopted, so the per-path lines would be empty")
 	}
@@ -954,7 +954,7 @@ func TestSimultaneousOpenConvergesOnSameSession(t *testing.T) {
 		set.trust = admitting(remote)
 		sessions := map[string]*ike.Session{dialedByA: {}, dialedByB: {}}
 		for _, which := range order {
-			set.adopt("path", sessions[which], local, remote, nil, (which == dialedByA) == (local == a), nil, nil)
+			set.adoptAt(t, "path", sessions[which], local, remote, nil, (which == dialedByA) == (local == a))
 		}
 		for name, sess := range sessions {
 			if live := set.live["path"]; live != nil && live.session == sess {
@@ -1002,7 +1002,7 @@ func TestSessionSetReportsEstablishedPath(t *testing.T) {
 		t.Fatal("an empty set reports a session, so neither end would ever dial")
 	}
 	sess := &ike.Session{}
-	release, adopted := set.adoptPreferred("path", sess, true, nil)
+	release, adopted := set.adoptPreferred(t, "path", sess, true, nil)
 	if !adopted {
 		t.Fatal("the first session was not adopted")
 	}
@@ -1031,7 +1031,7 @@ func TestLiveCountCountsOnlyWhatProvedItsPeerIsThere(t *testing.T) {
 	}
 	// Both installed, so a count of the map alone answers two.
 	for path, sess := range map[string]*ike.Session{"proving": proving, "stale": stale} {
-		if _, adopted := set.adoptPreferred(path, sess, true, nil); !adopted {
+		if _, adopted := set.adoptPreferred(t, path, sess, true, nil); !adopted {
 			t.Fatalf("the %s session was not adopted", path)
 		}
 	}
@@ -1063,7 +1063,7 @@ func TestStaleIncumbentDoesNotStandDialerDown(t *testing.T) {
 	stale, fresh := &ike.Session{}, &ike.Session{}
 	set.active = func(sess *ike.Session) bool { return sess != stale }
 
-	if _, adopted := set.adoptPreferred("path", stale, true, nil); !adopted {
+	if _, adopted := set.adoptPreferred(t, "path", stale, true, nil); !adopted {
 		t.Fatal("the first session was not adopted")
 	}
 	// the dial is the one both ends prefer, which adopt takes over the stale entry
@@ -1072,7 +1072,7 @@ func TestStaleIncumbentDoesNotStandDialerDown(t *testing.T) {
 	}
 	// The dialer then opens one, and this end prefers it because it is the one
 	// both ends agree should be dialed, so it takes over from the stale entry.
-	if _, adopted := set.adoptPreferred("path", fresh, true, nil); !adopted {
+	if _, adopted := set.adoptPreferred(t, "path", fresh, true, nil); !adopted {
 		t.Fatal("the dialer's own session was declined")
 	}
 	if live := set.live["path"]; live == nil || live.session != fresh {
@@ -1082,7 +1082,7 @@ func TestStaleIncumbentDoesNotStandDialerDown(t *testing.T) {
 		t.Error("the replacement does not stand the dialer down")
 	}
 	// an incumbent neither end prefers is one adopt replaces with any dial, so once stale it stands down none, the dial neither end prefers included
-	if _, adopted := set.adoptPreferred("unpreferred", stale, false, nil); !adopted {
+	if _, adopted := set.adoptPreferred(t, "unpreferred", stale, false, nil); !adopted {
 		t.Fatal("the session neither end prefers was not adopted on a free path")
 	}
 	if set.holds("unpreferred", false) {
@@ -1097,8 +1097,8 @@ func TestSessionSetKeepsActivePreferredSession(t *testing.T) {
 	set.close = func(*ike.Session) {}
 	set.active = func(*ike.Session) bool { return true }
 	winner, loser := &ike.Session{}, &ike.Session{}
-	set.adoptPreferred("path", winner, true, nil)
-	if _, adopted := set.adoptPreferred("path", loser, false, nil); adopted {
+	set.adoptPreferred(t, "path", winner, true, nil)
+	if _, adopted := set.adoptPreferred(t, "path", loser, false, nil); adopted {
 		t.Error("the session neither end prefers replaced the one both do")
 	}
 	if live := set.live["path"]; live == nil || live.session != winner {
@@ -1536,11 +1536,11 @@ func TestRegistrationCannotOutliveItsSession(t *testing.T) {
 		}
 	}
 
-	releaseLoser, adopted := set.adoptPreferred("path", loser, false, attach("loser"))
+	releaseLoser, adopted := set.adoptPreferred(t, "path", loser, false, attach("loser"))
 	if !adopted {
 		t.Fatal("the first session was not adopted")
 	}
-	if _, adopted := set.adoptPreferred("path", winner, true, attach("winner")); !adopted {
+	if _, adopted := set.adoptPreferred(t, "path", winner, true, attach("winner")); !adopted {
 		t.Fatal("the session both ends prefer was declined")
 	}
 	// The loser now unwinds, which is the ordering that used to clobber.
@@ -1586,7 +1586,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	c.sessions.active = func(*ike.Session) bool { return true }
 	third := &ike.Session{}
 	thirdID := identity.MustParse("example/third:1")
-	if _, ok := c.sessions.adopt("example/third:1@1", third, identity.MustParse("example/local:1"), thirdID, privateKey.Public().(ed25519.PublicKey), false, nil, nil); !ok {
+	if _, ok := c.sessions.adoptAt(t, "example/third:1@1", third, identity.MustParse("example/local:1"), thirdID, privateKey.Public().(ed25519.PublicKey), false); !ok {
 		t.Fatal("the session for the node about to be dropped was not adopted")
 	}
 	c.syncPeers()
@@ -1632,7 +1632,7 @@ func TestSessionLandingAfterSweepIsToldToGo(t *testing.T) {
 
 	late := &ike.Session{}
 	attached := false
-	release, adopted := set.adoptPreferred("path", late, true, func() func() {
+	release, adopted := set.adoptPreferred(t, "path", late, true, func() func() {
 		attached = true
 		return func() {}
 	})
@@ -1668,7 +1668,7 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	c.sessions.active = func(*ike.Session) bool { return true }
 
 	name := "example/gateway:1@0"
-	if _, adopted := c.sessions.adoptPreferred(name, &ike.Session{}, false, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred(t, name, &ike.Session{}, false, nil); !adopted {
 		t.Fatal("the session the peer opened was not adopted")
 	}
 
@@ -1703,7 +1703,7 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 	if preferInitiator(d.localID, identity.MustParse("example/gateway:1")) {
 		t.Fatal("the fixture's own name comes first, so its dial is the preferred one and this proves nothing")
 	}
-	release, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	release, adopted := c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
 	if !adopted {
 		t.Fatal("the session the gateway dialed was not adopted")
 	}
@@ -1859,7 +1859,7 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	// a peer chooses, and with no sessions its line is never rendered.
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	if _, adopted := c.sessions.adoptPreferred("example/gate\tway:0@0", &ike.Session{}, true, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred(t, "example/gate\tway:0@0", &ike.Session{}, true, nil); !adopted {
 		t.Fatal("the session was not adopted, so the path line would be empty")
 	}
 	var out bytes.Buffer
@@ -1892,7 +1892,7 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 		sess *ike.Session
 		peer identity.Identity
 	}{{"example/keeper:0@0", keeper, stays}, {"example/gone:0@0", gone, goes}} {
-		if _, ok := set.adopt(adopted.path, adopted.sess, local, adopted.peer, nil, false, nil, nil); !ok {
+		if _, ok := set.adoptAt(t, adopted.path, adopted.sess, local, adopted.peer, nil, false); !ok {
 			t.Fatalf("%s was not adopted", adopted.path)
 		}
 	}
@@ -2029,7 +2029,7 @@ func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
 	set.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
 	peer, key := identity.MustParse("example/gateway:1"), seeded(1)
 	set.trust = admittingUnder(key, peer)
-	if _, ok := set.adopt("example/gateway:1@0", &ike.Session{}, identity.MustParse("example/local:0"), peer, key, false, nil, nil); !ok {
+	if _, ok := set.adoptAt(t, "example/gateway:1@0", &ike.Session{}, identity.MustParse("example/local:0"), peer, key, false); !ok {
 		t.Fatal("a session the trust admits was not adopted, so this proves nothing")
 	}
 
@@ -2060,7 +2060,7 @@ func TestReloadClosesASessionWhosePeerTookAnotherKey(t *testing.T) {
 		dialed bool
 	}{{"example/local:0", true}, {"example/local:1", false}} {
 		local := identity.MustParse(held.local)
-		if _, ok := set.adopt(identity.Path(gateway, local), &ike.Session{}, local, gateway, old, held.dialed, nil, nil); !ok {
+		if _, ok := set.adoptAt(t, identity.Path(gateway, local), &ike.Session{}, local, gateway, old, held.dialed); !ok {
 			t.Fatalf("the session at %s was not adopted, so this proves nothing", local)
 		}
 	}
@@ -2081,7 +2081,7 @@ func TestSessionVerifiedUnderAReplacedKeyIsRefused(t *testing.T) {
 	gateway, local, rotated := identity.MustParse("example/gateway:1"), identity.MustParse("example/local:0"), seeded(2)
 	set.trust = admittingUnder(rotated, gateway)
 	for _, dialed := range []bool{true, false} {
-		if _, ok := set.adopt(identity.Path(gateway, local), &ike.Session{}, local, gateway, seeded(1), dialed, nil, nil); ok {
+		if _, ok := set.adoptAt(t, identity.Path(gateway, local), &ike.Session{}, local, gateway, seeded(1), dialed); ok {
 			t.Errorf("a session verified under the key the trust replaced was adopted, dialed %t", dialed)
 		}
 	}
@@ -2090,7 +2090,7 @@ func TestSessionVerifiedUnderAReplacedKeyIsRefused(t *testing.T) {
 	}
 	revocations(t, set.events, map[string]string{"reason": "handshake", "peer": "example/gateway:1", "endpoint": "198.51.100.7:4500",
 		"err": "the trust document holds another key for example/gateway"}, "example/gateway:1@0", "example/gateway:1@0")
-	if _, ok := set.adopt(identity.Path(gateway, local), &ike.Session{}, local, gateway, rotated, true, nil, nil); !ok {
+	if _, ok := set.adoptAt(t, identity.Path(gateway, local), &ike.Session{}, local, gateway, rotated, true); !ok {
 		t.Error("a session verified under the key the trust gives was refused")
 	}
 }
@@ -2262,7 +2262,7 @@ func dialedClient(t *testing.T, address string) (*Client, *config.Config, *atomi
 	c.dialRetry = dialedPoll
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	if _, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, false, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, false, nil); !adopted {
 		t.Fatal("the session the peer opened was not adopted")
 	}
 	wakes := &atomic.Int32{}

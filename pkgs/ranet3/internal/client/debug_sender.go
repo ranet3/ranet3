@@ -16,7 +16,7 @@ import (
 func (c *Client) DebugSender(peer string) control.SenderInfo {
 	info := control.SenderInfo{Sessions: []control.SenderSession{}}
 	for _, live := range c.sessions.snapshot() {
-		if live.pmtu == nil || peer != "" && !identity.Names(live.path, peer) {
+		if peer != "" && !identity.Names(live.path, peer) {
 			continue
 		}
 		stats := live.pmtu.peer.SendStats()

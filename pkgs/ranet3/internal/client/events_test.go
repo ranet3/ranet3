@@ -131,11 +131,11 @@ func TestResolutionIsRecorded(t *testing.T) {
 	set.events = events.New()
 	set.close = func(*ike.Session) {}
 	const path = "example/gateway:1@0"
-	set.adoptPreferred(path, &ike.Session{}, true, nil)
-	if _, adopted := set.adoptPreferred(path, &ike.Session{}, false, nil); adopted {
+	set.adoptPreferred(t, path, &ike.Session{}, true, nil)
+	if _, adopted := set.adoptPreferred(t, path, &ike.Session{}, false, nil); adopted {
 		t.Fatal("a session neither end prefers took the path from one both prefer")
 	}
-	if _, adopted := set.adoptPreferred(path, &ike.Session{}, true, nil); !adopted {
+	if _, adopted := set.adoptPreferred(t, path, &ike.Session{}, true, nil); !adopted {
 		t.Fatal("an equally preferred session did not replace the one it reconnects")
 	}
 	var kept []string
@@ -165,7 +165,7 @@ func TestLosingSessionIsNeverRecordedEstablished(t *testing.T) {
 		}
 	}
 	path := fmt.Sprintf("example/%s:0@0", bravo.name)
-	if _, adopted := alpha.client.sessions.adoptPreferred(path, held, true, nil); !adopted {
+	if _, adopted := alpha.client.sessions.adoptPreferred(t, path, held, true, nil); !adopted {
 		t.Fatal("the held session was not adopted")
 	}
 	// crossed is after any handshake of bravo's starts, when a crossing dial's session is taken, so the INITIAL_CONTACT bravo's first handshake carries leaves the held one to the rule

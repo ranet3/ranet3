@@ -24,14 +24,15 @@ var (
 // contactSet is a session set whose handshakes end where ended holds them, which keeps what it closes and what it drops
 type contactSet struct {
 	*sessionSet
+	tb      testing.TB
 	mu      sync.Mutex
 	gone    map[*ike.Session]bool
 	closed  []*ike.Session
 	dropped []*ike.Session
 }
 
-func newContactSet() *contactSet {
-	c := &contactSet{sessionSet: newSessionSet(), gone: make(map[*ike.Session]bool)}
+func newContactSet(tb testing.TB) *contactSet {
+	c := &contactSet{sessionSet: newSessionSet(), tb: tb, gone: make(map[*ike.Session]bool)}
 	c.events = events.New()
 	c.trust = admittingUnder(seeded(1), contactPeer.Node(), contactOther.Node())
 	c.active = func(*ike.Session) bool { return true }
@@ -63,14 +64,15 @@ func (c *contactSet) end(sess *ike.Session) {
 
 // take adopts sess at peer's path with the rule already applied, contact as adopt passes it
 func (c *contactSet) take(peer identity.Identity, sess *ike.Session, preferred bool, contact time.Time) (func(), bool) {
-	return c.adoptFor(identity.Path(peer, contactLocal), sess, preferred, false, contact, contactLocal, peer, seeded(1), nil, nil)
+	path := identity.Path(peer, contactLocal)
+	return c.adoptFor(path, sess, preferred, false, contact, contactLocal, peer, seeded(1), testDriver(c.tb, path), nil)
 }
 
 // after a restart a peer dialed on 2 paths at once gets the notice on the first IKE_AUTH alone, request or response
 // and every later one goes without it while any SA to the peer's node is live or past its decision, on whichever path
 // another node's first one carries it all the same
 func TestInitialContactGoesOnTheFirstHandshakeToAPeerAlone(t *testing.T) {
-	set := newContactSet()
+	set := newContactSet(t)
 	first, second := &ike.Session{}, &ike.Session{}
 	if !set.initialContact(first, contactPeer) {
 		t.Fatal("the first handshake after a restart went without INITIAL_CONTACT")
@@ -313,7 +315,7 @@ func TestCrossingSessionTakenAfterTheNoticeStartedStays(t *testing.T) {
 // a session of that path adopted since, from a dial that crossed the notice's, is settled by the rule as before, and another path's session stays
 func TestInitialContactEndsTheOlderSessionOfItsPathAlone(t *testing.T) {
 	t.Run("older", func(t *testing.T) {
-		set := newContactSet()
+		set := newContactSet(t)
 		older, elsewhere, notice := &ike.Session{}, &ike.Session{}, &ike.Session{}
 		set.take(contactPeer, older, true, time.Time{})
 		set.take(contactSecond, elsewhere, true, time.Time{})
@@ -332,7 +334,7 @@ func TestInitialContactEndsTheOlderSessionOfItsPathAlone(t *testing.T) {
 		}
 	})
 	t.Run("newer", func(t *testing.T) {
-		set := newContactSet()
+		set := newContactSet(t)
 		crossing, notice := &ike.Session{}, &ike.Session{}
 		set.take(contactPeer, crossing, true, time.Time{})
 		started := set.live[identity.Path(contactPeer, contactLocal)].adopted.Add(-time.Millisecond)

@@ -186,17 +186,19 @@ func expectSessions(ht *hegel.T, set *sessionSet, closed *closedSessions, kept m
 // and closes every other one with its ike.session.revoked
 func TestRevokeKeepsExactlyTheSessionsTheTrustHoldsUnderTheirKey(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
+		tb := &caseTB{TB: ht}
+		defer tb.end()
 		before, after := drawReload(ht)
 		set, closed := revokingSet()
 		drawn := drawSessions(ht, before)
 		for _, s := range drawn {
 			if s.node == noPeer {
 				// adopt refuses it, so it stands for a session the set came to hold without adopt asking the trust
-				set.live[s.path] = &liveSession{session: s.session, dialed: s.dialed, local: s.local, key: trustKeys[s.key]}
+				set.live[s.path] = &liveSession{session: s.session, dialed: s.dialed, local: s.local, key: trustKeys[s.key], pmtu: testDriver(tb, s.path)}
 				continue
 			}
 			set.trust = admittingUnder(trustKeys[s.key], s.peer)
-			if _, ok := set.adopt(s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed, nil, nil); !ok {
+			if _, ok := set.adoptAt(tb, s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed); !ok {
 				ht.Fatalf("%s was refused under a trust holding its key, so this proves nothing", s.path)
 			}
 		}
@@ -218,12 +220,14 @@ func TestRevokeKeepsExactlyTheSessionsTheTrustHoldsUnderTheirKey(t *testing.T) {
 // so a handshake verified before a reload and adopted after its sweep answers to the trust the reload stored, and each refusal is recorded
 func TestAdoptAdmitsExactlyTheHandshakesTheTrustHoldsUnderTheirKey(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
+		tb := &caseTB{TB: ht}
+		defer tb.end()
 		before, after := drawReload(ht)
 		set, closed := revokingSet()
 		set.trust = indexTrust{indexOf(ht, after)}
 		kept, refused := make(map[string]*ike.Session), make(map[string]drawnRefusal)
 		for _, s := range drawSessions(ht, before) {
-			_, admitted := set.adopt(s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed, nil, nil)
+			_, admitted := set.adoptAt(tb, s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed)
 			why := s.refusal(after)
 			if admitted != (why == "") {
 				ht.Fatalf("%s verified under key %d was admitted %t, where the trust gives %q", s.path, s.key, admitted, why)

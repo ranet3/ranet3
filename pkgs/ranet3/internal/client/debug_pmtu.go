@@ -41,7 +41,7 @@ func (c *Client) DebugPMTU(peer string) control.PMTUInfo {
 	}
 	now := time.Now()
 	for _, live := range c.sessions.snapshot() {
-		if live.pmtu == nil || peer != "" && !identity.Names(live.path, peer) {
+		if peer != "" && !identity.Names(live.path, peer) {
 			continue
 		}
 		view := live.pmtu.view(now)

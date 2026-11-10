@@ -175,7 +175,7 @@ func TestStoppedResponderKeepsTheSessionsItHolds(t *testing.T) {
 	}
 	c.sessions.close = func(*ike.Session) { t.Error("stopping the responder closed a live session") }
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
 
 	if _, err := c.SetSubsystem(context.Background(), control.SubsystemResponder, false); err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 	}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	held := &ike.Session{}
-	if _, adopted := c.sessions.adoptPreferred("example/gateway:1@0", held, true, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred(t, "example/gateway:1@0", held, true, nil); !adopted {
 		t.Fatal("the fixture session was not adopted")
 	}
 	woken := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
@@ -260,7 +260,7 @@ func TestRedialAtAnEndpointWakesTheDialersOfItsNode(t *testing.T) {
 			c.sessions.close = func(*ike.Session) {}
 			c.sessions.active = func(*ike.Session) bool { return true }
 			if tc.held {
-				c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+				c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
 			}
 			for _, path := range dialers {
 				c.dialers[path] = &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
@@ -294,7 +294,7 @@ func TestRedialDropsResponderOnlySession(t *testing.T) {
 	c := writable(t)
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/inbound:1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred(t, "example/inbound:1@0", &ike.Session{}, true, nil)
 	result, err := c.Redial(context.Background(), "example/inbound", false)
 	if err != nil {
 		t.Fatal(err)
@@ -316,8 +316,8 @@ func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
 		closed++
 	}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
-	c.sessions.adoptPreferred("example/inbound:1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred(t, "example/inbound:1@0", &ike.Session{}, true, nil)
 	dialers := []*dialer{{cancel: func() {}, wake: make(chan struct{}, 1)}, {cancel: func() {}, wake: make(chan struct{}, 1)}}
 	c.dialers["example/gateway:1@0"] = dialers[0]
 	c.dialers["example/elsewhere:1@0"] = dialers[1]
@@ -408,8 +408,8 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 		return nil
 	}
 	gateway, elsewhere := &ike.Session{}, &ike.Session{}
-	c.sessions.adoptPreferred("example/gateway:1@0", gateway, true, nil)
-	c.sessions.adoptPreferred("example/elsewhere:1@0", elsewhere, true, nil)
+	c.sessions.adoptPreferred(t, "example/gateway:1@0", gateway, true, nil)
+	c.sessions.adoptPreferred(t, "example/elsewhere:1@0", elsewhere, true, nil)
 
 	result, err := c.Rekey(context.Background(), "gateway", false)
 	if err != nil {
@@ -508,7 +508,7 @@ func TestRekeyAnswersWhichSessionsRekeyed(t *testing.T) {
 		return nil
 	}
 	for path, sess := range map[string]*ike.Session{"example/bravo:0@0": bravo, "example/charlie:0@0": charlie, "example/delta:0@0": delta} {
-		c.sessions.adoptPreferred(path, sess, true, nil)
+		c.sessions.adoptPreferred(t, path, sess, true, nil)
 	}
 	render := func(name string, result control.Result) {
 		t.Helper()
@@ -558,7 +558,7 @@ func TestRekeyEverySessionMissedIsRecordedUnderEachAlone(t *testing.T) {
 	held := errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
 	c.sessions.rekey = func(*ike.Session) error { return held }
 	for _, path := range []string{"example/bravo:0@0", "example/charlie:0@0"} {
-		c.sessions.adoptPreferred(path, &ike.Session{}, true, nil)
+		c.sessions.adoptPreferred(t, path, &ike.Session{}, true, nil)
 	}
 	if result := rekeyAll(t, c); len(result.Acted) != 0 || len(result.Missed) != 2 {
 		t.Fatalf("the rekey answered %+v, want both sessions missed", result)
@@ -588,7 +588,7 @@ func TestRekeyWhoseCallerWentAwayAnswersThen(t *testing.T) {
 		<-release
 		return nil
 	}
-	c.sessions.adoptPreferred("example/bravo:0@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred(t, "example/bravo:0@0", &ike.Session{}, true, nil)
 	ctx, hangUp := context.WithCancel(context.Background())
 	answered := make(chan control.Result, 1)
 	go func() {

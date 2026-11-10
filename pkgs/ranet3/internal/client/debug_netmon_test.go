@@ -92,8 +92,8 @@ func TestProbeAsksTheSessionsItNames(t *testing.T) {
 	var probed []*ike.Session
 	c.sessions.probe = func(sess *ike.Session) { probed = append(probed, sess) }
 	gateway, inbound := &ike.Session{}, &ike.Session{}
-	c.sessions.adoptPreferred("example/gateway:1@0", gateway, true, nil)
-	c.sessions.adoptPreferred("example/inbound:1@0", inbound, true, nil)
+	c.sessions.adoptPreferred(t, "example/gateway:1@0", gateway, true, nil)
+	c.sessions.adoptPreferred(t, "example/inbound:1@0", inbound, true, nil)
 
 	for _, refused := range []struct {
 		peer string

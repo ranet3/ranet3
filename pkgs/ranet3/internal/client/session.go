@@ -482,9 +482,7 @@ func (s *sessionSet) relink(link int, installed bool, steering *srv6.SteerTable)
 		s.steering = steering
 	}
 	for _, live := range s.live {
-		if live.pmtu != nil {
-			live.pmtu.relink(link, s.steering)
-		}
+		live.pmtu.relink(link, s.steering)
 	}
 }
 
@@ -693,9 +691,7 @@ waiting:
 // a probe never blocks, so the answer comes before any of the liveness checks it starts
 func (s *sessionSet) startProbe(live liveSessionView) {
 	s.probe(live.session)
-	if live.pmtu != nil {
-		live.pmtu.confirmNow()
-	}
+	live.pmtu.confirmNow()
 }
 
 // closeAll tells every live peer the session is ending and drops it, and shuts

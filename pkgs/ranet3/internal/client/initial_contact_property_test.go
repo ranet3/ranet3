@@ -57,7 +57,9 @@ type contactRelease struct {
 // the model keeps its own sessions by path, each adopted where the path is free, the notice's session started after the path's was adopted, or the rule lets it replace that one
 func TestInitialContactGoesOutExactlyWhileNoSAToThePeerExists(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		set := newContactSet()
+		tb := &caseTB{TB: ht}
+		defer tb.end()
+		set := newContactSet(tb)
 		var open []contactHandshake
 		live := map[string]contactLive{}
 		var releases []contactRelease
@@ -75,7 +77,7 @@ func TestInitialContactGoesOutExactlyWhileNoSAToThePeerExists(t *testing.T) {
 		drawn := func(n int) int { return hegel.Draw(ht, pbt.Spanning(0, n-1)) }
 		for range hegel.Draw(ht, pbt.Spanning(1, 40)) {
 			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/contactRestartOdds)) {
-				set, open, live, releases = newContactSet(), nil, map[string]contactLive{}, nil
+				set, open, live, releases = newContactSet(tb), nil, map[string]contactLive{}, nil
 				continue
 			}
 			switch drawn(contactSteps) {

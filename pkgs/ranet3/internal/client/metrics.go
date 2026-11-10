@@ -189,9 +189,7 @@ func (c *Client) renderSenders(w io.Writer) {
 	}
 	var senders []sender
 	for _, live := range c.sessions.snapshot() {
-		if live.pmtu != nil {
-			senders = append(senders, sender{live.path, live.pmtu.peer.SendStats()})
-		}
+		senders = append(senders, sender{live.path, live.pmtu.peer.SendStats()})
 	}
 	slices.SortFunc(senders, func(a, b sender) int { return strings.Compare(a.path, b.path) })
 	for _, series := range []struct {

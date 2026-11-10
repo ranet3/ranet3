@@ -107,8 +107,8 @@ func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 	}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	sessions := []*ike.Session{{}, {}}
-	c.sessions.adoptPreferred("example/gateway:1@0", sessions[0], true, nil)
-	c.sessions.adoptPreferred("example/inbound:1@0", sessions[1], true, nil)
+	c.sessions.adoptPreferred(t, "example/gateway:1@0", sessions[0], true, nil)
+	c.sessions.adoptPreferred(t, "example/inbound:1@0", sessions[1], true, nil)
 	dialers := []*dialer{{cancel: func() {}, wake: make(chan struct{}, 1)}, {cancel: func() {}, wake: make(chan struct{}, 1)}}
 	c.dialers["example/gateway:1@0"] = dialers[0]
 	c.dialers["example/elsewhere:1@0"] = dialers[1]
@@ -221,7 +221,7 @@ func TestLinkAloneWakesTheReconcilerAndProbesNoSession(t *testing.T) {
 		probed++
 	}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
 	dialer := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
 	c.dialers["example/gateway:1@0"] = dialer
 	wakes := make(chan struct{}, 2)

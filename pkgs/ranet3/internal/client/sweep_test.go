@@ -21,14 +21,11 @@ const sweepHeld = 200 * time.Millisecond
 // the sweep stops every dialer and returns only once each has ended, session and all
 // a dialer ending late, as one unwinding a session does, holds the sweep until it has
 func TestSweepWaitsForEveryDialerItStops(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	c := testClient(t)
-	c.ctx, c.cancel, c.prepare = ctx, cancel, testPrepare()
 	c.cfg.Store(&config.Config{})
 	c.storeIndex(trust(t, registry.Registry{}))
 	release := make(chan struct{})
-	dialing, stop := context.WithCancel(ctx)
+	dialing, stop := context.WithCancel(c.ctx)
 	slow := &dialer{cancel: stop, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	c.dialers["example/slow:0@0"] = slow
 	c.peers.Go(func() {
@@ -66,10 +63,7 @@ func TestSweepWaitsForEveryDialerItStops(t *testing.T) {
 // a dialer dropped while the node runs tells its peer the session is gone, once
 // a session the sweep already told is not told again, though the sweep stops its dialer while the node runs
 func TestSweptSessionIsNotToldAgain(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	c := testClient(t)
-	c.ctx, c.cancel, c.prepare = ctx, cancel, testPrepare()
 	var mu sync.Mutex
 	var told []*ike.Session
 	c.sessions.close = func(sess *ike.Session) {
@@ -83,9 +77,9 @@ func TestSweptSessionIsNotToldAgain(t *testing.T) {
 		return len(told)
 	}
 	dropped, swept := &ike.Session{}, &ike.Session{}
-	c.sessions.adoptPreferred("example/dropped:0@0", dropped, true, nil)
-	c.sessions.adoptPreferred("example/swept:0@0", swept, true, nil)
-	dial, stop := context.WithCancel(ctx)
+	c.sessions.adoptPreferred(t, "example/dropped:0@0", dropped, true, nil)
+	c.sessions.adoptPreferred(t, "example/swept:0@0", swept, true, nil)
+	dial, stop := context.WithCancel(c.ctx)
 	stop()
 
 	c.tellDropped(dial, "example/dropped:0@0", dropped)

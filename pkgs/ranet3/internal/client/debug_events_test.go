@@ -131,7 +131,7 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 		c.sessions.active = func(*ike.Session) bool { return true }
 		c.sessions.rekey = func(*ike.Session) error { return nil }
 		for _, path := range []string{"example/gateway:1@0", "example/gateway:2@0", "other/gateway:1@0"} {
-			c.sessions.adoptPreferred(path, &ike.Session{}, true, nil)
+			c.sessions.adoptPreferred(t, path, &ike.Session{}, true, nil)
 			c.dialers[path] = &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
 		}
 		var result control.Result
