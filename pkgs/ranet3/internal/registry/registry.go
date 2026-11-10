@@ -208,9 +208,10 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 	return ed, nil
 }
 
-// ResolveRemote resolves an endpoint's address for dialing. A literal IP is
-// used directly, and a hostname is resolved through DNS and filtered to the
-// endpoint's declared address family.
+// ResolveRemote resolves an endpoint's address for dialing. A literal IP of
+// the endpoint's declared address family is used directly, and one of the
+// other family is refused. A hostname is resolved through DNS and filtered to
+// the declared family.
 //
 // The context makes shutdown prompt: a hostname whose resolver is
 // unreachable otherwise holds the dialer for the resolver's own timeout, and
