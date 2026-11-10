@@ -74,6 +74,14 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 				Reason: "conntrack maps per connection, and no nf_tables statement pins 1 external port per inside endpoint",
 				Row:    "RFC 4787 sections 4.1 and 8, RFC 5382 section 4.1",
 			},
+			egresstest.OverloadsTCPPorts: {
+				Reason: "conntrack keeps a translated connection unique with its destination, and no nf_tables statement keeps an external port for 1 inside endpoint",
+				Row:    "RFC 4787 section 4.2.1 (REQ-3), RFC 5382 section 7.1 (REQ-7)",
+			},
+			egresstest.RemapsTCPOnClash: {
+				Reason: "conntrack maps per connection, and no nf_tables statement pins 1 external port per inside endpoint",
+				Row:    "RFC 4787 sections 4.1 and 8, RFC 5382 section 4.1",
+			},
 		}),
 		New:        newKernelExit,
 		Holds:      kernelExitTables,

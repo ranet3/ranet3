@@ -101,8 +101,8 @@ type Family struct {
 	// Leaf is the leaf's address, inside the mesh's Overlay, and Exit every
 	// address the exit holds. Spare is a second address of the leaf's inside
 	// Overlay, which no socket of the leaf's takes as its source unless it binds
-	// to it and no row but the limit's sends from, so a backend counts none of
-	// its flows when that row begins.
+	// to it, so a backend counts of its flows, when the limit's row begins, only
+	// those the rows before it left open.
 	Leaf, Spare netip.Addr
 	Overlay     netip.Prefix
 	Exit        []netip.Addr
@@ -214,6 +214,15 @@ const (
 	// REQ-11 have one mapping serve the endpoint toward every destination. The
 	// suite checks it in UDP alone.
 	RemapsOnClash
+	// OverloadsTCPPorts gives two inside endpoints' connections from one port
+	// one external endpoint toward two destinations, the port overloading RFC
+	// 5382 section 7.1 REQ-7 rules out
+	OverloadsTCPPorts
+	// RemapsTCPOnClash takes another external port for an inside endpoint's
+	// connection toward a destination that another inside endpoint's
+	// connection from the same port reached first, where RFC 5382 section 4.1
+	// REQ-1 has one mapping serve the endpoint toward every destination
+	RemapsTCPOnClash
 )
 
 func (l Limit) String() string {
@@ -240,6 +249,10 @@ func (l Limit) String() string {
 		return "overloads ports"
 	case RemapsOnClash:
 		return "remaps on a clash"
+	case OverloadsTCPPorts:
+		return "overloads tcp ports"
+	case RemapsTCPOnClash:
+		return "remaps tcp on a clash"
 	}
 	return fmt.Sprintf("limit %d", int(l))
 }
@@ -253,10 +266,11 @@ type Declared struct{ Reason, Row string }
 // refusing those it cannot, to carrying no ICMP message RFC 5508 rules out, to
 // Egress from several sessions at once, to the mappings, port ranges,
 // fragments, errors and simultaneous open of RFC 4787 and RFC 5382, to
-// filtering, hairpinning, the unsolicited SYN and one UDP port of two inside
-// endpoints as those RFCs ask or as its arm declares it does instead, to a withdrawal and a restore by SetEnabled,
-// and to the share of flows its capability names, and an arm that reads its
-// flows to the idle timers it keeps them to.
+// filtering, hairpinning, the unsolicited SYN and one port of two inside
+// endpoints in UDP and TCP as those RFCs ask or as its arm declares it does
+// instead, to a withdrawal and a restore by SetEnabled, and to the share of
+// flows its capability names, and an arm that reads its flows to the idle
+// timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class

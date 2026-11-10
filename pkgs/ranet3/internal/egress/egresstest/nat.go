@@ -82,16 +82,24 @@ func (r *rows) portRanges(t *testing.T) {
 	r.verdict()
 }
 
-// portClash is RFC 4787 REQ-1 and REQ-3 for two inside endpoints on one port:
-// the leaf's datagram from the port to the server, then one from another
-// address of the overlay from the same port to the second server, then the
-// leaf's from the port to the second server. The first two are read from two
-// endpoints, since REQ-3 rules out port overloading, and the third from the
-// first's endpoint, since REQ-1 and REQ-11 rule out a mapping that changes.
-// Where the arm declares OverloadsPorts, the first two are read from one
-// endpoint, and where it declares RemapsOnClash, the third from another than
-// the first's.
+// portClash is one port of two inside endpoints, in UDP and in TCP: the leaf's
+// flow from the port to the server, then another inside endpoint's from the
+// same port to the second server, then the leaf's from the port to the second
+// server, each flow's mapping held while the next is made. The first two are
+// read from two endpoints, since port overloading is ruled out, and the third
+// from the first's endpoint, since a mapping that changes is. Where the arm
+// declares the protocol's overloading, the first two are read from one
+// endpoint, and where it declares its remap, the third from another than the
+// first's.
 func (r *rows) portClash(t *testing.T) {
+	t.Run("udp", r.udpClash)
+	t.Run("tcp", r.tcpClash)
+	r.verdict()
+}
+
+// udpClash is portClash in UDP, RFC 4787 REQ-3, REQ-1 and REQ-11, the other
+// inside endpoint an address of the overlay that no node holds
+func (r *rows) udpClash(t *testing.T) {
 	first, second := netip.AddrPortFrom(r.family.Server, clashPort), netip.AddrPortFrom(r.family.Second, clashPort)
 	servers := map[netip.AddrPort]*net.UDPConn{first: r.listenUDP(t, first), second: r.listenUDP(t, second)}
 	leaf, other := netip.AddrPortFrom(r.family.Leaf, leafClashPort), netip.AddrPortFrom(r.unheld(), leafClashPort)
@@ -104,24 +112,54 @@ func (r *rows) portClash(t *testing.T) {
 		}
 		return got
 	}
-	opened, shared, moved := read(leaf, first), read(other, second), read(leaf, second)
-	if declared, overloads := r.limits[OverloadsPorts]; overloads {
+	r.clash(t, [3]netip.AddrPort{read(leaf, first), read(other, second), read(leaf, second)}, other.Addr(),
+		clashRule{OverloadsPorts, "RFC 4787 REQ-3 rules out", RemapsOnClash, "RFC 4787 REQ-1 and REQ-11 rule out"})
+}
+
+// tcpClash is portClash in TCP, RFC 5382 REQ-7 and REQ-1, the other inside
+// endpoint the spare address, each connection open until the step ends
+func (r *rows) tcpClash(t *testing.T) {
+	first, second := netip.AddrPortFrom(r.family.Server, clashPort), netip.AddrPortFrom(r.family.Second, clashPort)
+	listeners := map[netip.AddrPort]*net.TCPListener{first: listen(t, r.network.Server, first), second: listen(t, r.network.Server, second)}
+	leaf, other := netip.AddrPortFrom(r.family.Leaf, leafClashPort), netip.AddrPortFrom(r.family.Spare, leafClashPort)
+	read := func(from, to netip.AddrPort) netip.AddrPort {
+		_, server := r.connect(t, listeners[to], to, from)
+		return addrPort(server.RemoteAddr())
+	}
+	r.clash(t, [3]netip.AddrPort{read(leaf, first), read(other, second), read(leaf, second)}, other.Addr(),
+		clashRule{OverloadsTCPPorts, "RFC 5382 REQ-7 rules out", RemapsTCPOnClash, "RFC 5382 REQ-1 rules out"})
+}
+
+// clashRule is the limits that declare a protocol's departures in portClash,
+// and the requirements that rule each out, as a failure names them
+type clashRule struct {
+	overloads   Limit
+	overloading string
+	remaps      Limit
+	remapping   string
+}
+
+// clash holds the endpoints the servers read portClash's three flows from,
+// other's the second, to rule as the arm declares its limits
+func (r *rows) clash(t *testing.T, flows [3]netip.AddrPort, other netip.Addr, rule clashRule) {
+	t.Helper()
+	opened, shared, moved := flows[0], flows[1], flows[2]
+	if declared, overloads := r.limits[rule.overloads]; overloads {
 		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
 		if shared != opened {
 			t.Errorf("the servers read the leaf's port from %s and %s's from %s, want one endpoint, as the arm declares", opened, other, shared)
 		}
 	} else if shared == opened {
-		t.Errorf("the servers read the leaf's port and %s's from one endpoint %s, the port overloading RFC 4787 REQ-3 rules out", other, opened)
+		t.Errorf("the servers read the leaf's port and %s's from one endpoint %s, the port overloading %s", other, opened, rule.overloading)
 	}
-	if declared, remaps := r.limits[RemapsOnClash]; remaps {
+	if declared, remaps := r.limits[rule.remaps]; remaps {
 		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
 		if moved == opened {
 			t.Errorf("once %s held the port toward the second server the leaf's port reached it from %s, its endpoint toward the server, want another, as the arm declares", other, moved)
 		}
 	} else if moved != opened {
-		t.Errorf("once %s held the port toward the second server the leaf's port reached it from %s and the server from %s, the changed mapping RFC 4787 REQ-1 and REQ-11 rule out", other, moved, opened)
+		t.Errorf("once %s held the port toward the second server the leaf's port reached it from %s and the server from %s, the changed mapping %s", other, moved, opened, rule.remapping)
 	}
-	r.verdict()
 }
 
 // unheld is an address of the overlay that neither the leaf, the spare nor

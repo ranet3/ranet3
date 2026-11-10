@@ -546,7 +546,7 @@ func (r *rows) echoPair(t *testing.T) {
 // oneMapping holds the two servers to reading one leaf endpoint's flows from
 // one outside endpoint, RFC 4787 REQ-1 and RFC 5382 REQ-1 where no other
 // inside endpoint holds the leaf's port, which its callers keep so. The clash
-// in UDP is portClash's.
+// is portClash's.
 func (r *rows) oneMapping(t *testing.T, what string, outside []netip.AddrPort) {
 	t.Helper()
 	if outside[0] != outside[1] || outside[0].Addr() != r.seen() {
