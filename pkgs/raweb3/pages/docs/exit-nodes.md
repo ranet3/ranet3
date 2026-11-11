@@ -802,21 +802,36 @@ What the exit does:
   holds the TIME_WAIT, which it does past twice the MSL until its PCB collector
   runs, as
   [the userspace exit's deviations](design/protocol-deviations.md#the-userspace-exit)
-  declare. A server that has closed discards that reset. On a plain TCP socket
-  under no content filter, macOS sets the 2 MSL timer again on no segment: it
-  clears the FIN of every segment in TIME_WAIT before the FIN's restart
-  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L6157-L6173)),
-  and drops before the ACK's restart every acknowledgment that could reach it
+  declare. The exit closes the socket itself rather than wait on that collector,
+  whose bound the slot's end below gives. A server that has closed discards that
+  reset. Each sweep also reads the range and the MSL again, and a change applies
+  from it.
+- **No restart.** On a plain TCP socket under no content filter, macOS sets the
+  2 MSL timer again on no segment. Every segment in TIME_WAIT fails the
+  condition of the step that takes in data
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L6005-L6009))
+  and so has its FIN cleared
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L6157-L6173))
+  before the FIN's restart. The ACK's restart needs an acknowledgment of new
+  data
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L5617-L5619)).
+  An acknowledgment of nothing new leaves before it, whether it is one far below
+  what the server had acknowledged
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L5100-L5109))
+  or a duplicate
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L5173-L5499)).
+  A socket enters TIME_WAIT only once the host's FIN is acknowledged, so an
+  acknowledgment of new data lies past what the host sent and is dropped
   ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L5089-L5098)).
   A server off the Mac that retransmitted its FIN eight times over 27 seconds
   had each acknowledged and the TIME_WAIT gone 45 seconds after the close, at
-  the default MSL. Each sweep also reads the range and the MSL again, and a
-  change applies from it.
+  the default MSL.
 - **A reset.** A flow the exit resets, at a withdraw or a relay's error, closes
   its host socket with a linger of 0 in any state before TIME_WAIT, CLOSING and
   LAST_ACK among them, as a reset of the leaf's connection asks, and keeps no
   slot. A socket it reads in TIME_WAIT, where both FINs have passed and a reset
-  has nothing left to tell the server, it leaves to the step above.
+  has nothing left to tell the server, it leaves to the table's TIME_WAIT row
+  above.
 - **A failed leaf endpoint.** Where the leaf's endpoint fails after the dial,
   the host's socket half closes and is watched, with twice the MSL to reach
   TIME_WAIT or closed. Until its hold ends it still acknowledges and drops what
@@ -834,15 +849,20 @@ What the exit does:
   ([netns.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/skywalk/namespace/netns.c#L696-L703),
   [in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L2015-L2020)).
   So the slot comes back at the first sweep past the margin from that close. The
-  margin is two of the collector's fast passes, measured on a Mac in use, where
-  the reservation was gone within 1 second of the close, and is no ceiling: a
-  pass the collector gives up
-  ([tcp_timer.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_timer.c#L806-L815))
+  margin is two of the collector's fast passes. On a Mac in use the reservation
+  was gone within 1 second of the close, as measured, and that is no ceiling.
+  The collector skips a socket still in use or busy until a later pass
+  ([tcp_timer.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_timer.c#L664-L676)),
+  which XNU's code bounds by nothing. A pass it gives up
+  ([tcp_timer.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_timer.c#L807-L819))
   re-arms lazily
   ([in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L447-L455)),
-  so on an idle host it can keep the port reserved up to its lazy pass. IPv6 was
-  not measured. At macOS's default MSL a leaf-first close keeps its slot 35 to
-  40 seconds past its relay's end, as does a reset that reads TIME_WAIT, and a
+  due 1 second on with 10 seconds of leeway
+  ([in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L162),
+  [in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L472-L494)),
+  so on an idle host the next pass comes up to about 11 seconds on. IPv6 was not
+  measured. At macOS's default MSL a leaf-first close keeps its slot 35 to 40
+  seconds past its relay's end, as does a reset that reads TIME_WAIT, and a
   server-first close whose last acknowledgment has not arrived when the relay
   ends keeps it until the next sweep.
 - **The bound.** `HostPorts` is the least of half the ports from
@@ -879,7 +899,7 @@ What it leaves open:
   before the exit read it, and one that began between a reset's read of the
   state and its close, are released with no margin. Its port may then stay
   reserved against the host's Skywalk flows, uncounted, until XNU's collector
-  runs, about 1 to 11 seconds.
+  runs, as the slot's end gives.
 - After a crash, which closes no socket with a linger of 0, the old sockets run
   their TIME_WAIT uncounted beside the new process's `HostPorts`. After a stop,
   a port may stay reserved against the host's Skywalk flows up to the margin

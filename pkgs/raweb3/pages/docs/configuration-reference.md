@@ -757,8 +757,8 @@ needs.
   A source under `none` holds none. `0` or leaving it out is the default, and a
   value past 2147483647 is refused. The shares come out of the host's connection
   tracking table, which ranet3 never sizes, so size the two together.
-- On macOS a source meets the smaller of its share and what the userspace exit's
-  memory and descriptors hold, its totals of connections and flows, as
+- On macOS the userspace exit's own limits, its host ports among them, also
+  refuse a source's new flows, as
   [the userspace exit's limits](design/limits.md#the-userspace-exit) give.
 - The periodic pass reinstalls removed chains and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
