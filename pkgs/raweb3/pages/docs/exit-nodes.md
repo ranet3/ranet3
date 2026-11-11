@@ -351,6 +351,9 @@ into the mesh holds its own.
 - **What its count misses.** The kernel's count of a source's flows can leave a
   flow open and uncounted, past the share, as the row for the flows the kernel
   exit's count misses in [limits](design/limits.md#dataplane-and-sockets) gives.
+  Behind
+  [a rule that holds forwarded packets](coexistence.md#a-rule-that-holds-forwarded-packets)
+  a source's flows are not bounded by the share.
 - **What it bounds.** The open flows a source holds through this node. A mesh
   source's flows to this node itself, to its mesh or uplink address, take
   entries in the same table and are not counted, as

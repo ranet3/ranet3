@@ -751,10 +751,12 @@ needs.
 - `flows_per_source` is
   [each source's share of the flows](exit-nodes.md#each-sources-share-of-the-flows)
   through this node, in each family, every protocol's together: once the exit
-  counts that many, its next new flow is refused. A source under `none` holds
-  none. `0` or leaving it out is the default, and a value past 2147483647 is
-  refused. The shares come out of the host's connection tracking table, which
-  ranet3 never sizes, so size the two together.
+  counts that many, its next new flow is refused, except a flow the kernel
+  exit's count misses, such as one behind
+  [a rule that holds forwarded packets](coexistence.md#a-rule-that-holds-forwarded-packets).
+  A source under `none` holds none. `0` or leaving it out is the default, and a
+  value past 2147483647 is refused. The shares come out of the host's connection
+  tracking table, which ranet3 never sizes, so size the two together.
 - On macOS a source meets the smaller of its share and what the userspace exit's
   memory and descriptors hold, its totals of connections and flows, as
   [the userspace exit's limits](design/limits.md#the-userspace-exit) give.

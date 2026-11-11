@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-10
+updated: 2026-11-11
 order: 110
 ---
 
@@ -617,7 +617,7 @@ chains were made in. An operator who wants to translate a mesh flow itself
 writes a chain below 99, or one at 99
 [made after the translator's](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n147).
 A flow such a chain translates leaves without this node's translation, its
-timeouts and its count of translated flows, and the limit still holds it to its
+timeouts and its count of translated flows, and the limit still counts it in its
 source's [share](exit-nodes.md#each-sources-share-of-the-flows). Deleting a
 neighbor's rule instead would break whatever installed it.
 
@@ -642,9 +642,12 @@ chains at that hook: a packet passes only where no chain drops it, so its
 refusal of a flow past its source's
 [share](exit-nodes.md#each-sources-share-of-the-flows), and its drop of a packet
 no flow is tracked for out of the mesh under a class that translates or into it
-under `return`, end that packet whatever the others say. A packet a host rule
-exempts from connection tracking, such as a `notrack` in a raw chain, counts as
-one no flow is tracked for, and leaves the mesh only under a class of `none`.
+under `return`, end that packet whatever the others say, though a chain after it
+that holds a source's packets can let that source's flows past the share, as
+[a rule that holds forwarded packets](#a-rule-that-holds-forwarded-packets)
+gives. A packet a host rule exempts from connection tracking, such as a
+`notrack` in a raw chain, counts as one no flow is tracked for, and leaves the
+mesh only under a class of `none`.
 
 The kernel settings an exit's traffic crosses stay the host's, but for the
 connection tracking timeouts of the flows it translates. The translator writes
@@ -697,6 +700,38 @@ after it at postrouting,
 arriving on its own interface. Tailscale's sources forwarded from `tailscale0`
 into the tun are dropped by `mesh_entry` unless a masquerade gives them the
 tun's address, since this node owns none of them.
+
+### A rule that holds forwarded packets
+
+Another program's rule can hold a packet forwarded out of the mesh after the
+translator's chain `forward` and before the kernel confirms the packet's
+connection at the end of postrouting
+([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n254),
+[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n411)).
+A queue at the forward or the postrouting hook that runs after the translator's
+chain and hands each packet to a userspace reader, as an inline intrusion
+prevention system does, is one such rule. At the forward hook a chain runs after
+the translator's where its priority is past 0, or at 0 where it was
+[made before the translator's](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n147),
+since at one priority the chains run by the order they were made in, the later
+first. The `filter` table of iptables
+[hooks forward at 0](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/iptable_filter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n28).
+While such a rule holds the first packets of a source's flows, the source can
+open flows past [its share](exit-nodes.md#each-sources-share-of-the-flows). A
+first packet held there can drop out of
+[the kernel's count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conncount.c?id=940de590b839f71d6dc846160534bf202401b8b7#n101)
+of its source's flows. The flow it opens is then admitted, never meets the limit
+again, and stays open for its lifetime without being counted. Measured with a
+queue at the forward hook whose reader held the first packets, and with one
+whose reader answered each at once, flows got past the share and stayed open,
+and with no such rule none did.
+
+The kernel exit sets no total of its own. On such a host nothing ranet3 sets
+bounds a source's flows below the maximum of the host's connection tracking
+table, which ranet3 never sizes, so one source can fill that table. A rule that
+leaves the packets arriving from the mesh's tun unheld leaves
+[the share](exit-nodes.md#each-sources-share-of-the-flows) as it is on a host
+with no such rule.
 
 ### The nftables table
 
