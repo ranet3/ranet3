@@ -7,6 +7,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -36,6 +37,8 @@ const (
 	quietFor = 500 * time.Millisecond
 	// utunBudget bounds every wait on the real kernel
 	utunBudget = 10 * time.Second
+	// utunPoll is how often a wait on the real kernel reads the utun again
+	utunPoll = 10 * time.Millisecond
 	// bareBudget bounds the wait for a down to leave the recorded mesh device bare, the budget waitForKernel gives every other wait there
 	bareBudget = 5 * time.Second
 	// barePoll is how often that wait reads the recorded machine
@@ -289,14 +292,28 @@ cap:
 	return u
 }
 
+// grewWhileListed reports whether a listing of the routing socket failed because its list grew while the kernel filled it
+// sysctl_iflist in bsd/net/rtsock.c answers ENOBUFS where the list outgrew the eighth it added to its first pass's size,
+// and sysctl answers ENOMEM where the list outgrew the caller's buffer, which Go and x/net try three times before they answer it
+func grewWhileListed(err error) bool {
+	return errors.Is(err, unix.ENOBUFS) || errors.Is(err, unix.ENOMEM)
+}
+
 // onUTUN reports whether the utun of u carries utunAddress and whether the kernel holds a route to utunRoute out of it
-func (u *utunNode) onUTUN(t *testing.T) (address, routed bool) {
+// it answers the error of a listing whose list grew meanwhile, as the reconciler's writes make it, and fails the test on any other
+func (u *utunNode) onUTUN(t *testing.T) (address, routed bool, err error) {
 	t.Helper()
 	link, err := net.InterfaceByName(u.node.Mesh.Name)
+	if grewWhileListed(err) {
+		return false, false, err
+	}
 	if err != nil {
 		t.Fatalf("look up %s: %v", u.node.Mesh.Name, err)
 	}
 	addresses, err := link.Addrs()
+	if grewWhileListed(err) {
+		return false, false, err
+	}
 	if err != nil {
 		t.Fatalf("list the addresses of %s: %v", link.Name, err)
 	}
@@ -308,6 +325,9 @@ func (u *utunNode) onUTUN(t *testing.T) (address, routed bool) {
 		}
 	}
 	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	if grewWhileListed(err) {
+		return false, false, err
+	}
 	if err != nil {
 		t.Fatalf("dump the routing table: %v", err)
 	}
@@ -324,34 +344,70 @@ func (u *utunNode) onUTUN(t *testing.T) (address, routed bool) {
 			routed = true
 		}
 	}
-	return address, routed
+	return address, routed, nil
+}
+
+// wholeUTUN reads the utun of u again past each listing whose list grew, until one reading meets none or deadline passes,
+// and answers how many listings grew in this call with either the whole reading and a nil error,
+// or, where a listing grew past deadline, no reading and that listing's error
+// the lists are the host's, which any process may write meanwhile, and not the utun's alone
+func (u *utunNode) wholeUTUN(t *testing.T, deadline time.Time) (address, routed bool, grown int, err error) {
+	t.Helper()
+	for {
+		address, routed, err = u.onUTUN(t)
+		if err == nil {
+			return address, routed, grown, nil
+		}
+		grown++
+		if time.Now().After(deadline) {
+			return false, false, grown, err
+		}
+		time.Sleep(utunPoll)
+	}
+}
+
+// waitOnUTUN waits until a whole reading of the utun of u satisfies want
+// its timeout names how many listings grew over the wait, the last whole reading where the wait had one,
+// and the last grown listing's error where the wait ended on one
+func (u *utunNode) waitOnUTUN(t *testing.T, what string, want func(address, routed bool) bool) {
+	t.Helper()
+	deadline := time.Now().Add(utunBudget)
+	grown, last := 0, "no whole reading"
+	for {
+		address, routed, more, err := u.wholeUTUN(t, deadline)
+		grown += more
+		if err == nil {
+			if want(address, routed) {
+				return
+			}
+			last = fmt.Sprintf("the last whole reading finding the address %v and the route %v", address, routed)
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("timed out waiting for %s, %s, past %d listings the host's lists grew under, the last answering %v", what, last, grown, err)
+			}
+			t.Fatalf("timed out waiting for %s, %s, past %d listings the host's lists grew under", what, last, grown)
+		}
+		time.Sleep(utunPoll)
+	}
 }
 
 // down on a real utun takes the address and the route off it and keeps the utun, and up puts both back
 func TestDownTakesItsAddressAndRouteOffARealUTUN(t *testing.T) {
 	requireRealUTUN(t)
 	u := startUTUN(t, t.TempDir())
-	waitFor(t, utunBudget, "the address and the route on the utun", func() bool {
-		address, routed := u.onUTUN(t)
-		return address && routed
-	})
+	u.waitOnUTUN(t, "the address and the route on the utun", func(address, routed bool) bool { return address && routed })
 	if _, err := u.node.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, utunBudget, "the address and the route off the utun", func() bool {
-		address, routed := u.onUTUN(t)
-		return !address && !routed
-	})
+	u.waitOnUTUN(t, "the address and the route off the utun", func(address, routed bool) bool { return !address && !routed })
 	if _, err := net.InterfaceByName(u.node.Mesh.Name); err != nil {
 		t.Errorf("down took the utun away: %v", err)
 	}
 	if _, err := u.node.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, utunBudget, "the address and the route back on the utun", func() bool {
-		address, routed := u.onUTUN(t)
-		return address && routed
-	})
+	u.waitOnUTUN(t, "the address and the route back on the utun", func(address, routed bool) bool { return address && routed })
 }
 
 // the mesh of a node New starts on a real utun drops a read from a neighbor toward another node's prefix, counted unowned_source,
@@ -378,14 +434,15 @@ func TestNodeStartingDownLeavesARealUTUNBare(t *testing.T) {
 	u := startUTUN(t, dir)
 	waitFor(t, utunBudget, "the first pass of the reconciler", func() bool { return !u.routes.Stats().At.IsZero() })
 	time.Sleep(quietFor)
-	if address, routed := u.onUTUN(t); address || routed {
+	address, routed, grown, err := u.wholeUTUN(t, time.Now().Add(utunBudget))
+	if err != nil {
+		t.Fatalf("no reading of the utun the node starting down holds bare came whole within %v, the host's interfaces or routes growing under %d listings, the last answering %v", utunBudget, grown, err)
+	}
+	if address || routed {
 		t.Errorf("the node starting down put its address (%v) or its route (%v) on the utun", address, routed)
 	}
 	if _, err := u.node.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, utunBudget, "the address and the route on the utun after up", func() bool {
-		address, routed := u.onUTUN(t)
-		return address && routed
-	})
+	u.waitOnUTUN(t, "the address and the route on the utun after up", func(address, routed bool) bool { return address && routed })
 }

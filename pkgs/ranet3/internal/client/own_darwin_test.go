@@ -18,10 +18,7 @@ import (
 func TestNodeOnARealUTUNReachesItsOwnAddress(t *testing.T) {
 	requireRealUTUN(t)
 	u := startUTUN(t, t.TempDir())
-	waitFor(t, utunBudget, "the address on the utun", func() bool {
-		address, _ := u.onUTUN(t)
-		return address
-	})
+	u.waitOnUTUN(t, "the address on the utun", func(address, _ bool) bool { return address })
 	own := utunAddress.Addr()
 	was := u.node.Mesh.TransitCounters()
 	server, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(own, 0)))
