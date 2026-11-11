@@ -19,27 +19,39 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 )
 
-// followLong outlasts the stub's session coming up
+// answerBound is a --for or --timeout a run waits out on a stream the stand-in holds open, and it must outlast the
+// stand-in's first answer on a loaded host, since the command counts that answer inside it
 // waitLong is a wait nothing here comes near the end of
-// waitShort ends before anything it asks for comes
 // pastLong reaches back past the stub's dial
 // clockStep is how far back a test stamps an event, as a clock stepped back during a wait stamps it
 const (
-	followLong = 10 * sessionAfter
-	waitLong   = 100 * sessionAfter
-	waitShort  = 3 * sessionAfter
-	pastLong   = 5 * dialAge
-	clockStep  = 2 * dialAge
+	answerBound = time.Second
+	waitLong    = 100 * sessionAfter
+	pastLong    = 5 * dialAge
+	clockStep   = 2 * dialAge
 )
 
-// debug events prints the recorder and exits, and with -f the events after it until --for has passed
+// endingSource is the stub whose feed carries a session and then ends
+type endingSource struct{ stubSource }
+
+func (s endingSource) DebugFollow(query control.EventQuery) ([]control.Event, control.Subscription) {
+	live := make(chan control.Delivery, 1)
+	live <- control.Delivery{Event: control.Event{Seq: 2, At: time.Now(), Kind: "ike.session.established", Peer: "example/gateway:0@0"}}
+	close(live)
+	return s.DebugEvents(query), scripted{live}
+}
+
+// debug events prints the recorder and exits, and with -f the events after it until the stream ends or --for has passed
 func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 	socket := serveStub(t)
 	out, err := execute(t, "debug", "events", "--control", socket)
 	if err != nil || !strings.Contains(out, "dial.attempt example/gateway:0@0") || strings.Contains(out, "ike.session") {
 		t.Errorf("debug events printed %q, %v", out, err)
 	}
-	out, err = execute(t, "debug", "events", "-f", "--for", followLong.String(), "--json", "--control", socket)
+	if out, err := executeBounded(t, "--for", answerBound, "debug", "events", "-f", "--control", socket); err != nil || !strings.Contains(out, "stream.live") {
+		t.Errorf("debug events -f on a stream held past --for printed %q and ended with %v", out, err)
+	}
+	out, err = execute(t, "debug", "events", "-f", "--for", waitLong.String(), "--json", "--control", serve(t, endingSource{}))
 	if err != nil {
 		t.Fatalf("debug events -f ended with %v", err)
 	}
@@ -51,7 +63,7 @@ func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 		}
 		kinds = append(kinds, event.Kind)
 	}
-	if strings.Join(kinds, " ") != "dial.attempt stream.live ike.session.established" {
+	if strings.Join(kinds, " ") != "dial.attempt stream.live ike.session.established stream.closed" {
 		t.Errorf("debug events -f printed %q", kinds)
 	}
 	if _, err := execute(t, "debug", "events", "-f", "--for", "0s", "--control", socket); err == nil || !strings.Contains(err.Error(), "--for") {
@@ -71,14 +83,19 @@ func TestDebugWaitEndsWithTheEventOrTheTimeout(t *testing.T) {
 	if err != nil || !strings.Contains(out, "before the wait began") {
 		t.Errorf("a wait reaching back for a recorded event printed %q and ended with %v", out, err)
 	}
-	for _, args := range [][]string{
-		{"debug", "wait", "babel.neighbor.down", "--timeout", waitShort.String(), "--control", socket},
-		{"debug", "wait", "dial.attempt", "--timeout", waitShort.String(), "--control", socket},
-		{"debug", "wait", "ike.session.established", "--attr", "role=responder", "--timeout", waitShort.String(), "--control", socket},
+	// each waits out its timeout, so they wait at once, each on a stub of its own whose stream places no other run holds
+	for name, args := range map[string][]string{
+		"a kind that never comes":  {"babel.neighbor.down"},
+		"a recorded event":         {"dial.attempt"},
+		"an attribute that misses": {"ike.session.established", "--attr", "role=responder"},
 	} {
-		if out, err := execute(t, args...); !errors.Is(err, waitTimedOut) || !strings.Contains(out, "event arrived within 300 milliseconds") {
-			t.Errorf("%q printed %q and ended with %v, want the timeout", args, out, err)
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			args := append(append([]string{"debug", "wait"}, args...), "--control", serveStub(t))
+			if out, err := executeBounded(t, "--timeout", answerBound, args...); !errors.Is(err, waitTimedOut) || !strings.Contains(out, "event arrived within 1 second") {
+				t.Errorf("%q printed %q and ended with %v, want the timeout", args, out, err)
+			}
+		})
 	}
 }
 

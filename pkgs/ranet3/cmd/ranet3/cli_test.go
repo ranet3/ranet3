@@ -151,6 +151,28 @@ func execute(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
+// executeBounded is execute of a command given flag at bound, failing t where the command still runs after waitLong
+func executeBounded(t *testing.T, flag string, bound time.Duration, args ...string) (string, error) {
+	t.Helper()
+	args = append(append([]string{}, args...), flag, bound.String())
+	type result struct {
+		out string
+		err error
+	}
+	ended := make(chan result, 1)
+	go func() {
+		out, err := execute(t, args...)
+		ended <- result{out, err}
+	}()
+	select {
+	case r := <-ended:
+		return r.out, r.err
+	case <-time.After(waitLong):
+		t.Fatalf("%q still ran %v after it began, outliving its %s of %v", args, waitLong, flag, bound)
+		return "", nil
+	}
+}
+
 // Every command reaches a live socket and prints the subsystem it names.
 func TestCommandsReadTheirOwnSubsystem(t *testing.T) {
 	socket := serveStub(t)

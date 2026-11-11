@@ -24,9 +24,10 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 )
 
-// serveTrace answers a trace with a stream.live note and one record, then holds the stream open until its reader goes
+// serveTrace answers a trace with a stream.live note and one record, then where held holds the stream open until its
+// reader goes, and otherwise ends it
 // it keeps the query of each trace it was asked
-func serveTrace(t *testing.T) (string, chan url.Values) {
+func serveTrace(t *testing.T, held bool) (string, chan url.Values) {
 	t.Helper()
 	path := socketPath(t)
 	listener, err := net.Listen("unix", path)
@@ -39,7 +40,9 @@ func serveTrace(t *testing.T) (string, chan url.Values) {
 		fmt.Fprintln(w, `{"note":{"at":"2026-10-28T19:30:00Z","kind":"stream.live"}}`)
 		fmt.Fprintln(w, `{"packet":{"time":"2026-10-28T19:30:00.001Z","arrival":"session","from":"example/gateway:0@1","decision":"forward","next":"example/relay:1@0","src":"192.0.2.1","dst":"192.0.2.3","proto":17,"hop_limit":64,"length":48,"payload":"RQAAMA=="}}`)
 		w.(http.Flusher).Flush()
-		<-r.Context().Done()
+		if held {
+			<-r.Context().Done()
+		}
 	})}
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
@@ -49,8 +52,8 @@ func serveTrace(t *testing.T) (string, chan url.Values) {
 // debug trace prints what the daemon streams until --for has passed, then exits 0, and under --json the wire lines
 // its flags reach the daemon as the query they spell
 func TestDebugTracePrintsUntilItsBound(t *testing.T) {
-	socket, asked := serveTrace(t)
-	out, err := execute(t, "debug", "trace", "--for", waitShort.String(), "--control", socket,
+	socket, asked := serveTrace(t, true)
+	out, err := executeBounded(t, "--for", answerBound, "debug", "trace", "--control", socket,
 		"--src", "192.0.2.1", "--dst", "192.0.2.0/24", "--proto", "udp", "--decision", "forward", "--peer", "gateway", "--rate", "5", "--payload", "64")
 	if err != nil || !strings.Contains(out, "stream.live") ||
 		!strings.Contains(out, "forward udp 192.0.2.1 > 192.0.2.3 arrival=session from=example/gateway:0@1 next=example/relay:1@0 hop_limit=64 length=48") {
@@ -60,7 +63,8 @@ func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 	if got := <-asked; got.Encode() != want.Encode() {
 		t.Errorf("the daemon was asked %v, want %v", got, want)
 	}
-	out, err = execute(t, "debug", "trace", "--for", waitShort.String(), "--json", "--control", socket)
+	ending, asked := serveTrace(t, false)
+	out, err = execute(t, "debug", "trace", "--for", waitLong.String(), "--json", "--control", ending)
 	if err != nil {
 		t.Fatalf("debug trace --json ended with %v", err)
 	}
@@ -83,9 +87,9 @@ func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 // --pcap writes the records to its file, made at mode 0600, and the stream's notes to stderr
 // under - the same bytes to stdout, and to a file of the caller's of mode 0600 the same bytes and nothing after
 func TestDebugTracePcapWritesItsFileOrStdout(t *testing.T) {
-	socket, _ := serveTrace(t)
+	socket, _ := serveTrace(t, false)
 	path := filepath.Join(t.TempDir(), "trace.pcapng")
-	stdout, stderr, err := executeApart(t, "debug", "trace", "--for", waitShort.String(), "--control", socket, "--payload", "64", "--pcap", path)
+	stdout, stderr, err := executeApart(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", path)
 	if err != nil || stdout != "" || !strings.Contains(stderr, "stream.live") || strings.Contains(stderr, "forward") {
 		t.Fatalf("debug trace --pcap printed %q and %q to stderr, and ended with %v", stdout, stderr, err)
 	}
@@ -99,14 +103,14 @@ func TestDebugTracePcapWritesItsFileOrStdout(t *testing.T) {
 	if !bytes.HasPrefix(file, []byte{0x0a, 0x0d, 0x0d, 0x0a}) || !bytes.Contains(file, []byte("forward udp 192.0.2.1 > 192.0.2.3 arrival=session")) || !bytes.Contains(file, []byte{0x45, 0, 0, 0x30}) {
 		t.Errorf("--pcap wrote %x, want a section holding the record and its payload", file)
 	}
-	stdout, _, err = executeApart(t, "debug", "trace", "--for", waitShort.String(), "--control", socket, "--payload", "64", "--pcap", "-")
+	stdout, _, err = executeApart(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", "-")
 	if err != nil || stdout != string(file) {
 		t.Errorf("debug trace --pcap - printed %x and ended with %v, want the file's %x", stdout, err, file)
 	}
 	if err := os.WriteFile(path, bytes.Repeat([]byte{0xff}, 2*len(file)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := executeApart(t, "debug", "trace", "--for", waitShort.String(), "--control", socket, "--payload", "64", "--pcap", path); err != nil {
+	if _, _, err := executeApart(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", path); err != nil {
 		t.Fatalf("debug trace --pcap of a file of the caller's of mode 0600 ended with %v", err)
 	}
 	if again, err := os.ReadFile(path); err != nil || !bytes.Equal(again, file) {
