@@ -486,7 +486,7 @@ func TestListenerCarriesTheUnderlayMarkWhereTheProcessMaySetOne(t *testing.T) {
 
 // Unchanged asks for nothing and must not touch the socket.
 func TestUnchangedLeavesTheSocketUnmarked(t *testing.T) {
-	bind, _, _, err := listenPacketBind(0, underlay.Unchanged, nil)
+	bind, _, _, err := openPacketBind(0, underlay.Unchanged, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

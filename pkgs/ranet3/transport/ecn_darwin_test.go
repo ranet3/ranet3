@@ -47,7 +47,7 @@ func TestControlMessageSizeHoldsEveryMessage(t *testing.T) {
 func TestDarwinRecordCarriesTheOuterECN(t *testing.T) {
 	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
+			opened, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

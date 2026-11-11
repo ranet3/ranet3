@@ -661,7 +661,7 @@ func TestDarwinReplyLeavesFromTheAddressTheRequestReachedOverIPv6(t *testing.T) 
 func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
+			opened, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -713,7 +713,7 @@ func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 func TestDarwinReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
 	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
+			opened, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -820,7 +820,7 @@ func TestDarwinReceiverDropsADatagramWhoseControlMessageWasCut(t *testing.T) {
 		{"udp4 monotonic", "udp4", "127.0.0.1", false, unix.SO_TIMESTAMP_MONOTONIC},
 	} {
 		t.Run(family.name, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
+			opened, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -886,7 +886,7 @@ func TestDarwinReceiverRefusesTheEndpointOfAnIKEDatagramWithNoDestination(t *tes
 		{"udp6", "::1", true},
 	} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
+			opened, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
