@@ -4,5 +4,5 @@ golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
 golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 golang.org/x/time v0.16.0 h1:vMb6ptszcQMkcwiRTAuNNU50gom6++Q/6gY2hDM6VDE=
 golang.org/x/time v0.16.0/go.mod h1:rVKOqvZeKvrDKTQiAHJ7wmwP0RzleSphoEA9RcdLA0s=
-gvisor.dev/gvisor v0.0.0-20261008000517-3b87f090dbda h1:HX4bzbYkQJtURY0fu9LZugDrQTKX2xLOIVRIV7yUdi8=
-gvisor.dev/gvisor v0.0.0-20261008000517-3b87f090dbda/go.mod h1:8EvmWpn201Ba5N80rb+0662hAULFFrp9ZZFGcgBJ+oY=
+gvisor.dev/gvisor v0.0.0-20261111090704-c24795a75477 h1:fBEl8gacmrwhHwqUIqO5w5+AETaIoo0DBZAqyP67thA=
+gvisor.dev/gvisor v0.0.0-20261111090704-c24795a75477/go.mod h1:Ml6ZH/vUKATC2FmyegP0ISP5Bu3U+DXEXJHB6MlH1dY=
