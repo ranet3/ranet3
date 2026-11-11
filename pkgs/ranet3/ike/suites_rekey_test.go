@@ -1344,6 +1344,7 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	// the IKE SA's rekey falls due soon after the SA is made
 	// and its lifetime ends while the relay holds that rekey
 	cfg.IKERekeyInterval, cfg.RekeyMargin = 3*time.Second, 2*time.Second
+	closed := "ike.sa.closed " + dialedPair + " sa=ike reason=lifetime"
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
 		if !fromInitiator || header == nil || header.IsResponse() {
 			return true
@@ -1356,6 +1357,10 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 			mu.Lock()
 			informational[header.MessageID] = true
 			mu.Unlock()
+			// the refused rekey lets the Delete start before Run takes the rekey's result
+			// and a Delete answered first ends the session before Run closes the SA at its lifetime
+			// so the relay holds the Delete until the session has recorded that close
+			return waitUntil(func() bool { return slices.Contains(dialed.recorded(), closed) })
 		}
 		return true
 	})
@@ -1364,7 +1369,7 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	initiator.retransmitAfter = 500 * time.Millisecond
 	initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 	established := initiator.current.established
-	runSession(t, responder)
+	responderRun := runSession(t, responder)
 	run := runSession(t, initiator)
 	if !waitUntil(rekeying.Load) {
 		t.Fatal("the IKE SA's rekey never started")
@@ -1377,11 +1382,12 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	awaitRecorded(t, dialed, "ike.suite.unlisted "+dialedPair+" sa=ike suite=aes256gcm/sha384/x25519 action=replace")
 	time.Sleep(time.Until(established.Add(cfg.IKERekeyInterval + quietPeriod)))
 	released.Store(true)
+	awaitRecorded(t, dialed, closed)
 	if err := endedWithin(t, run, "dialing"); !errors.Is(err, ErrPRFUnlisted) {
-		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake", err)
+		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake, %v", err, ErrPRFUnlisted)
 	}
-	if all := strings.Join(dialed.recorded(), "\n"); !strings.Contains(all, "ike.sa.closed "+dialedPair+" sa=ike reason=lifetime") {
-		t.Errorf("the IKE SA did not close at its lifetime: %s", all)
+	if err := endedWithin(t, responderRun, "answering"); !errors.Is(err, errPeerDeletedIKE) {
+		t.Errorf("the answering session ended with %v, want the dialing session's Delete, %v", err, errPeerDeletedIKE)
 	}
 	// a request sent as the session ended reaches the relay after it
 	time.Sleep(quietPeriod)
