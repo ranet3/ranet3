@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-10
+updated: 2026-11-11
 order: 45
 ---
 
@@ -705,8 +705,9 @@ the process that wrote them:
   and one that does not rewrites them.
 - A clean stop, `ranet3 down`, `ranet3 disable reconciler` and a reload to
   `"uplink"` or without `cap.exit` withdraw its chains and sets with the rules,
-  and the table with them where nothing else is left in it. A start or a reload
-  whose file asks for no switch deletes those an earlier instance left.
+  and the table as [sharing a host](coexistence.md#the-nftables-table) gives. A
+  start or a reload whose file asks for no switch deletes those an earlier
+  instance left.
 - A start that a refusal or `SIGINT` or `SIGTERM` ends before its build
   completes runs no pass, so it writes no chain and leaves those an earlier
   instance left, with the rules and routes of its protocol.

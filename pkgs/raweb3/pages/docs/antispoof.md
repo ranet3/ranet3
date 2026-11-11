@@ -486,9 +486,9 @@ The lifetime of its chains and sets:
 - `ranet3 down` leaves them: the kernel still forwards and the host's services
   still trust mesh sources.
 - A stop on `SIGINT` or `SIGTERM` withdraws its chains and sets last, and the
-  table with them where nothing else is left in it, after the reconciler
-  withdrew the routes into the tun and the mesh closed its sessions, so nothing
-  forwards into the mesh by the time they are gone.
+  table as [sharing a host](coexistence.md#the-nftables-table) gives, after the
+  reconciler withdrew the routes into the tun and the mesh closed its sessions,
+  so nothing forwards into the mesh by the time they are gone.
 - A start that a refusal or either signal ends before its build completes, after
   the filter's first pass, withdraws its chains and sets where that pass made
   them, and leaves those the pass found, taken over or rewritten, logging

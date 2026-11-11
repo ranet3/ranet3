@@ -596,10 +596,11 @@ again in that transaction a chain, set or timeout object of its own that
 nf_tables will not change in place, and nothing else.
 
 It removes its chains, sets and timeout objects at shutdown and at
-`ranet3 down`, and the table with them where nothing of another writer's is left
-in it. What an earlier instance left carries the same names and is adopted, then
-brought to what the configuration now asks for, and a rule of a family the
-configuration no longer covers goes with the first pass's rewrite of the chains.
+`ranet3 down`, and the table with them as
+[the nftables table](#the-nftables-table) gives. What an earlier instance left
+carries the same names and is adopted, then brought to what the configuration
+now asks for, and a rule of a family the configuration no longer covers goes
+with the first pass's rewrite of the chains.
 
 Nothing here writes iptables. The 2 are separate registries in the kernel, an
 `iptables-nft` rule is visible here as an ordinary nftables table, and the
@@ -756,12 +757,27 @@ setting it dormant sets a flag on it, so each wakes every writer once, and the
 first writer's pass after it makes the table again or clears the flag, which
 wakes no other: the table it makes holds none of their chains, and with the flag
 cleared it bypasses none. No writer's writes wake another. Each makes the table
-where it is missing, and the last to withdraw deletes it, so a clean stop leaves
-no table, while a stop that leaves anything of another writer's in it leaves the
-table holding that. A table another writer gave a flag other than dormant, such
-as `persist`, refuses every writer's pass until `nft delete table inet ranet3`
-clears it. The translator names that command in the reason it is not ready,
-while the antispoof filter and the kill switch report the write's refusal,
+where it is missing.
+
+The daemon counts its own writers. Each holds the table from its first write
+that succeeds, or from the read that finds what an earlier instance of it left,
+until its withdrawal, or until it ends without one. The last of them to withdraw
+deletes the table, in the transaction that deletes its own, so a clean stop
+leaves no table. The count decides for the daemon's writers: once one has ended
+without withdrawing, as the antispoof filter and the kill switch do at a stop
+for the mesh's failure, no later withdrawal deletes the table. The withdrawal's
+listing decides for anything else in the table: the last withdrawal deletes the
+table only where it lists nothing but its own and no flag but dormant, so a
+chain of another program's keeps the table where the listing shows it, and goes
+with the table where a listing comes back without it. No other withdrawal
+deletes the table, whatever it lists, so a daemon that dies between two
+withdrawals, or a start without `cap.table` that deletes the kill switch an
+earlier instance left, leaves the table for the next start to take over.
+
+A table another writer gave a flag other than dormant, such as `persist`,
+refuses every writer's pass until `nft delete table inet ranet3` clears it. The
+translator names that command in the reason it is not ready, while the antispoof
+filter and the kill switch report the write's refusal,
 `operation not supported`, and the filter's ends a start at its first pass. The
 translator's nat chain needs Linux 5.2 or later, as [Linux](platforms.md#linux)
 gives. An `inet` nat chain hooks NAT in both families, so on an exit that
