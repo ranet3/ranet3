@@ -342,7 +342,9 @@ into the mesh holds its own.
   A source no class takes leaves under `auto` and holds a share.
 - **What it does not count.** A TCP connection in TIME_WAIT or closed. The share
   bounds a source's open flows, and its closed ones are bounded by their
-  timeouts and by how fast it closes them.
+  timeouts and by how fast it closes them. The userspace exit on macOS counts a
+  closed connection while its host socket may hold a port, as
+  [host ports](#host-ports) gives.
 - **A full set admits.** Each family's set, `flows4` or `flows6`, keeps a count
   for each source holding flows, up to 65535 sources. Past that a new source is
   not counted and its flows are not limited, until every flow of some source has
@@ -763,6 +765,134 @@ flows the exit holds are bounded by the host's memory and descriptors, as
 listed in [gaps on macOS](platforms.md#gaps-on-macos), with each deviation in
 [exit translation](design/protocol-deviations.md#exit-translation).
 
+### Host ports
+
+On macOS a port in TIME_WAIT is refused to every bind of port 0 and every
+connect from an unbound socket on the host, the host's own connections and the
+exit's dials among them. When a leaf closes a TCP connection first, the exit's
+socket toward the server closes first too and stays in TIME_WAIT, so a source
+closing connections fast could hold every port of the host's automatic range.
+The exit on macOS keeps a slot for each such socket. The terms:
+
+- A **slot** is a place in the source's share, in `Flows` and in `HostPorts`,
+  which a connection takes at its SYN and keeps past its relay's end while its
+  host socket may pin the port.
+- The **MSL** is the maximum segment lifetime the host reads from
+  `net.inet.tcp.msl`, and a TIME_WAIT lasts twice it, 30 seconds at its default
+  of 15.
+- A **sweep** is the exit's pass every 5 seconds, which ends idle mappings and
+  acts on each slot whose state or time has come.
+- The **margin** is the 2 seconds a slot is kept past each close with a linger
+  of 0 that the relay's end or a sweep makes.
+
+What the exit does:
+
+- **When the relay ends** the exit reads the host socket's state, and each sweep
+  reads every socket it watches again before acting on its time:
+
+  | State read                      | What the exit does                | When                                                                |
+  | ------------------------------- | --------------------------------- | ------------------------------------------------------------------- |
+  | closed                          | closes it and gives its slot back | at that read, with no margin                                        |
+  | TIME_WAIT                       | closes it with a linger of 0      | at the first sweep twice the MSL past the first read of TIME_WAIT   |
+  | CLOSING or LAST_ACK             | keeps it watched                  | while the exit runs, until a read finds the host's FIN acknowledged |
+  | FIN_WAIT_1 or FIN_WAIT_2        | closes it with a linger of 0      | at the first sweep twice the MSL past the relay's end               |
+  | any other, or a read that fails | closes it with a linger of 0      | at the relay's end at once, and at a sweep only past its time       |
+
+  The close with a linger of 0 sends the server a reset wherever macOS still
+  holds the TIME_WAIT, which it does past twice the MSL until its PCB collector
+  runs, as
+  [the userspace exit's deviations](design/protocol-deviations.md#the-userspace-exit)
+  declare. A server that has closed discards that reset. On a plain TCP socket
+  under no content filter, macOS sets the 2 MSL timer again on no segment: it
+  clears the FIN of every segment in TIME_WAIT before the FIN's restart
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L6157-L6173)),
+  and drops before the ACK's restart every acknowledgment that could reach it
+  ([tcp_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_input.c#L5089-L5098)).
+  A server off the Mac that retransmitted its FIN eight times over 27 seconds
+  had each acknowledged and the TIME_WAIT gone 45 seconds after the close, at
+  the default MSL. Each sweep also reads the range and the MSL again, and a
+  change applies from it.
+- **A reset.** A flow the exit resets, at a withdraw or a relay's error, closes
+  its host socket with a linger of 0 in any state before TIME_WAIT, CLOSING and
+  LAST_ACK among them, as a reset of the leaf's connection asks, and keeps no
+  slot. A socket it reads in TIME_WAIT, where both FINs have passed and a reset
+  has nothing left to tell the server, it leaves to the step above.
+- **A failed leaf endpoint.** Where the leaf's endpoint fails after the dial,
+  the host's socket half closes and is watched, with twice the MSL to reach
+  TIME_WAIT or closed. Until its hold ends it still acknowledges and drops what
+  the server sends.
+- **The linger.** macOS refuses every socket option on a socket shut both ways,
+  as one in TIME_WAIT is
+  ([uipc_socket.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_socket.c#L4776-L4782)),
+  so the exit sets `SO_NP_EXTENSIONS` with `SONPX_SETOPTSHUT` on each dial's
+  socket before its connect. Where macOS still refuses the linger, the socket
+  and its slot stay as they were and the next sweep tries again.
+- **The slot's end.** After a close with a linger of 0 the host's own binds and
+  connects take the port at once, but the port stays reserved until XNU's PCB
+  collector disposes of the socket, a reservation that refuses the port to the
+  host's Skywalk flows alone
+  ([netns.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/skywalk/namespace/netns.c#L696-L703),
+  [in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L2015-L2020)).
+  So the slot comes back at the first sweep past the margin from that close. The
+  margin is two of the collector's fast passes, measured on a Mac in use, where
+  the reservation was gone within 1 second of the close, and is no ceiling: a
+  pass the collector gives up
+  ([tcp_timer.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/tcp_timer.c#L806-L815))
+  re-arms lazily
+  ([in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L447-L455)),
+  so on an idle host it can keep the port reserved up to its lazy pass. IPv6 was
+  not measured. At macOS's default MSL a leaf-first close keeps its slot 35 to
+  40 seconds past its relay's end, as does a reset that reads TIME_WAIT, and a
+  server-first close whose last acknowledgment has not arrived when the relay
+  ends keeps it until the next sweep.
+- **The bound.** `HostPorts` is the least of half the ports from
+  `net.inet.ip.portrange.first` to `net.inet.ip.portrange.last` and half of
+  `Flows`. A new TCP connection is refused while the open TCP connections and
+  the slots held reach it, counted as `host ports`, so a range of 1 port refuses
+  every one. Since the open ones count, where `Flows` is under twice
+  `Connections` fewer TCP connections are admitted than `Connections`.
+  Leaf-first closes fill `HostPorts` at `HostPorts` / 40 a second across
+  sources, about 205 a second at its most of 8192.
+- **The share.** A slot held counts in its source's share. A source at its share
+  that holds more slots than open flows is refused as `share held`, else as
+  `share`, both counted in `ranet3_egress_refused_total`. At the default share
+  of 4096 a source closing first is refused past about 102 such closes a second,
+  less what it holds open.
+- **The stop.** The exit's stop closes every socket it holds with a linger of 0,
+  one in CLOSING or LAST_ACK as one in TIME_WAIT however young, since a stopped
+  exit counts no slot, and a socket left to run would pin its port uncounted
+  beside the next process's `HostPorts`, for as long as its server keeps it. The
+  stop has reset every open flow before. What it costs is the last
+  unacknowledged bytes of a connection that was closing at the stop. Every slot
+  is given back. A socket whose linger macOS refuses then is closed plainly and
+  left to run uncounted, and the log says how many.
+
+What it leaves open:
+
+- No cap holds one source's slots below its share. A source filling `HostPorts`,
+  a dual-stack leaf from its two shares, refuses every source's new TCP
+  connection, at the rate above. While the exit runs, a socket held in CLOSING
+  or LAST_ACK lasts until the server acknowledges or the host stops
+  retransmitting, or for as long as a server keeps a zero window and answers its
+  probes, each counted in its source's share.
+- A TIME_WAIT that macOS's own collector or the server's reopening SYN ended
+  before the exit read it, and one that began between a reset's read of the
+  state and its close, are released with no margin. Its port may then stay
+  reserved against the host's Skywalk flows, uncounted, until XNU's collector
+  runs, about 1 to 11 seconds.
+- After a crash, which closes no socket with a linger of 0, the old sockets run
+  their TIME_WAIT uncounted beside the new process's `HostPorts`. After a stop,
+  a port may stay reserved against the host's Skywalk flows up to the margin
+  into the next process.
+- A leaf chooses its own port, and the exit keeps it where the host binds it, so
+  a socket held on a port outside the automatic range refuses that port to a
+  host server that binds it without `SO_REUSEADDR` or `SO_REUSEPORT`, within the
+  source's share.
+- The userspace exit on Linux holds nothing and sets no bound on the host ports
+  its closed connections pin. That is a limit of the exit, not of Linux, whose
+  hold would be built apart. The userspace exit runs on Linux in tests alone
+  today.
+
 ## The nftables chains
 
 The translator writes its chains in the nftables table `inet ranet3`, which
@@ -1005,13 +1135,19 @@ On macOS the line names the userspace exit and its flows in place of where it
 writes and its rules, with the refused counts, the leaves' packets it dropped
 with no flow to take them where there were any, what it announces and withholds,
 and the families it is ready for, and 2 lines under it give its flows against
-its limits and its buffers against its budget, such as:
+its limits, the closed connections it holds and the [host ports](#host-ports)
+its TCP connections take against `HostPorts`, and its buffers against its
+budget, such as:
 
 ```
 Egress   userspace, 21 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
-Flows    14 TCP of 985, 6 UDP, 1 echo of 10240, 3 dialing, 210 in TIME_WAIT
+Flows    14 TCP of 985, 6 UDP, 1 echo of 10240, 3 dialing, 210 in TIME_WAIT, 37 held for host sockets, 54 host ports of 5120
 Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
 ```
+
+The 210 in TIME_WAIT are the leaf-side endpoints in the exit's own stack, and
+the 37 held the closed connections whose host sockets may pin a port. The 54
+host ports are the 14 TCP connections open, the 3 dialing and the 37 held.
 
 The userspace exit writes the lines of the first table. Of the second, both
 exits write `egress translating for N prefixes in <where>`, `egress ready`,
@@ -1024,6 +1160,9 @@ kernel exit's on Linux:
 | `egress userspace exit started again`                                                                                           | info  | the first pass after `ranet3 up`                                                                                                    |
 | `egress userspace exit opened no ICMP socket, so it refuses echo in this family and relays no router's error about its sockets` | warn  | an ICMP socket of a family would not open, with `ipv6` and `err`, at startup                                                        |
 | `egress: the userspace exit opened no raw socket, so a leaf's own ICMP error about a datagram reaches no server`                | warn  | the daemon could not open a raw socket, as one not running as root cannot, with `err`, at startup                                   |
+| `egress userspace exit keeps its last bound on host ports`                                                                      | warn  | a sweep could not read the automatic range or the MSL, with `err`, once until a sweep reads them again                              |
+| `egress userspace exit keeps a host socket the host refused to abort, and its slot, and tries again at each sweep`              | warn  | on macOS the host refused the linger of 0 that ends a held socket, with `err`, once for the exit's run                              |
+| `egress userspace exit closed host sockets the host refused to abort, and left them to the host`                                | warn  | on macOS the exit's stop closed held sockets whose linger of 0 the host refused, with `sockets` and `err`                           |
 
 | Log line                                                            | Level | When                                                                                                                                     |
 | ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1054,10 +1193,11 @@ since the pass before as `refused`, counted from zero after a pass that wrote
 the chains. A pass that cannot read the counters back keeps the last pass's
 counts, the dropped ones among them, unless it rewrote the chains, whose
 counters start from zero whether or not it read them back. The userspace exit
-records `egress.refused` itself when it refuses a flow, past a share, a total or
-the descriptors among the reasons, at most once every 30 seconds, with the
-`source` and the `reason` of the refusal that falls due and every flow refused
-since the last record as `refused`, so a source retrying does not flood the log.
+records `egress.refused` itself when it refuses a flow, past a share, a total,
+the descriptors or, on macOS, the host ports or a share of held connections
+among the reasons, at most once every 30 seconds, with the `source` and the
+`reason` of the refusal that falls due and every flow refused since the last
+record as `refused`, so a source retrying does not flood the log.
 
 | Metric                                   | Meaning                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -1066,6 +1206,7 @@ since the last record as `refused`, so a source retrying does not flood the log.
 | `ranet3_egress_flows_total`              | connections the rules have translated                                                                                          |
 | `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                 |
 | `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                |
+| `ranet3_egress_host_held`                | closed TCP connections the macOS userspace exit holds while their host sockets may pin a port, see [host ports](#host-ports)   |
 | `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them |
 | `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                              |
 | `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                     |
@@ -1075,6 +1216,6 @@ since the last record as `refused`, so a source retrying does not flood the log.
 | `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |
 
 The userspace exit writes the prefix counts, the refused counts, the pass's 2
-series and readiness alone, and none of the rules', the translation's, the
-dropped counts', connection tracking's or the conflicts' series.
-[Metrics](metrics.md) describes the scrape.
+series, readiness and, on macOS, the connections held alone, and none of the
+rules', the translation's, the dropped counts', connection tracking's or the
+conflicts' series. [Metrics](metrics.md) describes the scrape.

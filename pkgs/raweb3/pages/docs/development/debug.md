@@ -315,10 +315,12 @@ These commands take flags of their own:
   and are not asked again. A node with no `cap.egress` says so. On macOS it is
   the userspace exit: its status line and the 2 lines under it, its TCP
   connections, UDP mappings and echo mappings in each family, its limits, the
-  TIME_WAIT endpoints a new SYN reused and those closed early past the limit, a
-  `Memory` row with Go's memory limit, whether the daemon was given it, the
-  node's own heap and what the budget leaves it, then each refusal and drop by
-  its reason and the sources holding the most flows.
+  host ports among them on macOS, the TIME_WAIT endpoints a new SYN reused and
+  those closed early past the limit, a `Memory` row with Go's memory limit,
+  whether the daemon was given it, the node's own heap and what the budget
+  leaves it, then each refusal and drop by its reason and the sources holding
+  the most flows, with the closed connections each holds for
+  [its host sockets](../exit-nodes.md#host-ports).
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
