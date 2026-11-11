@@ -820,28 +820,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	// the zero it has with the counting deleted. Overflowing that queue is not
 	// this node falling behind on receive, which the other counter reports,
 	// so it is the refused one this drives.
-	hub := c.hub
-	if fillUnclaimedQueue(t, hub) == 0 {
-		t.Fatal("the queue refused nothing, so the counter would read zero either way")
-	}
-	// Closed before anything reads the counter: the receive loops are still
-	// draining the socket backlog of the last burst, and every datagram in it
-	// raises the count, so a snapshot taken while they run is smaller than
-	// what Metrics renders a moment later. The count that matters is the one
-	// that stops moving, not the one fillUnclaimedQueue saw on its way out.
-	hub.Close()
-	var refused uint64
-	for deadline := time.Now().Add(20 * time.Second); refused == 0; {
-		settled := hub.Refused()
-		time.Sleep(10 * time.Millisecond)
-		if hub.Refused() == settled {
-			refused = settled
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the drop counter never settled, so the metric would be read mid-flight")
-		}
-	}
+	refused := fillUnclaimedQueue(t, c.hub)
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	release, adopted := c.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil)
@@ -873,7 +852,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	for _, want := range []string{
 		"ranet3_babel_routes_originated 1",
 		fmt.Sprintf("ranet3_babel_routes_selected %d", stats.Selected),
-		// every datagram was an IKE_SA_INIT the full queue refused
+		// each refusal the hub counted is of an IKE_SA_INIT the full queue had no room for, so this cause's line carries the whole count
 		fmt.Sprintf(`ranet3_receive_refused_total{cause="unclaimed_full"} %d`, refused),
 		`ranet3_receive_refused_total{cause="unknown_esp"} 0`,
 		// Nothing here fills a session's receive queue or holds all its
@@ -1793,16 +1772,19 @@ func unclaimedInit() []byte {
 	return datagram
 }
 
-// fillUnclaimedQueue sends IKE_SA_INIT-shaped datagrams at a hub nobody is
-// listening on until its queue refuses one, which is the ordinary way an
-// inbound receive queue fills: the SPIs belong to no Mux, so every datagram
-// lands in the queue Listen drains and nothing drains it.
+const (
+	// unclaimedWait bounds the wait for a hub to count the refusals fillUnclaimedQueue sent it, and unclaimedPoll is how often it looks
+	unclaimedWait = 20 * time.Second
+	unclaimedPoll = time.Millisecond
+)
+
+// fillUnclaimedQueue sends a hub twice as many IKE_SA_INIT-shaped datagrams as its queue of unclaimed IKE datagrams holds, and returns the refusals once the hub has counted exactly the half the full queue refused
+// the SPIs belong to no Mux and nothing drains the queue, so a datagram is queued only while the queue has room and refused only once it is full, and at that count no datagram sent is in flight and the counter stays put
 func fillUnclaimedQueue(t *testing.T, hub *transport.Hub) uint64 {
 	t.Helper()
-	// The queue exists only once somebody asks to listen, and nothing drains
-	// it here, which is how a responder under load looks from the receive
-	// loop's side.
-	_ = hub.Listen()
+	queue := hub.Listen()
+	held := cap(queue)
+	want := uint64(held)
 	peer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
@@ -1810,20 +1792,23 @@ func fillUnclaimedQueue(t *testing.T, hub *transport.Hub) uint64 {
 	defer peer.Close()
 	dst := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: hub.LocalAddr().(*net.UDPAddr).Port}
 	datagram := unclaimedInit()
-
-	deadline := time.Now().Add(20 * time.Second)
-	for hub.Refused() < 64 {
-		if time.Now().After(deadline) {
-			t.Fatal("the unclaimed queue never filled, so the refused counter proves nothing")
+	for range 2 * held {
+		if _, err := peer.WriteToUDP(datagram, dst); err != nil {
+			t.Fatal(err)
 		}
-		for range 64 {
-			if _, err := peer.WriteToUDP(datagram, dst); err != nil {
-				t.Fatal(err)
-			}
-		}
-		time.Sleep(time.Millisecond)
 	}
-	return hub.Refused()
+	deadline := time.Now().Add(unclaimedWait)
+	for {
+		got := hub.Refused()
+		if got == want {
+			return want
+		}
+		if got > want || time.Now().After(deadline) {
+			t.Fatalf("the hub queued %d and counted %d refusals of the %d datagrams sent at a queue of %d, want %d refusals",
+				len(queue), got, 2*held, held, want)
+		}
+		time.Sleep(unclaimedPoll)
+	}
 }
 
 // The Prometheus text exposition format defines three escape sequences inside
