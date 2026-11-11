@@ -32,7 +32,8 @@ const (
 
 // relayHarness is an exit a test drives through its lanes' handling and its
 // relays without Run, on a clock of its own, whose Prepare records each
-// socket and readies only those toward loopback and those that only receive
+// socket and readies only those toward loopback, toward reach, and those
+// that only receive
 type relayHarness struct {
 	x    *Exit
 	mesh *fakeMesh
@@ -43,6 +44,9 @@ type relayHarness struct {
 	prepared []netip.AddrPort
 	// refuseAll has Prepare refuse every socket, so none is opened
 	refuseAll bool
+	// reach is a server off the host a test names, which Prepare readies
+	// sockets toward as it does toward loopback
+	reach netip.Addr
 }
 
 func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relayHarness {
@@ -54,7 +58,7 @@ func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relay
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.prepared = append(h.prepared, to)
-		if h.refuseAll || to.IsValid() && !to.Addr().IsLoopback() {
+		if h.refuseAll || to.IsValid() && !to.Addr().IsLoopback() && (!h.reach.IsValid() || to.Addr().Unmap() != h.reach) {
 			return syscall.ENETUNREACH
 		}
 		return nil
@@ -77,6 +81,9 @@ func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relay
 	x.answers = h.mesh.OpenLane()
 	h.lane = h.mesh.OpenLane()
 	x.udp.now, x.echo.now = h.now, h.now
+	if x.tcp.holds != nil {
+		x.tcp.holds.now = h.now
+	}
 	t.Cleanup(func() { closeWithin(t, x) })
 	return h
 }

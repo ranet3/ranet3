@@ -111,6 +111,9 @@ type Flows struct {
 	// Dialing is the TCP connections being dialed, and TimeWait the
 	// leaf-side endpoints in TIME_WAIT
 	Dialing, TimeWait int
+	// Host is the exit's hold on the host ports its TCP connections pin, nil
+	// where it holds none
+	Host *HostHold
 	// Limits holds the exit's bounds, and Buffered the bytes its TCP buffers
 	// hold now
 	Limits   FlowLimits
@@ -135,6 +138,14 @@ type FlowLimits struct {
 	Lanes, Link                                 int64
 }
 
+// HostHold is a userspace exit's hold on the host ports: Held the closed TCP
+// connections held while their host sockets may pin their ports, Ports those
+// and the TCP connections open together, and Bound the most they may take, a
+// bound of 0 refusing every new connection
+type HostHold struct {
+	Held, Ports, Bound int
+}
+
 // The shares of memory a userspace exit's budget is: half of Go's memory
 // limit, or a sixteenth of the host's memory where no Go limit is set
 const (
@@ -142,10 +153,11 @@ const (
 	BudgetHost    = "host"
 )
 
-// SourceFlows is the flows one source holds open through the exit
+// SourceFlows is the flows one source holds through the exit, and Held those
+// of them closed and held while their host sockets may pin their ports
 type SourceFlows struct {
-	Source netip.Addr
-	Flows  int
+	Source      netip.Addr
+	Flows, Held int
 }
 
 // ExitDebug is an exit's detail as a debug read finds it, which a backend

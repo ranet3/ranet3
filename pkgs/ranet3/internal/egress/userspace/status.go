@@ -32,9 +32,10 @@ const (
 )
 
 // flowsStatus is the exit's detail as Status reports it: the flows open by
-// family, the dials and the endpoints in TIME_WAIT, the limits and the bytes
-// the TCP buffers hold, the refusals and drops by why, and the sources
-// holding the most flows
+// family, the dials and the endpoints in TIME_WAIT, where the platform bounds
+// the host ports the connections held for their host sockets and the host
+// ports taken, the limits and the bytes the TCP buffers hold, the refusals and
+// drops by why, and the sources holding the most flows
 func (x *Exit) flowsStatus() *egress.Flows {
 	l := x.rt.Limits
 	from := egress.BudgetHost
@@ -55,8 +56,13 @@ func (x *Exit) flowsStatus() *egress.Flows {
 		f.TCP[family(flow.ipv6)]++
 		f.Buffered += queued(flow.ep)
 	}
+	connections := x.tcp.connections
 	x.tcp.mu.Unlock()
 	f.TimeWait = x.tcp.closed.waiting()
+	if x.tcp.holds != nil {
+		held := x.flows.heldCount()
+		f.Host = &egress.HostHold{Held: held, Ports: connections + held, Bound: x.tcp.holds.limit()}
+	}
 	x.udp.mu.RLock()
 	for leaf, mappings := range x.udp.mappings {
 		for _, m := range mappings {
@@ -129,7 +135,7 @@ func (f *flows) most(n int) []egress.SourceFlows {
 	f.mu.Lock()
 	sources := make([]egress.SourceFlows, 0, len(f.bySource))
 	for source, open := range f.bySource {
-		sources = append(sources, egress.SourceFlows{Source: source, Flows: open})
+		sources = append(sources, egress.SourceFlows{Source: source, Flows: open, Held: f.heldBy[source]})
 	}
 	f.mu.Unlock()
 	slices.SortFunc(sources, func(a, b egress.SourceFlows) int {
@@ -139,13 +145,13 @@ func (f *flows) most(n int) []egress.SourceFlows {
 }
 
 // refused counts a new flow refused for reason, raw its first packet, among
-// them each refused past its source's share in its family, and records
-// egress.refused naming the source and the reason, an interval apart, with
-// the refusals since the last record
+// them each refused past its source's share in its family, held flows or
+// not, and records egress.refused naming the source and the reason, an
+// interval apart, with the refusals since the last record
 func (x *Exit) refused(raw []byte, reason string) {
 	x.counts.refuse(reason)
 	source := sourceOf(raw)
-	if reason == reasonShare {
+	if reason == reasonShare || reason == reasonShareHeld {
 		x.counts.share[family(source.Is6())].Add(1)
 	}
 	if since, ok := x.refusals.add(x.reportClock()); ok {

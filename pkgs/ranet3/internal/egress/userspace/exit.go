@@ -64,6 +64,9 @@ type Platform struct {
 	// Raw is the raw ICMP socket the leaves' own errors are sent to a server
 	// through, nil where the process may open none
 	Raw Raw
+	// hostSockets is the platform's part of the bound on the host ports the
+	// TCP relay's closed connections pin, nil where the exit bounds none
+	hostSockets *hostSockets
 }
 
 // Link is a link of the host's, by name, and the largest packet it carries
@@ -152,8 +155,8 @@ type passStats struct {
 type counts struct {
 	laneDropped, unlaid atomic.Uint64
 	reused, closed      atomic.Uint64
-	// share counts the flows refused past their source's share, by family,
-	// and untracked a leaf's packets dropped for want of a flow to take them
+	// share counts the flows refused past their source's share, as share or
+	// share held, by family, and untracked a leaf's packets dropped for want of a flow to take them
 	share, untracked [2]atomic.Uint64
 
 	mu               sync.Mutex
@@ -219,13 +222,18 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	started := time.Now()
 	x.reportClock = func() int64 { return int64(time.Since(started)) }
 	x.pump = &pump{link: x.link, unlaid: func() { x.counts.unlaid.Add(1) }}
+	x.flows = newFlows(cfg.SourceLimit(), rt.Limits.Flows)
+	holds, err := newHostHolds(rt.Platform.hostSockets, x.flows)
+	if err != nil {
+		return nil, err
+	}
 	s, err := newStack(x.link, rt.Limits.Window, stackHandlers{udp: x.takeUDP, icmp: x.takeICMP})
 	if err != nil {
 		return nil, err
 	}
 	x.stack = s
-	x.flows = newFlows(cfg.SourceLimit(), rt.Limits.Flows)
 	x.tcp = newTCPRelay(x)
+	x.tcp.holds = holds
 	x.udp = newUDPRelay(x)
 	x.echo = newEchoRelay(x)
 	x.icmp = openICMP(x)
@@ -364,7 +372,8 @@ func (x *Exit) withdraw(why string) {
 	x.echo.withdraw()
 }
 
-// sweep ends the mappings past their time until the exit stops
+// sweep ends the mappings past their time, and runs the hold's sweep, until
+// the exit stops
 func (x *Exit) sweep() {
 	ticker := time.NewTicker(mappingSweep)
 	defer ticker.Stop()
@@ -378,16 +387,20 @@ func (x *Exit) sweep() {
 	}
 }
 
-// expire ends each UDP and echo mapping past its time at now
+// expire ends each UDP and echo mapping past its time at now, and runs the
+// hold's sweep on the hold's own clock: it reads the range and the MSL again,
+// reads each watched host socket's state and acts on it, aborts each socket
+// past its hold and gives back each slot past its margin
 func (x *Exit) expire(now time.Time) {
 	x.udp.expire(now)
 	x.echo.expire(now)
+	x.tcp.holds.pass()
 }
 
 // Close closes the link, the stack, once each request the forwarder handed
-// over has ended and each mapping's readers have, the platform's ICMP
-// sockets, and Raw, once. Run's end calls it last, and it closes an exit
-// whose Run never ran.
+// over has ended, the host sockets the hold keeps, each mapping once its
+// readers have ended, the platform's ICMP sockets, and Raw, once. Run's end
+// calls it last, and it closes an exit whose Run never ran.
 func (x *Exit) Close() error {
 	var err error
 	x.closeOnce.Do(func() {
@@ -397,6 +410,7 @@ func (x *Exit) Close() error {
 		x.udp.withdraw()
 		x.echo.withdraw()
 		x.tcp.running.Wait()
+		x.tcp.holds.close()
 		x.udp.readers.Wait()
 		x.echo.readers.Wait()
 		x.icmp.close()

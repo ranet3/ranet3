@@ -20,7 +20,8 @@ import (
 // MTU, read when asked, so a provider's sandbox never needs the ioctl. held is
 // the addresses the network watch reads off the links outside the mesh, on
 // link, or on any where link is empty, and raw the root daemon's raw sockets,
-// nil where the process may open none.
+// nil where the process may open none. The TCP relay's closed connections are
+// held against the host ports their sockets pin (xnuHostSockets).
 //
 // Held asks an IPv4 address of the link a socket is scoped to, and an IPv6
 // address of any link: with its sockets scoped to a utun, an exit had every
@@ -46,6 +47,7 @@ func Darwin(interfaceOf func(netip.Addr) (index int, generation uint64), held fu
 			}
 			return held(address, link)
 		},
-		Raw: raw,
+		Raw:         raw,
+		hostSockets: xnuHostSockets(),
 	}
 }

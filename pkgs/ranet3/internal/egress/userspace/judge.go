@@ -107,15 +107,21 @@ func unservable(destination netip.Addr) bool {
 	return packet.InvalidDestination(destination) || destination.IsMulticast() || destination == packet.LimitedBroadcast
 }
 
-// The reasons a new flow is refused past a limit
+// The reasons a new flow is refused past a limit: its source's share, the
+// share where the source holds more closed TCP connections kept for their
+// host sockets than flows open, the total, and the host ports a new TCP
+// connection would take past hostPortsOf
 const (
-	reasonShare = "share"
-	reasonTotal = "total"
+	reasonShare     = "share"
+	reasonShareHeld = "share held"
+	reasonTotal     = "total"
+	reasonHostPorts = "host ports"
 )
 
-// flows counts the flows open through the exit, TCP connections, UDP
-// mappings and echo mappings alike, by the mesh source holding each and in
-// all. A new flow is admitted while its source holds fewer than share and all
+// flows counts the flows through the exit, TCP connections, UDP mappings and
+// echo mappings alike, by the mesh source holding each and in all, a TCP
+// connection kept while its host socket may pin its port (hostHolds) among
+// them. A new flow is admitted while its source holds fewer than share and all
 // sources fewer than total, which cap.egress's share and Limits.Flows set.
 type flows struct {
 	share, total int
@@ -123,10 +129,14 @@ type flows struct {
 	mu       sync.Mutex
 	open     int
 	bySource map[netip.Addr]int
+	// held and heldBy are the flows of open and bySource kept for a host
+	// socket's port
+	held   int
+	heldBy map[netip.Addr]int
 }
 
 func newFlows(share, total int) *flows {
-	return &flows{share: share, total: total, bySource: map[netip.Addr]int{}}
+	return &flows{share: share, total: total, bySource: map[netip.Addr]int{}, heldBy: map[netip.Addr]int{}}
 }
 
 // admit opens a flow for source where its share and the total allow one, and
@@ -134,8 +144,27 @@ func newFlows(share, total int) *flows {
 func (f *flows) admit(source netip.Addr) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.admitLocked(source)
+}
+
+// admitTCP opens a TCP connection's flow for source as admit does, where
+// bound, the host ports hostHolds.limit allows, is also above the relay's
+// connections and every flow held, and otherwise reports the limit it met
+func (f *flows) admitTCP(source netip.Addr, connections, bound int) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if connections+f.held >= bound {
+		return reasonHostPorts, false
+	}
+	return f.admitLocked(source)
+}
+
+func (f *flows) admitLocked(source netip.Addr) (string, bool) {
+	n := f.bySource[source]
 	switch {
-	case f.bySource[source] >= f.share:
+	case n >= f.share && 2*f.heldBy[source] > n:
+		return reasonShareHeld, false
+	case n >= f.share:
 		return reasonShare, false
 	case f.open >= f.total:
 		return reasonTotal, false
@@ -149,10 +178,41 @@ func (f *flows) admit(source netip.Addr) (string, bool) {
 func (f *flows) release(source netip.Addr) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.releaseLocked(source)
+}
+
+func (f *flows) releaseLocked(source netip.Addr) {
 	if f.bySource[source]--; f.bySource[source] <= 0 {
 		delete(f.bySource, source)
 	}
 	f.open--
+}
+
+// hold keeps a TCP connection's flow for source past its relay's end, while
+// its host socket may pin its port
+func (f *flows) hold(source netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.held++
+	f.heldBy[source]++
+}
+
+// heldCount is the flows hold keeps
+func (f *flows) heldCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.held
+}
+
+// unhold closes a flow hold kept for source
+func (f *flows) unhold(source netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.heldBy[source]--; f.heldBy[source] <= 0 {
+		delete(f.heldBy, source)
+	}
+	f.held--
+	f.releaseLocked(source)
 }
 
 // upperLayer6 is the protocol raw, an IPv6 packet packet.Version passed,
