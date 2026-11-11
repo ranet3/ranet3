@@ -18,7 +18,8 @@ type Limits struct {
 	Budget int64
 	From   BudgetSource
 	// Flows is the most TCP connections, UDP mappings and echo mappings open
-	// at once, each source's share of cap.egress inside it
+	// at once and TCP connections held closed for a host socket (hostHolds),
+	// each source's share of cap.egress inside it
 	Flows int
 	// Connections is the most TCP connections open at once, the flows that
 	// hold gVisor's buffers

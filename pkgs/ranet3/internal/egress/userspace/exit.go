@@ -156,7 +156,8 @@ type counts struct {
 	laneDropped, unlaid atomic.Uint64
 	reused, closed      atomic.Uint64
 	// share counts the flows refused past their source's share, as share or
-	// share held, by family, and untracked a leaf's packets dropped for want of a flow to take them
+	// share held, by family, and untracked a leaf's packets dropped for want
+	// of a flow to take them
 	share, untracked [2]atomic.Uint64
 
 	mu               sync.Mutex
