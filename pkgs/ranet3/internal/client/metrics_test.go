@@ -380,10 +380,31 @@ func TestMetricsOfTheUserspaceExitWriteNoRulesSeries(t *testing.T) {
 	}
 	for _, unwanted := range []string{
 		"ranet3_egress_rules_installed", "ranet3_egress_flows_total", "ranet3_egress_untranslated_flows_total",
-		"ranet3_egress_dropped_total", "ranet3_egress_conntrack", "ranet3_egress_conflicts",
+		"ranet3_egress_dropped_total", "ranet3_egress_conntrack", "ranet3_egress_conflicts", "ranet3_egress_host_held",
 	} {
 		if strings.Contains(out.String(), unwanted) {
 			t.Errorf("the scrape of the userspace exit carries %q:\n%s", unwanted, out.String())
+		}
+	}
+}
+
+// A userspace exit that bounds the host ports its TCP connections pin writes
+// the closed connections it holds for them as a gauge, under a bound of 0 too
+func TestMetricsOfTheUserspaceExitBoundingHostPortsWriteTheConnectionsItHolds(t *testing.T) {
+	for _, test := range []struct {
+		held, bound int
+	}{{37, 5120}, {0, 0}} {
+		c := testClient(t)
+		c.SetExit(&fakeExit{status: egress.Status{
+			Backend: "userspace", Ready4: true,
+			Flows: &egress.Flows{Host: &egress.HostHold{Held: test.held, Ports: test.held, Bound: test.bound}, Limits: egress.FlowLimits{Budget: 16 << 20, From: egress.BudgetGoLimit, Connections: 23}},
+		}})
+		var out strings.Builder
+		c.renderEgress(&out)
+		for _, want := range []string{"# TYPE ranet3_egress_host_held gauge", fmt.Sprintf("ranet3_egress_host_held %d\n", test.held)} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("under a bound of %d the scrape does not carry %q:\n%s", test.bound, want, out.String())
+			}
 		}
 	}
 }

@@ -273,6 +273,11 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_egress_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv4\"} %d\n", status.Refused.IPv4)
 	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv6\"} %d\n", status.Refused.IPv6)
+	if u := status.Userspace; u != nil && u.Host != nil {
+		fmt.Fprint(w, "# HELP ranet3_egress_host_held Closed TCP connections the userspace exit holds while their host sockets may pin their ports, each in its source's share and against the host ports.\n")
+		fmt.Fprint(w, "# TYPE ranet3_egress_host_held gauge\n")
+		fmt.Fprintf(w, "ranet3_egress_host_held %d\n", u.Host.Held)
+	}
 	if rules {
 		fmt.Fprint(w, "# HELP ranet3_egress_dropped_total Packets out of the mesh, and into it under return, dropped because no flow is tracked for them, which a rule that translates would otherwise send on under their own source.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_dropped_total counter\n")

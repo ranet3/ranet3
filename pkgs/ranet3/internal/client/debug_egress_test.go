@@ -74,26 +74,35 @@ func TestDebugEgressCarriesTheExitsDebugRead(t *testing.T) {
 }
 
 // An exit carrying its flows itself answers its flows, limits, counts and
-// sources whole, its budget's source named as the wire names it
+// sources whole, its budget's source named as the wire names it, and its
+// bound on the host ports wherever it has one, a bound of 0 included
 func TestDebugEgressCarriesTheUserspaceDetail(t *testing.T) {
 	c := writable(t)
 	source := netip.MustParseAddr("192.0.2.65")
-	for _, test := range []struct{ from, wire string }{
-		{egress.BudgetGoLimit, control.EgressBudgetGoLimit},
-		{egress.BudgetHost, control.EgressBudgetHost},
+	for _, test := range []struct {
+		from, wire string
+		host       *control.EgressHost
+	}{
+		{egress.BudgetGoLimit, control.EgressBudgetGoLimit, &control.EgressHost{Held: 5, Ports: 12, Bound: 67}},
+		{egress.BudgetHost, control.EgressBudgetHost, &control.EgressHost{Held: 5, Ports: 12}},
+		{egress.BudgetHost, control.EgressBudgetHost, nil},
 	} {
-		c.SetExit(&fakeExit{status: egress.Status{Backend: "userspace", Flows: &egress.Flows{
+		flows := &egress.Flows{
 			TCP: [2]int{4, 1}, UDP: [2]int{2, 0}, Echo: [2]int{0, 1}, Dialing: 2, TimeWait: 9, Buffered: 4096,
 			Limits:  egress.FlowLimits{Budget: 16 << 20, From: test.from, Flows: 135, Connections: 23, Dials: 23, TimeWait: 23, Window: 64 << 10, Lanes: 512 << 10, Link: 512 << 10},
 			Refused: map[string]uint64{"share": 1}, Dropped: map[string]uint64{"lane full": 2}, Reused: 3, Closed: 1,
-			Sources: []egress.SourceFlows{{Source: source, Flows: 8}},
-		}}})
+			Sources: []egress.SourceFlows{{Source: source, Flows: 8, Held: 5}},
+		}
+		if test.host != nil {
+			flows.Host = &egress.HostHold{Held: test.host.Held, Ports: test.host.Ports, Bound: test.host.Bound}
+		}
+		c.SetExit(&fakeExit{status: egress.Status{Backend: "userspace", Flows: flows}})
 		want := &control.EgressUserspace{
 			TCP: control.EgressFlows{IPv4: 4, IPv6: 1}, UDP: control.EgressFlows{IPv4: 2}, Echo: control.EgressFlows{IPv6: 1},
-			Dialing: 2, TimeWait: 9, Buffered: 4096,
+			Dialing: 2, TimeWait: 9, Host: test.host, Buffered: 4096,
 			Limits:  control.EgressLimits{Budget: 16 << 20, From: test.wire, Flows: 135, Connections: 23, Dials: 23, TimeWait: 23, Window: 64 << 10, Lanes: 512 << 10, Link: 512 << 10},
 			Refused: map[string]uint64{"share": 1}, Dropped: map[string]uint64{"lane full": 2}, Reused: 3, Closed: 1,
-			Sources: []control.EgressSourceFlows{{Source: source, Flows: 8}},
+			Sources: []control.EgressSourceFlows{{Source: source, Flows: 8, Held: 5}},
 		}
 		if got := c.DebugEgress().Status.Userspace; !reflect.DeepEqual(got, want) {
 			t.Errorf("the debug read of a budget from %s answers\n%+v\nwant\n%+v", test.from, got, want)

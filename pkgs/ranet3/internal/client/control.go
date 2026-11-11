@@ -250,8 +250,12 @@ func userspaceStatus(f egress.Flows) *control.EgressUserspace {
 		},
 		Refused: f.Refused, Dropped: f.Dropped, Reused: f.Reused, Closed: f.Closed,
 	}
+	if f.Host != nil {
+		host := control.EgressHost(*f.Host)
+		out.Host = &host
+	}
 	for _, source := range f.Sources {
-		out.Sources = append(out.Sources, control.EgressSourceFlows{Source: source.Source, Flows: source.Flows})
+		out.Sources = append(out.Sources, control.EgressSourceFlows{Source: source.Source, Flows: source.Flows, Held: source.Held})
 	}
 	return out
 }
