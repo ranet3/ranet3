@@ -25,7 +25,7 @@ const (
 	// a link coming up is several messages, and a read after the first would be redone after the last
 	selectionSettle = 250 * time.Millisecond
 	// dumpAttempts bounds the fetches of one read of the routing table or the interface list that fail with ENOMEM or ENOBUFS
-	// each fetch is x/net's FetchRIB or a lookup of Go's net, which retries ENOMEM inside the fetch and ends it at its first ENOBUFS
+	// each fetch is x/net's FetchRIB or a call of Go's net, which retries ENOMEM inside the fetch and ends it at its first ENOBUFS
 	// each fetch sizes the list again, so a read fails only where the list outgrows its room in every one of its fetches
 	// an exhausted read returns the last fetch's error, wrapped as one failed fetch's is
 	dumpAttempts = 4

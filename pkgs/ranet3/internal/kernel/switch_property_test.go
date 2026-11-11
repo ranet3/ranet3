@@ -373,9 +373,9 @@ func TestSwitchKeepsTheTunsRoutesOffTheRejectsKeys(t *testing.T) {
 	})
 }
 
-// A hold of the mesh's at an overlay key where the mesh had a route, with a
-// shorter route of the mesh's holding the key beneath the host's route at the
-// same length, leaves the key's addresses to the hold
+// A hold of the mesh's written over its route at an overlay key, with a shorter
+// route of the mesh's holding the key beneath the host's route at the same
+// length, leaves the key's addresses to the hold
 func TestSwitchLeavesAnOverlayKeyTheMeshRetractedToTheHold(t *testing.T) {
 	switchCase{
 		overlay:     coverOverlay,
@@ -402,9 +402,9 @@ func (c switchCase) check(t *testing.T, ht testing.TB) {
 	// mesh at or inside the prefix holds, so its mesh table answers there
 	// only from such a route. A route from a source matches no lookup with
 	// no source, a hold of the mesh's refuses as the overlay's does, and a
-	// hold at a destination of c.mesh replaces the route there, as the table
-	// keeps one entry a source and destination, so only a route of c.mesh no
-	// hold replaced holds an address there for an unbound lookup
+	// hold at a destination of c.mesh replaces the route there, as the mesh's
+	// route table keeps one entry a source and destination, so only a route of
+	// c.mesh no hold replaced holds an address there for an unbound lookup
 	bare := c.reference(t, ht)
 	reference := append(slices.DeleteFunc(slices.Clone(bare), func(r Route) bool {
 		return slices.ContainsFunc(overlayKeys(c.overlay), func(key netip.Prefix) bool {
