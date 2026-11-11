@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"runtime"
 	"slices"
 	"strconv"
@@ -60,17 +59,12 @@ func tableRows(t *testing.T) (rows [][]string, lines []string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), netstatWait)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, netstat, "-an", "-p", "tcp").Output()
+	rows, lines, err := timewaitTableRows(ctx)
 	if netstatRefused(err) {
 		t.Skipf("the host refuses to start netstat, so its TCP table cannot be read here: %v", err)
 	}
 	if err != nil {
 		t.Fatalf("netstat: %v", err)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if fields := strings.Fields(line); len(fields) >= 6 && strings.HasPrefix(fields[0], "tcp") {
-			rows, lines = append(rows, fields), append(lines, line)
-		}
 	}
 	return rows, lines
 }
