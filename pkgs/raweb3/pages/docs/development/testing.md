@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-10
+updated: 2026-11-11
 order: 20
 ---
 
@@ -118,10 +118,16 @@ the leaf, and plays the server beyond the exit's uplink. A backend's tests run
 it with an arm, which builds the backend, names the source classes it carries,
 declares the NAT behaviors it lacks by its nature, each with its reason and the
 row of [protocol deviations](../design/protocol-deviations.md) that records it,
-and says whether it ends the leaf's TCP. Each class runs on a network of its
-own, and each of the suite's rows in both families. The `raweb3` check fails
-unless each row the kernel exit's arm declares a limit under is the first cell
-of exactly 1 row of that page.
+and says whether it ends the leaf's TCP. An arm whose count of a source's flows
+can leave a flow open and uncounted declares that too, with its reason and the
+row of [limits](../design/limits.md) that records it. On such an arm the suite's
+row for the share takes up to 2 more flows carried, each one the server read,
+before the flow it expects the exit to refuse, and holds its later checks exact.
+Each class runs on a network of its own, and each of the suite's rows in both
+families. The `raweb3` check fails unless each row the kernel exit's arm
+declares a limit under is the first cell of exactly 1 row of protocol
+deviations, and the row it declares its count misses flows under is the first
+cell of exactly 1 row of limits.
 
 On Linux the suite builds 4 network namespaces, each new and empty and held by a
 thread of its own:
@@ -218,36 +224,27 @@ were.
 
 ## Property tests
 
-The packages that read bytes a peer or a file chooses also carry property tests,
-in files ending in `_property_test.go`: `esp`, `ike`, `identity`, `transport`,
-`sadr`, `srv6`, `internal/babel`, `internal/packet`, `internal/netstack`,
-`schema`, `internal/config`, `internal/registry`, `internal/client`,
-`internal/kernel`, `internal/egress`, `internal/egress/kernel`,
-`internal/nftables` and `control`. They run with the rest of `go test`, under
-Hegel for Go through `internal/pbt`, whose `Check` gives every property the same
-terms: 200 cases, or 10 under `go test -short`, where Hegel replaces the count
-`Check` sets, no example database, and a derandomized engine. Hegel seeds the
-labels of nested generators per process, so two runs need not draw the same
-sample, and a boundary the code branches on is drawn outright, with
-`pbt.Spanning` or by name, rather than left to the sample. A failing property
-prints the smallest input it found. Hegel is a test dependency only:
-`internal/notices` fails when a non-test file outside `internal/pbt` imports it,
-or when a non-test file imports `internal/pbt`, so it never reaches the binary
-or its notices.
+Property tests sit beside the unit tests of their package and run with the rest
+of `go test`, under Hegel for Go through `internal/pbt`, whose `Check` gives
+every property the same terms: 200 cases, or 10 under `go test -short`, where
+Hegel replaces the count `Check` sets, no example database, and a derandomized
+engine. Hegel seeds the labels of nested generators per process, so two runs
+need not draw the same sample, and a boundary the code branches on is drawn
+outright, with `pbt.Spanning` or by name, rather than left to the sample. A
+failing property prints the smallest input it found. Hegel is a test dependency
+only: `internal/notices` fails when a non-test file outside `internal/pbt`
+imports it, or when a non-test file imports `internal/pbt`, so it never reaches
+the binary or its notices.
 
 Hegel runs on a library of its own. The `go-test` check sets
 `HEGEL_LIBHEGEL_PATH` to the library in the vendored Hegel module, and fails if
 a test wrote Hegel's cache, `~/.cache/hegel-go` or `~/Library/Caches/hegel-go`,
 under the check's home directory anyway.
 
-Property tests build on Linux and macOS alone. `internal/pbt` and every property
-test carry a build constraint that names them. The `transport` properties of its
-sends and of the source a socket connected to 1 peer binds, the
-`internal/kernel` netlink and rule message properties, the
-`internal/egress/kernel` nftables and antispoof chain properties and the
-`internal/nftables` properties build on Linux alone, and the `transport`
-property of the address an answer leaves from builds on macOS alone. The
-`go-lint` check vets the tree for FreeBSD, which fails on a property test
+Property tests build on Linux and macOS alone. `internal/pbt` and every test
+file that imports it carry a build constraint or a file name that names one or
+both of them, and a file that names one runs in that platform's `go test` alone.
+The `go-lint` check vets the tree for FreeBSD, which fails on a property test
 without the constraint.
 
 ## Nix checks
@@ -273,7 +270,7 @@ have commands of their own.
 | `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, a build of `cmd/ranet3` for Android with cgo off, builds of `internal/egress/userspace` and `internal/underlay` for Android and iOS with cgo off, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory, `internal/bubble` or `testing`, or a non-test file, outside the network's own files, that names `NewMemoryNetwork`                                                                                                                                                                                     |
 | `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, a check of the VM tests' absent and counted log lines, and `reuse lint`                                                                                                                                                                                                                                                                                                                                   |
 | `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `raweb3`        | all 3   | all 3                            | a check of the kernel exit's rows of protocol deviations, as [the exit behavior suite](#the-exit-behavior-suite) says, then `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `raweb3`        | all 3   | all 3                            | a check of the kernel exit's rows of protocol deviations and limits, as [the exit behavior suite](#the-exit-behavior-suite) says, then `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `modules`       | Linux   | `x86_64-linux`, `aarch64-linux`  | an evaluation of the NixOS module with networkd on, on with `ManageForeignRoutingPolicyRules` set by the host, and off, and of the `networkd.conf` it writes with networkd on, and of the nix-darwin module beside a stand-in for the nix-darwin options it reads and sets, which declares each `serviceConfig` key the module sets with nix-darwin's type: its job's command line and its `/etc` entry for a TOML and a YAML file, its `serviceConfig` rendered as a plist, its 2 assertions, its reload past a secrets step at `mkAfter` in 3 module orders, and its activation steps against stand-ins for `ranet3` and `launchctl` in 9 activations |
 | `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests, as root in a VM                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

@@ -331,14 +331,13 @@ update = "16s"
 # carry exactly one.
 # return = true
 
-# The most flows one mesh source address under a class that translates holds
-# open through this node in each family, every protocol's, past which its next
-# new flow is refused, so that the open flows one source holds through this
-# node take at most that much of the connection table the host shares. The
-# flows of a source under none, and a source's flows to this node itself, are
-# not bounded by it. Each address of a routed prefix holds a share of its own.
-# A share is part of the table the host's net.netfilter.nf_conntrack_max sizes,
-# which ranet3 never writes, so size the two together. Omitted it is 4096.
+# The share of the flows one mesh source address under a class that translates
+# holds open through this node in each family, every protocol's: once the exit
+# counts that many of the source's flows, its next new flow is refused. What the
+# share leaves out is under "Each source's share of the flows" on the exit nodes
+# page. Each address of a routed prefix holds a share of its own. A share is
+# part of the table the host's net.netfilter.nf_conntrack_max sizes, which
+# ranet3 never writes, so size the two together. Omitted it is 4096.
 # flows_per_source = 4096
 
 # The periodic pass, which reinstalls chains somebody removed and re-reads the

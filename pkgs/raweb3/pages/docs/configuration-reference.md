@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-10
+updated: 2026-11-11
 order: 35
 ---
 
@@ -681,7 +681,7 @@ needs.
 | `advertise`        | list of prefixes | none    | Prefixes this node offers to carry                                  |
 | `translate`        | list of classes  | none    | What the source of a packet leaving the mesh becomes, by its source |
 | `return`           | boolean          | `false` | Also translate traffic from the advertised prefixes into the mesh   |
-| `flows_per_source` | integer          | `4096`  | The most flows 1 translated source address holds open in a family   |
+| `flows_per_source` | integer          | `4096`  | The share of flows 1 translated source address holds in a family    |
 | `sweep`            | duration         | `"30s"` | Interval of the periodic pass                                       |
 
 - `advertise` is required unless the node has an egress segment, where it may be
@@ -750,11 +750,11 @@ needs.
   `none`, for exactly 1 such mesh address through `cap.route` and `cap.table`.
 - `flows_per_source` is
   [each source's share of the flows](exit-nodes.md#each-sources-share-of-the-flows)
-  through this node, in each family, every protocol's together, past which its
-  next new flow is refused. A source under `none` holds none. `0` or leaving it
-  out is the default, and a value past 2147483647 is refused. The shares come
-  out of the host's connection tracking table, which ranet3 never sizes, so size
-  the two together.
+  through this node, in each family, every protocol's together: once the exit
+  counts that many, its next new flow is refused. A source under `none` holds
+  none. `0` or leaving it out is the default, and a value past 2147483647 is
+  refused. The shares come out of the host's connection tracking table, which
+  ranet3 never sizes, so size the two together.
 - On macOS a source meets the smaller of its share and what the userspace exit's
   memory and descriptors hold, its totals of connections and flows, as
   [the userspace exit's limits](design/limits.md#the-userspace-exit) give.

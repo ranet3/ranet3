@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-10
+updated: 2026-11-11
 order: 50
 ---
 
@@ -677,9 +677,14 @@ which reassembles or parses it first:
   from a destination that mapping sent to, and counts the rest.
 - **Errors** a server or a router raises about a mapping's datagram, or about a
   dial that fails, reach the leaf from the address that raised them. A leaf's
-  own error about a reply reaches the server through a raw socket, which only
-  root opens. Any other error a leaf sends reaches the exit's stack only where
-  the exit reads its quote down to a TCP header, or is dropped and counted as
+  own error about a reply leaves from the mapping
+  [the userspace exit](design/protocol-deviations.md#the-userspace-exit) finds
+  for it. Toward a server it goes through a raw socket, which only root opens,
+  and toward a leaf whose datagram the exit hairpinned it goes back to that leaf
+  with no raw socket. Where the exit finds no mapping, or an error toward a
+  server finds no raw socket or fails to send, the error is dropped and counted.
+  Any other error a leaf sends reaches the exit's stack only where the exit
+  reads its quote down to a TCP header, or is dropped and counted as
   `leaf error quote`. An error in fragments is counted as `leaf error fragment`.
   - A Packet Too Big below 1280 bytes or a Fragmentation Needed below 552 is
     counted as `leaf error mtu`. One at or above that floor reaches the stack

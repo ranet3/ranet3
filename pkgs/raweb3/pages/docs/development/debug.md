@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-10
+updated: 2026-11-11
 order: 30
 ---
 
@@ -239,7 +239,7 @@ These commands take flags of their own:
   The kernel names no rule, so the rule shown is the one a walk of the dumped
   rules ends on for that answer, as far as the answer tells: the view walks them
   by priority as
-  [`fib_rules_lookup`](https://github.com/torvalds/linux/blob/master/net/core/fib_rules.c)
+  [`fib_rules_lookup`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/core/fib_rules.c)
   does, following `goto` and `nop`, applying `invert`, and applying
   `suppress_prefixlength` as
   [`fib4_rule_suppress`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/fib_rules.c#L147)

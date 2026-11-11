@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-10
+updated: 2026-11-11
 order: 55
 ---
 
@@ -598,8 +598,8 @@ the filter is not ready the pass retries, the log warns,
 
 At startup the daemon refuses to start on Linux when the first pass cannot
 install its chains and sets and read them back, which on a host means a kernel
-without nf_tables or conntrack, a daemon without `CAP_NET_ADMIN`, or other
-programs' nftables changes interrupting one of its reads
+without nf_tables or conntrack, a daemon without `CAP_NET_ADMIN`, or nftables
+changes interrupting one of its reads
 [3 times in a row](design/limits.md#dataplane-and-sockets). A node does not run
 without its entry chain.
 
