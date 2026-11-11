@@ -434,8 +434,10 @@ family, scoped or not, with `ENETUNREACH`
 ([ifa_ifwithroute_common_locked](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L1862)),
 which a test utun holding an IPv4 address alone answers for a scoped `::/0`. So
 where the utun holds no address of a family at all, in mode off as in a family
-the mode leaves out, the reconciler installs none of that family's routes. It
-counts each as skipped, logs
+the mode leaves out, the reconciler installs none of that family's routes but a
+hold with no source at a prefix of `overlay`, which goes on `lo0`, an interface
+holding an address of each family. It counts each route it leaves out as
+skipped, logs
 `kernel is leaving a route uninstalled: the tun holds no address of its family, and macOS routes a family only out of an interface holding one of its addresses`
 once for each, and the pass after the utun gains an address of the family
 installs them. The mesh's own table still carries the family.
@@ -1259,7 +1261,7 @@ side holds about `Window` however short the server's reads. That count is
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | An IPv4 source-specific route                                                                          | Never installs it, and warns once. The mesh's own table still applies it                                     |
 | A prefix lying wholly in a range `overlay` refuses, such as a multicast, link-local or loopback prefix | Never installs it, and warns once. Each names a link, a group, the host or no host rather than a destination |
-| On macOS, a route of a family the utun holds no address of                                             | Installs none of them, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives           |
+| On macOS, a route of a family the utun holds no address of                                             | Installs none out of the utun, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives   |
 | A route another program changed without a notification                                                 | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise                    |
 
 The kernel's IPv4 table has no source-specific lookup. Installing such a route

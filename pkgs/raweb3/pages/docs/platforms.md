@@ -196,8 +196,9 @@ name:
 
 - a source-specific route, but one at an address the utun holds
 - a retracted route, which it holds as a reject route, unless the route counts
-  as a default or is at an address the utun holds, where it installs no route at
-  all, as [the route reconciler](routing.md#the-route-reconciler) gives
+  as a default, is at an address the utun holds, has no source and is at a
+  prefix of `overlay`, or is a prefix the mesh cannot carry, as
+  [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives
 - any route outside the overlay inside an unscoped route of the host's longer
   than `/0` out of another interface, a member of the zero-free cover among
   them, as Linux's rule 5410 answers by such a route ahead of the mesh's table,

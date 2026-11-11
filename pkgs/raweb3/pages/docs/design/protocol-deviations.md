@@ -2689,14 +2689,21 @@ windows of 1 to 5 segments at their median.
 
 **The gVisor fork.** The userspace exit's TCP is gVisor's netstack, which
 `pkgs/ranet3/go.mod` replaces with a fork made from the upstream version it
-requires. The fork carries 2 changes. A segment past a zero receive window whose
-ACK is acceptable has its ACK taken, as RFC 9293 section 3.10.7.4 asks of "valid
-ACKs" at a zero window, so a flow whose 2 directions both stand at a zero window
-moves. And the send queue is counted in memory against the send buffer, each
-segment's bytes with its structs, as the receive queue is, and each write is
-read in pieces of a power of two so its chunks hold little more than that count,
-so a server trickling toward a leaf whose window is closed holds one flow within
-its send buffer.
+requires. The fork carries 2 changes. First, a segment that starts at `RCV.NXT`
+and is refused only because the receive window is zero has its ACK taken where
+`SND.UNA =< SEG.ACK =< SND.NXT` and the peer's FIN has not arrived, as RFC 9293
+section 3.10.7.4 asks of "valid ACKs" at a zero window. So a flow stalled both
+ways moves again. The exit's receive window is zero, and the window the peer
+advertised is full with the exit's data in flight. The flow moves once the peer
+sends a segment that starts at `RCV.NXT` with an ACK that opens its own window.
+Second, the send queue is counted in memory against the send buffer, each
+segment's bytes with its structs, as the receive queue is. The endpoint takes a
+write while that count is below the send buffer, and refuses the next once the
+count reaches it. So a server trickling toward a leaf whose window is closed
+holds one flow's queue to its send buffer, past it by less than one write's
+segment. Each write is read in pieces whose sizes are powers of two, each
+filling the pooled chunk it takes, but for a last piece shorter than the
+smallest chunk.
 
 The packets an exit drops before its translation sees them are under
 [Drops with no answer](#drops-with-no-answer).
