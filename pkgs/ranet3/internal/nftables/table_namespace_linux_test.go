@@ -545,7 +545,7 @@ const (
 // /proc/self/ns/net to the first ask. A third process, started in its
 // parent's mount namespace, refuses, and could not mount there anyway: a
 // mount needs CAP_SYS_ADMIN in the user namespace that owns the mount
-// namespace, and its own user namespace, a child of that one, gives none
+// namespace, and its own user namespace, a descendant of that one, gives none
 // there.
 func TestNftablesProcIsReadForTheKeyOnceAtTheFirstAsk(t *testing.T) {
 	if cover := os.Getenv(procCover); cover != "" {

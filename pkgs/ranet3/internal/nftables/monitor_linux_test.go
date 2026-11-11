@@ -182,8 +182,8 @@ func transaction(port uint32, generation uint16, datagrams ...[]notifications) [
 // and writing a firewall's inet table in one transaction
 var (
 	// installed is the exit's install, and deleted another writer's deletion
-	// of the table, for which the exit's own withdrawal sends the same
-	// datagrams
+	// of the table, a stand-in for the exit's own withdrawal where only the
+	// sending port matters
 	installed = [][]notifications{
 		slices.Concat([]notifications{exit(1, unix.NFT_MSG_NEWTABLE, ""), exit(1, unix.NFT_MSG_NEWCHAIN, "forward"), exit(1, unix.NFT_MSG_NEWCHAIN, "forward6"), exit(1, unix.NFT_MSG_NEWCHAIN, "postrouting")},
 			objects(unix.NFT_MSG_NEWOBJ, timeoutObjects...),
