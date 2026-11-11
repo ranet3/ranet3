@@ -708,10 +708,11 @@ translator's chain `forward` and before the kernel confirms the packet's
 connection at the end of postrouting
 ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n254),
 [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n411)).
-A queue at the forward or the postrouting hook that runs after the translator's
-chain and hands each packet to a userspace reader, as an inline intrusion
-prevention system does, is one such rule. At the forward hook a chain runs after
-the translator's where its priority is past 0, or at 0 where it was
+A queue is one such rule when it hands each packet to a userspace reader, as an
+inline intrusion prevention system does, at the forward hook after the
+translator's chain `forward`, or at the postrouting hook at any priority below
+the one at which the kernel confirms the connection. At the forward hook a chain
+runs after the translator's where its priority is past 0, or at 0 where it was
 [made before the translator's](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n147),
 since at one priority the chains run by the order they were made in, the later
 first. The `filter` table of iptables
@@ -720,11 +721,11 @@ While such a rule holds the first packets of a source's flows, the source can
 open flows past [its share](exit-nodes.md#each-sources-share-of-the-flows). A
 first packet held there can drop out of
 [the kernel's count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conncount.c?id=940de590b839f71d6dc846160534bf202401b8b7#n101)
-of its source's flows. The flow it opens is then admitted, never meets the limit
-again, and stays open for its lifetime without being counted. Measured with a
-queue at the forward hook whose reader held the first packets, and with one
-whose reader answered each at once, flows got past the share and stayed open,
-and with no such rule none did.
+of its source's flows. The flow it opens is admitted at the limit before the
+hold, never meets the limit again, and stays open for its lifetime without being
+counted. Measured with a queue at the forward hook whose reader held the first
+packets, and with one whose reader answered each at once, flows got past the
+share and stayed open, and with no such rule none did.
 
 The kernel exit sets no total of its own. On such a host nothing ranet3 sets
 bounds a source's flows below the maximum of the host's connection tracking
