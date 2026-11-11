@@ -165,6 +165,7 @@ func build(t testing.TB, owned bool, carrier *net.UDPConn) Network {
 		{"give the exit's links their addresses at once", n.exit, atOnce},
 		{"give the router's links their addresses at once", n.router, atOnce},
 		{"give the server's links their addresses at once", n.server, atOnce},
+		{"keep the leaf's kernel off the ports the suite binds there", n.leaf, leafEphemeral},
 		{"make the exit's uplink and the mesh's tun", n.exit, n.makeExit},
 		{"make the router's links to the server", n.router, n.makeRouter},
 		{"make the leaf's tun", n.leaf, n.makeLeaf},
@@ -598,6 +599,12 @@ func via(netlink netnstest.Netlink, name string, to netip.Prefix, gateway netip.
 // which would hold back or drop the first packets of a flow.
 func atOnce(netnstest.Netlink) error {
 	return os.WriteFile("/proc/sys/net/ipv6/conf/default/accept_dad", []byte("0\n"), 0o644)
+}
+
+// leafEphemeral has the kernel give a socket here a port of leafEphemeralLow
+// to leafEphemeralHigh, in both families
+func leafEphemeral(netnstest.Netlink) error {
+	return os.WriteFile(localPortRange, fmt.Appendf(nil, "%d %d\n", leafEphemeralLow, leafEphemeralHigh), 0o644)
 }
 
 // nfDrop is NF_DROP, the verdict that ends a packet

@@ -45,6 +45,9 @@ const (
 	// loopbackIndex the index Linux gives every namespace's loopback
 	threadNamespace = "/proc/thread-self/ns/net"
 	loopbackIndex   = 1
+	// localPortRange is the range the kernel gives a socket its port from in
+	// the calling thread's network namespace
+	localPortRange = "/proc/sys/net/ipv4/ip_local_port_range"
 	// answerTTL is the TTL the exit's ICMPv4 answers carry, Linux's default
 	answerTTL = 64
 )

@@ -177,6 +177,12 @@ const (
 	// a port below 1024 and one above, RFC 4787 REQ-3a's two ranges
 	lowRangePort  = 500
 	highRangePort = 40000
+	// the range the leaf's kernel gives a socket its port from, RFC 6335
+	// section 6's dynamic ports, apart from every port the suite binds there,
+	// whose bind a connection the kernel gave that port would refuse, and a
+	// port the suite binds is a package constant whose name ends in Port
+	leafEphemeralLow  = 49152
+	leafEphemeralHigh = 65535
 )
 
 const (
