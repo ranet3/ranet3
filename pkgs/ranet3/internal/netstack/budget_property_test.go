@@ -20,20 +20,23 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// budgetSettle is how often the machine looks at the budgets while it waits for the sender
-// and budgetSettleTimeout how long it waits, short enough that a case which fails here shrinks in minutes
+// budgetSettle is how often a wait looks again at what the sender has done
+// and budgetStopTimeout how long the machine waits for a closed peer's sender to end, which Close waits for only through its grace
+// minutes, past any stall a loaded host gives the sender
 const (
-	budgetSettle        = 50 * time.Microsecond
-	budgetSettleTimeout = 2 * time.Second
+	budgetSettle      = 50 * time.Microsecond
+	budgetStopTimeout = 2 * time.Minute
 )
 
 // valve holds the peer's transport until a step opens it
 // and decides what the transport answers while it is open
+// returned counts the packets of every transmit that has returned, failed or not, and is written under mu
 type valve struct {
 	mu          sync.Mutex
 	cond        *sync.Cond
 	open        bool
 	fail        bool
+	returned    uint64
 	transmitted atomic.Int64
 }
 
@@ -49,6 +52,8 @@ func (v *valve) transmit(sealed [][]byte) error {
 	for !v.open {
 		v.cond.Wait()
 	}
+	v.returned += uint64(len(sealed))
+	v.cond.Broadcast()
 	if v.fail {
 		return errors.New("sendto: network is unreachable")
 	}
@@ -61,6 +66,15 @@ func (v *valve) set(open, fail bool) {
 	v.open, v.fail = open, fail
 	v.mu.Unlock()
 	v.cond.Broadcast()
+}
+
+// await waits until the transport has returned packets packets in all
+func (v *valve) await(packets uint64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for v.returned < packets {
+		v.cond.Wait()
+	}
 }
 
 // heldBatch is a reservation the machine has made and not yet seen to its end
@@ -154,7 +168,9 @@ type budgetMachine struct {
 	// dropped, failed and offered count packets
 	dropped, failed uint64
 	offered         uint64
-	closed          bool
+	// through counts the packets the drains have let through the transport
+	through uint64
+	closed  bool
 }
 
 // newBudgetMachine is a machine whose peer seals each packet as the index of its reservation
@@ -325,7 +341,17 @@ func (m *budgetMachine) RuleClose(tc hegel.TestCase) {
 	}
 	m.valve.set(true, false)
 	m.peer.Close()
+	m.stopped(tc)
 	m.held, m.closed = kept, true
+}
+
+// stopped waits for the peer's sender to end, which Close waits for only through its grace
+func (m *budgetMachine) stopped(tc hegel.TestCase) {
+	select {
+	case <-m.peer.senderDone:
+	case <-time.After(budgetStopTimeout):
+		tc.Errorf("the sender never finished after the peer closed")
+	}
 }
 
 // RuleDrain lets the transport take everything the sender can reach, every reservation sent before the first one that is not
@@ -347,6 +373,7 @@ func (m *budgetMachine) RuleDrain(tc hegel.TestCase) {
 		}
 		packets += uint64(h.count)
 	}
+	m.through += packets
 	m.valve.set(true, fail)
 	m.settle(tc, data, control)
 	m.valve.set(false, false)
@@ -357,17 +384,19 @@ func (m *budgetMachine) RuleDrain(tc hegel.TestCase) {
 	m.held = m.held[reach:]
 }
 
-// settle waits for the sender to bring both budgets to what the model holds
+// settle waits for the transport to return every packet the drains let through and for the sender to give back what they held
+// then holds both budgets to what the model holds
+// the sender adds a run of transmits to its release sizes only after the last of them has given its budget back
+// so a sum that counts every packet let through finds each of them back in its budget
+// both counts reach the drains' total only while the delay control drops none of those packets, as reserveData's stamp an hour ahead and the control's skip of control places ensure
+// neither wait has a bound, since a stall of any length only delays both events
 func (m *budgetMachine) settle(tc hegel.TestCase, data, control int) {
-	for deadline := time.Now().Add(budgetSettleTimeout); ; time.Sleep(budgetSettle) {
-		gotData, gotControl := m.peer.dataBudget.used.Load(), m.peer.controlBudget.used.Load()
-		if gotData == int64(data) && gotControl == int64(control) {
-			return
-		}
-		if time.Now().After(deadline) {
-			tc.Errorf("the budgets hold %d data bytes and %d control packets, the model %d and %d", gotData, gotControl, data, control)
-			return
-		}
+	m.valve.await(m.through)
+	for m.peer.SendStats().Releases.Sum < m.through {
+		time.Sleep(budgetSettle)
+	}
+	if gotData, gotControl := m.peer.dataBudget.used.Load(), m.peer.controlBudget.used.Load(); gotData != int64(data) || gotControl != int64(control) {
+		tc.Errorf("the budgets hold %d data bytes and %d control packets, the model %d and %d", gotData, gotControl, data, control)
 	}
 }
 
@@ -458,6 +487,7 @@ func TestBudgetAgreesWithItsModel(t *testing.T) {
 		// and the peer closes with whatever is held, sent or on its way to the transport
 		v.set(true, false)
 		m.peer.Close()
+		m.stopped(ht)
 		for _, h := range m.held {
 			if h.queued {
 				continue
@@ -465,11 +495,6 @@ func TestBudgetAgreesWithItsModel(t *testing.T) {
 			if h.send() == nil {
 				ht.Fatalf("a closed peer queued reservation %d", h.index)
 			}
-		}
-		select {
-		case <-m.peer.senderDone:
-		case <-time.After(budgetSettleTimeout):
-			ht.Fatal("the sender never finished after the peer closed")
 		}
 		m.settle(ht, 0, 0)
 		if counted := uint64(v.transmitted.Load()) + m.peer.SendFailed() + m.peer.Dropped(); counted != m.offered {
