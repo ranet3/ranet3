@@ -22,11 +22,10 @@ as it takes a packet through an advertised prefix.
 most of this page describes, which translates in the host's kernel. A macOS
 build carries the userspace exit, which ends each TCP connection in a stack of
 its own and relays UDP and echo through the host's sockets, as
-[the exit on macOS](#the-exit-on-macos) gives. A build for any other platform,
-Android and iOS among them, carries no exit, and the daemon refuses `cap.egress`
-at startup in words that name the platform, as
-[Platforms](platforms.md#at-a-glance) quotes them. Every build but Linux's
-refuses a `cap.route` entry that
+[the exit on macOS](#the-exit-on-macos) gives. An Android or iOS build carries
+no exit, and the daemon refuses `cap.egress` at startup in words that name the
+platform, as [Platforms](platforms.md#at-a-glance) quotes them. Every build but
+Linux's refuses a `cap.route` entry that
 [counts as a default](routing.md#routes-that-count-as-a-default) at startup and
 on a reload, since its kernel would forward that traffic with no entry chain to
 pass the replies into the mesh. A node that accepted the configuration and

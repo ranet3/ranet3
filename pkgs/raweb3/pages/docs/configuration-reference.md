@@ -258,7 +258,7 @@ nothing but what [`cap.egress`](#capegress) and an egress segment add, as
   [counts as a default](routing.md#routes-that-count-as-a-default), such as one
   outside `overlay` shorter than `/8` for IPv4 or `/16` for IPv6, makes this
   node an exit for its family. On Linux such an entry other than a default loads
-  with a warning. Every other platform refuses any such entry at startup and on
+  with a warning. macOS, Android and iOS refuse any such entry at startup and on
   a reload, as [gaps on macOS](platforms.md#gaps-on-macos) and
   [other platforms](platforms.md#other-platforms) give.
 
@@ -672,7 +672,7 @@ Carry other nodes' traffic out of the mesh, as an exit node or a subnet router.
 Linux carries it with the kernel exit and macOS with the userspace exit, which
 refuses a class of `none`, `return` and an `advertise` prefix that counts as no
 default at startup, as [the exit on macOS](exit-nodes.md#the-exit-on-macos)
-gives. The daemon refuses the block at startup on other platforms.
+gives. An Android or iOS build refuses the block at startup.
 [Exit nodes](exit-nodes.md) describes the translation and the return path it
 needs.
 
@@ -921,7 +921,7 @@ programs' rules do beside them.
   switch on macOS passes every connected network.
   [The limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) say
   what a Mac that forwards under the mode is told.
-- The BSDs, Android and iOS refuse the block at startup and on a reload:
+- Android and iOS refuse the block at startup and on a reload:
   `kernel: cap.exit is refused on <platform>, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
   `fallback = "none"`, and `via` with `fallback` unwritten, which is `"none"`
   then, are refused ahead of it, since no filter there keeps the host's traffic
