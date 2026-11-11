@@ -13,8 +13,8 @@ github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiT
 github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
-github.com/stepbrobd/gvisor v0.0.0-20261108143121-b68f2641a116 h1:0KpmRBsaEckj1DJhxv2bVQwUlfdYZCXyDnAfPcBoX5k=
-github.com/stepbrobd/gvisor v0.0.0-20261108143121-b68f2641a116/go.mod h1:8EvmWpn201Ba5N80rb+0662hAULFFrp9ZZFGcgBJ+oY=
+github.com/stepbrobd/gvisor v0.0.0-20261111114150-a3c66be4a4fe h1:O3FdkkRktCW2piT5onoI/zgTOpOvcPkObeQIzaowK/w=
+github.com/stepbrobd/gvisor v0.0.0-20261111114150-a3c66be4a4fe/go.mod h1:Ml6ZH/vUKATC2FmyegP0ISP5Bu3U+DXEXJHB6MlH1dY=
 go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
