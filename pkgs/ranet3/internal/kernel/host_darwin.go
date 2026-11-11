@@ -38,37 +38,48 @@ func (runningKernel) Dump() ([]byte, error) {
 	return refetched(func() ([]byte, error) { return route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0) })
 }
 
-// refetched is fetch's dump, fetched again on ENOMEM up to dumpAttempts times in all
-// a table that grows between FetchRIB's sizing sysctl and its read fails with ENOMEM once FetchRIB's own tries run out
-func refetched(fetch func() ([]byte, error)) ([]byte, error) {
+// refetched is fetch's answer, fetched again on ENOMEM or ENOBUFS up to dumpAttempts times in all
+// a list that grows between the sizing sysctl and the read fails with ENOMEM once the fetch's own tries run out
+// an interface list that grows past the eighth xnu adds to its sizing pass inside one NET_RT_IFLIST sysctl fails with ENOBUFS, which neither Go's net nor x/net retries
+func refetched[T any](fetch func() (T, error)) (T, error) {
 	var (
-		rib []byte
-		err error
+		answer T
+		err    error
 	)
 	for range dumpAttempts {
-		if rib, err = fetch(); !errors.Is(err, unix.ENOMEM) {
+		if answer, err = fetch(); !errors.Is(err, unix.ENOMEM) && !errors.Is(err, unix.ENOBUFS) {
 			break
 		}
 	}
-	return rib, err
+	return answer, err
 }
 
+type ribFetch func(af int, typ route.RIBType, arg int) ([]byte, error)
+
 func (runningKernel) Addresses(index int) ([]netip.Prefix, error) {
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeInterface, index)
+	return readAddresses(route.FetchRIB, index)
+}
+
+func readAddresses(fetch ribFetch, index int) ([]netip.Prefix, error) {
+	rib, err := refetched(func() ([]byte, error) { return fetch(unix.AF_UNSPEC, route.RIBTypeInterface, index) })
 	if err != nil {
 		return nil, fmt.Errorf("kernel: dump the addresses of interface %d: %w", index, err)
 	}
 	return interfaceAddrs(index, rib)
 }
 
-// Links reads the interface list and one address dump of every interface
-// an IPv6 address gone between the dump and the read of its flags is left out, as the read its delete wakes leaves it
 func (runningKernel) Links() ([]HostInterface, error) {
-	devices, err := net.Interfaces()
+	return readLinks(net.Interfaces, route.FetchRIB)
+}
+
+// readLinks reads the interface list and one address dump of every interface
+// an IPv6 address gone between the dump and the read of its flags is left out, as the read its delete wakes leaves it
+func readLinks(list func() ([]net.Interface, error), fetch ribFetch) ([]HostInterface, error) {
+	devices, err := refetched(list)
 	if err != nil {
 		return nil, fmt.Errorf("kernel: list the interfaces: %w", err)
 	}
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeInterface, 0)
+	rib, err := refetched(func() ([]byte, error) { return fetch(unix.AF_UNSPEC, route.RIBTypeInterface, 0) })
 	if err != nil {
 		return nil, fmt.Errorf("kernel: dump the interfaces' addresses: %w", err)
 	}
@@ -144,7 +155,11 @@ func (runningKernel) Lookup(destination, mask netip.Addr) (RouteAnswer, error) {
 }
 
 func (runningKernel) InterfaceIndex(name string) (int, error) {
-	device, err := net.InterfaceByName(name)
+	return lookUpIndex(net.InterfaceByName, name)
+}
+
+func lookUpIndex(byName func(string) (*net.Interface, error), name string) (int, error) {
+	device, err := refetched(func() (*net.Interface, error) { return byName(name) })
 	if err != nil {
 		return 0, fmt.Errorf("kernel: look up interface %s: %w", name, err)
 	}
@@ -152,7 +167,11 @@ func (runningKernel) InterfaceIndex(name string) (int, error) {
 }
 
 func (runningKernel) InterfaceName(index int) (string, error) {
-	device, err := net.InterfaceByIndex(index)
+	return lookUpName(net.InterfaceByIndex, index)
+}
+
+func lookUpName(byIndex func(int) (*net.Interface, error), index int) (string, error) {
+	device, err := refetched(func() (*net.Interface, error) { return byIndex(index) })
 	if err != nil {
 		return "", fmt.Errorf("kernel: name interface %d: %w", index, err)
 	}
@@ -160,7 +179,7 @@ func (runningKernel) InterfaceName(index int) (string, error) {
 }
 
 func (runningKernel) Watch(index, skip int) (Watcher, error) {
-	return newRouteMonitor(index, skip)
+	return newRouteMonitor(index, skip, net.InterfaceByName, net.InterfaceByIndex)
 }
 
 // controlSocket is one socket of a family, which is all the address ioctls

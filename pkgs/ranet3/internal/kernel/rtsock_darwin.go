@@ -308,7 +308,7 @@ type routeMonitor struct {
 // newRouteMonitor watches one interface and lo0, or every interface when index
 // is zero, minus the one skip names. See routeMonitor for which caller wants
 // which.
-func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
+func newRouteMonitor(index int, skip int, byName func(string) (*net.Interface, error), byIndex func(int) (*net.Interface, error)) (*routeMonitor, error) {
 	monitor := &routeMonitor{
 		index:  index,
 		skip:   skip,
@@ -317,14 +317,14 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 		stop:   make(chan struct{}),
 	}
 	if index != 0 {
-		loopback, err := net.InterfaceByName(Loopback)
+		loopback, err := refetched(func() (*net.Interface, error) { return byName(Loopback) })
 		if err != nil {
 			return nil, fmt.Errorf("kernel: find %s, whose routes the route monitor of interface %d wakes on: %w", Loopback, index, err)
 		}
 		monitor.loopback = loopback.Index
 	} else {
 		if skip != 0 {
-			device, err := net.InterfaceByIndex(skip)
+			device, err := refetched(func() (*net.Interface, error) { return byIndex(skip) })
 			if err != nil {
 				return nil, fmt.Errorf("kernel: name interface %d, whose events the route monitor skips: %w", skip, err)
 			}

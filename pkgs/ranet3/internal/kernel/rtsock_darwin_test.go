@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"slices"
@@ -416,7 +417,7 @@ func TestLinkWatcherNamesTheInterfaceItSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	monitor, err := newRouteMonitor(0, index)
+	monitor, err := newRouteMonitor(0, index, net.InterfaceByName, net.InterfaceByIndex)
 	if err != nil {
 		t.Fatalf("open a monitor of every interface but %s: %v", Loopback, err)
 	}
@@ -432,6 +433,42 @@ func TestLinkWatcherNamesTheInterfaceItSkips(t *testing.T) {
 		}
 	case <-time.After(quietWindow):
 		t.Error("the monitor's Close did not return beside its two readers")
+	}
+}
+
+// A monitor's lookup of the loopback it wakes on, or of the interface it skips,
+// looks up again where its first lookup overruns the kernel's room. It opens
+// the sockets a monitor reads and writes nothing, so it needs no privilege.
+func TestRouteMonitorLooksUpAgainWhileTheListOverrunsItsBuffer(t *testing.T) {
+	loopback := net.Interface{Index: 1, Name: Loopback}
+	overrun := &net.OpError{Op: "route", Net: "ip+net", Err: unix.ENOBUFS}
+	for _, c := range []struct {
+		what        string
+		index, skip int
+		holds       func(*routeMonitor) bool
+	}{
+		{what: "the loopback a monitor of one interface wakes on", index: 7, holds: func(m *routeMonitor) bool { return m.loopback == loopback.Index }},
+		{what: "the interface a monitor of every interface skips", skip: loopback.Index, holds: func(m *routeMonitor) bool { return m.skipName == Loopback }},
+	} {
+		calls := 0
+		answer := func() (*net.Interface, error) {
+			calls++
+			if calls == 1 {
+				return nil, overrun
+			}
+			return &loopback, nil
+		}
+		monitor, err := newRouteMonitor(c.index, c.skip,
+			func(string) (*net.Interface, error) { return answer() },
+			func(int) (*net.Interface, error) { return answer() })
+		if err != nil {
+			t.Errorf("%s: open the monitor: %v", c.what, err)
+			continue
+		}
+		if calls != 2 || !c.holds(monitor) {
+			t.Errorf("%s: looked up %d times, want 2 times and the interface of the second", c.what, calls)
+		}
+		awaitClose(t, monitor.Close)
 	}
 }
 
