@@ -282,10 +282,15 @@ func egressLine(e EgressStatus) string {
 }
 
 // userspaceFlowsLine is the flows the userspace exit holds against its limits,
-// the TCP connections against theirs and every flow against the whole
+// the TCP connections against theirs and every flow against the whole, and
+// where it bounds them the host ports its TCP connections take against theirs
 func userspaceFlowsLine(u EgressUserspace) string {
-	return fmt.Sprintf("%d TCP of %d, %d UDP, %d echo of %d, %d dialing, %d in TIME_WAIT",
+	line := fmt.Sprintf("%d TCP of %d, %d UDP, %d echo of %d, %d dialing, %d in TIME_WAIT",
 		u.TCP.IPv4+u.TCP.IPv6, u.Limits.Connections, u.UDP.IPv4+u.UDP.IPv6, u.Echo.IPv4+u.Echo.IPv6, u.Limits.Flows, u.Dialing, u.TimeWait)
+	if h := u.Host; h != nil {
+		line += fmt.Sprintf(", %d held for host sockets, %d host ports of %d", h.Held, h.Ports, h.Bound)
+	}
+	return line
 }
 
 // userspaceBuffersLine is the bytes the userspace exit's TCP buffers hold

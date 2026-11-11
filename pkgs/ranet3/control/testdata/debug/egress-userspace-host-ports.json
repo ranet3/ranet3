@@ -1,0 +1,85 @@
+{
+  "enabled": true,
+  "status": {
+    "enabled": true,
+    "ready": [
+      "ipv4",
+      "ipv6"
+    ],
+    "flows_per_source": 4096,
+    "refused": {
+      "ipv4": 2,
+      "ipv6": 0
+    },
+    "dropped": {
+      "ipv4": 0,
+      "ipv6": 0
+    },
+    "pass_at": "2026-10-28T19:00:00Z",
+    "installed": 0,
+    "flows": 0,
+    "bytes": 0,
+    "untranslated": 0,
+    "userspace": {
+      "tcp": {
+        "ipv4": 11,
+        "ipv6": 3
+      },
+      "udp": {
+        "ipv4": 4,
+        "ipv6": 2
+      },
+      "echo": {
+        "ipv4": 0,
+        "ipv6": 1
+      },
+      "dialing": 3,
+      "time_wait": 210,
+      "host": {
+        "held": 37,
+        "ports": 54,
+        "bound": 5120
+      },
+      "limits": {
+        "budget": 4294967296,
+        "from": "host",
+        "flows": 10240,
+        "connections": 985,
+        "dials": 985,
+        "time_wait": 985,
+        "window": 1048576,
+        "lanes": 4194304,
+        "link": 4194304
+      },
+      "buffered": 3250586,
+      "refused": {
+        "host ports": 9,
+        "share": 2,
+        "share held": 3
+      },
+      "dropped": {
+        "lane full": 7,
+        "udp checksum": 1
+      },
+      "reused": 5,
+      "closed": 1,
+      "sources": [
+        {
+          "source": "192.0.2.65",
+          "flows": 40,
+          "held": 30
+        },
+        {
+          "source": "3fff::41",
+          "flows": 6
+        }
+      ]
+    }
+  },
+  "memory": {
+    "limit": 8651800576,
+    "given": false,
+    "node": 61865984,
+    "room": 61865984
+  }
+}

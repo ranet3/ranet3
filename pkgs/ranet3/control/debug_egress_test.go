@@ -69,10 +69,21 @@ func egressFixtures(passAt time.Time) map[string]EgressInfo {
 	given := userspaceFixture(EgressBudgetGoLimit)
 	given.PassAt = passAt
 	outgrown := &EgressMemory{Limit: 64 << 20, Given: true, Node: 40 << 20, Room: 32 << 20}
+	hostPorts := hostPortsFixture(EgressBudgetHost)
+	hostPorts.PassAt = passAt
+	// a range of one port bounds the host ports to none, under which the 17
+	// connections open before it still count and no new one is admitted
+	none := userspaceFixture(EgressBudgetHost)
+	none.PassAt = passAt
+	u := *none.Userspace
+	u.Host = &EgressHost{Ports: 17}
+	none.Userspace = &u
 	return map[string]EgressInfo{
 		"egress": ready, "egress-off": {}, "egress-unready": unready,
-		"egress-userspace":       {Enabled: true, Status: userspace, Memory: set},
-		"egress-userspace-given": {Enabled: true, Status: given, Memory: outgrown},
+		"egress-userspace":              {Enabled: true, Status: userspace, Memory: set},
+		"egress-userspace-given":        {Enabled: true, Status: given, Memory: outgrown},
+		"egress-userspace-host-ports":   {Enabled: true, Status: hostPorts, Memory: set},
+		"egress-userspace-host-ports-0": {Enabled: true, Status: none, Memory: set},
 	}
 }
 
@@ -82,7 +93,7 @@ func TestEgressRendersAsTheGoldenFiles(t *testing.T) {
 		RenderEgress(&out, info)
 		golden(t, name+".txt", []byte(out.String()))
 	}
-	for _, name := range []string{"egress", "egress-userspace", "egress-userspace-given"} {
+	for _, name := range []string{"egress", "egress-userspace", "egress-userspace-given", "egress-userspace-host-ports", "egress-userspace-host-ports-0"} {
 		goldenJSON(t, name+".json", egressFixtures(time.Date(2026, 10, 28, 19, 0, 0, 0, time.UTC))[name])
 	}
 }

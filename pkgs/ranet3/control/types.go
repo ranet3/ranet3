@@ -637,13 +637,15 @@ type EgressStatus struct {
 // runs under and the bytes its TCP buffers hold now, the new flows refused
 // and the packets dropped by why, the TIME_WAIT endpoints a new SYN reused
 // and those closed early past the limit, and the sources holding the most
-// flows, most first.
+// flows, most first. Host is the bound on the host ports its TCP connections
+// pin (exit-nodes.md, "Host ports"), absent where it bounds none.
 type EgressUserspace struct {
 	TCP      EgressFlows         `json:"tcp"`
 	UDP      EgressFlows         `json:"udp"`
 	Echo     EgressFlows         `json:"echo"`
 	Dialing  int                 `json:"dialing"`
 	TimeWait int                 `json:"time_wait"`
+	Host     *EgressHost         `json:"host,omitempty"`
 	Limits   EgressLimits        `json:"limits"`
 	Buffered uint64              `json:"buffered"`
 	Refused  map[string]uint64   `json:"refused,omitempty"`
@@ -651,6 +653,16 @@ type EgressUserspace struct {
 	Reused   uint64              `json:"reused"`
 	Closed   uint64              `json:"closed"`
 	Sources  []EgressSourceFlows `json:"sources,omitempty"`
+}
+
+// EgressHost is the userspace exit's bound on the host ports: the closed TCP
+// connections it holds for their host sockets, those and the connections open
+// together, and the most they may take, which a bound of 0 refuses every new
+// connection at
+type EgressHost struct {
+	Held  int `json:"held"`
+	Ports int `json:"ports"`
+	Bound int `json:"bound"`
 }
 
 // EgressFlows is a count of flows open in each family
@@ -683,10 +695,12 @@ const (
 	EgressBudgetHost    = "host"
 )
 
-// EgressSourceFlows is the flows one source holds open through the exit
+// EgressSourceFlows is the flows one source holds through the exit, and Held
+// those of them closed and held for their host sockets, absent where none
 type EgressSourceFlows struct {
 	Source netip.Addr `json:"source"`
 	Flows  int        `json:"flows"`
+	Held   int        `json:"held,omitempty"`
 }
 
 // EgressPackets is a count of packets in each family as the last pass read

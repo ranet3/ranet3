@@ -1,0 +1,3 @@
+Egress   userspace, 21 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
+Flows    14 TCP of 985, 6 UDP, 1 echo of 10240, 3 dialing, 210 in TIME_WAIT, 37 held for host sockets, 54 host ports of 5120
+Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory

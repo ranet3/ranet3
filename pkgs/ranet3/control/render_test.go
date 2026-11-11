@@ -362,6 +362,29 @@ func TestStatusEgressUserspaceRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-egress-userspace.txt", []byte(out.String()))
 }
 
+// hostPortsFixture is the userspace fixture of an exit that bounds the host
+// ports its TCP connections pin: 37 closed connections held, which with the
+// 14 open and the 3 dialing take 54 of 5120 host ports, and its refusals
+// past them and past a share of held connections
+func hostPortsFixture(from string) EgressStatus {
+	e := userspaceFixture(from)
+	u := *e.Userspace
+	u.Host = &EgressHost{Held: 37, Ports: 54, Bound: 5120}
+	u.Refused = map[string]uint64{"share": 2, "share held": 3, "host ports": 9}
+	u.Sources = []EgressSourceFlows{{Source: netip.MustParseAddr("192.0.2.65"), Flows: 40, Held: 30}, {Source: netip.MustParseAddr("3fff::41"), Flows: 6}}
+	e.Userspace = &u
+	return e
+}
+
+// where the exit bounds the host ports, the flows line goes on with the
+// closed connections it holds and the host ports taken against the bound
+func TestStatusEgressHostPortsRendersAsTheGoldenFile(t *testing.T) {
+	var out strings.Builder
+	e := hostPortsFixture(EgressBudgetHost)
+	pairs(&out, [][]string{{"Egress", egressLine(e)}, {"Flows", userspaceFlowsLine(*e.Userspace)}, {"Buffers", userspaceBuffersLine(*e.Userspace)}})
+	golden(t, "status-egress-userspace-host-ports.txt", []byte(out.String()))
+}
+
 // the flows and buffers rows sit right under the egress row, above the
 // antispoof row, and appear for no exit that installs rules
 func TestStatusPlacesTheUserspaceRowsUnderEgress(t *testing.T) {

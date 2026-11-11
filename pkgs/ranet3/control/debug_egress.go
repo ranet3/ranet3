@@ -189,14 +189,18 @@ func RenderEgress(w io.Writer, info EgressInfo) {
 // and closed
 func userspaceRows(u EgressUserspace) [][]string {
 	l := u.Limits
+	limits := fmt.Sprintf("%d flows, %d TCP connections, %d dials, %d in TIME_WAIT, a window of %s, lanes of %s, a link of %s",
+		l.Flows, l.Connections, l.Dials, l.TimeWait, bytesText(uint64(max(l.Window, 0))), bytesText(uint64(max(l.Lanes, 0))), bytesText(uint64(max(l.Link, 0))))
+	if u.Host != nil {
+		limits += fmt.Sprintf(", %d host ports", u.Host.Bound)
+	}
 	return [][]string{
 		{"Flows", userspaceFlowsLine(u)},
 		{"Buffers", userspaceBuffersLine(u)},
 		{"TCP", flowsText(u.TCP)},
 		{"UDP", flowsText(u.UDP)},
 		{"Echo", flowsText(u.Echo)},
-		{"Limits", fmt.Sprintf("%d flows, %d TCP connections, %d dials, %d in TIME_WAIT, a window of %s, lanes of %s, a link of %s",
-			l.Flows, l.Connections, l.Dials, l.TimeWait, bytesText(uint64(max(l.Window, 0))), bytesText(uint64(max(l.Lanes, 0))), bytesText(uint64(max(l.Link, 0))))},
+		{"Limits", limits},
 		{"TIME_WAIT", fmt.Sprintf("%d reused by a new SYN, %d closed early past the limit", u.Reused, u.Closed)},
 	}
 }
@@ -218,7 +222,8 @@ func memoryLine(m EgressMemory) string {
 }
 
 // renderUserspace writes the userspace exit's new flows refused and packets
-// dropped by why, and the sources holding the most flows
+// dropped by why, and the sources holding the most flows with those each
+// holds for its host sockets' TIME_WAIT
 func renderUserspace(w io.Writer, u EgressUserspace) {
 	for _, counts := range []struct {
 		title string
@@ -241,7 +246,11 @@ func renderUserspace(w io.Writer, u EgressUserspace) {
 	fmt.Fprintln(w, "Sources")
 	rows := make([][]string, 0, len(u.Sources))
 	for _, source := range u.Sources {
-		rows = append(rows, []string{source.Source.String(), countOf(source.Flows, "flow")})
+		flows := countOf(source.Flows, "flow")
+		if source.Held > 0 {
+			flows += fmt.Sprintf(", %d held for host sockets", source.Held)
+		}
+		rows = append(rows, []string{source.Source.String(), flows})
 	}
 	indented(w, func(w io.Writer) { pairs(w, rows) })
 }
