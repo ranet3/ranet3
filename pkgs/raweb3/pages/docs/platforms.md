@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-10
+updated: 2026-11-11
 order: 100
 ---
 
@@ -266,7 +266,7 @@ exit, and the daemon warns, as
 ## Other platforms
 
 On FreeBSD and OpenBSD the daemon builds and does not start. The underlay
-refuses with
+refuses to open its bind at startup with
 `transport: open bind: no underlay transport on freebsd: unsupported operation`,
 naming its own platform where this one names `freebsd`.
 
@@ -361,7 +361,7 @@ portal that lets nothing through, needs `ranet3 redial --all` instead.
 The watch also reads the host every 30 seconds whether or not a notification
 came, and acts only where the reading moved, which finds a change whose
 notification a full receive buffer dropped
-([`netlink_overrun`](https://github.com/torvalds/linux/blob/v7.3/net/netlink/af_netlink.c#L351),
+([`netlink_overrun`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/netlink/af_netlink.c#L351),
 [`raw_input`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/raw_usrreq.c#L90)).
 A read that fails is read again after 1 second, the wait doubling to 30 seconds
 until a read succeeds, and no notification shortens it. While its reads fail the
