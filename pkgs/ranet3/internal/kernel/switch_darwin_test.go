@@ -89,6 +89,9 @@ var (
 	// helper's overlay holds beside killOverlay and its mesh announces
 	killFull        = []netip.Prefix{prefix("198.18.0.77/32"), prefix("2001:db8:ee::77/128")}
 	killFullOverlay = slices.Concat(killOverlay, prefixes(killFull...))
+	// killOwn is an address of each family's first overlay prefix at full
+	// length, which the own-address test's utun holds and its mesh originates
+	killOwn = []netip.Prefix{prefix("198.51.100.1/32"), prefix("2001:db8:bb::1/128")}
 	// killNameservers lie under a member of each family's cover and under the
 	// NAT64 member, and inside no prefix of the overlay
 	killNameservers = []netip.Addr{netip.MustParseAddr("203.0.113.53"), netip.MustParseAddr("2001:db8:ff::53"), netip.MustParseAddr("64:ff9b::cb00:7135")}
@@ -592,6 +595,170 @@ func TestDarwinRunReadsItsHostRoutesBack(t *testing.T) {
 	}
 }
 
+// A reconciler under Run on a utun holding a /32 and a /128 of the overlay
+// that the mesh originates writes no hold at either, since XNU rewrites a host
+// route out of the utun at an address of the utun's, so its passes settle,
+// the last adding none and skipping none, and none runs after. The table then
+// holds no reject at either address, out of M or on lo0, and a datagram from
+// the host to each address arrives. The test hands a packet to either address
+// that comes out of M back up through M, as the mesh hands up a packet for an
+// address of the node's own, an IPv6 one with the transport checksum lo0's
+// offload left unfinished completed, as the mesh completes it.
+func TestDarwinRunWritesNoHoldAtItsOwnAddresses(t *testing.T) {
+	requireNetTest(t)
+	killLeavesTheHost(t)
+	name, fd := createUTUNWithFD(t)
+	setInterfaceUp(t, name)
+	mesh := netstack.NewRouteTable()
+	for _, own := range killOwn {
+		mesh.Set(netip.Prefix{}, own, netstack.Local)
+	}
+	table := Table{ID: DefaultTable, Proto: DefaultProtocol, Addresses: prefixes(killOwn...), Reconcile: schema.Duration(time.Minute)}
+	reconciler, err := New(table, Runtime{Interface: name, Overlay: killOverlay}, mesh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Run(ctx) }()
+	running := true
+	t.Cleanup(func() {
+		if running {
+			cancel()
+			<-done
+		}
+	})
+	select {
+	case <-reconciler.FirstPass():
+	case <-time.After(killReady):
+		t.Fatalf("the reconciler's first pass did not end within %s", killReady)
+	}
+	passes := []Stats{reconciler.Stats()}
+	for deadline := time.Now().Add(2 * killQuiet); time.Now().Before(deadline); time.Sleep(killPoll) {
+		if stats := reconciler.Stats(); !stats.At.Equal(passes[len(passes)-1].At) {
+			passes = append(passes, stats)
+		}
+	}
+	for i, stats := range passes {
+		if stats.Skipped != 0 || stats.Err != "" {
+			t.Errorf("pass %d skipped %d routes with err %q, want none", i, stats.Skipped, stats.Err)
+		}
+	}
+	// the route monitor wakes on the first pass's own writes, so a second pass
+	// follows it, and the last pass read below is that one or a later one
+	if len(passes) < 2 {
+		t.Fatalf("one pass ran in %s from the first, want a second woken by the first pass's own writes", 2*killQuiet)
+	}
+	last := passes[len(passes)-1]
+	if time.Since(last.At) < killQuiet || len(passes) > 3 {
+		t.Errorf("%d passes ran in %s from the first, the last at %s, want the passes settled within %s", len(passes), 2*killQuiet, last.At.Format(time.StampMilli), killQuiet)
+	}
+	if last.Added != 0 || last.Skipped != 0 {
+		t.Errorf("the last pass added %d routes and skipped %d, want none", last.Added, last.Skipped)
+	}
+	for _, rm := range dumpedRoutes(t) {
+		if destination, ok := dumpedPrefix(rm); ok && slices.Contains(killOwn, destination) && rm.Flags&unix.RTF_REJECT != 0 {
+			t.Errorf("the table holds a reject at %s on interface %d with flags %#x", destination, rm.Index, rm.Flags)
+		}
+	}
+	waitHoleDAD(t, name)
+	for _, own := range killOwn {
+		if err := killOwnArrives(t, fd, own.Addr()); err != nil {
+			t.Errorf("a datagram from the host to %s, its own %s address: %v", own.Addr(), familyOf(own.Addr()), err)
+		}
+	}
+	cancel()
+	running = false
+	if err := <-done; err != nil {
+		t.Errorf("the stop: %v", err)
+	}
+}
+
+// killOwnArrives sends one datagram from an unbound socket to a socket bound
+// to address, an address of the utun at fd, while it writes each packet to
+// address that comes out of the utun back into it. It is the error the
+// connect, the send or the read met.
+func killOwnArrives(t *testing.T, fd int, address netip.Addr) error {
+	t.Helper()
+	network := "udp6"
+	if address.Is4() {
+		network = "udp4"
+	}
+	server, err := net.ListenUDP(network, net.UDPAddrFromAddrPort(netip.AddrPortFrom(address, 0)))
+	if err != nil {
+		t.Fatalf("listen on %s: %v", address, err)
+	}
+	defer server.Close()
+	client, err := net.DialUDP(network, nil, server.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	drainTUN(fd)
+	stop := make(chan struct{})
+	reflected := make(chan struct{})
+	go func() {
+		defer close(reflected)
+		killReflect(fd, address, stop)
+	}()
+	defer func() {
+		close(stop)
+		<-reflected
+	}()
+	sent := []byte("own address")
+	if _, err := client.Write(sent); err != nil {
+		return err
+	}
+	if err := server.SetReadDeadline(time.Now().Add(killWake)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, err := server.Read(buf)
+	if err != nil {
+		return err
+	}
+	if string(buf[:n]) != string(sent) {
+		return fmt.Errorf("the socket read %q, want %q", buf[:n], sent)
+	}
+	return nil
+}
+
+// killReflect writes each packet to address that comes out of the utun at fd
+// back into it, its four byte address family kept and an IPv6 transport
+// checksum completed as the mesh completes it (completeOwnChecksum), until
+// stop closes
+func killReflect(fd int, address netip.Addr, stop <-chan struct{}) {
+	buf := make([]byte, 2048)
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		n, err := unix.Read(fd, buf)
+		if err != nil || n <= 4 {
+			time.Sleep(killPoll)
+			continue
+		}
+		if killDestination(buf[4:n]) == address {
+			completeOwnChecksum(buf[4:n])
+			_, _ = unix.Write(fd, buf[:n])
+		}
+	}
+}
+
+// killDestination is the destination of one IP packet, invalid where the
+// packet is too short to name one
+func killDestination(packet []byte) netip.Addr {
+	switch {
+	case len(packet) >= 20 && packet[0]>>4 == 4:
+		return netip.AddrFrom4([4]byte(packet[16:20]))
+	case len(packet) >= 40 && packet[0]>>4 == 6:
+		return netip.AddrFrom16([16]byte(packet[24:40]))
+	}
+	return netip.Addr{}
+}
+
 // A running reconciler holding the switch wakes on another writer's delete of
 // a reject or a hold on lo0 and writes each again within one wake, long before
 // the periodic pass a minute out. No exit is live, so no capture's grace wakes
@@ -910,8 +1077,8 @@ func killQuery(t *testing.T, kind string, nameserver netip.Addr, prepare underla
 }
 
 // killLeavesTheHost reads the host's table and defaults, and once every later
-// cleanup of the test has run deletes any reject on lo0 at the switch's keys
-// and the overlay's that an arm left, scoped or not, and then waits for the
+// cleanup of the test has run deletes any reject on lo0 at the switch's keys,
+// the overlay's or killOwn's that an arm left, scoped or not, and then waits for the
 // table and the defaults to be as they were, but for ARP, NDP and cloned rows
 func killLeavesTheHost(t *testing.T) {
 	t.Helper()
@@ -939,8 +1106,8 @@ func killLeavesTheHost(t *testing.T) {
 }
 
 // killSweep deletes each reject on lo0 at a key of the switch's or the
-// overlay's, the scoped ones by their scope, since RTM_DELETE finds a scoped
-// route only under its interface
+// overlay's or at an address of killOwn, the scoped ones by their scope, since
+// RTM_DELETE finds a scoped route only under its interface
 func killSweep(t *testing.T, loopback int) {
 	t.Helper()
 	sock, err := routeSocket(runningKernel{})
@@ -952,11 +1119,15 @@ func killSweep(t *testing.T, loopback int) {
 	keys := slices.Concat(rejectKeys, overlayKeys(killFullOverlay))
 	for _, rm := range dumpedRoutes(t) {
 		destination, ok := dumpedPrefix(rm)
-		if !ok || rm.Index != loopback || rm.Flags&unix.RTF_REJECT == 0 || !slices.Contains(keys, destination) {
+		own := slices.Contains(killOwn, destination)
+		if !ok || rm.Index != loopback || rm.Flags&unix.RTF_REJECT == 0 || !own && !slices.Contains(keys, destination) {
 			continue
 		}
-		message, err := loopMessage(unix.RTM_DELETE, destination)
-		if err == nil && rm.Flags&unix.RTF_IFSCOPE != 0 {
+		var message *route.RouteMessage
+		var err error
+		if own {
+			message = killOwnDelete(rm, destination)
+		} else if message, err = loopMessage(unix.RTM_DELETE, destination); err == nil && rm.Flags&unix.RTF_IFSCOPE != 0 {
 			message.Flags, message.Index = message.Flags|unix.RTF_IFSCOPE, loopback
 		}
 		if err == nil {
@@ -966,6 +1137,25 @@ func killSweep(t *testing.T, loopback int) {
 			t.Errorf("delete the reject at %s an arm left: %v", destination, err)
 		}
 	}
+}
+
+// killOwnDelete is the RTM_DELETE of a reject at an address of a utun's that
+// XNU moved onto lo0 from the utun, which keeps the platform's shape of a hold
+// out of the utun: a host route whose gateway is the utun's link, and scoped
+// to the utun where the dump reports it scoped. The move changes the route's
+// interface and leaves its gateway's index and its key's scope as they were
+// (nd6.c:2969-3020), so the utun's index is read from the gateway.
+func killOwnDelete(rm *route.RouteMessage, destination netip.Prefix) *route.RouteMessage {
+	link := &route.LinkAddr{}
+	if len(rm.Addrs) > unix.RTAX_GATEWAY {
+		if gateway, ok := rm.Addrs[unix.RTAX_GATEWAY].(*route.LinkAddr); ok {
+			link = &route.LinkAddr{Index: gateway.Index}
+		}
+	}
+	addrs := make([]route.Addr, unix.RTAX_MAX)
+	addrs[unix.RTAX_DST] = routeAddr(destination.Addr())
+	addrs[unix.RTAX_GATEWAY] = link
+	return &route.RouteMessage{Type: unix.RTM_DELETE, Flags: unix.RTF_UP | unix.RTF_STATIC | unix.RTF_HOST | rm.Flags&unix.RTF_IFSCOPE, Index: link.Index, Addrs: addrs}
 }
 
 // killLoops is each key lo0 holds a route of the rejects' shape at

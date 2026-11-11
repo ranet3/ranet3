@@ -309,3 +309,71 @@ func TestOverlayHoldsHoldEachPrefixOnce(t *testing.T) {
 		}
 	}
 }
+
+// On a platform whose kernel rewrites a host route at an address of the
+// tun's, a pass writes what it writes on one that keeps it, but each route, a
+// hold or a reachable one, at one address the tun holds that is not an overlay
+// prefix's own hold, whatever the entries, their sources, the overlay, the
+// gate, and the halves and pieces the pass makes of them: the tun holds the
+// address of an entry now and then, at a drawn length, and the overlay now and
+// then the prefix one bit short of an address the tun holds, a /31 or a /127,
+// with a learned route at it, which goes in as its halves
+func TestPassLeavesOutOnlyTheRoutesAtTheTunsAddressesWhereTheKernelRewritesThem(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		entries := hegel.Draw(ht, mirrorEntries())
+		tun := slices.Clone(coverAddresses)
+		for _, entry := range entries {
+			if address := entry.destination.Addr(); hegel.Draw(ht, hegel.Booleans()) {
+				tun = append(tun, netip.PrefixFrom(address, hegel.Draw(ht, edges(0, address.BitLen()))))
+			}
+		}
+		tun = append(tun, hegel.Draw(ht, hegel.Lists(anyNearPrefix()).MaxSize(2))...)
+		candidates := hegel.Draw(ht, hegel.Lists(anyNearPrefix()).MaxSize(2))
+		for _, address := range tun {
+			if hegel.Draw(ht, hegel.Booleans()) {
+				key := netip.PrefixFrom(address.Addr(), address.Addr().BitLen()-1).Masked()
+				candidates = append(candidates, key)
+				entries = append(entries, mirrorEntry{destination: key, value: learned})
+			}
+		}
+		var overlay []schema.Prefix
+		for _, prefix := range candidates {
+			if taken := append(slices.Clone(overlay), schema.PrefixFrom(prefix)); (egress.Border{Overlay: taken}).Validate() == nil {
+				overlay = taken
+			}
+		}
+		sessions := 0
+		if hegel.Draw(ht, hegel.Booleans()) {
+			sessions = 1
+		}
+		written := func(rewrites bool) map[Route]bool {
+			reconciler, table, k := ownHarness(t, Table{}, rewrites, tun...)
+			reconciler.rt.Overlay = overlay
+			reconciler.rt.Sessions = func() int { return sessions }
+			for _, entry := range entries {
+				table.Set(entry.source, entry.destination, entry.value)
+			}
+			// the error of a pass the fake refuses part of is left, and the routes it wrote are compared
+			_ = reconciler.reconcile()
+			out := map[Route]bool{}
+			for _, route := range k.snapshot() {
+				out[route] = true
+			}
+			return out
+		}
+		kept, got := written(false), written(true)
+		keys := overlayKeys(overlay)
+		want := map[Route]bool{}
+		for route := range kept {
+			atTun := slices.ContainsFunc(tun, func(address netip.Prefix) bool { return address.Addr() == route.Destination.Addr() })
+			overlays := route.Unreachable && !route.Source.IsValid() && slices.Contains(keys, route.Destination)
+			if route.Destination.IsSingleIP() && atTun && !overlays {
+				continue
+			}
+			want[route] = true
+		}
+		if !maps.Equal(got, want) {
+			ht.Fatalf("where the kernel rewrites a route at the tun's %v, the overlay %v, the pass writes\n%v\nwant\n%v", tun, overlay, sortedRoutes(got), sortedRoutes(want))
+		}
+	})
+}

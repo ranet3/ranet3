@@ -660,9 +660,11 @@ type Reconciler struct {
 	// window ending with each listing of the tun's addresses
 	warnedAddrs warnOnce[netip.Prefix]
 	// bare is each family the tun held no address of at the last listing,
-	// which a covering platform skips the routes of, and unlisted says the
-	// listings since have failed where no other step asked for one
+	// which a covering platform skips the routes of, tun the addresses it held
+	// there, whoever wrote them, and unlisted says the listings since have
+	// failed where no other step asked for one
 	bare     []Family
+	tun      []netip.Prefix
 	unlisted bool
 	// warned is the routes reported as unrepresentable, a window ending with
 	// each snapshot
@@ -690,13 +692,15 @@ type Reconciler struct {
 	pathVerdict  string
 	pathReported *PathStatus
 
-	// rules, keyer, sw and fib are the platform's optional halves, set by use
-	// with plat: nil where it has no policy engine, writes no hold apart from
-	// the tun and no kill switch, and judges no lookup by the route it ends at
-	rules ruler
-	keyer holdKeyer
-	sw    switcher
-	fib   fibLooker
+	// rules, keyer, rewriter, sw and fib are the platform's optional halves,
+	// set by use with plat: nil where it has no policy engine, writes no hold
+	// apart from the tun, keeps a route at an address of the tun's as written,
+	// writes no kill switch, and judges no lookup by the route it ends at
+	rules    ruler
+	keyer    holdKeyer
+	rewriter ownRewriter
+	sw       switcher
+	fib      fibLooker
 	// look is the platform's lookups, nil where it answers none, also set by
 	// use. lookups holds what the last pass whose batch answered found,
 	// lookFailed whether the last batch failed, and installed what the kernel
@@ -983,6 +987,7 @@ func (r *Reconciler) use(plat platform) {
 	r.look, _ = plat.(looker)
 	r.fib, _ = plat.(fibLooker)
 	r.keyer, _ = plat.(holdKeyer)
+	r.rewriter, _ = plat.(ownRewriter)
 	r.sw, _ = plat.(switcher)
 }
 
@@ -1290,7 +1295,7 @@ func (r *Reconciler) reconcile() error {
 	desired := r.desired(snapshot, network)
 	// a pass that cannot list the tun keeps the last listing's, as the cover's families stand
 	if listed {
-		r.bare = bareFamilies(held)
+		r.bare, r.tun = bareFamilies(held), held
 	}
 	if exit.fallback {
 		exit.own = thrown(desired)
@@ -1519,10 +1524,19 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// The halves go in after withheld has judged the whole members (see
 	// cutAround)
 	keys, rejected := r.splitKeys(desired)
+	// The splits and the cut are the last steps that make a route, a half of a
+	// /31 or /127 overlay key or a piece at one address the tun holds among
+	// them, so each list they make leaves a route at such an address here
+	// (atOwnAddress), the members handed back after a refused route among
+	// them, and each hole the piece with it
 	cut := func(routes []Route) ([]Route, []Hole) {
-		return cutAround(routes, keys, rejected, r.keyer, scoped, hosts, func(routes []Route) ([]Route, []Hole) {
+		pieces, holes := cutAround(routes, keys, rejected, r.keyer, scoped, hosts, func(routes []Route) ([]Route, []Hole) {
 			return cutHoles(routes, scoped, endpoints, hosts, r.rt.Overlay)
 		})
+		for i := range holes {
+			holes[i].Pieces = slices.DeleteFunc(holes[i].Pieces, func(piece netip.Prefix) bool { return r.atOwnAddress(Route{Destination: piece}) })
+		}
+		return slices.DeleteFunc(pieces, r.atOwnAddress), holes
 	}
 	bare := desired
 	// After the capture grace check, which judges the zero route whole: a
@@ -2270,6 +2284,37 @@ func canonicalPrefix(prefix netip.Prefix) (netip.Prefix, bool) {
 // scoper is implemented by a platform whose kernel keys a route by interface
 // scope as well as by its destination, which is darwin alone.
 type scoper interface{ scopes(Route) bool }
+
+// ownRewriter is implemented by a platform whose kernel rewrites a host route
+// out of the tun at one address of the tun's into a form the platform cannot
+// read back as its own, which is darwin alone
+// (routePlatform.rewritesOwnRoutes). The reconciler writes such a platform no
+// route there, a hold or a reachable one: the cut in applyRoutes declines each
+// route at such an address in every list its splits and its cut make, the
+// members handed back after a refused route among them (atOwnAddress). For an
+// IPv6 address, whoever put it on the tun, the host's own route at it is the
+// kernel's (in6_ifaddloop), which sends the packet out of the tun into the
+// mesh, and for an IPv4 address in the form the reconciler assigns, the far
+// end the address itself, the kernel's host route to the far end is at the
+// address and out of the tun too (in_ifinit). The mesh sends what it reads
+// there by its own table, so a route written there would carry nothing that
+// route does not. An IPv4 address another program put on the tun with another
+// far end or none has no route of the kernel's at it, and a route there is
+// declined all the same, since the kernel would mark it local (in_addroute).
+type ownRewriter interface{ rewritesOwnRoutes() }
+
+// atOwnAddress reports a route of the pass, a hold or a reachable one,
+// whatever its source, a route of the mesh's or a half or a piece of one, at
+// one address the tun held at the last listing, on a platform that rewrites
+// one. It keeps each hold with no source at a key of the overlay in force,
+// which the platform writes apart from the tun: the hold overlayHolds gives
+// the key, and the mesh's own entry there, the latter also where a carve-out
+// equals the key and overlayHolds gives none.
+func (r *Reconciler) atOwnAddress(route Route) bool {
+	return r.rewriter != nil && route.Destination.IsSingleIP() &&
+		slices.ContainsFunc(r.tun, func(address netip.Prefix) bool { return address.Addr() == route.Destination.Addr() }) &&
+		!(route.Unreachable && !route.Source.IsValid() && slices.Contains(overlayKeys(r.rt.Overlay), route.Destination))
+}
 
 // coverFamilies is the families whose zero routes the pass installs as the
 // cover: on a covering platform in modes 2 and 3, each the tun holds an

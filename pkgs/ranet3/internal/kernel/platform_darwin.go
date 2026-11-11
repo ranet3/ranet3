@@ -76,10 +76,11 @@ import (
 //
 // A hold at a prefix of the overlay (overlayHolds) goes on lo0 in the rejects'
 // shape, so it outlives the utun as linux's unreachable route outlives the
-// process. Every other hold stays scoped out of the utun (holdsAgainstTheFIB).
-// A route of ours out of the utun at a hold's key goes in as its halves
-// (splitAtKeys), and one at a full-length key, which has no halves, goes in as
-// a host route beside it (routeMessage). A route of that shape on lo0 is this
+// process. Every other hold stays scoped out of the utun (holdsAgainstTheFIB),
+// but one at an address of the tun's, where the reconciler writes no route at
+// all (rewritesOwnRoutes). A route of ours out of the utun at a hold's key goes in
+// as its halves (splitAtKeys), and one at a full-length key, which has no
+// halves, goes in as a host route beside it (routeMessage). A route of that shape on lo0 is this
 // reconciler's at a key of the overlay in force or at one this process held a
 // hold at, and another program's at any other key, since route add -reject
 // writes the same shape. routing.md's "The kill switch on macOS" gives what a
@@ -760,6 +761,16 @@ func (p *routePlatform) heldApart(r Route) bool {
 	return r.Unreachable && !r.Scoped && !r.Source.IsValid() &&
 		(p.holds[r.Destination] || p.overlaid[r.Destination])
 }
+
+// rewritesOwnRoutes stands for XNU's rewrite of a host route out of the tun at
+// an address of the tun's, a hold or a reachable one, scoped or not. In IPv6
+// it moves the route onto lo0 (nd6_rtrequest in bsd/netinet6/nd6.c), where
+// decodeRoute does not read it as ours, and the next add of it deletes it and
+// goes in again (in6_addroute in bsd/netinet6/in6_rmx.c), which wakes the next
+// pass. In IPv4 it marks the route RTF_LOCAL (in_addroute in
+// bsd/netinet/in_rmx.c), which skipRouteFlags skips, so every later add of it
+// meets EEXIST.
+func (p *routePlatform) rewritesOwnRoutes() {}
 
 // ownKey is a key of ours: a route's key, and whether it is a host route,
 // which the kernel keys apart from a hold on lo0 at its address
