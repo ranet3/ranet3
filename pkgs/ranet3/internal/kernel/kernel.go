@@ -2289,18 +2289,20 @@ type scoper interface{ scopes(Route) bool }
 // out of the tun at one address of the tun's into a form the platform cannot
 // read back as its own, which is darwin alone
 // (routePlatform.rewritesOwnRoutes). The reconciler writes such a platform no
-// route there, a hold or a reachable one: the cut in applyRoutes declines each
-// route at such an address in every list its splits and its cut make, the
-// members handed back after a refused route among them (atOwnAddress). For an
-// IPv6 address, whoever put it on the tun, the host's own route at it is the
-// kernel's (in6_ifaddloop), which sends the packet out of the tun into the
-// mesh, and for an IPv4 address in the form the reconciler assigns, the far
-// end the address itself, the kernel's host route to the far end is at the
-// address and out of the tun too (in_ifinit). The mesh sends what it reads
-// there by its own table, so a route written there would carry nothing that
-// route does not. An IPv4 address another program put on the tun with another
-// far end or none has no route of the kernel's at it, and a route there is
-// declined all the same, since the kernel would mark it local (in_addroute).
+// route there out of the tun, a hold or a reachable one. The cut in
+// applyRoutes declines each route at such an address in every list its splits
+// and its cut make, the members handed back after a refused route among them,
+// all but a hold with no source at a key of the overlay in force, which the
+// platform writes on lo0 (atOwnAddress). For an IPv6 address, whoever put it
+// on the tun, the host's own route at it is the kernel's (in6_ifaddloop),
+// which sends the packet out of the tun into the mesh, and for an IPv4 address
+// in the form the reconciler assigns, the far end the address itself, the
+// kernel's host route to the far end is at the address and out of the tun too
+// (in_ifinit). The mesh sends what it reads there by its own table, so a route
+// written there would carry nothing that route does not. An IPv4 address
+// another program put on the tun with another far end or none has no route of
+// the kernel's at it, and a route there is declined all the same, since the
+// kernel would mark it local (in_addroute).
 type ownRewriter interface{ rewritesOwnRoutes() }
 
 // atOwnAddress reports a route of the pass, a hold or a reachable one,

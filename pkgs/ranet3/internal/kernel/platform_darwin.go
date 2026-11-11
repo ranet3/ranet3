@@ -77,14 +77,14 @@ import (
 // A hold at a prefix of the overlay (overlayHolds) goes on lo0 in the rejects'
 // shape, so it outlives the utun as linux's unreachable route outlives the
 // process. Every other hold stays scoped out of the utun (holdsAgainstTheFIB),
-// but one at an address of the tun's, where the reconciler writes no route at
-// all (rewritesOwnRoutes). A route of ours out of the utun at a hold's key goes in
-// as its halves (splitAtKeys), and one at a full-length key, which has no
-// halves, goes in as a host route beside it (routeMessage). A route of that shape on lo0 is this
-// reconciler's at a key of the overlay in force or at one this process held a
-// hold at, and another program's at any other key, since route add -reject
-// writes the same shape. routing.md's "The kill switch on macOS" gives what a
-// hold refuses.
+// but one at an address of the tun's, where the reconciler writes no route out
+// of the utun (rewritesOwnRoutes). A route of ours out of the utun at a hold's
+// key goes in as its halves (splitAtKeys), and one at a full-length key, which
+// has no halves, goes in as a host route beside it (routeMessage). A route of
+// that shape on lo0 is this reconciler's at a key of the overlay in force or at
+// one this process held a hold at, and another program's at any other key,
+// since route add -reject writes the same shape. routing.md's "The kill switch
+// on macOS" gives what a hold refuses.
 type routePlatform struct {
 	rt    Runtime
 	index int
