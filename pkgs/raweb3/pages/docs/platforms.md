@@ -194,9 +194,10 @@ each route's scope and where each lookup ends. The reconciler installs these
 routes scoped to the tun, which no socket selects unless it asks for the tun by
 name:
 
-- a source-specific route
+- a source-specific route, but one at an address the utun holds
 - a retracted route, which it holds as a reject route, unless the route counts
-  as a default, whose hold it does not install at all
+  as a default or is at an address the utun holds, where it installs no route at
+  all, as [the route reconciler](routing.md#the-route-reconciler) gives
 - any route outside the overlay inside an unscoped route of the host's longer
   than `/0` out of another interface, a member of the zero-free cover among
   them, as Linux's rule 5410 answers by such a route ahead of the mesh's table,
