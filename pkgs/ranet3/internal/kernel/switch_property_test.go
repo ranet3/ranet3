@@ -219,7 +219,7 @@ func (c switchCase) exitMode(switched bool) *ExitMode {
 
 // pass is a pass over c on rejectingKernel, the switch asked for where
 // switched in modes 2 and 3
-func (c switchCase) pass(t *testing.T, ht *hegel.T, switched bool) (*Reconciler, *rejectingKernel) {
+func (c switchCase) pass(t *testing.T, ht testing.TB, switched bool) (*Reconciler, *rejectingKernel) {
 	reconciler, table, k := rejectingHarness(t, c.exitMode(switched), c.addresses...)
 	c.run(ht, reconciler, table)
 	return reconciler, k
@@ -227,7 +227,7 @@ func (c switchCase) pass(t *testing.T, ht *hegel.T, switched bool) (*Reconciler,
 
 // reference is the routes of ours a pass over c with no switch asked for
 // leaves on the covering fake, which writes no overlay hold and splits nothing
-func (c switchCase) reference(t *testing.T, ht *hegel.T) []Route {
+func (c switchCase) reference(t *testing.T, ht testing.TB) []Route {
 	reconciler, table, covering := coveredHarness(t, Table{}.WithMode(c.exitMode(false)), Runtime{Sessions: func() int { return 1 }}, c.addresses...)
 	reconciler.now = func() time.Time { return start }
 	c.run(ht, reconciler, table)
@@ -235,7 +235,7 @@ func (c switchCase) reference(t *testing.T, ht *hegel.T) []Route {
 }
 
 // run is a pass of reconciler over c's overlay, host, endpoints and mesh
-func (c switchCase) run(ht *hegel.T, reconciler *Reconciler, table *netstack.RouteTable) {
+func (c switchCase) run(ht testing.TB, reconciler *Reconciler, table *netstack.RouteTable) {
 	reconciler.rt.Overlay = c.overlay
 	reconciler.rt.Selection = newFakeSelection(c.hosts...)
 	reconciler.rt.Underlay = func() []netip.Addr { return c.endpoints }
@@ -254,7 +254,7 @@ func (c switchCase) run(ht *hegel.T, reconciler *Reconciler, table *netstack.Rou
 }
 
 // toggle runs a pass on reconciler with the switch asked for where switched
-func (c switchCase) toggle(ht *hegel.T, reconciler *Reconciler, switched bool) {
+func (c switchCase) toggle(ht testing.TB, reconciler *Reconciler, switched bool) {
 	if err := reconciler.SetTable(reconciler.table.WithMode(c.exitMode(switched)), c.overlay, nil); err != nil {
 		ht.Fatal(err)
 	}
@@ -369,103 +369,122 @@ func keyOf(address netip.Addr) netip.Prefix {
 // or off leaves the kernel as a first pass under the switch it turns to.
 func TestSwitchKeepsTheTunsRoutesOffTheRejectsKeys(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		c := hegel.Draw(ht, switchCases())
-		switched, k := c.pass(t, ht, true)
-		plainReconciler, plain := c.pass(t, ht, false)
-		var holds []Route
-		for _, key := range overlayKeys(c.overlay) {
-			holds = append(holds, Route{Destination: key, Metric: holdMetric, Unreachable: true})
-		}
-		within := func(inner, outer netip.Prefix) bool {
-			return outer.Bits() <= inner.Bits() && outer.Contains(inner.Addr())
-		}
-		// linux's hold answers every address of its prefix that no route of
-		// the mesh at or inside the prefix holds, so its mesh table answers
-		// there only from such a route. A route from a source matches no
-		// lookup with no source and a hold of the mesh's refuses as the
-		// overlay's does, so only a route of c.mesh holds an address there
-		// for an unbound lookup
-		bare := c.reference(t, ht)
-		reference := append(slices.DeleteFunc(slices.Clone(bare), func(r Route) bool {
-			return slices.ContainsFunc(overlayKeys(c.overlay), func(key netip.Prefix) bool {
-				return within(r.Destination, key) && !slices.ContainsFunc(c.mesh, func(m netip.Prefix) bool {
-					return within(m, key) && within(r.Destination, m)
-				})
-			})
-		}), holds...)
-		// a socket bound to the tun meets the routes scoped to it, which no
-		// hold on lo0 answers ahead of, as linux passes a hold over for a
-		// lookup bound to the tun (routing.md row B4), so at or inside an
-		// overlay prefix they are the ones a pass with no switch and no split
-		// leaves there but a hold at an overlay key
-		scopedOf := func(routes []Route) []Route {
-			out := slices.DeleteFunc(slices.Clone(routes), func(r Route) bool {
-				return !r.Scoped || r.Unreachable && slices.Contains(overlayKeys(c.overlay), r.Destination) ||
-					!slices.ContainsFunc(overlayKeys(c.overlay), func(key netip.Prefix) bool { return within(r.Destination, key) })
-			})
-			slices.SortFunc(out, compareRoutes)
-			return out
-		}
-		asked := c.mode != 0
-		held, _ := k.held()
-		// the switch reads holding with no exit live and passing with one, never not holding
-		if asked && (!slices.Equal(held, rejectKeys) || switchReads(switched) != string(FallbackHolding) && switchReads(switched) != string(FallbackPassing)) {
-			ht.Fatalf("the switch reads %s with rejects at %v, want holding at each key\ncase %+v\nheld %v", switchReads(switched), held, c, k.snapshot())
-		}
-		if !asked && len(held) != 0 {
-			ht.Fatalf("with no switch asked for the fake holds rejects at %v", held)
-		}
-		ours := k.snapshot()
-		if got, want := scopedOf(ours), scopedOf(bare); !slices.Equal(got, want) {
-			ht.Fatalf("the routes of ours scoped to the tun at or inside the overlay are %v, want %v\ncase %+v", got, want, c)
-		}
-		for _, r := range ours {
-			if asked && !r.Scoped && slices.Contains(rejectKeys, r.Destination) {
-				ht.Fatalf("%+v sits at a key of the switch's while it is asked for\ncase %+v\nheld %v", r, c, ours)
-			}
-			if !r.Scoped && !r.Unreachable && slices.Contains(overlayKeys(c.overlay), r.Destination) {
-				ht.Fatalf("%+v sits at an overlay hold's key\ncase %+v\nheld %v", r, c, ours)
-			}
-		}
-		for _, address := range c.probes() {
-			got := unboundAt(ours, held, c.hosts, address)
-			model := unboundAt(reference, nil, c.hosts, address)
-			want := model
-			// a reject longer than the hold it ends at refuses in its place
-			refused := model.ours != nil && slices.Contains(holds, *model.ours) && keyOf(address).Bits() > model.ours.Destination.Bits()
-			if asked && (refused || model.ours == nil && (!model.host.IsValid() || keyOf(address).Bits() > model.host.Bits())) {
-				want = landing{reject: keyOf(address)}
-			}
-			matches := got.reject == want.reject && got.host == want.host && (got.ours == nil) == (want.ours == nil)
-			if matches && got.ours != nil {
-				r := *got.ours
-				r.Destination = want.ours.Destination
-				matches = r == *want.ours
-			}
-			if !matches {
-				ht.Fatalf("an unbound lookup of %s ends at %s, want %s\ncase %+v\nheld %v\nwith no switch and no split %v", address, got, want, c, ours, reference)
-			}
-			crashed := unboundAt(c.holdsOf(ours), held, c.hosts, address)
-			host := unboundAt(nil, nil, c.hosts, address).host
-			switch hold := c.holdAt(address); {
-			case hold.IsValid():
-				if (crashed.ours == nil || crashed.ours.Destination != hold) && crashed.reject.Bits() <= hold.Bits() && (!host.IsValid() || host.Bits() <= hold.Bits()) {
-					ht.Fatalf("after a crash an unbound lookup of %s ends at %s, want the hold at %s\ncase %+v\nheld %v", address, crashed, hold, c, ours)
-				}
-			case asked:
-				if crashed.reject != keyOf(address) && (!host.IsValid() || host.Bits() <= keyOf(address).Bits()) {
-					ht.Fatalf("after a crash an unbound lookup of %s ends at %s, want the reject at %s\ncase %+v", address, crashed, keyOf(address), c)
-				}
-			}
-		}
-
-		c.toggle(ht, switched, false)
-		if after, _ := k.held(); len(after) != 0 || !slices.Equal(k.snapshot(), plain.snapshot()) {
-			ht.Fatalf("turning the switch off left rejects at %v and %v, want %v\ncase %+v", after, k.snapshot(), plain.snapshot(), c)
-		}
-		c.toggle(ht, plainReconciler, true)
-		if after, _ := plain.held(); !slices.Equal(after, held) || !slices.Equal(plain.snapshot(), ours) {
-			ht.Fatalf("turning the switch on left rejects at %v and %v, want %v and %v\ncase %+v", after, plain.snapshot(), held, ours, c)
-		}
+		hegel.Draw(ht, switchCases()).check(t, ht)
 	})
+}
+
+// A hold of the mesh's at an overlay key where the mesh had a route, with a
+// shorter route of the mesh's holding the key beneath the host's route at the
+// same length, leaves the key's addresses to the hold
+func TestSwitchLeavesAnOverlayKeyTheMeshRetractedToTheHold(t *testing.T) {
+	switchCase{
+		overlay:     coverOverlay,
+		mesh:        []netip.Prefix{prefix("::/1"), prefix("3fff:c::/32")},
+		unreachable: []netip.Prefix{prefix("3fff:c::/32")},
+		hosts:       []hostRoute{{destination: prefix("::/1"), index: 2}},
+		addresses:   coverAddresses[:1],
+	}.check(t, t)
+}
+
+// check fails ht where a pass over c breaks the property of
+// TestSwitchKeepsTheTunsRoutesOffTheRejectsKeys
+func (c switchCase) check(t *testing.T, ht testing.TB) {
+	switched, k := c.pass(t, ht, true)
+	plainReconciler, plain := c.pass(t, ht, false)
+	var holds []Route
+	for _, key := range overlayKeys(c.overlay) {
+		holds = append(holds, Route{Destination: key, Metric: holdMetric, Unreachable: true})
+	}
+	within := func(inner, outer netip.Prefix) bool {
+		return outer.Bits() <= inner.Bits() && outer.Contains(inner.Addr())
+	}
+	// linux's hold answers every address of its prefix that no route of the
+	// mesh at or inside the prefix holds, so its mesh table answers there
+	// only from such a route. A route from a source matches no lookup with
+	// no source, a hold of the mesh's refuses as the overlay's does, and a
+	// hold at a destination of c.mesh replaces the route there, as the table
+	// keeps one entry a source and destination, so only a route of c.mesh no
+	// hold replaced holds an address there for an unbound lookup
+	bare := c.reference(t, ht)
+	reference := append(slices.DeleteFunc(slices.Clone(bare), func(r Route) bool {
+		return slices.ContainsFunc(overlayKeys(c.overlay), func(key netip.Prefix) bool {
+			return within(r.Destination, key) && !slices.ContainsFunc(c.mesh, func(m netip.Prefix) bool {
+				return within(m, key) && within(r.Destination, m) && !slices.Contains(c.unreachable, m)
+			})
+		})
+	}), holds...)
+	// a socket bound to the tun meets the routes scoped to it, which no
+	// hold on lo0 answers ahead of, as linux passes a hold over for a
+	// lookup bound to the tun (routing.md row B4), so at or inside an
+	// overlay prefix they are the ones a pass with no switch and no split
+	// leaves there but a hold at an overlay key
+	scopedOf := func(routes []Route) []Route {
+		out := slices.DeleteFunc(slices.Clone(routes), func(r Route) bool {
+			return !r.Scoped || r.Unreachable && slices.Contains(overlayKeys(c.overlay), r.Destination) ||
+				!slices.ContainsFunc(overlayKeys(c.overlay), func(key netip.Prefix) bool { return within(r.Destination, key) })
+		})
+		slices.SortFunc(out, compareRoutes)
+		return out
+	}
+	asked := c.mode != 0
+	held, _ := k.held()
+	// the switch reads holding with no exit live and passing with one, never not holding
+	if asked && (!slices.Equal(held, rejectKeys) || switchReads(switched) != string(FallbackHolding) && switchReads(switched) != string(FallbackPassing)) {
+		ht.Fatalf("the switch reads %s with rejects at %v, want holding at each key\ncase %+v\nheld %v", switchReads(switched), held, c, k.snapshot())
+	}
+	if !asked && len(held) != 0 {
+		ht.Fatalf("with no switch asked for the fake holds rejects at %v", held)
+	}
+	ours := k.snapshot()
+	if got, want := scopedOf(ours), scopedOf(bare); !slices.Equal(got, want) {
+		ht.Fatalf("the routes of ours scoped to the tun at or inside the overlay are %v, want %v\ncase %+v", got, want, c)
+	}
+	for _, r := range ours {
+		if asked && !r.Scoped && slices.Contains(rejectKeys, r.Destination) {
+			ht.Fatalf("%+v sits at a key of the switch's while it is asked for\ncase %+v\nheld %v", r, c, ours)
+		}
+		if !r.Scoped && !r.Unreachable && slices.Contains(overlayKeys(c.overlay), r.Destination) {
+			ht.Fatalf("%+v sits at an overlay hold's key\ncase %+v\nheld %v", r, c, ours)
+		}
+	}
+	for _, address := range c.probes() {
+		got := unboundAt(ours, held, c.hosts, address)
+		model := unboundAt(reference, nil, c.hosts, address)
+		want := model
+		// a reject longer than the hold it ends at refuses in its place
+		refused := model.ours != nil && slices.Contains(holds, *model.ours) && keyOf(address).Bits() > model.ours.Destination.Bits()
+		if asked && (refused || model.ours == nil && (!model.host.IsValid() || keyOf(address).Bits() > model.host.Bits())) {
+			want = landing{reject: keyOf(address)}
+		}
+		matches := got.reject == want.reject && got.host == want.host && (got.ours == nil) == (want.ours == nil)
+		if matches && got.ours != nil {
+			r := *got.ours
+			r.Destination = want.ours.Destination
+			matches = r == *want.ours
+		}
+		if !matches {
+			ht.Fatalf("an unbound lookup of %s ends at %s, want %s\ncase %+v\nheld %v\nwith no switch and no split %v", address, got, want, c, ours, reference)
+		}
+		crashed := unboundAt(c.holdsOf(ours), held, c.hosts, address)
+		host := unboundAt(nil, nil, c.hosts, address).host
+		switch hold := c.holdAt(address); {
+		case hold.IsValid():
+			if (crashed.ours == nil || crashed.ours.Destination != hold) && crashed.reject.Bits() <= hold.Bits() && (!host.IsValid() || host.Bits() <= hold.Bits()) {
+				ht.Fatalf("after a crash an unbound lookup of %s ends at %s, want the hold at %s\ncase %+v\nheld %v", address, crashed, hold, c, ours)
+			}
+		case asked:
+			if crashed.reject != keyOf(address) && (!host.IsValid() || host.Bits() <= keyOf(address).Bits()) {
+				ht.Fatalf("after a crash an unbound lookup of %s ends at %s, want the reject at %s\ncase %+v", address, crashed, keyOf(address), c)
+			}
+		}
+	}
+
+	c.toggle(ht, switched, false)
+	if after, _ := k.held(); len(after) != 0 || !slices.Equal(k.snapshot(), plain.snapshot()) {
+		ht.Fatalf("turning the switch off left rejects at %v and %v, want %v\ncase %+v", after, k.snapshot(), plain.snapshot(), c)
+	}
+	c.toggle(ht, plainReconciler, true)
+	if after, _ := plain.held(); !slices.Equal(after, held) || !slices.Equal(plain.snapshot(), ours) {
+		ht.Fatalf("turning the switch on left rejects at %v and %v, want %v and %v\ncase %+v", after, plain.snapshot(), held, ours, c)
+	}
 }
