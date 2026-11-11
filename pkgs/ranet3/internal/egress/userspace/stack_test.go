@@ -53,7 +53,9 @@ func newStackHarness(t *testing.T) *stackHarness {
 func newStackHarnessOn(t *testing.T, clock tcpip.Clock) *stackHarness {
 	t.Helper()
 	h := &stackHarness{link: newLink(1 << 20)}
-	// on the host's clock the stack is built as the exit builds it
+	// the link's clock stays at zero, so its controlled delay drops no packet the test waits for
+	fakeClock(h.link)
+	// on the host's clock the stack's timers run as the exit builds them
 	build := newStack
 	if clock != nil {
 		build = func(l *link, window int, handlers stackHandlers) (*stack.Stack, error) {

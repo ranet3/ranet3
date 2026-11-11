@@ -72,6 +72,8 @@ func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relay
 	h.prepared = nil
 	h.mu.Unlock()
 	h.x = x
+	// the link's clock stays at zero, so its controlled delay drops no packet the test waits for
+	fakeClock(x.link)
 	x.answers = h.mesh.OpenLane()
 	h.lane = h.mesh.OpenLane()
 	x.udp.now, x.echo.now = h.now, h.now

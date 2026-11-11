@@ -130,6 +130,8 @@ func TestPumpLaysEverySegmentWholeWithItsSpacing(t *testing.T) {
 		tb.Helper()
 		l := newLink(1 << 30)
 		defer l.Close()
+		// the link's clock stays at zero, so its controlled delay drops no frame the pump is to lay
+		fakeClock(l)
 		var list stack.PacketBufferList
 		for _, f := range frames {
 			list.PushBack(f.packetBuffer())
@@ -173,8 +175,8 @@ func TestPumpLaysEverySegmentWholeWithItsSpacing(t *testing.T) {
 				got++
 			}
 		}
-		if got != len(want) || unlaid != 0 {
-			tb.Fatalf("laid %d of %d segments with %d unlaid", got, len(want), unlaid)
+		if delayed := l.delayed.Load(); got != len(want) || unlaid != 0 || delayed != 0 {
+			tb.Fatalf("laid %d of %d segments with %d unlaid and %d dropped for the delay", got, len(want), unlaid, delayed)
 		}
 	}
 	payload := func(size int, seed byte) []byte {
