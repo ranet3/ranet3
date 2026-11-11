@@ -170,6 +170,14 @@ func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 			return slices.Equal(last.After.IPv4.Addresses, after.IPv4.Addresses)
 		})
 	}
+	// delivered waits for one more read, which the watch's one goroutine makes only once it has delivered, or dropped as undone,
+	// what the read before it signaled
+	delivered := func() {
+		t.Helper()
+		reads := host.readCount()
+		poke()
+		waitFor(t, func() bool { return host.readCount() > reads })
+	}
 
 	poke()
 	quiet("a notification leaving the state alone")
@@ -188,6 +196,7 @@ func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	host.set(fourth)
 	poke()
 	lastIs(fourth)
+	delivered()
 	signaled("two changes nothing took between", second, fourth)
 
 	host.set(first)
@@ -196,6 +205,7 @@ func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	host.set(fourth)
 	poke()
 	lastIs(fourth)
+	delivered()
 	quiet("a change undone before anything took it")
 
 	host.set(second)

@@ -181,6 +181,7 @@ func (w *NetworkWatch) HealthChanged() <-chan struct{} { return w.healthChanged 
 func (w *NetworkWatch) Changes() <-chan NetworkChange { return w.changes }
 
 // State is the network as the watch last read it and the last change it signaled, zero before the first
+// a read's state shows here before its change is sent on Changes, so a reader that saw the state may still be sent the change
 func (w *NetworkWatch) State() (NetworkState, NetworkChange) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

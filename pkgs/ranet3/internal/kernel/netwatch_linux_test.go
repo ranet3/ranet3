@@ -306,7 +306,7 @@ func (s *heldSocket) Read(buf []byte) (int, error) {
 const overrunFill, overrunBurst = 16, 256
 
 // a burst past the monitor's receive buffer costs it the burst's notifications, and the ENOBUFS it reads then wakes the watch,
-// which reads the burst whole within quietWindow, and an address after it still signals
+// which signals the burst whole within quietWindow, and an address after it still signals
 // the queue holds only what wakes nothing when the monitor reads again, so ENOBUFS is the burst's only wake
 func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
@@ -354,16 +354,6 @@ func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = w.Close() })
 	time.Sleep(quietWindow)
-	drainChanges := func() {
-		for {
-			select {
-			case <-w.Changes():
-			default:
-				return
-			}
-		}
-	}
-	drainChanges()
 
 	socket.hold()
 	t.Cleanup(socket.release)
@@ -381,28 +371,26 @@ func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 	}
 	socket.release()
 
-	fresh := hostReader{conn: conn}
-	caughtUp := func() bool {
-		want, err := fresh.read()
-		if err != nil {
-			t.Fatalf("read the host: %v", err)
-		}
-		got, _ := w.State()
-		return len(NetworkChange{Before: got, After: want}.Families()) == 0
+	burst, err := hostReader{conn: conn}.read()
+	if err != nil {
+		t.Fatalf("read the host: %v", err)
 	}
-	deadline := time.Now().Add(quietWindow)
-	for !caughtUp() {
-		if time.Now().After(deadline) {
+	// a change not taken merges with the next, so once one ends at the burst no change older than the next address comes
+	deadline := time.After(quietWindow)
+	for caught := false; !caught; {
+		select {
+		case change := <-w.Changes():
+			caught = len(NetworkChange{Before: change.After, After: burst}.Families()) == 0
+		case <-deadline:
 			got, _ := w.State()
-			t.Fatalf("%d overrun(s) later the watch still reads %d IPv4 addresses, not the burst's %d", socket.overruns.Load(), len(got.IPv4.Addresses), overrunBurst)
+			t.Fatalf("%d overrun(s) later no change ending at the burst came within %v, and the watch reads %d IPv4 addresses of the burst's %d",
+				socket.overruns.Load(), quietWindow, len(got.IPv4.Addresses), overrunBurst)
 		}
-		time.Sleep(waitPoll)
 	}
 	if socket.overruns.Load() == 0 {
 		t.Fatal("the burst never overran the monitor, so the watch followed it by its notifications")
 	}
 
-	drainChanges()
 	if _, err := conn.execute(unix.RTM_NEWADDR, add, hostAddrMessage(uplink.index, prefix("192.0.2.77/32"))); err != nil {
 		t.Fatal(err)
 	}
