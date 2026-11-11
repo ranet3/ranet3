@@ -247,7 +247,7 @@ type borderBackend interface {
 	Fill(rules []BorderRule, was, sets borderSets) error
 	// Withdraw removes what the filter writes and reports whether it removed
 	// any, what is already gone being success. nftables removes the filter's
-	// chains and sets, and the table with them where nothing else is in it.
+	// chains and sets, and the table as nftables.Hold.Withdraw says.
 	Withdraw() (removed bool, err error)
 	// Changed carries another writer's changes to what the filter writes. On
 	// nftables it carries one coalesced wake-up per transaction in which

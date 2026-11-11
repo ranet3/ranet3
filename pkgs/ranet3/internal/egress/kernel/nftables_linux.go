@@ -27,6 +27,7 @@ import (
 type natTables struct {
 	conn     *nftables.Conn
 	monitor  *nftables.Monitor
+	holder   nftables.Hold
 	families []uint8
 	limit    int
 }
@@ -78,7 +79,10 @@ func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 	return be, nil
 }
 
-func (n *natTables) Close() error { return errors.Join(n.monitor.Close(), n.conn.Close()) }
+func (n *natTables) Close() error {
+	n.holder.Release()
+	return errors.Join(n.monitor.Close(), n.conn.Close())
+}
 
 func (n *natTables) Changed() <-chan struct{} { return n.monitor.Changed() }
 
@@ -127,8 +131,15 @@ func nftFamily(family uint8) uint8 {
 // set or an object holds its own family not ready. The elements of the set a
 // line looks its sources up in are read with the line. A rule in any other
 // table or chain is skipped, and never removed.
+// It counts the translator among the table's holders where it finds any of
+// the translator's chains, sets or objects, as a start that takes them over
+// keeps them.
 func (n *natTables) Rules(desired []Rule) (map[uint8]chainReadback, error) {
-	return n.read(n.conn, desired, true)
+	out, err := n.read(n.conn, desired, true)
+	if err == nil && (out[egress.FamilyIPv4].held || out[egress.FamilyIPv6].held) {
+		err = n.holder.Found(n.conn)
+	}
+	return out, err
 }
 
 func (n *natTables) Read(desired []Rule) (map[uint8]chainReadback, error) {
@@ -188,9 +199,9 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	families := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}
 	out := make(map[uint8]chainReadback, len(families))
 	for _, family := range families {
-		chainFault, remake := "", shared.Remake()
+		chainFault, remake, held := "", shared.Remake(), shared.Held
 		if family == egress.FamilyIPv6 {
-			chainFault, remake = ownFault, remake || own.Remake()
+			chainFault, remake, held = ownFault, remake || own.Remake(), held || own.Held
 		}
 		var objects nftables.Readback
 		if slices.Contains(n.families, family) {
@@ -199,7 +210,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 				return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 			}
 		}
-		out[family] = chainReadback{rules: placed[family], fault: cmp.Or(fault, chainFault, objects.Fault), remake: remake || objects.Remake()}
+		out[family] = chainReadback{rules: placed[family], fault: cmp.Or(fault, chainFault, objects.Fault), remake: remake || objects.Remake(), held: held || objects.Held}
 	}
 	return out, nil
 }
@@ -418,7 +429,7 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 	if err != nil {
 		return err
 	}
-	return n.conn.Batch(requests)
+	return n.holder.Write(n.conn, requests)
 }
 
 // translatorContents is the translator's objects for families: the chains
@@ -488,11 +499,11 @@ func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Co
 }
 
 // Withdraw removes the translator's chains, sets and timeout objects of both
-// families, and the table with them where nothing else is in it. Both
-// families' sets and objects go rather than the configured ones alone, so
-// those an instance under another configuration left go with the rest.
+// families as nftables.Hold.Withdraw does. Both families' sets and objects
+// go rather than the configured ones alone, so those an instance under
+// another configuration left go with the rest.
 func (n *natTables) Withdraw() error {
-	_, err := nftables.Withdraw(n.conn, translatorScope)
+	_, err := n.holder.Withdraw(n.conn, translatorScope)
 	return err
 }
 

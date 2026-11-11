@@ -380,25 +380,31 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	if err != nil {
 		return err
 	}
-	return conn.Batch(requests)
+	return p.fallbackHeld.Write(conn, requests)
 }
 
+// readFallback counts the switch among the table's holders where it finds any
+// of the switch's chains or sets, as a start that takes them over keeps them
 func (p *netlinkPlatform) readFallback(s fallbackSets) (fallbackRead, error) {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return fallbackRead{}, err
 	}
-	return fallbackFault(conn, s)
+	out, found, err := fallbackFault(conn, s)
+	if err == nil && found {
+		err = p.fallbackHeld.Found(conn)
+	}
+	return out, err
 }
 
 // fallbackFault reads the switch conn holds against what writeFallback writes
-// for s
-func fallbackFault(conn *nftables.Conn, s fallbackSets) (fallbackRead, error) {
+// for s, and reports whether it found any of the switch's chains or sets
+func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found bool, err error) {
 	read, err := readFallback(conn, s)
 	if err != nil {
-		return fallbackRead{}, err
+		return fallbackRead{}, false, err
 	}
-	out := fallbackRead{remake: read.Remake()}
+	out = fallbackRead{remake: read.Remake()}
 	for _, rule := range read.Rules {
 		if rule.Spec == fallbackDrop {
 			out.dropped, out.bytes = out.dropped+rule.Packets, out.bytes+rule.Bytes
@@ -406,17 +412,17 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (fallbackRead, error) {
 	}
 	if read.Fault != "" {
 		out.fault = read.Fault
-		return out, nil
+		return out, read.Held, nil
 	}
 	for i := range fallbackChains {
 		if out.fault, err = chainFault(conn, s, i, read.Rules); err != nil {
-			return fallbackRead{}, err
+			return fallbackRead{}, false, err
 		}
 		if out.fault != "" {
 			break
 		}
 	}
-	return out, nil
+	return out, read.Held, nil
 }
 
 // chainFault names how the chain at index chain of fallbackChains holds lines
@@ -515,15 +521,17 @@ func holdsSwitch(chains []string) bool {
 	return slices.ContainsFunc(fallbackChains, func(chain nftables.Chain) bool { return slices.Contains(chains, chain.Name) })
 }
 
-// deleteFallback deletes through the watch's socket, so its own delete wakes
-// nothing, and closes the watch, which the next pass that asks for the switch
-// opens again
+// deleteFallback removes the switch's chains and sets as
+// nftables.Hold.Withdraw does, through the watch's socket, so its own delete
+// wakes nothing, and closes the watch, which the next pass that asks for the
+// switch opens again
 func (p *netlinkPlatform) deleteFallback() error {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
-	return errors.Join(deleteFallback(conn), p.unwatchFallback())
+	_, err = p.fallbackHeld.Withdraw(conn, fallbackScope)
+	return errors.Join(err, p.unwatchFallback())
 }
 
 // holdsFallback lists the table's chains through the watch's socket
@@ -539,15 +547,9 @@ func (p *netlinkPlatform) holdsFallback() (bool, error) {
 	return holdsSwitch(chains), nil
 }
 
-// deleteFallback removes the switch's chains and sets, and the table with
-// them where nothing else is in it
-func deleteFallback(conn *nftables.Conn) error {
-	_, err := nftables.Withdraw(conn, fallbackScope)
-	return err
-}
-
 // DeleteFallback deletes the switch an earlier instance left, for a start that
-// runs no reconciler to delete it. A kernel without nf_tables holds none. A
+// runs no reconciler to delete it, and leaves the table, which such a start
+// never held. A kernel without nf_tables holds none. A
 // start without CAP_NET_ADMIN, which nfnetlink refuses with EPERM, cannot
 // tell whether one is held, and warns as any other refusal. The overlay names
 // darwin's holds and nothing here, where the holds are routes of ranet3's
@@ -555,7 +557,8 @@ func deleteFallback(conn *nftables.Conn) error {
 func DeleteFallback(_ []schema.Prefix) {
 	conn, err := nftables.Dial()
 	if err == nil {
-		err = deleteFallback(conn)
+		var never nftables.Hold
+		_, err = never.Withdraw(conn, fallbackScope)
 		_ = conn.Close()
 	}
 	if err != nil && !withoutNFTables(err) {

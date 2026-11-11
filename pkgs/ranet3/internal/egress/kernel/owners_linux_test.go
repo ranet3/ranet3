@@ -153,6 +153,53 @@ func startOwners(t *testing.T) (*Translator, backend, borderBackend, *BorderFilt
 	return tr, be, filterBackend, f, switchConn
 }
 
+// A translator that ended without withdrawing holds the table no more, and the
+// next one, whose first pass finds what the first wrote as written and keeps
+// every handle of it, holds the table in its place: its withdrawal, the
+// table's last holder's, deletes the table
+func TestTranslatorTakingAnEndedOnesChainsOverDeletesTheTableAtItsWithdrawal(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	ended, err := newBackend(egress.Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the first translator's backend: %v", err)
+	}
+	requireEmptyRuleset(t, ended)
+	if err := newTranslator(egress.Egress{}, rt, ended).reconcile(); err != nil {
+		t.Fatalf("the first translator's pass: %v", err)
+	}
+	if err := ended.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	written := tableHandlesByName(t, reader)
+
+	be, err := newBackend(egress.Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the next translator's backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	if err := newTranslator(egress.Egress{}, rt, be).reconcile(); err != nil {
+		t.Fatalf("the next translator's pass: %v", err)
+	}
+	if kept := tableHandlesByName(t, reader); !maps.Equal(kept, written) {
+		t.Fatalf("the next translator's pass changed the handles %v to %v, want what the first wrote kept", written, kept)
+	}
+	if err := be.Withdraw(); err != nil {
+		t.Fatalf("the next translator's withdrawal: %v", err)
+	}
+	if tables, err := nftables.Tables(reader, nftables.Table); err != nil || len(tables) != 0 {
+		t.Errorf("after the withdrawal of the translator that took the chains over, the table %s is in the families %v (%v), want none", nftables.Table, tables, err)
+	}
+}
+
 // Each owner's remake, of a chain made again at another priority or the table
 // set dormant, deletes and makes again at most its own chains: every chain,
 // rule, set and object of the other two keeps its handle, and its counters

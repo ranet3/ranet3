@@ -24,8 +24,8 @@ import (
 // Scope names the objects one owner writes in Table: its chains, those whose
 // name runs past Prefix among them, its named sets and its ct timeout
 // objects. Its monitor watches the chains and the sets, never a timeout
-// object, whose change the owner's next read finds, and Withdraw removes all
-// of them.
+// object, whose change the owner's next read finds, and Hold.Withdraw
+// removes all of them.
 type Scope struct {
 	Chains   []string
 	Prefix   string

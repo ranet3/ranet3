@@ -1493,6 +1493,8 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		t.Fatalf("open a second nftables backend: %v", err)
 	}
 	t.Cleanup(func() { _ = check.Close() })
+	// it reads through read, not Rules, so it holds no table beside the translator
+	reader := check.(*natTables)
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1539,7 +1541,7 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		mark := len(entries())
 		run(change.command)
 		moved(change.name, mark, "ready false false", "ready true true")
-		read, err := check.Rules(desired)
+		read, err := reader.read(reader.conn, desired, true)
 		_, faulted, remake := flatten(read)
 		if err != nil || faulted || remake {
 			t.Errorf("%s: after the pass the chains read back as %+v (%v), want %v as written", change.name, read, err, desired)

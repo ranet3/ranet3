@@ -25,6 +25,7 @@ import (
 type borderTable struct {
 	conn    *nftables.Conn
 	monitor *nftables.Monitor
+	holder  nftables.Hold
 }
 
 // Filters reports that the filter runs on every node here, its entry chain
@@ -51,7 +52,10 @@ func newBorderBackend(*egress.Border, egress.BorderRuntime) (borderBackend, erro
 	return &borderTable{conn: conn, monitor: monitor}, nil
 }
 
-func (b *borderTable) Close() error { return errors.Join(b.monitor.Close(), b.conn.Close()) }
+func (b *borderTable) Close() error {
+	b.holder.Release()
+	return errors.Join(b.monitor.Close(), b.conn.Close())
+}
 
 // Leave is Close, since the chains and sets are all the backend holds for the
 // filter
@@ -91,8 +95,14 @@ func (b *borderTable) chain(name string) egress.BorderChainReading {
 
 func (b *borderTable) readings(sets borderSets) []egress.BorderSetReading { return sets.readings() }
 
+// Rules counts the filter among the table's holders where it finds any of
+// the filter's chains or sets, as a start that takes them over keeps them
 func (b *borderTable) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
-	return readBorder(b.conn, rules, sets)
+	read, err := readBorder(b.conn, rules, sets)
+	if err == nil && read.held {
+		err = b.holder.Found(b.conn)
+	}
+	return read, err
 }
 
 // Read dumps through a socket of its own, so the run goroutine's stays with
@@ -220,7 +230,7 @@ func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 	if err != nil {
 		return err
 	}
-	return b.conn.Batch(requests)
+	return b.holder.Write(b.conn, requests)
 }
 
 // borderBatch is the transaction Apply sends over the chains the table holds,
@@ -264,7 +274,7 @@ func (b *borderTable) Fill(_ []BorderRule, was, sets borderSets) error {
 	if err != nil {
 		return err
 	}
-	return b.conn.Batch(requests)
+	return b.holder.Write(b.conn, requests)
 }
 
 // fillBatch is the transaction Fill sends: each set sets names moved from what
@@ -285,9 +295,9 @@ func fillBatch(was, sets borderSets) ([]nftables.Request, error) {
 	return requests, nil
 }
 
-// Withdraw removes the filter's chains and sets, and the table with them
-// where nothing else is in it
-func (b *borderTable) Withdraw() (bool, error) { return nftables.Withdraw(b.conn, borderScope) }
+// Withdraw removes the filter's chains and sets as nftables.Hold.Withdraw
+// does
+func (b *borderTable) Withdraw() (bool, error) { return b.holder.Withdraw(b.conn, borderScope) }
 
 func newBorderRule(rule BorderRule) (nftables.Request, error) {
 	line, err := borderLine(rule)

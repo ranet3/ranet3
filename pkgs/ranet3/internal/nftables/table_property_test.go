@@ -63,13 +63,15 @@ func requestName(r Request) string {
 	return ""
 }
 
-// A withdrawal over any listing of the table deletes the table exactly where
+// A withdrawal over any listing of the table, by the table's last holder or
+// another, deletes the table exactly where the owner is the last holder,
 // every chain, named set and object in it is the owner's and no flag but
-// dormant is set, names no other owner's or stranger's chain, set or object
-// otherwise, flushes each of the owner's chains before it deletes any chain,
-// set or object, deletes each of the owner's chains once but one a rule of a
-// chain it does not flush goes to, and each of its sets and objects once, and
-// sends nothing where the table holds nothing of the owner's
+// dormant is set, and then as its one last request, names no other owner's
+// or stranger's chain, set or object otherwise, flushes each of the owner's
+// chains before it deletes any chain, set or object, deletes each of the
+// owner's chains once but one a rule of a chain it does not flush goes to,
+// and each of its sets and objects once, and sends nothing where the table
+// holds nothing of the owner's
 func TestWithdrawalTakesTheOwnersObjectsAlone(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		owner := hegel.Draw(ht, pbt.Spanning(0, len(owners)-1))
@@ -103,89 +105,98 @@ func TestWithdrawalTakesTheOwnersObjectsAlone(t *testing.T) {
 			}
 		}
 		s := ownerScope(owner)
-		requests := s.withdrawal(l)
-
-		owned := 0
-		for _, name := range slices.Concat(l.chains, l.sets) {
-			if ownerOf(name) == owner {
-				owned++
-			}
-		}
-		for _, o := range l.objects {
-			if ownerOf(o.name) == owner {
-				owned++
-			}
-		}
-		total := len(l.chains) + len(l.sets) + len(l.objects)
-		if owned == 0 {
-			if len(requests) != 0 {
-				ht.Fatalf("over %+v holding nothing of the %s's the withdrawal sends %d requests", l, owners[owner].name, len(requests))
-			}
-			return
-		}
-		deletesTable := slices.ContainsFunc(requests, func(r Request) bool { return r.Kind == Command(unix.NFT_MSG_DELTABLE) })
-		if want := owned == total && l.flags&^unix.NFT_TABLE_F_DORMANT == 0; deletesTable != want {
-			ht.Fatalf("over %+v the %s's withdrawal deletes the table %v, want %v", l, owners[owner].name, deletesTable, want)
-		}
-		if deletesTable {
-			if len(requests) != 1 {
-				ht.Fatalf("a withdrawal deleting the table sends %d requests", len(requests))
-			}
-			return
-		}
-		lastFlush, firstDelete := -1, len(requests)
-		for i, r := range requests {
-			name := requestName(r)
-			if ownerOf(name) != owner {
-				ht.Fatalf("the %s's withdrawal over %+v names %s, which is not its own", owners[owner].name, l, name)
-			}
-			if r.Kind == Command(unix.NFT_MSG_DELRULE) {
-				lastFlush = i
-			} else {
-				firstDelete = min(firstDelete, i)
-			}
-			if r.Kind == Command(unix.NFT_MSG_DELCHAIN) && name == held {
-				ht.Fatalf("the withdrawal deletes the chain %s a rule of chain %s goes to", name, l.rules[0].Chain)
-			}
-		}
-		if lastFlush > firstDelete {
-			ht.Fatalf("the withdrawal flushes at %d after a deletion at %d", lastFlush, firstDelete)
-		}
-		sent := func(kind int, name string) int {
-			n := 0
-			for _, r := range requests {
-				if r.Kind == Command(kind) && requestName(r) == name {
-					n++
-				}
-			}
-			return n
-		}
-		for _, name := range l.chains {
-			if ownerOf(name) != owner {
-				continue
-			}
-			if sent(unix.NFT_MSG_DELRULE, name) == 0 {
-				ht.Fatalf("the withdrawal leaves the chain %s of the %s's unflushed", name, owners[owner].name)
-			}
-			want := 1
-			if name == held {
-				want = 0
-			}
-			if sent(unix.NFT_MSG_DELCHAIN, name) != want {
-				ht.Fatalf("the %s's withdrawal over %+v deletes its chain %s %d times, want %d", owners[owner].name, l, name, sent(unix.NFT_MSG_DELCHAIN, name), want)
-			}
-		}
-		for _, name := range l.sets {
-			if ownerOf(name) == owner && sent(unix.NFT_MSG_DELSET, name) != 1 {
-				ht.Fatalf("the %s's withdrawal over %+v deletes its set %s %d times, want once", owners[owner].name, l, name, sent(unix.NFT_MSG_DELSET, name))
-			}
-		}
-		for _, o := range l.objects {
-			if ownerOf(o.name) == owner && sent(unix.NFT_MSG_DELOBJ, o.name) != 1 {
-				ht.Fatalf("the %s's withdrawal over %+v deletes its object %s %d times, want once", owners[owner].name, l, o.name, sent(unix.NFT_MSG_DELOBJ, o.name))
-			}
+		// the last holder and any other are swept, since a withdrawal branches on it
+		for _, last := range []bool{false, true} {
+			withdrawsAlone(ht, owner, l, held, last, s.withdrawal(l, last))
 		}
 	})
+}
+
+// withdrawsAlone fails ht where requests, the withdrawal of the owner at
+// index owner over l, by the table's last holder where last, is other than
+// TestWithdrawalTakesTheOwnersObjectsAlone says, held being the chain of the
+// owner's a rule of a chain it does not flush goes to
+func withdrawsAlone(ht *hegel.T, owner int, l listing, held string, last bool, requests []Request) {
+	owned := 0
+	for _, name := range slices.Concat(l.chains, l.sets) {
+		if ownerOf(name) == owner {
+			owned++
+		}
+	}
+	for _, o := range l.objects {
+		if ownerOf(o.name) == owner {
+			owned++
+		}
+	}
+	total := len(l.chains) + len(l.sets) + len(l.objects)
+	if owned == 0 {
+		if len(requests) != 0 {
+			ht.Fatalf("over %+v holding nothing of the %s's the withdrawal sends %d requests", l, owners[owner].name, len(requests))
+		}
+		return
+	}
+	deletes := slices.IndexFunc(requests, func(r Request) bool { return r.Kind == Command(unix.NFT_MSG_DELTABLE) })
+	if want := last && owned == total && l.flags&^unix.NFT_TABLE_F_DORMANT == 0; (deletes >= 0) != want {
+		ht.Fatalf("over %+v the %s's withdrawal, the last holder's %v, deletes the table %v, want %v", l, owners[owner].name, last, deletes >= 0, want)
+	}
+	if deletes >= 0 {
+		if deletes != len(requests)-1 {
+			ht.Fatalf("the %s's withdrawal deletes the table at %d of its %d requests, want last", owners[owner].name, deletes, len(requests))
+		}
+		requests = requests[:deletes]
+	}
+	lastFlush, firstDelete := -1, len(requests)
+	for i, r := range requests {
+		name := requestName(r)
+		if ownerOf(name) != owner {
+			ht.Fatalf("the %s's withdrawal over %+v names %s, which is not its own", owners[owner].name, l, name)
+		}
+		if r.Kind == Command(unix.NFT_MSG_DELRULE) {
+			lastFlush = i
+		} else {
+			firstDelete = min(firstDelete, i)
+		}
+		if r.Kind == Command(unix.NFT_MSG_DELCHAIN) && name == held {
+			ht.Fatalf("the withdrawal deletes the chain %s a rule of chain %s goes to", name, l.rules[0].Chain)
+		}
+	}
+	if lastFlush > firstDelete {
+		ht.Fatalf("the withdrawal flushes at %d after a deletion at %d", lastFlush, firstDelete)
+	}
+	sent := func(kind int, name string) int {
+		n := 0
+		for _, r := range requests {
+			if r.Kind == Command(kind) && requestName(r) == name {
+				n++
+			}
+		}
+		return n
+	}
+	for _, name := range l.chains {
+		if ownerOf(name) != owner {
+			continue
+		}
+		if sent(unix.NFT_MSG_DELRULE, name) == 0 {
+			ht.Fatalf("the withdrawal leaves the chain %s of the %s's unflushed", name, owners[owner].name)
+		}
+		want := 1
+		if name == held {
+			want = 0
+		}
+		if sent(unix.NFT_MSG_DELCHAIN, name) != want {
+			ht.Fatalf("the %s's withdrawal over %+v deletes its chain %s %d times, want %d", owners[owner].name, l, name, sent(unix.NFT_MSG_DELCHAIN, name), want)
+		}
+	}
+	for _, name := range l.sets {
+		if ownerOf(name) == owner && sent(unix.NFT_MSG_DELSET, name) != 1 {
+			ht.Fatalf("the %s's withdrawal over %+v deletes its set %s %d times, want once", owners[owner].name, l, name, sent(unix.NFT_MSG_DELSET, name))
+		}
+	}
+	for _, o := range l.objects {
+		if ownerOf(o.name) == owner && sent(unix.NFT_MSG_DELOBJ, o.name) != 1 {
+			ht.Fatalf("the %s's withdrawal over %+v deletes its object %s %d times, want once", owners[owner].name, l, o.name, sent(unix.NFT_MSG_DELOBJ, o.name))
+		}
+	}
 }
 
 // A rewrite over any stale subset of an owner's chains, sets and objects,

@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/netlink"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 // netlinkConn is everything this backend asks of a netlink socket. Reaching
@@ -56,6 +57,9 @@ type netlinkPlatform struct {
 	// pass's under a capability that does not write them. Only the reconcile
 	// loop touches it once the platform is built.
 	fallback *fallbackWatch
+	// fallbackHeld is the switch's hold on its table, which outlives each
+	// watch and ends at Close. Only the reconcile loop touches it.
+	fallbackHeld nftables.Hold
 }
 
 // each optional half is reached only through a type assertion
@@ -116,6 +120,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 func (p *netlinkPlatform) Notify() <-chan struct{} { return p.monitor.signal }
 
 func (p *netlinkPlatform) Close() error {
+	p.fallbackHeld.Release()
 	return errors.Join(p.unwatchFallback(), p.monitor.Close(), p.conn.Close())
 }
 

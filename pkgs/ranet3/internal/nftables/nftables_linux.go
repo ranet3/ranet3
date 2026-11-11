@@ -429,37 +429,6 @@ func (c Contents) Rewrite(proto uint8, stale Contents, strays []string) []Reques
 	return requests
 }
 
-// Withdraw removes what s names from Table in one transaction and reports
-// whether the table held any of it, a table that is not there being success.
-// Where the table holds nothing of another writer's and no flag but dormant,
-// it deletes the table, which takes s's chains, sets and objects with it.
-// Otherwise it flushes each chain of s's, deletes each but one another
-// writer's rule or map element goes to, which nf_tables refuses to delete
-// and which stays flushed, then deletes s's sets and timeout objects, which a
-// rule of another writer's still using one fails. A table carrying the owner
-// or persist flag is never deleted, since it belongs to the socket that set
-// the flag or to a start that adopts it.
-func Withdraw(conn *Conn, s Scope) (removed bool, err error) {
-	tables, err := Tables(conn, Table)
-	if err != nil {
-		return false, err
-	}
-	flags, held := tables[unix.NFPROTO_INET]
-	if !held {
-		return false, nil
-	}
-	l, err := list(conn, flags)
-	if err != nil {
-		return false, err
-	}
-	requests := s.withdrawal(l)
-	if len(requests) == 0 {
-		return false, nil
-	}
-	err = conn.Batch(requests)
-	return err == nil, err
-}
-
 // listing is Table as a withdrawal finds it: its flags, the name of each
 // chain and named set, each object by type and name, every rule and every
 // verdict map, which say what goes to a chain
@@ -522,9 +491,10 @@ func list(conn *Conn, flags uint32) (listing, error) {
 	return l, nil
 }
 
-// withdrawal is the transaction Withdraw sends over l, none where l holds
-// nothing of s's
-func (s Scope) withdrawal(l listing) []Request {
+// withdrawal is the transaction Hold.Withdraw sends over l, none where l
+// holds nothing of s's, ending in the table's deletion where last, s being
+// the table's last holder, and l shows no flag but dormant and nothing but s's
+func (s Scope) withdrawal(l listing, last bool) []Request {
 	timeout := func(o object) bool {
 		return o.kind == unix.NFT_OBJECT_CT_TIMEOUT && slices.Contains(s.Timeouts, o.name)
 	}
@@ -533,9 +503,6 @@ func (s Scope) withdrawal(l listing) []Request {
 	objects := slices.DeleteFunc(slices.Clone(l.objects), func(o object) bool { return !timeout(o) })
 	if len(chains) == 0 && len(sets) == 0 && len(objects) == 0 {
 		return nil
-	}
-	if l.flags&^unix.NFT_TABLE_F_DORMANT == 0 && len(chains) == len(l.chains) && len(sets) == len(l.sets) && len(objects) == len(l.objects) {
-		return []Request{DeleteTable(unix.NFPROTO_INET, Table)}
 	}
 	var requests []Request
 	// every chain is flushed before any is deleted, since a goto in one keeps another it names from being deleted
@@ -552,6 +519,9 @@ func (s Scope) withdrawal(l listing) []Request {
 	}
 	for _, o := range objects {
 		requests = append(requests, Timeout{Table: Table, Name: o.name}.Delete(unix.NFPROTO_INET))
+	}
+	if last && l.flags&^unix.NFT_TABLE_F_DORMANT == 0 && len(chains) == len(l.chains) && len(sets) == len(l.sets) && len(objects) == len(l.objects) {
+		requests = append(requests, DeleteTable(unix.NFPROTO_INET, Table))
 	}
 	return requests
 }

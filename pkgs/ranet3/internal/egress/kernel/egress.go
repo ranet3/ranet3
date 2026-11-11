@@ -20,7 +20,7 @@
 // (exit-nodes.md, "Each source's share of the flows"). Their names are the
 // ownership marker, the way Table.Proto is the reconciler's in
 // internal/kernel. This package writes only those, and withdraws them at
-// shutdown, with the table where nothing of another writer's is left in it.
+// shutdown, with the table as nftables.Hold.Withdraw says.
 // It reads other writers' tables, chains and rules to find its own and to
 // report conflicts, and writes, replaces or deletes nothing else. A rule
 // another writer puts in this package's chains is removed by the next pass.
@@ -512,8 +512,9 @@ type chainReadback struct {
 	// pf is pf's state beside the anchor as the antispoof filter's pf backend
 	// read it, nil on every other backend
 	pf *egress.BorderPF
-	// held is whether any of the antispoof filter's chains or sets is there,
-	// which its readback alone sets
+	// held is whether any chain, set or object of the owner's that the family
+	// reads is there, which the antispoof filter's readback and the
+	// translator's set
 	held bool
 }
 
@@ -538,9 +539,9 @@ type backend interface {
 	// Conflicts names the source translation already on the host that this
 	// node's traffic could meet, for an operator rather than as a number.
 	Conflicts() ([]string, error)
-	// Withdraw removes the translator's own chains, sets and objects, and the
-	// table with them where it holds nothing else. What is already gone is
-	// success.
+	// Withdraw removes the translator's own chains, sets and objects, and on
+	// nftables the table as nftables.Hold.Withdraw says. What is already gone
+	// is success.
 	Withdraw() error
 	// Changed carries one coalesced wake-up per transaction in which another
 	// writer deleted the table, set a flag on it, or added, changed or deleted
@@ -1159,8 +1160,8 @@ func (t *Translator) stop() error {
 	return err
 }
 
-// withdraw removes the chains, sets and objects this translator owns, and the
-// table with them where nothing else is in it. It is best effort by
+// withdraw removes the chains, sets and objects this translator owns, as its
+// backend's Withdraw does. It is best effort by
 // construction: the caller usually stops the mesh at the same moment, and what
 // is already gone is not an error.
 func (t *Translator) withdraw() error {

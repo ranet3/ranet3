@@ -523,7 +523,7 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 	fault := func() string {
-		read, err := fallbackFault(reader, sets)
+		read, _, err := fallbackFault(reader, sets)
 		if err != nil {
 			t.Fatalf("read the table back: %v", err)
 		}
@@ -624,8 +624,9 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 // listing finds, and no rule, route or address of its own, so the switch's drop
 // alone refuses the host's datagram beyond the LAN. The next Run puts the rules
 // back and takes the chains over as it finds them, its drop's count kept, and a
-// Run stopped plainly leaves nothing for a listing to find, even with the
-// antispoof filter's entry chain in the table.
+// Run stopped plainly leaves nothing for a listing to find, the table with it,
+// since the switch it took over holds the table as a write would, and leaves
+// no switch even with the antispoof filter's entry chain in the table.
 func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	const device, uplink = "ranetsw0", "ranetup0"
 	plat := rootRulePlatform(t, device)
@@ -669,10 +670,15 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		listed                   bool
 		rules, routes, addresses int
 	}
-	// held reads the switch back and lists it through the test's own platform, and counts the reconciler's rules, routes and
-	// addresses
+	reader, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	// held reads the switch back through a socket of the test's own, so the read holds no table, lists it through the
+	// test's own platform, and counts the reconciler's rules, routes and addresses
 	held := func() (out leftover) {
-		read, err := plat.readFallback(sets)
+		read, _, err := fallbackFault(reader, sets)
 		listed, listErr := plat.holdsFallback()
 		rules, ruleErr := plat.Rules()
 		routes, routeErr := plat.Routes()
@@ -705,6 +711,9 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	stop(nil)
 	if left := held(); left.read.fault != "its chains are missing" || left.listed || left.rules+left.routes+left.addresses > 0 {
 		t.Errorf("a plain stop left %+v, want nothing", left)
+	}
+	if tables, err := nftables.Tables(reader, nftables.Table); err != nil || len(tables) != 0 {
+		t.Errorf("after the plain stop of the start that took the switch over, the table %s is in the families %v (%v), want none", nftables.Table, tables, err)
 	}
 	filter, err := nftables.Dial()
 	if err != nil {
