@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-11
+updated: 2026-11-12
 order: 20
 ---
 
@@ -221,6 +221,196 @@ nameserver outside the overlay that prepare is checked by `internal/registry`'s
 unit tests. Each test ends by deleting any reject an arm left at the switch's or
 the overlay's keys, and checks that the host's table and defaults are as they
 were.
+
+### The userspace exit's host ports
+
+Two of the darwin tests of `internal/egress/userspace` below narrow the whole
+Mac's automatic port range, from `net.inet.ip.portrange.first` to
+`net.inet.ip.portrange.last`, to a window of 4 or 2048 ports, which they fill
+with TCP sockets of their own on purpose. While it is narrowed, every automatic
+port of the Mac, of either protocol, comes from that window, and once it is full
+the first test reads an automatic TCP bind and an unbound TCP connect refused,
+and the attack test an unbound TCP connect. Run them on a Mac nothing else
+depends on while they run, and note what
+`sysctl net.inet.ip.portrange.first net.inet.ip.portrange.last` prints before a
+run. The range is not TCP's alone: XNU's bind of port 0 reads it with no test of
+the protocol
+([in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1146-L1150)),
+and so does the port namespace of the host's Skywalk flows
+([netns.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/skywalk/namespace/netns.c#L291-L292)).
+
+Each of the two writes the range with `/usr/sbin/sysctl -w`, reads back each
+write, and writes back the values it read at its start, in these ways:
+
+- **In its own process,** with each write read back: when it ends, when it
+  fails, on `SIGINT`, `SIGTERM`, `SIGHUP` or `SIGQUIT`, and at a timer it arms
+  just before narrowing, 60 seconds on in
+  `TestTimeWaitRefusesItsPortsToAutomaticBindsAndUnboundConnects` and 120
+  seconds on in
+  `TestHostPortBoundPreservesUnboundConnectsUnderALeafFirstAttack`, which also
+  restores the range through a watcher of its own within 85 seconds of starting
+  to narrow it. The timer and a signal end the process after the restore. On
+  `SIGQUIT` the test then resets its handler and sends itself the signal again,
+  so Go's goroutine dump still follows. All of these act only while the process
+  runs.
+- **Outside its process:** before its first narrowing write, each starts
+  `/bin/sh` in a session of its own, with an empty environment, `/` as its
+  directory and the null device as its streams, which sleeps and then runs
+  `/usr/sbin/sysctl -w` for each of the two values, 68 seconds after its start
+  in the first test and 128 seconds after it in the attack test, past each
+  test's own timer and its writes. The test checks right before its first
+  narrowing write that this process still waits, and fails as setup where it
+  does not. Once a restore in the process has read back both values, the test
+  kills that process's group, reaps it, and logs a line that starts with
+  `outside restore:` and says whether it found the process still waiting. Where
+  a restore in the process fails, the outside one stays armed, and the message
+  says when it writes.
+- **The test binary's deadline:** before narrowing, each test fails as setup
+  where `go test`'s `-timeout` leaves less than the test needs, 64 seconds in
+  the first test and 122 seconds in the attack test, and prints
+  `test deadline has N seconds left, need 64.000 seconds before narrowing`, or
+  `122.000`, with the flag to pass. Pass `-timeout 0` to `go test`, or
+  `-test.timeout 0` to its binary.
+- **A range left narrowed:** each fails as setup on a range under 8192 ports,
+  which may be an interrupted run's leftover, and refuses to narrow while the
+  outside restore of an earlier narrowing test in the same binary has not been
+  retired.
+
+What nothing covers: the test checks that its outside process still waits right
+before it narrows, and nothing watches that process afterwards. Where the
+process dies during the narrowed stretch and the test binary dies too, nothing
+of the tests writes the range back. A Mac that loses power starts again on XNU's
+own range, from 49152 to 65535
+([in_pcb.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L183-L184)).
+To restore the range by hand, run
+`sysctl -w net.inet.ip.portrange.first=<first>` and
+`sysctl -w net.inet.ip.portrange.last=<last>` as root with the values noted
+before the run, or reboot. The attack test logs those values in its line
+`attack: original range`, and the first test logs them nowhere.
+
+Each test below runs only where its variable is set, except the three listed
+last, which run with none. The package's test binary is built once into a
+directory from `mktemp -d`, which only the developer can write, since a file in
+the shared `/tmp` may belong to another account by the time `sudo` runs it, and
+runs each as root with its variable, an anchored `-test.run` and the
+`-test.timeout` given. Only a build that succeeds sets `bin`, so where it fails
+each `sudo` line stops at `${bin:?}` and runs nothing:
+
+```sh
+bin=
+dir=$(mktemp -d) && go test -c -o "$dir/userspace.test" ./internal/egress/userspace && bin=$dir/userspace.test
+sudo env RANET3_TIMEWAIT_SERVER=192.0.2.10:9000 "${bin:?the build failed}" -test.run '^TestTimeWaitRefusesItsPortsToAutomaticBindsAndUnboundConnects$' -test.timeout 0
+sudo env RANET3_TIMEWAIT_SERVER=192.0.2.10:9000 "${bin:?the build failed}" -test.run '^TestTimeWaitPortsBecomeAvailableAfterTheirSocketsEnd$' -test.timeout 10m
+sudo env RANET3_TIMEWAIT_SERVER=192.0.2.10:9000 "${bin:?the build failed}" -test.run '^TestTimeWaitRegistrarReferencesDisappearAfterTheirSocketsEnd$' -test.timeout 10m
+sudo env RANET3_TIMEWAIT_RATE=1 "${bin:?the build failed}" -test.run '^TestBenchLeafFirstConnectionRateWithAndWithoutHostPortBounds$' -test.timeout 15m
+sudo env RANET3_TIMEWAIT_ATTACK=1 "${bin:?the build failed}" -test.run '^TestHostPortBoundPreservesUnboundConnectsUnderALeafFirstAttack$' -test.timeout 0
+```
+
+- `RANET3_TIMEWAIT_SERVER`, run as root, starts three tests, one of which
+  narrows the whole Mac's range. Run as another user it starts the second alone.
+  It names a server off the Mac by an IPv4 address and port, such as
+  `192.0.2.10:9000`: an address that is global unicast and none of the Mac's
+  own, a port other than 0, and a server there that reads to the client's FIN
+  and then closes without sending anything. The tests print neither it nor
+  `RANET3_TIMEWAIT_OTHER`, and print an error that may carry an address by its
+  kind alone. Each connects to the server from sockets of its own and closes
+  them first, so the Mac holds them in TIME_WAIT:
+  - `TestTimeWaitRefusesItsPortsToAutomaticBindsAndUnboundConnects` runs as
+    root, since it writes the range, and needs an MSL whose double outlasts its
+    narrowed stretch's bound of 22 seconds. It binds each of the last 4 ports of
+    the range once without connecting, to check they are free, narrows the range
+    to those 4, and leaves each in TIME_WAIT. While it is narrowed, every
+    program's bind of port 0 and connect from an unbound socket draws on those 4
+    ports, and the test reads its own refused. It leaves the 4 sockets in
+    TIME_WAIT under the restored range until macOS ends them.
+  - `TestTimeWaitPortsBecomeAvailableAfterTheirSocketsEnd` needs no root, an MSL
+    of at most 15 seconds, and writes no setting. Of its 5 arms, 4 end a socket
+    in TIME_WAIT and then bind its port without a reuse option, at most every
+    250 milliseconds, closing each such bind at once, until one succeeds or the
+    observation ends: 3 ready the socket as the exit does and close it with a
+    linger of 0, at once, after holding it through its TIME_WAIT, or once the
+    kernel has closed it, and 1 closes it plainly. The arm that waits for the
+    kernel's close fails as setup where the socket never leaves TIME_WAIT. The
+    fifth arm binds nothing: it sets a linger of 0 on a socket not readied,
+    fails unless macOS refuses it with `EINVAL`, and closes the socket plainly.
+    A program that binds an arm's port meanwhile may find it taken. A close with
+    a linger of 0 sends the server a reset where macOS still holds the
+    TIME_WAIT, as [host ports](../exit-nodes.md#host-ports) says. The 2 arms
+    that close plainly leave their sockets in TIME_WAIT until macOS ends them.
+    Its own bound is 257 seconds.
+  - `TestTimeWaitRegistrarReferencesDisappearAfterTheirSocketsEnd` reads its
+    variable first and then runs as root, which reading the port registrar
+    through `kern.skywalk.stats.netns` needs, and skips where the kernel has no
+    registrar to read there. It needs an MSL of at most 15 seconds and writes no
+    setting. The registrar holds every program's addresses and ports, and the
+    test logs only totals and the counts on its own arm's port. Its 3 arms end
+    their sockets as the test above does, and the one that closes plainly leaves
+    its socket in TIME_WAIT until macOS ends it. Its own bound is 240.5 seconds.
+- `RANET3_TIMEWAIT_OTHER` names a second server off the Mac in the same form,
+  such as `198.51.100.10:9000`, differing from `RANET3_TIMEWAIT_SERVER` in
+  address or port. Only
+  `TestTimeWaitRefusesItsPortsToAutomaticBindsAndUnboundConnects` reads it,
+  making one more unbound connect toward it while the range is narrowed, which
+  it wants refused with no port taken. Where it is unset, that connect is not
+  made.
+- `RANET3_TIMEWAIT_RATE`, set to any value, starts
+  `TestBenchLeafFirstConnectionRateWithAndWithoutHostPortBounds`, which measures
+  the exit's leaf-first connections a second with the bound on host ports and
+  without it, in 4 pairs of runs against a loopback server of its own, so it
+  needs nothing off the Mac. It skips unless `netstat` shows that server in the
+  Mac's TCP table, so it runs as root on a Mac whose login user's `netstat`
+  lists no TCP socket. It needs an automatic range of at least 16384 ports, an
+  MSL of at most 15 seconds, and a block of 1024 ports below the range and none
+  under 1024: the 1024 from 30000, or the 1024 just below the range where it
+  starts under 31024. It skips where any socket in the table holds a port of
+  that block, and prints the block and a count. It reads the range and writes no
+  setting. Each run opens up to 1024 connections in turn through the exit, whose
+  host socket for each takes the leaf's port in the block, and has the leaf
+  close each first, so up to 1024 of the Mac's sockets toward the server stand
+  in TIME_WAIT at once. After each run it waits until the table shows none of
+  them left and for twice the MSL and 15 seconds more past the exit's close, so
+  a run that passes leaves none behind, and one that fails leaves its sockets in
+  TIME_WAIT until macOS ends them. Its own bound is 807 seconds, past
+  `go test`'s default of 10 minutes.
+- `RANET3_TIMEWAIT_ATTACK`, set to any value, starts
+  `TestHostPortBoundPreservesUnboundConnectsUnderALeafFirstAttack`, which
+  narrows the whole Mac's range and runs as root. It runs against 2 loopback
+  servers of its own, so it needs nothing off the Mac. It needs an MSL of at
+  most 15 seconds and a soft descriptor limit of at least 1536, and fails as
+  setup where `netstat` does not show both its servers in the Mac's TCP table.
+  It narrows the range to 2048 consecutive ports of it on which the table shows
+  no socket, and skips where no such window is free. For 60 seconds a leaf opens
+  connections through an exit with the bound and closes each first, as fast as
+  the exit admits them, so the exit's host sockets take up to the 1024 its bound
+  allows, while the test connects to its second server from an unbound socket
+  every 250 milliseconds and the rest of the Mac draws on the other 1024. Then,
+  for at most 8 seconds, a leaf runs once through the window on an exit without
+  the bound, and the test fails unless the Mac's unbound connects are then
+  refused with `EADDRNOTAVAIL`: for that stretch no program on the Mac gets a
+  TCP port of the range by a bind of port 0 or an unbound connect. It leaves the
+  sockets of the exit without the bound in TIME_WAIT under the restored range,
+  up to 2048 of them, until macOS ends them.
+- `RANET3_HOLD_SERVER` starts no test. It names a server off the Mac by an
+  address and port, such as `192.0.2.10:9000`, which reads to the client's FIN
+  and closes, and the subtests of
+  `TestHostTimeWaitIsHeldAndAbortedOnTheExitsClock` other than
+  `server first and reset`, and `TestBenchBytesPerHeldTimeWait` where
+  `RANET3_EXIT_BENCH` is set, dial it in place of a loopback server of their
+  own. A failing hold test prints that server and the table's lines toward it.
+  The bench's host sockets take the leaf ports 43600 to 43605, and its run
+  without the bound leaves its 6 sockets in TIME_WAIT toward the server until
+  macOS ends them.
+- **No variable:** `TestPreparedSocketTakesTheLingerOfZeroInTimeWait`,
+  `TestHostTimeWaitIsHeldAndAbortedOnTheExitsClock` and
+  `TestLastAckKeepsItsSlotUntilTheServerAcknowledges` run in every run of the
+  package. The first two skip unless `netstat` shows a loopback listener of
+  their own in the Mac's TCP table, so they run as root on a Mac whose login
+  user's `netstat` lists no TCP socket. They write no setting. Each listens on
+  `127.0.0.1` at ports the Mac assigns, and the exit's host sockets take the
+  leaf ports the second and third name, from 43100 to 43502, and 43700
+  and 43701. The exit closes the sockets it holds with a linger of 0 when the
+  test closes it. The first leaves one socket in TIME_WAIT toward its own
+  listener, the one macOS refuses the linger of 0 to, until macOS ends it.
 
 ## Property tests
 
