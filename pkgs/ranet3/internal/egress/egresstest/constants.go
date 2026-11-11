@@ -178,9 +178,9 @@ const (
 	lowRangePort  = 500
 	highRangePort = 40000
 	// the range the leaf's kernel gives a socket its port from, RFC 6335
-	// section 6's dynamic ports, apart from every port the suite binds there,
-	// whose bind a connection the kernel gave that port would refuse, and a
-	// port the suite binds is a package constant whose name ends in Port
+	// section 6's dynamic ports, which lies clear of every package constant
+	// whose name ends in Port, the one form a port the suite binds takes, since
+	// a connection the kernel gave a port the suite binds would refuse that bind
 	leafEphemeralLow  = 49152
 	leafEphemeralHigh = 65535
 )
