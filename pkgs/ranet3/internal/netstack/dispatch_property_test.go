@@ -19,8 +19,15 @@ import (
 )
 
 // dispatchStepTimeout is how long the scheduler waits for a resumed reader to park again or finish
-// and how long the peers have to drain once every reader is done
-const dispatchStepTimeout = 2 * time.Second
+// and how long a case that ends waits for its readers before it leaves them behind
+// a time, since a reader that waits for room shows only as the event that never comes
+// so a reader stalled longer than this fails a case on a correct tree, and a case that fails here waits it out once for each replay of the engine
+// dispatchDrainTimeout is how long the peers have to drain once every reader is done
+// minutes, past any stall a loaded host gives a sender, since the drain waits for what the peers carried rather than for a time
+const (
+	dispatchStepTimeout  = 10 * time.Second
+	dispatchDrainTimeout = 2 * time.Minute
+)
 
 // sequencedPeer hands out sequence numbers under its reserveMu, as an outbound SA does
 // and records the number of every packet its transport carries once the valve lets it
@@ -290,7 +297,7 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 			}
 		}
 		for i, peer := range peers {
-			for deadline := time.Now().Add(dispatchStepTimeout); !closing; time.Sleep(budgetSettle) {
+			for deadline := time.Now().Add(dispatchDrainTimeout); !closing; time.Sleep(budgetSettle) {
 				sent, _ := peer.transmitted()
 				if uint64(sent)+peer.DelayDropped() == peer.next && peer.dataBudget.used.Load() == 0 && peer.controlBudget.used.Load() == 0 {
 					break
