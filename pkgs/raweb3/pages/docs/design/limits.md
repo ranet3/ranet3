@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-11
+updated: 2026-11-12
 order: 10
 ---
 
@@ -613,8 +613,8 @@ at all.
 `capture_grace` has a floor of 1 second. A value above 0 and under 1 second is
 refused by name, and 0 takes the default. The hold is checked once a pass, and
 each pass reads the routing table, so a shorter grace would only make passes
-more frequent. The reconciler wakes for the grace only while a capturing route
-is in play.
+more frequent. While a capturing route is in play and a session is live, the
+reconciler runs a pass at least once a grace.
 
 A session counts as live for 20 seconds after it last received authenticated IKE
 from its peer, and for 20 to 30 seconds after its last authenticated ESP, which
