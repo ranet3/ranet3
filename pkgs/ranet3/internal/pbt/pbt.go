@@ -24,18 +24,16 @@ import (
 	"hegel.dev/go/hegel"
 )
 
-// Check runs fn as a property over generated inputs, and reports the smallest
-// input it finds that makes fn fail.
+// Check runs fn as a property over generated inputs.
 //
 // The example database is off. A run writes nothing into the tree and replays
 // nothing an earlier run left behind, so the result depends on the code alone.
-// The run is derandomized, though not to the point of repeating itself: hegel
-// v0.9.29 hashes the labels of nested generators with a seed each process
+// The run is derandomized, though not to the point of repeating itself: hegel's
+// Go package hashes the labels of nested generators with a seed each process
 // picks for itself, so a property built from them draws a different sample in
-// each run. A failure is still printed shrunk, with what reproduces it. A
-// boundary the code branches on is drawn outright, through Spanning or by
-// name, rather than left to the sample. Each property gets 200 cases, twice
-// the engine's default, except under go test -short, where hegel v0.9.29
+// each run. A boundary the code branches on is drawn outright, through Spanning
+// or by name, rather than left to the sample. Each property gets 200 cases,
+// twice the engine's default, except under go test -short, where hegel.Test
 // replaces the count with 10.
 func Check(t *testing.T, fn func(*hegel.T)) {
 	t.Helper()
