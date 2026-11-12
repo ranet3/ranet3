@@ -162,7 +162,8 @@ func (s *Shell) setReady(r Readiness, level slog.Level) {
 // stopped does not call it.
 func (s *Shell) SetUnready(why string) { s.SetReady(Readiness{Why4: why, Why6: why}) }
 
-// Unready is why the families not ready are not, as SetReady last recorded
+// Unready is why the families not ready are not, as SetReady or Retract last
+// recorded
 func (s *Shell) Unready() string { return s.unready }
 
 // unreadyText is why the families not ready are not, a family the exit does

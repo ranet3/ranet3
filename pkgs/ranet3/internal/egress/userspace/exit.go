@@ -359,10 +359,8 @@ func (x *Exit) Run(ctx context.Context) error {
 	return x.Close()
 }
 
-// withdraw takes nothing more from the sessions, reports both families not
-// ready, so the mesh hands the exit nothing more, publishes an empty
-// announcement, and then ends each dial, resets each connection and ends each
-// mapping
+// withdraw takes nothing more from the sessions, calls Retract, and then ends
+// each dial, resets each connection and ends each mapping
 func (x *Exit) withdraw(why string) {
 	x.taking.Store(false)
 	x.Retract(why)
