@@ -539,6 +539,64 @@ func TestFlowPastTheTotalIsRefusedForTheTotal(t *testing.T) {
 	}
 }
 
+// A datagram or an echo request refused for a share its source's held
+// connections fill is counted and answered past the limit, as one refused for
+// the share is
+func TestRefusalForAShareHeldIsAnsweredPastTheLimit(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		raw    []byte
+		refuse func(*Exit, []byte)
+	}{
+		{"udp", udpDatagram(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 53), []byte("past the share held")),
+			func(x *Exit, raw []byte) { x.udp.refuse(raw, reasonShareHeld) }},
+		{"echo", ipPacket(leaf4, server4, protoICMP, echoRequest(leaf4, server4, 7, 1, []byte("past the share held"))),
+			func(x *Exit, raw []byte) { x.echo.refuse(raw, reasonShareHeld) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, nil)
+			c.refuse(h.x, c.raw)
+			answers := h.mesh.answered()
+			if len(answers) != 1 || answers[0].kind != netstack.ExitPastLimit || !bytes.Equal(answers[0].offending, c.raw) {
+				t.Errorf("answered %v for a share held, want one past the limit quoting the packet", answers)
+			}
+			if got := h.count(true, reasonShareHeld); got != 1 {
+				t.Errorf("counted %d refused for a share held, want 1", got)
+			}
+		})
+	}
+}
+
+// The share held judgment of a source whose held connections fill its share
+// reaches the answer from the lane on the UDP and the echo path alike, the
+// flows' state set directly so nothing is opened
+func TestShareHeldFromTheLaneIsAnsweredPastTheLimit(t *testing.T) {
+	const share = 2
+	for _, c := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"udp", udpDatagram(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 53), []byte("past the share held"))},
+		{"echo", ipPacket(leaf4, server4, protoICMP, echoRequest(leaf4, server4, 7, 1, []byte("past the share held")))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, func(_ *Runtime, cfg *egress.Egress) { cfg.FlowsPerSource = share })
+			h.x.flows.mu.Lock()
+			h.x.flows.bySource[leaf4], h.x.flows.heldBy[leaf4] = share, share
+			h.x.flows.open, h.x.flows.held = share, share
+			h.x.flows.mu.Unlock()
+			h.x.handle(h.lane, c.raw)
+			answers := h.mesh.answered()
+			if len(answers) != 1 || answers[0].kind != netstack.ExitPastLimit || !bytes.Equal(answers[0].offending, c.raw) {
+				t.Errorf("answered %v for a share held, want one past the limit quoting the packet", answers)
+			}
+			if got := h.count(true, reasonShareHeld); got != 1 {
+				t.Errorf("counted %d refused for a share held, want 1", got)
+			}
+		})
+	}
+}
+
 // A mapping under a class naming an address sends from that address, and
 // under auto from the address the route to the server picks, its socket that
 // only receives bound to that address as well

@@ -231,7 +231,7 @@ func echoReason(err error) string {
 func (e *echoRelay) refuse(raw []byte, reason string) {
 	e.x.refused(raw, reason)
 	switch reason {
-	case reasonShare, reasonTotal, reasonDescriptors:
+	case reasonShare, reasonShareHeld, reasonTotal, reasonDescriptors:
 		e.x.answers.Answer(raw, netstack.ExitPastLimit, 0)
 	case reasonEchoSocket:
 		e.x.answers.Answer(raw, netstack.ExitProhibited, 0)

@@ -474,11 +474,11 @@ func socketReason(err error) string {
 }
 
 // refuse counts a datagram refused for reason, and answers it past the limit
-// where a limit refused it: a source's share, the flows or the descriptors
+// where a limit refused it
 func (u *udpRelay) refuse(raw []byte, reason string) {
 	u.x.refused(raw, reason)
 	switch reason {
-	case reasonShare, reasonTotal, reasonDescriptors:
+	case reasonShare, reasonShareHeld, reasonTotal, reasonDescriptors:
 		u.x.answers.Answer(raw, netstack.ExitPastLimit, 0)
 	}
 }
