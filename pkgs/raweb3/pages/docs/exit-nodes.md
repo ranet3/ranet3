@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-12
+updated: 2026-11-13
 order: 50
 ---
 
@@ -1095,8 +1095,11 @@ an entry outside it admits inner sources alone.
 An egress segment needs no `cap.table`. On Linux its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of
 [the return path](#the-return-path), and the reply lookup reads it. Its packets
-wait for their family's [readiness](#readiness), and the mesh counts one of a
-family not ready as not ready.
+wait for their family's [readiness](#readiness). The mesh counts one of a family
+not ready as not ready, and its answer about the packet it carries is
+Destination Unreachable, code 0, over IPv6 and Network Unreachable, code 0, over
+IPv4, from the addresses the [forwarding decision's](routing.md#transit) answers
+come from and within their rate limits.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host carries out is: on Linux each family the host

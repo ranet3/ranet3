@@ -522,9 +522,9 @@ peer. A packet past the rate is counted, but not one that arrived at a segment
 of this node while no trace whose filter may take it had room, whether End sent
 it on or a segment refused it before or after End's rewrite. An inner packet an
 egress segment took out past its allow list is counted, whether the segment sent
-it out or refused it. Each trace has a queue of its own, and what the rate and
-the queue refused is counted in a `stream.dropped` line once a second, with
-`rate` and `queue` each the records refused since the line before.
+it out, refused it or answered it. Each trace has a queue of its own, and what
+the rate and the queue refused is counted in a `stream.dropped` line once a
+second, with `rate` and `queue` each the records refused since the line before.
 
 Each session's packets are decided on a goroutine of their own, and so are each
 tun queue's reads. Records of one session or one queue come in the order the

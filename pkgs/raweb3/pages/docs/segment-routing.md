@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-12
+updated: 2026-11-13
 order: 60
 ---
 
@@ -207,7 +207,8 @@ decision would, from the inner source, and passes over every route that
 [counts as a default](routing.md#routes-that-count-as-a-default), so a
 destination outside the overlay that only this node's default or another exit's
 covers leaves by the uplink, where its family is
-[ready](exit-nodes.md#readiness). The loader refuses:
+[ready](exit-nodes.md#readiness), and is answered where it is not, as
+[exit nodes](exit-nodes.md#egress-segments) describes. The loader refuses:
 
 - a list with no entry, or with no IPv6 entry, since every outer source is IPv6
 - an entry of length 0, which admits every address of its family

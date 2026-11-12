@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-11
+updated: 2026-11-13
 order: 90
 ---
 
@@ -181,10 +181,13 @@ for a multicast destination or the limited broadcast, at the mesh's edge, where
 it checks what the tun hands this node before the packet enters the mesh, for no
 route or a hold, or for its size. `decision` is `forwarded`, `delivered`,
 `dropped`, `answered`, `unanswered` or `unsent`, and `reason` names why a packet
-was dropped and is empty for every other decision. The dropped series sum to the
-packets and reads dropped. A read this node hands its peer's send, whole or cut
-into fragments, counts under no decision, and `ranet3_peer_send_dropped_total`
-counts one that peer's budget refuses.
+was dropped and is empty for every other decision. The `answered`, `unanswered`
+and `unsent` decisions also count the ICMP errors about an egress segment's
+inner packets of a family not ready and about the packets the userspace exit
+answers itself. The dropped series sum to the packets and reads dropped. A read
+this node hands its peer's send, whole or cut into fragments, counts under no
+decision, and `ranet3_peer_send_dropped_total` counts one that peer's budget
+refuses.
 
 | `decision`   | `reason`            | Counts                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
