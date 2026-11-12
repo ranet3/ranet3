@@ -28,14 +28,14 @@ const (
 	// unrecognized Next Header type, RFC 8986 section 4.1.1's SR upper-layer
 	// header error, and the extension header too big and too many extension
 	// headers RFC 8883 sections 2.3 and 2.5 answer a processing limit with.
-	icmpTimeExceeded     = 3
-	icmpHopLimitInTranst = 0
-	icmpParameterProblem = 4
-	icmpErroneousHeader  = 0
-	icmpUnrecognizedNext = 1
-	icmpUpperLayer       = 4
-	icmpHeaderTooBig     = 6
-	icmpTooManyHeaders   = 8
+	icmpTimeExceeded      = 3
+	icmpHopLimitInTransit = 0
+	icmpParameterProblem  = 4
+	icmpErroneousHeader   = 0
+	icmpUnrecognizedNext  = 1
+	icmpUpperLayer        = 4
+	icmpHeaderTooBig      = 6
+	icmpTooManyHeaders    = 8
 	// icmpPacketTooBig is RFC 4443 section 3.2, whose one code is 0 and whose four octets carry the MTU
 	icmpPacketTooBig = 2
 	// icmpRedirect is RFC 4861 section 4.5, informational by its type and still one RFC 4443 section 2.4 (e.2) lets no error answer
@@ -53,7 +53,7 @@ const (
 // TimeExceeded answers a packet whose hop limit ran out at this node, RFC 4443
 // section 3.3, from source. allow is icmpError's.
 func TimeExceeded(offending []byte, source netip.Addr, allow func() bool) []byte {
-	return icmpError(offending, source, icmpTimeExceeded, icmpHopLimitInTranst, 0, allow)
+	return icmpError(offending, source, icmpTimeExceeded, icmpHopLimitInTransit, 0, allow)
 }
 
 // ParameterProblem answers a header field this node will not act on, RFC 4443
