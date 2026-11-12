@@ -61,6 +61,19 @@ type laneDevice struct {
 
 func lanesOf(lanes ...tun.Device) *laneDevice { return &laneDevice{Device: lanes[0], lanes: lanes} }
 
+// discardLanes is a mesh over a multiqueue tun of count lanes that discard every write, its writers started
+func discardLanes(tb testing.TB, count int) *Mesh {
+	devices := make([]tun.Device, count)
+	for i := range devices {
+		devices[i] = &discardDevice{}
+	}
+	m := ownEverything(&Mesh{closed: make(chan struct{})})
+	m.setDevice(lanesOf(devices...))
+	m.startInboundWriters()
+	tb.Cleanup(m.Close)
+	return m
+}
+
 func (d *laneDevice) Queues() []tun.Queue {
 	queues := make([]tun.Queue, len(d.lanes))
 	for i, lane := range d.lanes {
@@ -462,14 +475,7 @@ func TestWriteHostAllocatesNoMoreThanItsLanesGroups(t *testing.T) {
 		most  float64
 	}{{1, 0}, {2, 12}, {16, 30}} {
 		t.Run(fmt.Sprintf("%d lanes", c.lanes), func(t *testing.T) {
-			devices := make([]tun.Device, c.lanes)
-			for i := range devices {
-				devices[i] = &discardDevice{}
-			}
-			m := ownEverything(&Mesh{closed: make(chan struct{})})
-			m.setDevice(lanesOf(devices...))
-			m.startInboundWriters()
-			t.Cleanup(m.Close)
+			m := discardLanes(t, c.lanes)
 			if allocs := leastAllocs(func() { m.WriteHost(frames, nil) }); allocs > c.most {
 				t.Errorf("a write of %d packets over %d lanes allocated %v times, want at most %v", len(frames), c.lanes, allocs, c.most)
 			}
