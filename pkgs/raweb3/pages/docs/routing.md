@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-11
+updated: 2026-11-12
 order: 45
 ---
 
@@ -1499,8 +1499,8 @@ live, and after a crash:
 - a TCP connection or a connected UDP socket opened over the uplink before the
   rejects went in, in either family, whose sends keep leaving by the uplink
   while it lasts, where Linux's filter drops them from the next packet on
-- ranet3's underlay and its queries for endpoint names to a nameserver outside
-  the overlay, each naming the interface
+- this node's underlay and its queries for endpoint names to a nameserver
+  outside the overlay, each naming the interface
   [the selection](#the-underlays-interface-on-macos) answers
 - this node's own prefixes outside the overlay, only where a route of the host's
   longer than the rejects reaches them
@@ -1607,8 +1607,8 @@ The switch's lifetime:
   `route -n delete -net 128.0.0.0/1` and `route -n delete -inet6 -net 8000::/1`.
 - Nothing outlives a reboot.
 
-ranet3 reads no count of the sends a reject refuses, so the switch reports no
-drops on macOS, and `ranet3 debug rules` lists each reject with no count, as
+The daemon reads no count of the sends a reject refuses, so the switch reports
+no drops on macOS, and `ranet3 debug rules` lists each reject with no count, as
 [debugging](development/debug.md#commands) gives.
 
 ## Watching it

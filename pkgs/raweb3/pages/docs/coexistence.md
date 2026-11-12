@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-11
+updated: 2026-11-12
 order: 110
 ---
 
@@ -494,8 +494,8 @@ zero-free cover it contains, as
 Mac takes. [Exit nodes](exit-nodes.md#what-to-advertise) says why an exit
 advertises the `/0` only.
 
-ranet3 writes nothing outside its utun but reject routes on `lo0`, unscoped, via
-`127.0.0.1` or `::1`: the hold of each overlay prefix, and under
+The daemon writes nothing outside its utun but reject routes on `lo0`, unscoped,
+via `127.0.0.1` or `::1`: the hold of each overlay prefix, and under
 `fallback = "none"` the 18 rejects of
 [the kill switch on macOS](routing.md#the-kill-switch-on-macos). It owns a route
 of that shape at those keys alone, whoever wrote it, and since
