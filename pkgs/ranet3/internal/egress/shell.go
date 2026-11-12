@@ -4,6 +4,7 @@
 package egress
 
 import (
+	"context"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -83,7 +84,10 @@ func (s *Shell) Announce() []netip.Prefix {
 // Publish hands the announcement to Republish, and only when it changed, and
 // reports whether it did. A republish rebuilds the speaker's originated set,
 // which an unchanged pass has no reason to do.
-func (s *Shell) Publish(prefixes []netip.Prefix) bool {
+func (s *Shell) Publish(prefixes []netip.Prefix) bool { return s.publish(prefixes, slog.LevelWarn) }
+
+// publish is Publish logging a change at level
+func (s *Shell) publish(prefixes []netip.Prefix, level slog.Level) bool {
 	previous := s.announced.Load()
 	if previous != nil && slices.Equal(*previous, prefixes) {
 		return false
@@ -94,7 +98,7 @@ func (s *Shell) Publish(prefixes []netip.Prefix) bool {
 		// said on every transition, because a prefix silently leaving the
 		// advertisement is a customer's exit node going away and the counters
 		// alone would not name it
-		slog.Warn("egress advertisement changed", "prefixes", len(prefixes),
+		slog.Log(context.Background(), level, "egress advertisement changed", "prefixes", len(prefixes),
 			"was", len(*previous), "detail", "a family is advertised only while it is ready, as ranet3 status says")
 	}
 	s.hooks.Republish()
@@ -105,7 +109,24 @@ func (s *Shell) Publish(prefixes []netip.Prefix) bool {
 // are served moves, and egress.ready is recorded at the first call and when
 // any of them or the skip moves. The first call logs each family it judged, a
 // family with no reason being one the exit does not carry.
-func (s *Shell) SetReady(r Readiness) {
+func (s *Shell) SetReady(r Readiness) { s.setReady(r, slog.LevelWarn) }
+
+// Retract records both families not ready for why and publishes the empty
+// announcement, its lines at info, since a stop the daemon was asked for is no
+// fault. A shell no pass has judged has announced nothing, so there it records
+// the reason alone, logs and publishes nothing, and the first judged pass stays
+// the first.
+func (s *Shell) Retract(why string) {
+	if !s.reported {
+		s.unready = why
+		return
+	}
+	s.setReady(Readiness{Why4: why, Why6: why}, slog.LevelInfo)
+	s.publish(nil, slog.LevelInfo)
+}
+
+// setReady is SetReady logging a family not ready at level
+func (s *Shell) setReady(r Readiness, level slog.Level) {
 	first := !s.reported
 	s.reported = true
 	s.unready = unreadyText(r.Ready4, r.Ready6, r.Why4, r.Why6)
@@ -125,7 +146,7 @@ func (s *Shell) SetReady(r Readiness) {
 		case family.ready:
 			slog.Info("egress ready", "family", FamilyName(family.family))
 		default:
-			slog.Warn("egress not ready", "family", FamilyName(family.family), "detail", family.why)
+			slog.Log(context.Background(), level, "egress not ready", "family", FamilyName(family.family), "detail", family.why)
 		}
 	}
 	s.ready4, s.ready6, s.serves, s.skipped = r.Ready4, r.Ready6, serves, r.Skipped
@@ -136,7 +157,9 @@ func (s *Shell) SetReady(r Readiness) {
 		slog.String("reason", s.unready), slog.String("skipped", r.Skipped))
 }
 
-// SetUnready records both families not ready for why, with nothing skipped
+// SetUnready records both families not ready for why, with nothing skipped. It
+// is a judgment and takes the first pass as SetReady does, so an exit that is
+// stopped does not call it.
 func (s *Shell) SetUnready(why string) { s.SetReady(Readiness{Why4: why, Why6: why}) }
 
 // Unready is why the families not ready are not, as SetReady last recorded

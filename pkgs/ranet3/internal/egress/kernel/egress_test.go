@@ -1028,6 +1028,179 @@ func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
 	}
 }
 
+// A stop and `ranet3 down` log each family not ready and the advertisement's
+// change at info, since neither is a fault of the exit, and another writer's
+// change still logs the families not ready at warn
+func TestExitLogsItsStopAtInfo(t *testing.T) {
+	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	count := func(lines, level, message string) int {
+		return strings.Count(lines, "level="+level+" msg=\""+message+"\"")
+	}
+	for name, stop := range map[string]func(*Translator) error{
+		"shutdown": func(tr *Translator) error {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return tr.Run(ctx)
+		},
+		"ranet3 down": func(tr *Translator) error { return tr.stop() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+			tr := translator(t, cfg, Runtime{}, &fakeBackend{})
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if err := stop(tr); err != nil {
+				t.Fatal(err)
+			}
+			got := lines.String()
+			if count(got, "INFO", "egress not ready") != 2 || count(got, "INFO", "egress advertisement changed") != 1 ||
+				count(got, "WARN", "egress not ready") != 0 || count(got, "WARN", "egress advertisement changed") != 0 {
+				t.Errorf("the %s logged other than both families not ready and the advertisement's change at info:\n%s", name, got)
+			}
+		})
+	}
+
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	be := &fakeBackend{changed: make(chan struct{}, 1)}
+	be.changed <- struct{}{}
+	// the change reports both families not ready, which ends the run, so Run
+	// returns on this goroutine
+	rt := Runtime{Ready: func(v4, v6, _ bool) {
+		if !v4 && !v6 {
+			cancel()
+		}
+	}}
+	cfg.Sweep = schema.Duration(lateSweep)
+	tr := translator(t, cfg, rt, be)
+	if err := tr.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := lines.String(); count(got, "WARN", "egress not ready") != 2 || count(got, "INFO", "egress not ready") != 0 {
+		t.Errorf("another writer's change logged other than both families not ready at warn:\n%s", got)
+	}
+}
+
+// readyRecorded is each egress.ready bus recorded but those of a stop for
+// stopped, as its ipv4, ipv6 and reason
+func readyRecorded(bus *events.Bus, stopped string) []string {
+	var out []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.ready" }, 0) {
+		if event.Attrs["reason"] != stopped {
+			out = append(out, event.Attrs["ipv4"]+" "+event.Attrs["ipv6"]+" "+event.Attrs["reason"])
+		}
+	}
+	return out
+}
+
+// A translator started down that another writer's change wakes before
+// `ranet3 up`, a firewall reload flushing the shared table for one, logs no
+// family while it is down, and its first pass after `ranet3 up` logs each
+// family not ready at warn once and records egress.ready for that pass
+func TestChangeWhileStartedDownLeavesTheFirstPassFirst(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	bus := events.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	be := &fakeBackend{changed: make(chan struct{}, 1)}
+	// the first pass publishes the empty announcement, which ends the run, so
+	// the log is read once Run has returned
+	rt := Runtime{Events: bus, Forwarding: func() (bool, bool) { return false, false }, Republish: cancel}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0"), Sweep: schema.Duration(lateSweep)}, rt, be)
+	tr.Enabled.Store(false)
+	var runErr error
+	ended := make(chan struct{})
+	go func() {
+		runErr = tr.Run(ctx)
+		close(ended)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-ended
+	})
+	wait := func(what string, met func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(passWait); !met(); time.Sleep(passPoll) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the translator never %s, it went %q", what, be.entries())
+			}
+		}
+	}
+	wait("stopped", func() bool { return slices.Contains(be.entries(), "withdraw") })
+	be.changed <- struct{}{}
+	wait("took the change", func() bool { return len(be.changed) == 0 })
+	tr.SetEnabled(true)
+	select {
+	case <-ended:
+	case <-time.After(passWait):
+		t.Fatalf("the translator ran no pass after ranet3 up, it went %q", be.entries())
+	}
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	got := lines.String()
+	if strings.Contains(got, "another writer changed its table") {
+		t.Errorf("the change logged readiness for an exit that is down:\n%s", got)
+	}
+	for _, family := range []string{"ipv4", "ipv6"} {
+		want := `level=WARN msg="egress not ready" family=` + family + ` detail="the kernel does not forward ` + family + `"`
+		if n := strings.Count(got, want); n != 1 {
+			t.Errorf("the first pass logged %s not ready %d times at warn, want once:\n%s", family, n, got)
+		}
+	}
+	want := []string{"false false ipv4 the kernel does not forward ipv4, ipv6 the kernel does not forward ipv6"}
+	if got := readyRecorded(bus, "the translator is stopping"); !slices.Equal(got, want) {
+		t.Errorf("recorded egress.ready %q, want %q", got, want)
+	}
+}
+
+// A first pass that fails, on a host whose chains cannot be listed, still
+// judged the exit, so it logs each family not ready at warn with the failure's
+// reason and records egress.ready once
+func TestFailedFirstPassLogsEachFamilyAtWarn(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	bus := events.New()
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Events: bus}, &fakeBackend{failRules: true})
+	if err := tr.reconcile(); err == nil {
+		t.Fatal("the pass reported no error")
+	}
+	const why = "its chains could not be read back"
+	for _, family := range []string{"ipv4", "ipv6"} {
+		want := `level=WARN msg="egress not ready" family=` + family + ` detail="` + why + `"`
+		if n := strings.Count(lines.String(), want); n != 1 {
+			t.Errorf("the failed first pass logged %s not ready %d times at warn, want once:\n%s", family, n, lines.String())
+		}
+	}
+	if got, want := readyRecorded(bus, ""), []string{"false false " + why}; !slices.Equal(got, want) {
+		t.Errorf("the failed first pass recorded egress.ready %q, want %q", got, want)
+	}
+}
+
+// A pass that narrows the announcement, a family the host stopped forwarding,
+// logs the advertisement's change at warn, since a prefix leaving it is an
+// exit going away
+func TestNarrowerAnnouncementLogsAtWarn(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	forwards6 := true
+	rt := Runtime{Forwarding: func() (bool, bool) { return true, forwards6 }}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, rt, &fakeBackend{})
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	forwards6 = false
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(lines.String(), `level=WARN msg="egress advertisement changed"`); got != 1 {
+		t.Errorf("the narrower announcement logged the change %d times at warn, want once:\n%s", got, lines.String())
+	}
+}
+
 // Another writer changing the translator's chains, a firewall reload flushing
 // the ruleset for one, wakes the translator, which reports the egress segments
 // not ready before the pass that puts the rules back and ready again after

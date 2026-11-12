@@ -379,7 +379,7 @@ func (f *BorderFilter) Close() error {
 	if f.made {
 		return f.finish()
 	}
-	f.setReady(false, "the antispoof filter is stopping")
+	f.stopping()
 	if f.found {
 		slog.Info("antispoof filter is leaving the chains it found", "where", f.Where())
 	}
@@ -391,7 +391,7 @@ func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBacke
 	f := &BorderFilter{rt: rt, be: be, sweep: cmp.Or(be.sweep(), egress.DefaultSweep), wake: make(chan struct{}, 1), trigger: "start"}
 	f.config.Store(cfg)
 	f.finish = sync.OnceValue(func() error {
-		f.setReady(false, "the antispoof filter is stopping")
+		f.stopping()
 		removed, err := f.be.Withdraw()
 		switch {
 		case err != nil:
@@ -457,7 +457,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			if errors.Is(context.Cause(ctx), meshkernel.ErrMeshFailed) {
-				f.setReady(false, "the antispoof filter is stopping")
+				f.stopping()
 				slog.Warn("antispoof filter is leaving its chains after the mesh failed", "where", f.Where())
 				return f.be.Leave()
 			}
@@ -773,7 +773,16 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 
 // setReady logs and records the filter's readiness when it moved, with detail
 // saying why it is not ready
-func (f *BorderFilter) setReady(ok bool, detail string) {
+func (f *BorderFilter) setReady(ok bool, detail string) { f.setReadyAt(ok, detail, slog.LevelWarn) }
+
+// stopping records the filter not ready at a stop, which is no fault, so it
+// logs the transition at info
+func (f *BorderFilter) stopping() {
+	f.setReadyAt(false, "the antispoof filter is stopping", slog.LevelInfo)
+}
+
+// setReadyAt is setReady logging a transition to not ready at level
+func (f *BorderFilter) setReadyAt(ok bool, detail string, level slog.Level) {
 	f.unready = ""
 	if !ok {
 		f.unready = detail
@@ -785,7 +794,7 @@ func (f *BorderFilter) setReady(ok bool, detail string) {
 	if ok {
 		slog.Info("antispoof filter ready", "where", f.Where())
 	} else {
-		slog.Warn("antispoof filter not ready", "where", f.Where(), "detail", detail)
+		slog.Log(context.Background(), level, "antispoof filter not ready", "where", f.Where(), "detail", detail)
 	}
 	f.rt.Events.Emit("antispoof.ready", "", slog.Bool("ready", ok))
 }

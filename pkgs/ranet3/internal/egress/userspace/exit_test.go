@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/wireguard/tun"
@@ -278,6 +280,12 @@ func (h *exitHarness) stopRun(t *testing.T) {
 	case <-time.After(exitWait):
 		t.Fatalf("run did not return within %s of its context ending", exitWait)
 	}
+}
+
+func (h *exitHarness) republishes() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.republish
 }
 
 func (h *exitHarness) readyCalls() []readyCall {
@@ -685,6 +693,38 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 	})
 	h.exit.Egress(frames(segment), nil)
 	h.waitFor(t, "the reset once enabled again", func() bool { return len(mesh.laidPackets()) != 0 })
+}
+
+// A stop and `ranet3 down` log each family not ready and the advertisement's
+// change at info, since neither is a fault of the exit
+func TestExitLogsItsStopAtInfo(t *testing.T) {
+	count := func(lines, level, message string) int {
+		return strings.Count(lines, "level="+level+" msg=\""+message+"\"")
+	}
+	for name, stop := range map[string]func(*testing.T, *exitHarness){
+		"shutdown": func(t *testing.T, h *exitHarness) { h.stopRun(t) },
+		"ranet3 down": func(t *testing.T, h *exitHarness) {
+			h.waitFor(t, "the first announcement", func() bool { return h.republishes() != 0 })
+			republished := h.republishes()
+			h.exit.SetEnabled(false)
+			// the empty announcement is published after its log line, so its
+			// republish orders the line before the read
+			h.waitFor(t, "the empty announcement", func() bool { return h.republishes() > republished })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+			h := newExitHarness(t, newFakeMesh(), &fakePlatform{routes4: true, routes6: true})
+			h.run(t)
+			stop(t, h)
+			got := lines.String()
+			if count(got, "INFO", "egress not ready") != 2 || count(got, "INFO", "egress advertisement changed") != 1 ||
+				count(got, "WARN", "egress not ready") != 0 || count(got, "WARN", "egress advertisement changed") != 0 {
+				t.Errorf("the %s logged other than both families not ready and the advertisement's change at info:\n%s", name, got)
+			}
+		})
+	}
 }
 
 // Close closes Raw of an exit whose Run never ran, once however often it is

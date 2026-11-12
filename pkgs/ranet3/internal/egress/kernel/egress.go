@@ -726,8 +726,12 @@ func (t *Translator) Run(ctx context.Context) error {
 	defer retry.Stop()
 
 	t.trigger = "start"
+	// passing is whether this turn ran a pass rather than a stop, so another
+	// writer's change is reported only for an exit a pass has judged
+	var passing bool
 	for ctx.Err() == nil {
-		if !t.Enabled.Load() {
+		passing = t.Enabled.Load()
+		if !passing {
 			// once per stop rather than once per wake, and a withdrawal that
 			// failed is retried on the backoff a failed pass takes
 			if !t.withdrawn {
@@ -765,7 +769,10 @@ func (t *Translator) Run(ctx context.Context) error {
 		case <-t.be.Changed():
 			// the steered rule may be gone or bypassed already, so the mesh stops handing this exit its packets before the pass that puts it back
 			t.trigger = "changed"
-			t.SetUnready("another writer changed its table")
+			// a stopped exit already reads not ready, and its next pass reads its chains back whatever was changed
+			if passing {
+				t.SetUnready("another writer changed its table")
+			}
 		case <-t.be.Missed():
 			// another table's large transaction overflows the socket as readily as a flush of this one, so only the pass's readback decides
 			t.trigger = "missed"
@@ -775,8 +782,7 @@ func (t *Translator) Run(ctx context.Context) error {
 	// keeps selecting this node while its chains are being taken down is a peer
 	// whose traffic leaves untranslated, and babel's own retraction is the
 	// only thing that can tell it otherwise.
-	t.SetUnready("the translator is stopping")
-	t.Publish(nil)
+	t.Retract("the translator is stopping")
 	return errors.Join(t.withdraw(), t.be.Close())
 }
 
@@ -1149,8 +1155,7 @@ func (t *Translator) reportConflicts(conflicts []string) {
 // diagnostic does not go on reporting the rules of the last pass that ran.
 func (t *Translator) stop() error {
 	started := time.Now()
-	t.SetUnready("the translator is stopped")
-	t.Publish(nil)
+	t.Retract("the translator is stopped")
 	err := t.withdraw()
 	stats := passStats{At: time.Now()}
 	attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),

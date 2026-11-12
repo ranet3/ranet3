@@ -1153,6 +1153,79 @@ func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 	}
 }
 
+// A stop the daemon asked for, a close before Run, of chains the first pass
+// made or found, and a stop for the mesh's failure log the filter not ready at
+// info, since none is a fault of the filter, and another writer's change still
+// logs it not ready at warn
+func TestBorderLogsItsStopAtInfo(t *testing.T) {
+	notReady := func(lines, level string) int {
+		return strings.Count(lines, "level="+level+" msg=\"antispoof filter not ready\"")
+	}
+	closing := func(f *BorderFilter) error { return f.Close() }
+	for _, c := range []struct {
+		name  string
+		found bool
+		stop  func(*BorderFilter) error
+	}{
+		{"stop", false, func(f *BorderFilter) error {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return f.Run(ctx)
+		}},
+		{"close before run", false, closing},
+		{"close before run of chains found", true, closing},
+		{"mesh failure", false, func(f *BorderFilter) error {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(meshkernel.ErrMeshFailed)
+			return f.Run(ctx)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+			be := &fakeBorder{}
+			if c.found {
+				// an earlier filter's pass leaves the chains for this one's first read to find
+				if _, err := startBorderFilter(overlay(t), borderRuntime(nil), be); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f, err := startBorderFilter(overlay(t), borderRuntime(events.New()), be)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.stop(f); err != nil {
+				t.Fatal(err)
+			}
+			if notReady(lines.String(), "INFO") != 1 || notReady(lines.String(), "WARN") != 0 {
+				t.Errorf("the %s logged the filter not ready other than once at info:\n%s", c.name, lines.String())
+			}
+		})
+	}
+
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	be := &fakeBorder{changed: make(chan struct{}, 1)}
+	f, err := startBorderFilter(overlay(t), borderRuntime(events.New()), be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.sweep = lateSweep
+	ctx, cancel := context.WithCancel(context.Background())
+	// the pass the change wakes ends the run, so Run returns on this goroutine
+	f.rt.Sets = func(*egress.Border) egress.BorderSets {
+		cancel()
+		return egress.BorderSets{}
+	}
+	be.changed <- struct{}{}
+	if err := f.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if notReady(lines.String(), "WARN") != 1 || notReady(lines.String(), "INFO") != 1 {
+		t.Errorf("another writer's change then the stop logged the filter not ready other than once at warn and once at info:\n%s", lines.String())
+	}
+}
+
 // A filter stopped for the mesh's failure reports itself not ready and leaves
 // its chains and sets, and one stopped for any other cause withdraws them
 func TestBorderLeavesItsTableOnlyWhenStoppedForTheMeshsFailure(t *testing.T) {

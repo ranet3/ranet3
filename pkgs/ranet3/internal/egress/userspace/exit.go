@@ -365,8 +365,7 @@ func (x *Exit) Run(ctx context.Context) error {
 // mapping
 func (x *Exit) withdraw(why string) {
 	x.taking.Store(false)
-	x.SetUnready(why)
-	x.Publish(nil)
+	x.Retract(why)
 	x.stats.Store(&passStats{At: time.Now(), Unready: x.Unready()})
 	x.tcp.withdraw()
 	x.udp.withdraw()
