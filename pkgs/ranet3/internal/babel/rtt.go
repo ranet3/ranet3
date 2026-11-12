@@ -95,10 +95,10 @@ type RTTCost struct {
 
 func DefaultCostParams() CostParams {
 	return CostParams{
-		// 96 is the value RFC 8966 Appendix B gives for a wired link, what BIRD
-		// uses as BABEL_RXCOST_WIRED, and what the fleet sets explicitly. At
-		// 32 a ranet3 hop looks three times cheaper than a BIRD hop, so a
-		// mixed fleet pulls transit onto whichever nodes run this.
+		// 96 is RFC 8966 Appendix B's wired value and BIRD's
+		// BABEL_RXCOST_WIRED. At 32 a ranet3 hop would look three times
+		// cheaper than a BIRD hop, and a mesh of both would pull transit onto
+		// ranet3 nodes.
 		RxCost: 96,
 		RTT: RTTCost{
 			// RFC 9616 section 4.2: "The mapping should also be constant

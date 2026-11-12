@@ -23,9 +23,9 @@ type Config struct {
 	Hello  schema.Duration `yaml:"hello,omitempty" json:"hello,omitempty" toml:"hello,omitempty"`
 	Update schema.Duration `yaml:"update,omitempty" json:"update,omitempty" toml:"update,omitempty"`
 	// Quality names the estimator turning Hello loss into a cost, spelled as
-	// BIRD spells it: "etx", which the fleet runs on these same tunnels, or
-	// "none" to leave this node's own Hello loss out of the rxcost it advertises
-	// and of the cost it takes from each neighbor's report.
+	// BIRD spells it: "etx", or "none" to leave this node's own Hello loss out
+	// of the rxcost it advertises and of the cost it takes from each
+	// neighbor's report.
 	Quality LinkQuality `yaml:"quality,omitempty" json:"quality,omitempty" toml:"quality,omitempty"`
 	// Cost is the link cost, named after the BIRD babel interface options it
 	// mirrors: a fixed rx cost plus up to rtt.weight scaled linearly between
@@ -73,11 +73,7 @@ type Runtime struct {
 // and one spelled out as its own default describe the same speaker.
 func (c Config) HelloInterval() time.Duration {
 	if c.Hello == 0 {
-		// The RFC 8966 Appendix B default, which is also BIRD's and what the
-		// fleet configures. At 20 seconds a peer that is up but silent is
-		// declared dead after 70 rather than 14, which is a different network
-		// from the one this is replacing. A node that would rather wake less
-		// often sets cap.babel hello.
+		// The RFC 8966 Appendix B default, and BIRD's.
 		return 4 * time.Second
 	}
 	return c.Hello.Duration()

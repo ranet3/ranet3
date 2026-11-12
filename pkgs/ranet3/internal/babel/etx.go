@@ -16,9 +16,6 @@ import (
 // one is a Hello that arrived and a zero one that did not, plus the sequence
 // number it expects next. Appendix A.2 then reads a cost off that vector.
 //
-// The fleet's BIRD runs "link quality etx" on its tunnel interfaces, so a link
-// dropping packets costs more there and cost nothing here until this existed.
-//
 // Appendix A.1's flush is keyed on liveness here rather than on an all-zero
 // vector, and happens in neighborState.forgetLink.
 
@@ -113,12 +110,12 @@ func (h *helloHistory) beta() (received, window int, ok bool) {
 }
 
 // LinkQuality selects the estimator of Appendix A.2 that turns Hello history
-// into a cost. The fleet's BIRD runs "link quality etx" on the same tunnels.
+// into a cost.
 type LinkQuality uint8
 
 const (
-	// LinkQualityETX is Appendix A.2.2, and the default because this mesh
-	// already runs it at the other end of every link.
+	// LinkQualityETX is Appendix A.2.2, and the default for the reason the
+	// protocol deviations page gives under Sending and link cost.
 	LinkQualityETX LinkQuality = iota
 	// LinkQualityNone keeps the configured rxcost however the history reads.
 	LinkQualityNone
@@ -151,9 +148,8 @@ func (q *LinkQuality) UnmarshalYAML(value *yaml.Node) error {
 
 // rxCost is the figure this node advertises in its IHU, C/beta of A.2.2 with
 // the nominal hop cost C in place of the RFC's 256. Using the configured
-// rxcost keeps a lossless link at exactly that figure, so the fleet's tuning
-// carries over, and the BIRD this mesh runs makes the same substitution with
-// its own cf->rxcost.
+// rxcost keeps a lossless link at exactly that figure, as BIRD's own
+// cf->rxcost does.
 //
 // It holds only against a peer that shares C. One computing alpha against a
 // literal 256 clamps to one for every cost this node advertises below that,
@@ -178,10 +174,9 @@ func (p CostParams) rxCost(history *helloHistory) uint16 {
 // Appendix A.2.2 writes it as 256/(alpha*beta) with alpha = MIN(1, 256/txcost),
 // which clamps any txcost below the nominal hop cost up to it. This does not,
 // because BIRD does not: proto/babel/babel.c computes
-// "txcost = nbr->txcost * max / rcv" with no floor, and BIRD is at the other
-// end of every link on this mesh. Clamping here would raise the cost of every
-// neighbor advertising under the nominal, which on the live mesh is the
-// majority of them, and leave the two ends disagreeing about every such link.
+// "txcost = nbr->txcost * max / rcv" with no floor. Clamping here would raise
+// the cost of every neighbor advertising under the nominal and leave a BIRD
+// neighbor and this node disagreeing about the link.
 // The floor's purpose, refusing a neighbor that claims an implausibly cheap
 // hop, is not served by a Babel node in any case: the same neighbor could
 // claim a low metric instead.

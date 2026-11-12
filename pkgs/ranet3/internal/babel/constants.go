@@ -195,20 +195,16 @@ const maxRouteKeys = 16384
 const rttTimestampHorizon = 3 * time.Minute
 
 // betaWindow is how many recent entries the reception probability is computed
-// over. Appendix A.2.2 suggests "a small number (say, 6)", and the whole
-// vector is chosen instead because the node at the other end of every link on
-// this mesh uses the whole of its own: BIRD popcounts hello_map over
-// hello_cnt. At six the two ends disagree by up to a factor of two on the same
-// loss, and a steady one-in-sixteen loss makes this end's advertised cost a
-// square wave while the other end reads it as flat.
+// over. RFC 8966 Appendix A.2.2 suggests "a small number (say, 6)", and the
+// whole vector is chosen instead because BIRD popcounts hello_map over
+// hello_cnt, its whole vector. At six the two ends disagree on the same loss,
+// and a steady one-in-sixteen loss makes this end's advertised cost a square
+// wave while the other end reads it as flat.
 const betaWindow = historyDepth
 
 // defaultRTTMax and defaultRTTWeight are rtt-max and max-rtt-penalty, which
-// deviate from the 120 ms and 150 RFC 9616 section 4.2 RECOMMENDS,
-// deliberately. This is a global mesh: 120 ms saturates every
-// intercontinental path, so the penalty stops ranking exactly the links it
-// exists to rank, and a penalty of 150 against a wired rxcost of 96 makes a
-// satellite hop cost less than three wired ones.
+// depart from RFC 9616 section 4.2, for the reason the protocol deviations page
+// gives under Sending and link cost.
 const (
 	defaultRTTMax    = 1024 * time.Millisecond
 	defaultRTTWeight = 1024
