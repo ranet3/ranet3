@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-11-09
+updated: 2026-11-12
 order: 30
 ---
 
@@ -112,10 +112,12 @@ These keys are required:
 Every other key has a default. A left-out `cap.route`, `cap.babel` or
 `cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment`,
 `cap.egress`, `cap.exit` or [`cap.transit`](configuration-reference.md) is off,
-and a left-out `cap.antispoof` exempts nothing. A node with no `cap.babel` sends
-Hellos every 4 seconds and updates every 16 seconds (RFC 8966 Appendix B). A
-node with no `cap.route` announces nothing but what `cap.egress` and an egress
-segment add, as [routing](routing.md#what-a-node-announces) describes.
+and a left-out `cap.antispoof` exempts nothing. A node with no `cap.babel` names
+a Hello interval of 4 seconds and an update interval of 16 seconds (RFC 8966
+Appendix B), and sends each a sixteenth ahead, as
+[routing](routing.md#the-babel-speaker) gives. A node with no `cap.route`
+announces nothing but what `cap.egress` and an egress segment add, as
+[routing](routing.md#what-a-node-announces) describes.
 
 A node that installs the mesh's routes itself adds `cap.table`, and `overlay`
 with the prefixes the mesh numbers its nodes from, which every platform loads

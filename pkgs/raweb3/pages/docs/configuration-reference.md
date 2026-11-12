@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-11
+updated: 2026-11-12
 order: 35
 ---
 
@@ -286,13 +286,15 @@ The Babel speaker's timers, link quality and switching margin. `hello` and
 
 | Key       | Value           | Default     | Meaning                                                                                                  |
 | --------- | --------------- | ----------- | -------------------------------------------------------------------------------------------------------- |
-| `hello`   | duration        | `"4s"`      | Interval between Hellos                                                                                  |
-| `update`  | duration        | 4 x `hello` | Interval between full route updates                                                                      |
+| `hello`   | duration        | `"4s"`      | Upper bound on the time between Hellos                                                                   |
+| `update`  | duration        | 4 x `hello` | Upper bound on the time between full route updates                                                       |
 | `quality` | `etx` or `none` | `etx`       | How Hello loss raises a link's cost (RFC 8966 Appendix A.2)                                              |
 | `margin`  | integer         | `4`         | A route replaces the selected one only with a lower metric and a smoothed metric lower by more than this |
 
-- Each interval is between 10 milliseconds and 655.35 seconds. An omitted
-  `update` is capped at 655.35 seconds.
+- Each interval is a whole number of centiseconds of at least 10 milliseconds,
+  and at most 655.35 seconds for `hello` and 655.34 seconds for `update`, since
+  655.35 seconds in an update means it is not repeated unless asked for. An
+  omitted `update` is capped at 655.34 seconds.
 - `margin` is between 0 and 65534, and
   [route selection](routing.md#route-selection) gives the rule it sets.
 - `quality = "none"` keeps the rxcost this node advertises unscaled by its Hello

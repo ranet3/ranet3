@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-11
+updated: 2026-11-12
 order: 30
 ---
 
@@ -589,7 +589,7 @@ connections to the reads.
 | `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                                                                        |
 | `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                                                              |
 | `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size                                                         |
-| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                                                                        |
+| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table, or a selected route's neighbor for that route before it expires       |
 | `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                                                              |
 | `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals, cost and margin                                                       |
 | `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved                                                        |
@@ -696,7 +696,7 @@ Each kind carries these attributes:
 | `ike.message.fragmented`                      | `exchange`, `message_id`, `fragments`, `threshold`                                                                                                                                                                                                                 |
 | `babel.neighbor.up`, `.down`                  | none                                                                                                                                                                                                                                                               |
 | `babel.neighbor.fragmented`                   | `size`                                                                                                                                                                                                                                                             |
-| `babel.request.sent`                          | none                                                                                                                                                                                                                                                               |
+| `babel.request.sent`                          | `route` on a request for a selected route                                                                                                                                                                                                                          |
 | `babel.neighbor.extra`                        | `from`, `extra`                                                                                                                                                                                                                                                    |
 | `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`, `margin`                                                                                                                                                                                   |
 | `babel.own.changed`                           | `set`, and `added`, `removed` and `held` where they name a route                                                                                                                                                                                                   |

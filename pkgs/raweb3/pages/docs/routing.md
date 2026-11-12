@@ -30,9 +30,13 @@ point-to-point Babel link. Babel packets use UDP port 6696 and the group
 `ff02::1:6`, sent from a random link-local address. They travel inside ESP and
 never pass through the tun.
 
-Every Hello interval, each neighbor gets a Hello and an IHU. The Hello carries a
-timestamp (RFC 9616). The IHU carries this node's receive cost and echoes the
-neighbor's timestamps. A full route update goes out every update interval. Each
+Each neighbor gets a Hello and an IHU every Hello interval less a sixteenth, and
+a full route update every update interval less a sixteenth, so each is sent
+before the time the last one named (RFC 8966 section 3.1). A Hello and IHU, or
+an update, that the session refuses goes on the next pass, which comes at most a
+quarter of the Hello interval later, and an update also waits out the pace of
+triggered updates to its neighbor. The Hello carries a timestamp (RFC 9616). The
+IHU carries this node's receive cost and echoes the neighbor's timestamps. Each
 Babel packet other than a path MTU probe fits in a 1280-byte inner IPv6 packet.
 
 | Timer           | Default    | Rule                                                                                                           |
@@ -42,6 +46,7 @@ Babel packet other than a path MTU probe fits in a 1280-byte inner IPv6 packet.
 | Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval                                                                            |
 | IHU expiry      | 14 seconds | 3.5 x the interval the IHU names                                                                               |
 | Route hold      | 56 seconds | 3.5 x the interval of the carrying Update                                                                      |
+| Route refresh   | 40 seconds | 2.5 x the interval of the carrying Update                                                                      |
 | Lost route hold | 60 seconds | the latest expiry of any update this node sent naming it reachable: 3.5 x that update's interval, plus 1 Hello |
 
 The router id is random. The speaker keeps it in the state directory
@@ -54,7 +59,9 @@ A link's cost has 2 parts, and a third where `cap.babel.cost.extra` names the
 neighbor. The first is the receive cost the neighbor reports in its IHU, scaled
 by the share of the neighbor's last 16 Hellos this node received (ETX, RFC 8966
 Appendix A.2.2). Each node computes the receive cost it reports the same way, as
-`cap.babel.cost.rx` (96 by default) scaled by its own reception.
+`cap.babel.cost.rx` (96 by default) scaled by its own reception. To a neighbor
+it hears no Hello from, one never heard or one silent past its dead time, it
+reports infinity.
 
 The second part is a round-trip penalty (RFC 9616). The penalty is 0 at or below
 `cap.babel.cost.rtt.min` (10 milliseconds). It is `cap.babel.cost.rtt.weight`
@@ -162,13 +169,16 @@ its neighbor held, and no seqno request asks about that origin. When only
 unfeasible routes remain, the speaker sends a seqno request. It repeats the
 request up to 4 times, 3, 3, 6 and 12 seconds apart. An unfeasible route that
 selection would take, weighed with every feasible route, if it were feasible
-draws 1 seqno request to its neighbor, not repeated. The speaker holds back a
-second request to a neighbor for the same prefix and origin inside 2 seconds,
-but not one for a newer seqno, and a starvation request it holds back is still
-repeated. A route is sent back toward its own next hop as a retraction, which is
-split horizon. An update a neighbor sends under this node's own router id, which
-is this node's route come back, takes out the route or offer that neighbor last
-sent for the prefix, as a retraction does.
+draws 1 seqno request to its neighbor, not repeated. Once 2.5 intervals of the
+update that refreshed a selected route have passed with no other, the speaker
+asks that route's neighbor for the prefix with 1 unicast route request, once for
+each update (RFC 8966 section 3.8.2.3). The speaker holds back a second request
+to a neighbor for the same prefix and origin inside 2 seconds, but not one for a
+newer seqno, and a starvation request it holds back is still repeated. A route
+is sent back toward its own next hop as a retraction, which is split horizon. An
+update a neighbor sends under this node's own router id, which is this node's
+route come back, takes out the route or offer that neighbor last sent for the
+prefix, as a retraction does.
 
 A route that appears or goes away sends a triggered update, as do a change of
 origin and a metric rise of at least `rx` (RFC 8966 section 3.7.2). A new seqno
