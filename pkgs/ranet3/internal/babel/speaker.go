@@ -12,8 +12,8 @@
 // that keeps it is that every finite update leaves through Speaker.advertiseTo,
 // which records the feasibility distance before the packet is built.
 //
-// The deliberate departures from RFC 8966 and RFC 9616 are listed once, with
-// their reasons, on the protocol deviations page,
+// The deliberate departures from RFC 8966 and RFC 9616 are listed, with their
+// reasons, on the protocol deviations page,
 // pkgs/raweb3/pages/docs/design/protocol-deviations.md.
 package babel
 
@@ -77,7 +77,7 @@ const seqnoRequestSuppress = 2 * time.Second
 // what any one neighbor can spend of it. An entry is only ever created for a
 // prefix this node has a route for, which bounds one half of the index. The
 // other half is the router id the requester wrote into the packet, which
-// nothing bounds, and eighty seqno requests fit in a single packet. Past a cap
+// nothing bounds, and many seqno requests fit in a single packet. Past a cap
 // the request is not forwarded, as the suppression above does with a
 // redundant one, and is the list of recently forwarded requests RFC 8966
 // section 3.8.1.2 asks a node to keep.
@@ -240,11 +240,11 @@ type Speaker struct {
 	// again. See noteSendRetryLocked.
 	retryAt time.Time
 	// nextStarveRetry is the earliest starveRetries deadline, kept the way the
-	// route table keeps its own: deadlineLocked runs on the receive path now,
-	// and maxStarveRetries is four thousand, so walking the map there would
-	// hand a neighbor a walk of it per packet. Only ever moved earlier between
-	// passes, so it can be early (one pass that finds nothing due) and
-	// never late. retryStarvedLocked rebuilds it exactly.
+	// route table keeps its own: deadlineLocked runs on the receive path, and
+	// walking up to maxStarveRetries entries there would hand a neighbor that
+	// walk per packet. Only ever moved earlier between passes, so it can be
+	// early (one pass that finds nothing due) and never late.
+	// retryStarvedLocked rebuilds it exactly.
 	nextStarveRetry time.Time
 }
 
@@ -725,31 +725,18 @@ func (s *Speaker) wake() {
 }
 
 // wakeForPacketLocked wakes the run loop for a packet that left it something
-// to do, and leaves it asleep for one that did not. A pass is a reselection of
-// the whole route table, 22 ms at maxRouteKeys prefixes over eight neighbors
-// and under the lock that is also every other neighbor's receive path, the
-// hello emitter and route installation, so a wake for every arriving packet
-// let one neighbor charge this node that much for a sixty byte Hello as fast
-// as the link carries them. Deciding instead costs the 230 ns of
-// deadlineLocked, and the Hello and IHU a packet refreshes move their own
-// deadlines later, never earlier, which is the case this leaves asleep. Both
-// figures are floors, taken on an idle machine. See BenchmarkRunLoopPass.
+// to do, and leaves it asleep for one that did not.
 //
-// It does not make an arriving packet free. Every Hello and IHU calls
-// routes.recomputeNeighbor on the receive path, which reselects every prefix
-// that neighbor holds under the same lock, and the cost is the same order as
-// the pass it no longer also pays for: on the eight-neighbor table at
-// maxRouteKeys, 7.6 ms against 19 ms, both measured on the same fixture by
-// BenchmarkReceiveHello and BenchmarkRunLoopPass. Comparing a one-neighbor
-// receive against an eight-neighbor pass, which an earlier note here did, puts
-// the ratio out by a factor of five. maxRouteKeys is a table-wide cap with no
-// per-neighbor share, so one neighbor can fill it and then charge that.
+// A pass reselects the whole route table under the lock every neighbor's
+// receive path takes, so a wake for every arriving packet would let one
+// neighbor charge this node a pass per Hello. A packet that left no work
+// pending and moved no deadline earlier leaves the loop asleep.
 //
-// The recompute fires on every Hello rather than on one that moves the link
-// cost: linkChanged is set unconditionally by both TLVs, while linkCost is
-// reportedCost gated on liveness, which a refreshing Hello from a live
-// neighbor does not move. Gating it on the cost actually changing is the next
-// thing worth doing here.
+// An arriving packet is not free: a packet with a Hello or an IHU this node
+// accepts recomputes its neighbor's routes, once for the packet and under the
+// same lock, as RFC 8966 sections 3.4.1 and 3.4.2 have a node recompute the
+// link's cost and run route selection after receiving one. maxRouteKeys has no
+// per-neighbor share, so one neighbor can fill the table and then charge that.
 func (s *Speaker) wakeForPacketLocked() {
 	if s.pendingWorkLocked() || s.sleepUntil.IsZero() || s.deadlineLocked().Before(s.sleepUntil) {
 		s.wake()
@@ -783,12 +770,11 @@ func (s *Speaker) pendingWorkLocked() bool {
 // could not send. The rollback has put the work back, and nothing else will
 // pick it up: a Hello is retried by `!n.sentHello` and a triggered update by
 // the neighbor's own `owed`, both on the next pass, whenever that is. A
-// quarter of the hello interval gives a refused Hello fourteen attempts inside
+// quarter of the hello interval gives a refused Hello several attempts inside
 // the three and a half intervals that withdraw the routes through this
-// neighbor, and costs a pass rather than a packet. The floor is a millisecond
-// rather than anything larger: at the ten millisecond interval Validate
-// accepts, a fifty millisecond floor put the first retry after the remote had
-// already declared this node dead.
+// neighbor, and costs a pass rather than a packet. The floor is a millisecond,
+// so at the shortest interval Validate accepts the first retry still comes
+// before the neighbor's dead timeout.
 func (s *Speaker) noteSendRetryLocked(now time.Time) {
 	s.retryAt = earlier(s.retryAt, now.Add(s.sendRetryInterval()))
 }
@@ -903,8 +889,8 @@ func (s *Speaker) Run(ctx context.Context) error {
 
 // routeLogInterval bounds how often a selection change is said out loud at
 // info. One neighbor alternating an update and a retraction for one prefix
-// drives a change per TLV, and sixty-six of those fit in one packet, each a
-// synchronous write on the goroutine holding s.mu. Every change is still
+// drives a change per TLV, many to one packet, each a synchronous write on the
+// goroutine holding s.mu. Every change is still
 // written at debug, where it costs a level comparison unless somebody asked
 // for it, and the info line carries how many it stands for.
 //

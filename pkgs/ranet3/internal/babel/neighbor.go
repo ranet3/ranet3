@@ -49,16 +49,15 @@ type neighborState struct {
 	// helloSeqno is this node's Hello counter toward one neighbor. RFC 8966
 	// section 4.6.5: "Every time a Hello is sent, the corresponding seqno
 	// counter MUST be incremented." Each peer is its own point-to-point link
-	// here, so each carries its own counter. One counter shared across
-	// neighbors repeated a seqno to whichever neighbor drew an extra Hello
-	// between two intervals, which is every neighbor on the pass it joins.
+	// here, so each carries its own counter. A counter shared across
+	// neighbors would repeat a seqno to a neighbor that draws an extra Hello
+	// between two intervals.
 	helloSeqno uint16
 	// owed holds the prefixes this neighbor still needs a triggered update
-	// for, RFC 8966 section 3.7.2. It is per neighbor rather than one set for the speaker,
-	// because a packet is dropped per neighbor: putting a shared set back
-	// re-sent the whole triggered update to every healthy neighbor on every
-	// wake for as long as one was congested. Bounded by the route table, like
-	// advertised.
+	// for, RFC 8966 section 3.7.2. It is per neighbor rather than one set for
+	// the speaker, because a packet is dropped per neighbor, and a shared set
+	// put back would resend the triggered update to every neighbor for as long
+	// as one is congested. Bounded by the route table, like advertised.
 	owed map[routeKey]struct{}
 	// nextTriggered is the earliest the next triggered update to this neighbor goes, see triggeredActions
 	nextTriggered time.Time

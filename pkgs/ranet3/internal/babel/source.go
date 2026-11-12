@@ -49,8 +49,7 @@ const sourceGCTime = 3 * time.Minute
 // new router id, which a node that lost its sequence number state does.
 //
 // The numbers sit far above what a legitimate prefix or a restarting neighbor
-// produces and far below what a flood needs. See maxOriginsPerPrefixPerNeighbor
-// for why the first version of them was too small.
+// produces and far below what a flood needs.
 const (
 	maxSources          = 1 << 16
 	maxOriginsPerPrefix = 1 << 10
@@ -60,18 +59,13 @@ const (
 	// stops one neighbor spending the global budget and denying every other
 	// neighbor every prefix.
 	//
-	// Both are far above what a restart produces, which the first version of
-	// this bound got wrong. A ranet3 node without a usable state file, BIRD
-	// with randomize router id set and babeld with a random id and no state
-	// file draw a new router id every time they start, which makes each of
-	// their restarts a new origin for every prefix they announce, charged to
-	// whichever neighbor this node reaches it through.
-	// At eight, nine restarts inside sourceGCTime made the prefix unfeasible,
-	// and since selectRoute rechecks feasibility for stored routes that
-	// dropped the route already selected: the prefix was held unreachable,
-	// mesh-wide, for three minutes after the churn stopped. A cap that refuses
-	// an origin refuses a route, so it has to sit above anything a supervisor
-	// restarting a peer can produce.
+	// Both are far above what a restart produces. A ranet3 node without a
+	// usable state file, BIRD with randomize router id set and babeld with a
+	// random id and no state file draw a new router id every time they start,
+	// which makes each of their restarts a new origin for every prefix they
+	// announce, charged to whichever neighbor this node reaches it through. A
+	// cap that refuses an origin refuses a route, so it has to sit above
+	// anything a supervisor restarting a peer can produce.
 	maxOriginsPerPrefixPerNeighbor = 1 << 8
 	maxSourcesPerNeighbor          = 1 << 13
 )
@@ -142,12 +136,11 @@ func (rt *routeTable) observe(key routeKey, adv advertisement, from string, now 
 		if entry.better(adv.seqno, adv.metric) {
 			entry.seqno, entry.metric = adv.seqno, adv.metric
 		}
-		// The charge follows whoever is keeping the entry alive. It was
-		// frozen at whoever created it, and gcAt is refreshed by every
-		// advertisement, so a neighbor that advertised one origin once and
-		// went quiet stayed charged for it as long as any other neighbor kept
-		// announcing the same prefix, and could then be refused a share it
-		// was not using.
+		// The charge follows whoever is keeping the entry alive, since every
+		// advertisement refreshes gcAt: charged to its creator, a neighbor
+		// that advertised an origin once and went quiet would hold a share it
+		// no longer uses for as long as any other neighbor announces the
+		// prefix.
 		if entry.owner != from {
 			rt.releaseOrigin(key, entry.owner)
 			rt.originsBy[originShare{route: key, peer: from}]++
@@ -175,14 +168,13 @@ func (rt *routeTable) requestSeqno(key routeKey, adv advertisement) uint16 {
 // for an entry a route still references, and Appendix B deliberately sets the
 // source GC time longer than the route expiry time so that removal is safe.
 //
-// Keeping a referenced entry instead made an unreachable prefix permanent. A
+// Keeping a referenced entry would make an unreachable prefix permanent. A
 // neighbor whose path genuinely worsens advertises a metric this node has
 // already bettered, so the route is unfeasible and unselectable. The node asks
 // the origin for a new sequence number, and if every request and reply is lost
 // it stops asking. The neighbor keeps refreshing the unfeasible route, so the
-// distance stays referenced, so it is never collected, so the route stays
-// unfeasible for the life of the process. Expiring it lets the path come
-// back.
+// distance would stay referenced, never be collected, and leave the route
+// unfeasible for the life of the process. Expiring it lets the path come back.
 func (rt *routeTable) sweepSources(now time.Time) {
 	for index, entry := range rt.sources {
 		if now.Before(entry.gcAt) {

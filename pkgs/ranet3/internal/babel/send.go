@@ -44,8 +44,8 @@ const (
 // belongs to exactly one packet, and takeUndos walks the list once.
 //
 // It carries the prefix rather than a closure over it because a dump builds
-// one per prefix, sixteen thousand at maxRouteKeys, and a closure each is an
-// allocation each under the lock the whole protocol runs on.
+// one per prefix, up to maxRouteKeys, and a closure each is an allocation each
+// under the lock the whole protocol runs on.
 type tlvUndo struct {
 	firstTLV int
 	key      routeKey
@@ -89,8 +89,7 @@ type reservedPacket struct {
 
 // takeUndos splits off the undos of the TLVs in [from, to) and returns the
 // rest. Rescanning from the front for each packet is quadratic in the dump,
-// 4.2 ms of it at maxRouteKeys prefixes, under the lock the whole protocol
-// runs on.
+// under the lock the whole protocol runs on.
 func takeUndos(rollback []tlvUndo, from, to int) ([]tlvUndo, []tlvUndo) {
 	for len(rollback) > 0 && rollback[0].firstTLV < from {
 		rollback = rollback[1:]
@@ -122,11 +121,8 @@ func takeUndos(rollback []tlvUndo, from, to int) ([]tlvUndo, []tlvUndo) {
 // goroutine. See noteLost.
 func (s *Speaker) emitLocked(actions []sendAction) func() {
 	var packets []reservedPacket
-	// Ordered by what a pass can afford to lose, least first. Sorting on the
-	// destination instead put the Hello behind every request of the pass,
-	// because a Hello is multicast too and coalesce had merged it into the
-	// dump. A Hello is the one packet here that nothing else can stand in
-	// for. See sendPriority.
+	// Ordered by what a pass can afford to lose, least first. A Hello is the
+	// one packet nothing else stands in for, see sendPriority.
 	merged := coalesce(actions)
 	slices.SortStableFunc(merged, func(a, b sendAction) int {
 		return int(a.priority) - int(b.priority)
@@ -174,8 +170,6 @@ func (s *Speaker) emitLocked(actions []sendAction) func() {
 // the same reason. A peer whose transport keeps failing after the reservation
 // succeeded closes a loop with nothing in it to wait on: give the work back,
 // rebuild it, reserve it, lose it, wake, as fast as the syscall returns.
-// Measured at 40,000 passes a second, each a reselection of the whole table
-// under the lock every neighbor's receive path needs.
 func (s *Speaker) noteLost(n *neighborState, undo []tlvUndo) func(error) {
 	if len(undo) == 0 {
 		return nil
@@ -399,13 +393,9 @@ func (s *Speaker) helloAction(n *neighborState, now time.Time) sendAction {
 		EncodeIHU(ihu),
 	}, whenRefused: []func(){func() {
 		// The seqno is given back. RFC 8966 section 4.6.5 counts Hellos that
-		// were sent, and a refused reservation is one that never reached the
-		// wire, so keeping the increment tells the neighbor it lost a Hello
-		// nobody transmitted. That was cosmetic until Hello loss became a
-		// cost: the speaker retries every quarter interval, so a few seconds
-		// of a stalled tunnel burned several sequence numbers and the peer's
-		// six-entry window read them all as loss, costing the link up to six
-		// times nominal at each end over a local queue that dropped nothing.
+		// were sent, and a seqno spent on a refused reservation reads at the
+		// neighbor as a lost Hello, which its link quality estimate charges as
+		// loss.
 		n.helloSeqno--
 		n.sentHello = false
 	}}}
@@ -479,11 +469,11 @@ func (s *Speaker) advertiseTo(n *neighborState, key routeKey, force bool, now ti
 		}
 		// Only what was actually spent is given back. A forced retraction for
 		// a prefix this node never advertised consumes nothing, and rolling
-		// one back recorded a prefix the neighbor chose as advertised: the
-		// key comes out of its Route Request, advertisableKeys unions the set,
-		// and every later dump then carried an Update for a prefix that does
-		// not exist. Nothing bounds that set, and each dropped dump rolls the
-		// phantoms back in, so it never drains.
+		// one back would record a prefix the neighbor chose as advertised:
+		// the key comes out of its Route Request, advertisableKeys unions the
+		// set, and every later dump would carry an Update for a prefix that
+		// does not exist. Nothing bounds that set, and each dropped dump
+		// rolls the phantoms back in, so it never drains.
 		if sent {
 			delete(n.advertised, key)
 			spent = true
@@ -662,8 +652,7 @@ func (s *Speaker) triggeredActions(now time.Time) []sendAction {
 		// a node MUST send an update as an urgent TLV", section 3.7.2, and
 		// takeDirty has already consumed the record that one is owed. A
 		// dropped packet without dumpFor's re-owe leaves the change to the
-		// next periodic dump, which is sixteen seconds at the defaults and
-		// four expiries at a neighbor that has lost the prefix.
+		// next periodic dump.
 		tlvs, rollback := s.dumpFor(n, keys, now)
 		if len(tlvs) == 0 {
 			continue
@@ -720,10 +709,9 @@ func (s *Speaker) starvedActions(now time.Time) []sendAction {
 // suppression table.
 func (s *Speaker) seqnoRequestTo(n *neighborState, key routeKey, routerID [8]byte, seqno uint16, now time.Time) sendAction {
 	// Charged to this node's own bucket under the same cap as a forwarded
-	// request. The router-id half of the index still comes from a neighbor's
-	// packet, so "this node's own requests come from its own route table" was
-	// only half true. Refusing to record one costs the suppression that stops
-	// it being relayed twice, not the request itself, which still goes out.
+	// request, since the router-id half of the index comes from a neighbor's
+	// packet. Refusing to record one costs the suppression that stops it being
+	// relayed twice, not the request, which still goes out.
 	s.allowSeqnoRequest(sourceKey{route: key, routerID: routerID}, seqno, "", now)
 	return sendAction{neighbor: n, dest: n.destination(), priority: priorityRequest, tlvs: []RawTLV{EncodeSeqnoRequest(SeqnoRequest{
 		AE: aeFor(key.dest), Prefix: key.dest, SourcePrefix: key.source,

@@ -33,11 +33,7 @@ const (
 const (
 	SubTLVPad1 uint8 = 0
 	SubTLVPadN uint8 = 1
-	// SubTLVTimestamp carries the RTT extension's timestamps, RFC 9616 section 6
-	// ("Delay-Based Metric Extension for the Babel Routing Protocol").
-	// Confirmed against both the RFC text and BIRD's actual wire encoding,
-	// which agree: 3, not the more mnemonic-seeming 4 this was initially
-	// miscoded as.
+	// SubTLVTimestamp carries the timestamps of RFC 9616 section 6.
 	SubTLVTimestamp uint8 = 3
 )
 

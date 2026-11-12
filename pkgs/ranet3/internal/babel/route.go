@@ -458,12 +458,10 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	}
 
 	previous := entry.selected
-	// Only a changed next hop changes the forwarding table: the cost is
-	// something this node advertises, which significant below decides, and is
-	// not part of the entry. Reinstalling on a cost change alone logged a line, wrote
-	// the same entry and woke the kernel reconciler for every prefix through
-	// a neighbor whose measured RTT moved, which under RFC 9616 costing is
-	// most IHUs.
+	// Only a changed next hop changes the forwarding table. The cost goes into
+	// what this node advertises, which significant decides, and is not part of
+	// the entry, so a cost change alone, which RTT costing makes of most IHUs,
+	// writes nothing and wakes no reconciler.
 	if selected.neighbor != previous.neighbor {
 		if selected.neighbor != nil {
 			// RFC 8966 section 3.5.4: the hold "is removed as soon as a
@@ -600,12 +598,9 @@ func (r *routeInfo) cost(n *neighborState, now time.Time, cost CostParams) uint1
 // interval is irregular and the decay is taken from elapsed time rather than
 // from a sample count.
 //
-// The one deviation from A.3 is that an increase is not smoothed: ms(R) is the
-// worst this route has been over the last few time constants. A plain average
-// makes ms(R) lag a real degradation of the selected route, which keeps traffic
-// on a link that has already gone bad for as long as it takes ms(R) to catch
-// up. Damping only improvements still gives A.3 what it asks for, that a route
-// be consistently good before it is switched to.
+// An increase is not smoothed: ms(R) is the worst this route has been over the
+// last few time constants, a departure from Appendix A.3 the protocol
+// deviations page gives with its reason under Updates and requests.
 func (r *routeInfo) smooth(cost uint16, now time.Time, tau time.Duration) {
 	elapsed := now.Sub(r.smoothedAt)
 	switch {

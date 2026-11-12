@@ -136,8 +136,7 @@ const (
 	// LinkQualityETX is Appendix A.2.2, and the default because this mesh
 	// already runs it at the other end of every link.
 	LinkQualityETX LinkQuality = iota
-	// LinkQualityNone keeps the configured rxcost however the history reads,
-	// the behavior this tree had before it kept any.
+	// LinkQualityNone keeps the configured rxcost however the history reads.
 	LinkQualityNone
 )
 

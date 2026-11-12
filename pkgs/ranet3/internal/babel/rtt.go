@@ -52,11 +52,9 @@ type RTTOptions struct {
 // plus up to RTT.Weight more, scaled linearly between RTT.Min and RTT.Max,
 // each field the file left out filled in with the default it stands for.
 //
-// One field at a time, because the block used to be replaced whole the moment
-// any of it was written: "rx = 96", the default spelled out, left weight, min
-// and max at zero, which takes the round-trip term out entirely and puts every
-// node back to advertising one cost whatever its round trip. That was measured
-// on the fleet once already, and internal/babel's own doc promises against it.
+// One field at a time: "rx = 96", the default spelled out, would otherwise
+// leave weight, min and max at zero, which takes the round-trip term out and
+// has every node advertise one cost whatever its round trip.
 func (o CostOptions) Params() CostParams {
 	params := DefaultCostParams()
 	if o.Rx != nil {
@@ -106,9 +104,9 @@ func DefaultCostParams() CostParams {
 			// RFC 9616 section 4.2: "The mapping should also be constant
 			// around 0, so that small oscillations in the RTT of low-RTT links
 			// do not contribute to routing instability", and it RECOMMENDS
-			// rtt-min = 10 ms for it. At zero the mapping was linear from the
-			// origin, so the exponential average of a link with ordinary
-			// jitter moved the advertised rxcost on most IHUs.
+			// rtt-min = 10 ms for it. A mapping linear from zero would move
+			// the exponential average of a link with ordinary jitter, and so
+			// the cost, on most IHUs.
 			Min: schema.Duration(10 * time.Millisecond),
 			// rtt-max and max-rtt-penalty deviate from the 120 ms and 150 the
 			// same section RECOMMENDS, deliberately. This is a global mesh:

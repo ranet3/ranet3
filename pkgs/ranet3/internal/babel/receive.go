@@ -284,12 +284,11 @@ func (s *Speaker) handlePacketLocked(n *neighborState, src netip.Addr, raw []byt
 // full dump, and any other request gets an update or an explicit retraction.
 //
 // The same section says a full dump SHOULD be rate-limited, and on a transit
-// node it has to be. The dump is the whole learned table, so one 1400 byte
-// packet holds 337 four byte wildcard requests and, unlimited, each would draw
-// its own copy: measured at 5000 routes that is 42,125 packets and 59 MB out
-// for one packet in, with the table walked under the lock the whole protocol
-// runs under. One dump per update interval is all a neighbor can use anyway,
-// since the periodic update carries the same thing.
+// node it has to be: the dump is the whole learned table, one packet holds
+// hundreds of wildcard requests, and each would draw its own copy, the table
+// walked under the lock the whole protocol runs under. One dump per update
+// interval is all a neighbor can use, since the periodic update carries the
+// same thing.
 func (s *Speaker) routeReply(n *neighborState, request RouteRequest, now time.Time) []sendAction {
 	var tlvs []RawTLV
 	var rollback []tlvUndo
@@ -297,12 +296,12 @@ func (s *Speaker) routeReply(n *neighborState, request RouteRequest, now time.Ti
 		if !n.lastFullDump.IsZero() && now.Sub(n.lastFullDump) < s.update {
 			return nil
 		}
-		// Taken now, so forty requests in one packet draw one dump, and not
-		// given back if the packets are dropped. The cost this limits is the
-		// table walk under the lock, which has already happened by then, so
-		// refunding it would turn off the limit exactly while this node is too
-		// congested to deliver: every later request would walk the table
-		// again, under the lock that also carries hellos and retractions.
+		// Taken now, so the requests of one packet draw one dump between
+		// them, and not given back if the packets are dropped. The cost this
+		// limits is the table walk under the lock, which has already happened
+		// by then, so refunding it would turn off the limit exactly while this
+		// node is too congested to deliver: every later request would walk the
+		// table again, under the lock that also carries hellos and retractions.
 		// The prefixes are owed back through dumpFor, which is the other half:
 		// the allowance is spent whether or not the answer went out.
 		n.lastFullDump = now
