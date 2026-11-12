@@ -49,11 +49,14 @@ type relayHarness struct {
 	reach netip.Addr
 }
 
+// unheard is the hooks of a test that reads no report through them
+var unheard = egress.Hooks{Ready: func(bool, bool, bool) {}, Republish: func() {}}
+
 func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relayHarness {
 	t.Helper()
 	h := &relayHarness{mesh: newFakeMesh(), clock: time.Unix(1_000_000, 0)}
 	p := &fakePlatform{routes4: true, routes6: true}
-	rt := Runtime{Mesh: h.mesh, Platform: p.platform(), Limits: testLimits()}
+	rt := Runtime{Mesh: h.mesh, Platform: p.platform(), Limits: testLimits(), Hooks: unheard}
 	rt.Platform.Prepare = func(_ string, to netip.AddrPort, _ syscall.RawConn) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()

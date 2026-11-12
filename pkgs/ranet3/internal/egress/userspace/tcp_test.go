@@ -129,7 +129,7 @@ func TestDialsConnectionsAndSharesComeBackAfterFailures(t *testing.T) {
 			released := sync.OnceFunc(func() { close(release) })
 			mesh := newFakeMesh()
 			p := &fakePlatform{routes4: true, routes6: true}
-			rt := Runtime{Mesh: mesh, Platform: p.platform(), Limits: testLimits()}
+			rt := Runtime{Mesh: mesh, Platform: p.platform(), Limits: testLimits(), Hooks: unheard}
 			rt.Limits.Dials, rt.Limits.Connections = c.dials, c.conns
 			rt.Platform.Prepare = func(_ string, to netip.AddrPort, _ syscall.RawConn) error {
 				if !to.IsValid() {

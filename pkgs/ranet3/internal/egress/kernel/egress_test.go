@@ -233,8 +233,17 @@ func translator(t *testing.T, cfg egress.Egress, rt Runtime, be backend) *Transl
 	if rt.Sysctl == nil {
 		rt.Sysctl = readsNothing
 	}
+	if rt.Ready == nil {
+		rt.Ready = unheard.Ready
+	}
+	if rt.Republish == nil {
+		rt.Republish = unheard.Republish
+	}
 	return newTranslator(cfg, rt, be)
 }
+
+// unheard is the hooks of a test that reads no report through them
+var unheard = egress.Hooks{Ready: func(bool, bool, bool) {}, Republish: func() {}}
 
 // readsNothing is a Runtime.Sysctl that reads no setting, as on a host whose
 // conntrack has not loaded

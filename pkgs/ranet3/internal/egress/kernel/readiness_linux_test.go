@@ -82,7 +82,7 @@ func TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady(t *testing.T) {
 		},
 		Sweep: schema.Duration(heldSweep),
 	}
-	exit := newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}}, cfg, egress.Hooks{})
+	exit := newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}}, cfg, unheard)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- exit.Run(ctx) }()

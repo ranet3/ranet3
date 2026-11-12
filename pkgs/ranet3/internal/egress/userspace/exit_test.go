@@ -456,7 +456,7 @@ func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mesh := newFakeMesh()
-			rt := Runtime{Mesh: mesh, Platform: c.platform.platform(), Limits: testLimits()}
+			rt := Runtime{Mesh: mesh, Platform: c.platform.platform(), Limits: testLimits(), Hooks: unheard}
 			var calls []readyCall
 			var mu sync.Mutex
 			rt.Ready = func(v4, v6, serves bool) {
@@ -543,7 +543,7 @@ func TestReadinessJudgesEveryPrefixForItsRouteWhicheverFailsFirst(t *testing.T) 
 				}
 				return route(address)
 			}
-			rt := Runtime{Mesh: newFakeMesh(), Platform: platform, Limits: testLimits()}
+			rt := Runtime{Mesh: newFakeMesh(), Platform: platform, Limits: testLimits(), Hooks: unheard}
 			var calls []readyCall
 			var mu sync.Mutex
 			rt.Ready = func(v4, v6, serves bool) {

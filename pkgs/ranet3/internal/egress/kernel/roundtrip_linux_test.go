@@ -365,6 +365,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
 		Sysctl:     readsNothing,
+		Hooks:      unheard,
 	}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
@@ -462,7 +463,7 @@ func TestNftablesRewritesALineEditedUnderItsComment(t *testing.T) {
 	}
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -538,7 +539,7 @@ func TestNftablesReadsForwardAndIPv6sChainBack(t *testing.T) {
 	}
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -651,7 +652,7 @@ func TestNftablesRemakesTheTableAnEarlierLayoutWrote(t *testing.T) {
 	}
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -739,7 +740,7 @@ func TestNftablesDeletesTheRetiredChainBesideAStrayItGoesTo(t *testing.T) {
 	}
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -803,7 +804,7 @@ func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 		{From: schema.MustPrefix("192.0.2.128/26"), To: egress.Translation{Auto: true}},
 		{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
 	}}
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -938,7 +939,7 @@ func TestNftablesNamesTheChainThatKeepsAStrayChainOfNone(t *testing.T) {
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	cfg := egress.Egress{Translate: []egress.Class{{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}}}}
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -1021,7 +1022,7 @@ func TestNftablesRemakesBesideAKilledInstancesChainOfNone(t *testing.T) {
 	}
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	killed := egress.Egress{FlowsPerSource: 64, Translate: []egress.Class{
 		{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
 		{From: schema.MustPrefix("192.0.2.0/26"), To: egress.Translation{Auto: true}},
@@ -1075,7 +1076,7 @@ func TestNftablesRemakesAStaleTimeoutAlone(t *testing.T) {
 	}
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -1142,7 +1143,7 @@ func TestNftablesKeepsTheSetsCountsAcrossARewrite(t *testing.T) {
 		}
 		return string(out)
 	}
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -1215,7 +1216,7 @@ func TestNftablesRemakesASetThatCountsAnotherLimit(t *testing.T) {
 		}
 		return string(out)
 	}
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	earlier, later := egress.Egress{FlowsPerSource: 64}, egress.Egress{}
 	before, err := newBackend(earlier, rt)
 	if err != nil {
@@ -1293,7 +1294,7 @@ func TestNftablesReportsTheNatChainsAtItsPriorityOrBelow(t *testing.T) {
 	if err != nil {
 		t.Fatal("another writer's chains are made through nft, which is not on the path")
 	}
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -1479,6 +1480,7 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 			defer mu.Unlock()
 			told = append(told, fmt.Sprintf("ready %v %v", v4, v6))
 		},
+		Republish: unheard.Republish,
 	}
 	// no sweep comes within notificationWait, so only a wake explains a pass
 	cfg := egress.Egress{Sweep: schema.Duration(lateSweep)}

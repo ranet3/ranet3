@@ -375,9 +375,9 @@ func (p *proxyExit) runHooks() {
 		select {
 		case call := <-p.called:
 			switch {
-			case call.kind == hookReady && len(call.payload) == 3 && p.hooks.Ready != nil:
+			case call.kind == hookReady && len(call.payload) == 3:
 				p.hooks.Ready(call.payload[0] == 1, call.payload[1] == 1, call.payload[2] == 1)
-			case call.kind == hookRepublish && p.hooks.Republish != nil:
+			case call.kind == hookRepublish:
 				p.hooks.Republish()
 			}
 			_ = p.w.reply(call.id, nil, nil)

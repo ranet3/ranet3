@@ -75,7 +75,7 @@ func TestForwardTakesEachFamilyAcrossItsOwnLinesAlone(t *testing.T) {
 	run(fmt.Sprintf(`add table inet exempt; add chain inet exempt raw { type filter hook prerouting priority raw; }; add rule inet exempt raw iifname "%s" notrack`, mesh))
 
 	cfg := egress.Egress{Translate: []egress.Class{{From: schema.MustPrefix("3fff:a::/32"), To: egress.Translation{None: true}}}}
-	rt := Runtime{Interface: mesh, Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: mesh, Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -194,7 +194,7 @@ func TestTranslatorLineLeavesTheOtherFamilysFlowsUncounted(t *testing.T) {
 	run(fmt.Sprintf(`add table inet exempt; add chain inet exempt raw { type filter hook prerouting priority raw; }; add rule inet exempt raw iifname "%s" udp sport %d notrack`, mesh, untracked))
 
 	cfg := egress.Egress{Advertise: prefixes(t, "2001:db8:1::/48"), FlowsPerSource: 1}
-	rt := Runtime{Interface: mesh, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: mesh, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)

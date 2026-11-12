@@ -94,9 +94,7 @@ func (s *Shell) Publish(prefixes []netip.Prefix) bool {
 		slog.Warn("egress advertisement changed", "prefixes", len(prefixes),
 			"was", len(*previous), "detail", "a family is advertised only while it is ready, as ranet3 status says")
 	}
-	if s.hooks.Republish != nil {
-		s.hooks.Republish()
-	}
+	s.hooks.Republish()
 	return true
 }
 
@@ -125,7 +123,7 @@ func (s *Shell) SetReady(r Readiness) {
 		}
 	}
 	s.ready4, s.ready6, s.serves, s.skipped = r.Ready4, r.Ready6, serves, r.Skipped
-	if moved && s.hooks.Ready != nil {
+	if moved {
 		s.hooks.Ready(r.Ready4, r.Ready6, serves)
 	}
 	s.hooks.Events.Emit("egress.ready", "", slog.Bool("ipv4", r.Ready4), slog.Bool("ipv6", r.Ready6), slog.Bool("sid", serves),

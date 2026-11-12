@@ -53,11 +53,10 @@ type Exit interface {
 type Hooks struct {
 	// Ready receives each family's readiness, and whether the egress SIDs are
 	// served, whenever one of the three moves, starting from none. A family is
-	// reported not ready before what carries it is withdrawn. Nil where nothing
-	// reads it, which only a test does.
+	// reported not ready before what carries it is withdrawn.
 	Ready func(v4, v6, serves bool)
 	// Republish says that Announce has moved, once per move, Run's end
-	// moving it to empty. Nil where nothing announces, which only a test does.
+	// moving it to empty.
 	Republish func()
 	// Events records every pass that rewrote what the backend holds, moved
 	// the announcement or failed, nil records nothing

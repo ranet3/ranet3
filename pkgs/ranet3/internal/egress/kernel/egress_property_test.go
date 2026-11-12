@@ -100,6 +100,7 @@ func exits() hegel.Generator[exit] {
 			Lookup:        holdsEvery,
 			Sysctl:        readsNothing,
 			Steered:       hegel.Draw(tc, hegel.Booleans()),
+			Hooks:         unheard,
 		}
 		return exit{cfg, rt}
 	})

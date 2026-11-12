@@ -80,7 +80,7 @@ func debugExit(t *testing.T, sweep time.Duration) (exit egress.Exit, debug func(
 		t.Fatalf("make the uplink: %v", err)
 	}
 	cfg := egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0")}, Sweep: schema.Duration(sweep)}
-	exit = newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}, Mesh: []netip.Addr{mesh}}, cfg, egress.Hooks{})
+	exit = newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}, Mesh: []netip.Addr{mesh}}, cfg, unheard)
 	debugged, ok := exit.(interface{ Debug() egress.ExitDebug })
 	if !ok {
 		t.Fatal("the kernel exit answers no debug read")

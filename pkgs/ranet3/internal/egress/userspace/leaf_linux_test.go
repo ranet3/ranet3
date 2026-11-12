@@ -121,7 +121,7 @@ func newLeafRig(t *testing.T, build func(Runtime) (*Exit, error)) *leafRig {
 		t.Fatalf("make the leaf's tun: %v", err)
 	}
 	p := &fakePlatform{routes4: true, routes6: true}
-	rt := Runtime{Mesh: r.mesh, Platform: p.platform(), Limits: testLimits()}
+	rt := Runtime{Mesh: r.mesh, Platform: p.platform(), Limits: testLimits(), Hooks: unheard}
 	rt.Platform.Prepare = func(network string, to netip.AddrPort, _ syscall.RawConn) error {
 		r.mu.Lock()
 		defer r.mu.Unlock()

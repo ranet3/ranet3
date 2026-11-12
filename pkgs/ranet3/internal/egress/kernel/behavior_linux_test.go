@@ -265,6 +265,9 @@ func newKernelExit(t testing.TB, host egresstest.Host, cfg egress.Egress, hooks 
 	return exit
 }
 
+// unheard is the hooks of a test that reads no report through them
+var unheard = egress.Hooks{Ready: func(bool, bool, bool) {}, Republish: func() {}}
+
 // kernelExitTables names the table the kernel exit writes in the exit's
 // namespace and each chain in it, which no other writer there adds to
 func kernelExitTables(host egresstest.Host) ([]string, error) {

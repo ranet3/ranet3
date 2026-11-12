@@ -131,7 +131,7 @@ func startOwners(t *testing.T) (*Translator, backend, borderBackend, *BorderFilt
 	}
 	t.Cleanup(func() { _ = switchConn.Close() })
 	writeSwitch(t, switchConn)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the translator's backend: %v", err)
@@ -162,7 +162,7 @@ func TestTranslatorTakingAnEndedOnesChainsOverDeletesTheTableAtItsWithdrawal(t *
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	ended, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the first translator's backend: %v", err)
