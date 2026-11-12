@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-11
+updated: 2026-11-12
 order: 65
 ---
 
@@ -111,9 +111,14 @@ A packet larger than its session's budget is never sent as it is.
   is dropped and answered with ICMP Parameter Problem, which names the octet at
   fault, and counted `invalid`.
 
-A node that moves a steered packet on to its next segment does the same when the
-session to that segment carries less, as [segment routing](segment-routing.md)
-describes.
+A node that moves a steered packet on to its next segment answers or drops it
+the same way when the session to that segment carries less, and counts what it
+drops and answers among its segments' drops and answers, not the
+[transit counters](metrics.md#transit-counters). Unlike the bullets, it answers
+a segment whose routing header does not name a whole IP packet behind it, or
+that carries an IPv4 packet the cut refuses for its size, with a Packet Too Big
+about the segment itself, as
+[segment routing](segment-routing.md#waypoints-and-packet-size) describes.
 
 ICMP answers are held to 2 limits. Their intervals, burst and cap are the Linux
 kernel's defaults, since ranet3 sends what the kernel sent before. The number of

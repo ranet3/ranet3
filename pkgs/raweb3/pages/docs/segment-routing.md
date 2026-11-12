@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-10
+updated: 2026-11-12
 order: 60
 ---
 
@@ -349,13 +349,15 @@ Where a route of the waypoint's own that counts as no default covers the
 packet's source, the waypoint writes its answer into its own tun instead, from
 the packet's destination, in either family and whatever router-id it holds, as
 the [forwarding decision](routing.md#transit) answers this host. A segment whose
-routing header names something other than the IP packet behind it gets Packet
-Too Big about itself, to its outer source, naming what the session carries, from
-the IPv6 router-id else the SID it reached, or, where such a route covers that
-source, into the tun from its next segment. A waypoint drops a segment, or the
-fragments it was cut into, and counts them, where the session's budget has no
-room for them, as [the dataplane](design/limits.md#dataplane) drops a tun read's
-packets, or where the session has closed.
+routing header does not name a whole IP packet behind it, or that carries an
+IPv4 packet without DF that cannot be cut, because its data runs past 65535
+bytes or the session leaves no room for 8 bytes of data behind its header, gets
+Packet Too Big about itself, to its outer source, naming what the session
+carries, from the IPv6 router-id else the SID it reached, or, where such a route
+covers that source, into the tun from its next segment. A waypoint drops a
+segment, or the fragments it was cut into, and counts them, where the session's
+budget has no room for them, as [the dataplane](design/limits.md#dataplane)
+drops a tun read's packets, or where the session has closed.
 
 A waypoint other than a ranet3 node may answer the steered packet itself
 instead, to the headend, as a tunnel's node answers under RFC 2473. A Linux
@@ -375,13 +377,15 @@ These are dropped without an answer:
   ranet3 answers with no Packet Too Big either, as
   [the deviations](design/protocol-deviations.md#icmp-answers) list
 - an IPv4 packet whose header fails the checks of RFC 1812 section 5.2.2, a bad
-  checksum among them
+  checksum among them, but at a waypoint one whose version or lengths do not
+  describe a whole packet, whose segment gets Packet Too Big as above
 - an IPv4 packet with DF, or without DF and with options that do not parse, that
   no ICMP error may answer: an ICMP error, a fragment other than the first, a
   packet to a multicast group or to `255.255.255.255`, or a packet from
   `0.0.0.0/8`, a loopback address, a multicast address or `240.0.0.0/4`
-- an IPv4 packet without DF that cannot be cut, because its data runs past 65535
-  bytes or the session leaves no room for 8 bytes of data behind its header
+- at the headend, an IPv4 packet without DF read off the tun that cannot be cut,
+  for the reasons above, as [path MTU](path-mtu.md#packets-that-do-not-fit)
+  gives
 - at a waypoint, a packet whose source no session leads back to, where no route
   covers it, a hold does, or only a route of this node's own that counts as a
   default does, and one whose session back has closed or has no room for its

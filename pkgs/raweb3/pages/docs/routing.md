@@ -382,8 +382,15 @@ not verify, which the mesh completes, since macOS leaves it to
 Linux never routes such a packet into the tun, since its
 [local table](https://man7.org/linux/man-pages/man8/ip-rule.8.html) delivers it
 first. Any other read the table answers as this node's own, which the mesh could
-only hand back to the host, is dropped (`looped`). None of these is answered, as
-[the antispoof filter](antispoof.md) and
+only hand back to the host, is dropped (`looped`) and answered from its
+destination into the tun within the
+[rate limits](path-mtu.md#packets-that-do-not-fit), over IPv6 with Destination
+Unreachable, code 3, and over IPv4 with Host Unreachable, code 1, or Network
+Unreachable, code 0, where an entry of this node's own that counts as a default
+answers a destination outside `overlay`. One to the base address of a prefix of
+this node's own wider than a host, or over IPv4 to its directed broadcast, is
+not answered, but in a /31 or a /127, whose 2 addresses are hosts. None of the
+edge's other drops is answered, as [the antispoof filter](antispoof.md) and
 [segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for the
 mesh's edge.
 
