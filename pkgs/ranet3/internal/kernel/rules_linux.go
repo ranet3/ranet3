@@ -24,8 +24,8 @@ import (
 // FRA_PROTOCOL set to the reconciler's protocol, a dump keeps only those, and
 // a delete carries the protocol too so the kernel refuses a mismatch as well.
 // FRA_PROTOCOL has been in the kernel since 4.17 and systemd-networkd sets it
-// to RTPROT_STATIC on the rules it installs, so the fleet's own rules and this
-// reconciler's are already distinguishable on a running node.
+// to RTPROT_STATIC on the rules it installs, so networkd's rules and this
+// reconciler's stay apart.
 
 // af is one rule's family as this backend writes it into the header. It lives
 // with the netlink encoder rather than beside the Family type, because a

@@ -103,9 +103,8 @@ func TestCaptureGateReportsEachTransitionOnce(t *testing.T) {
 	}
 }
 
-// Only a running grace needs a wake-up of its own. A gate that is open because
-// a session is live will be woken by the next mesh change, and a shut one has
-// nothing scheduled to happen at all.
+// An open gate asks to be woken one grace after its last live sample, and a
+// gate that has seen nothing or has withdrawn asks for nothing.
 func TestCaptureGateAsksToBeWokenOnlyWhileTheGraceRuns(t *testing.T) {
 	const grace = 10 * time.Second
 	gate := captureGate{grace: grace}
@@ -115,8 +114,7 @@ func TestCaptureGateAsksToBeWokenOnlyWhileTheGraceRuns(t *testing.T) {
 	// Open, and asking to be woken one grace after the last live sample. A
 	// session stops counting as live because it went quiet and nothing fires
 	// when that happens, so a gate that waited for its own next pass to
-	// notice took the periodic sweep rather than the grace: measured at about
-	// a minute against the ten seconds the grace promises.
+	// notice took the periodic sweep rather than the grace.
 	gate.sample(start, 1)
 	at, ok := gate.deadline()
 	if !ok {
@@ -588,15 +586,9 @@ func TestRunWithdrawsTheCaptureOnTheGraceRatherThanTheSweep(t *testing.T) {
 	waitFor(t, func() bool { return !fake.has(capture) })
 }
 
-// The grace must not set the reconcile rate. The gate is open whenever a
-// session is live, which on an ordinary node is always, so arming the wake
-// from that alone made a full pass run once per grace: measured at 239 passes
-// in 300 ms with a one millisecond grace against two, and at the shipped
-// defaults three times as often as reconcile says.
-//
-// The wake is needed only while a capturing route is installed or wanted,
-// which is the state whose withdrawal nothing else would schedule. A split
-// internet holding no zero address counts as a default and arms it too.
+// The wake is armed only while a capturing route is installed or wanted, the
+// state whose withdrawal nothing else would schedule. A split internet holding
+// no zero address counts as a default and arms it too.
 func TestGraceWakesOnlyWhileACaptureIsInPlay(t *testing.T) {
 	for name, test := range map[string]struct {
 		announce netip.Prefix

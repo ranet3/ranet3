@@ -25,11 +25,9 @@ import (
 // It is an exact lookup of the one entry keyed on the unspecified address
 // rather than a longest-prefix match, because another program's route over
 // the zero address, such as the 0.0.0.0/1 a VPN writes out of its own utun,
-// answers a match. Measured on Darwin 27.2.0: with 0.0.0.0/1 and 128.0.0.0/1
-// out of a utun, the match answers utun and the exact lookup answers the
-// physical interface. Where there is no entry at all the exact lookup falls
-// back to a match, which is why the mesh interface is rejected here too and
-// not only there.
+// answers a match. Where there is no entry at all the exact lookup falls back
+// to a match, which is why the mesh interface is rejected here too and not
+// only there.
 func lookupDefault(host Host, mesh int, family netip.Addr) (index int, gateway netip.Addr, err error) {
 	answer, err := host.Lookup(family.Unmap(), zeroMaskOf(family))
 	if err != nil {

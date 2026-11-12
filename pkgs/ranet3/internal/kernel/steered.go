@@ -42,8 +42,8 @@ type PathStatus struct {
 	Installed []Family
 }
 
-// steeredDefaults adds mode 3's two defaults to the pass's routes while the
-// mesh holds a live session and every SID of cap.exit via resolves through its own /128, as
+// steeredDefaults adds mode 3's two defaults to the pass's routes while
+// capture is allowed and every SID of cap.exit via resolves through its own /128, as
 // unresolvedSegment reads them, whatever the fallback.
 func (r *Reconciler) steeredDefaults(out []Route) []Route {
 	r.pathDown, r.pathVerdict = r.unresolvedSegment()

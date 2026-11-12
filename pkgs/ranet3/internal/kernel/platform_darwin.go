@@ -128,10 +128,8 @@ type routePlatform struct {
 	// ours is the keys the kernel holds for this interface: what the last dump
 	// reported as ours, plus what has installed since. EEXIST says only that
 	// the key is taken, not by whom, and a pass that repairs a partial apply
-	// re-adds a route this process installed moments earlier, so without this
-	// the reconciler recorded its own route as another program's, stopped
-	// reporting it in the dump, re-added it on every pass and could never
-	// withdraw it.
+	// re-adds a route this process installed moments earlier, which must not
+	// read as another program's.
 	ours map[ownKey]bool
 
 	// addrs replaces the interface dump when set. The write side already goes
@@ -157,12 +155,9 @@ type routePlatform struct {
 	// assigned is this interface's own addresses as of the current pass, and
 	// assignedAt says whether that answer has been taken yet.
 	//
-	// It is cached so every scope decision of a pass reads one answer, and to
-	// stop paying for it repeatedly: AddRoute asks sourceIsOurs about every source-specific route
-	// it is offered, a route it skips stays in the diff and is offered again
-	// on the next pass, so a node hearing sixty-four of them paid for
-	// sixty-four whole-interface dumps per pass, forever. Taken once and
-	// shared, the pass pays for one.
+	// It is taken once a pass, so every scope decision of the pass reads one
+	// answer and the pass pays for one interface dump however many
+	// source-specific routes it offers.
 	assigned   []netip.Prefix
 	assignedAt bool
 
@@ -413,10 +408,7 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 		// An install this process watched the kernel refuse, so another writer
 		// holds this key and reporting the route as ours would withdraw it on
 		// the next pass. The row's own scope is the one checked, because the
-		// kernel keys on it: asking about the scoped key for every
-		// row hid this reconciler's own unscoped route to the same
-		// destination, which it then reinstalled and warned about on every
-		// pass and never withdrew.
+		// kernel keys a scoped and an unscoped route to one destination apart.
 		//
 		// The p.scoped escape is keyed by destination alone, because that is
 		// how the source record is keyed, so a scoped route of ours at a

@@ -6,8 +6,7 @@ package kernel
 import "time"
 
 const (
-	// DefaultTable matches the table the fleet's kbabel4 and kbabel6 write,
-	// which the policy rules and the End.DT46 SRv6 action look up.
+	// DefaultTable is the table cap.table.id takes where it names none.
 	DefaultTable = 200
 	// DefaultProtocol is the rt_proto stamped on every installed route. It
 	// deliberately collides with nothing in rtnetlink.h, so a route of this

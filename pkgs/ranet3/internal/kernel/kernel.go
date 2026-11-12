@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 // Package kernel mirrors the mesh forwarding table into the host's routing
-// table, taking over from the BIRD kernel protocols a ranet deployment runs
-// today. It is a one-way reconciler: internal/netstack keeps owning the
+// table. It is a one-way reconciler: internal/netstack keeps owning the
 // forwarding decision and this package only teaches the kernel which packets
 // to hand to the TUN, so every route it installs points at the device, but
 // for the holds and throw routes on linux, which name no device of the
@@ -108,11 +107,11 @@ var errRouteSkipped = errors.New("kernel: route was not installed")
 // Table is the cap.table capability, parsed straight out of the file: the
 // routing table this reconciler owns and everything it writes into it.
 // Writing the block turns the reconciler on, so a deployment configuring its
-// routes externally writes no cap.table and gets no reconciler. Every field is checked by Validate, which the loader calls, and
-// again by New and by SetTable on a reload.
+// routes externally writes no cap.table and gets no reconciler. Every field is
+// checked by Validate, which the loader calls, and again by New and by
+// SetTable on a reload.
 type Table struct {
-	// ID is the routing table the reconciler owns. The fleet uses 200, the
-	// table its policy rules and its End.DT46 look up. Zero uses DefaultTable.
+	// ID is the routing table the reconciler owns. Zero uses DefaultTable.
 	ID schema.TableID `yaml:"id,omitempty" json:"id,omitempty" toml:"id,omitempty"`
 	// Proto is the rt_proto stamped on every installed route, and the marker
 	// separating this reconciler's routes from everyone else's. Zero uses
@@ -1017,13 +1016,12 @@ func (r *Reconciler) DerivedRules() []DumpedRule {
 	return out
 }
 
-// SetEnabled stops or starts this reconciler while it runs, which is the
-// `birdc disable` a kernel protocol took while Babel lived in BIRD. Stopping
-// withdraws every route, address and rule it installed and the kill switch,
-// and starting puts back on the next pass what that pass asks
-// for, which is idempotent like every other pass. A table
-// left holding routes nobody maintains is the state a stop exists to avoid,
-// so the withdrawal is part of it rather than a separate ask.
+// SetEnabled stops or starts this reconciler while it runs. Stopping withdraws
+// every route, address and rule it installed and the kill switch, and starting
+// puts back on the next pass what that pass asks for, which is idempotent like
+// every other pass. A table left holding routes nobody maintains is the state
+// a stop exists to avoid, so the withdrawal is part of it rather than a
+// separate ask.
 //
 // The withdrawal runs on the reconcile goroutine rather than here, because
 // every field it touches belongs to that goroutine alone. This records the
@@ -1143,8 +1141,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	defer retry.Stop()
 	// Nothing else wakes at the moment the capture grace expires: the mesh has
 	// stopped changing, which is why the grace is running at all. Without this
-	// the machine's own traffic stays in a dead tun until the periodic sweep,
-	// which is three times the grace by default.
+	// the machine's own traffic stays in a dead tun until the periodic sweep.
 	grace := time.NewTimer(r.table.Reconcile.Duration())
 	grace.Stop()
 	defer grace.Stop()
@@ -1352,14 +1349,9 @@ func (r *Reconciler) sampleCapture() {
 }
 
 // captureDeadline is when a pass has to run for the grace to expire on time,
-// and nothing at all while no capturing route is installed or wanted.
-//
-// The condition matters more than it looks. The gate is open whenever a
-// session is live, which on an ordinary node is always, so arming the wake
-// from that alone made the grace the reconcile rate: a full pass, both dumps
-// and on darwin a table read and two route lookups, once per grace rather than
-// once per reconcile interval. Measured at 239 passes in 300 ms with a one
-// millisecond grace, against two.
+// and nothing while no capturing route is installed or wanted. While one is
+// and a session is live, the deadline moves at every pass, so the reconciler
+// runs a pass at least once a grace.
 func (r *Reconciler) captureDeadline() (time.Time, bool) {
 	if !r.capturing {
 		return time.Time{}, false
@@ -1935,12 +1927,7 @@ func (r *Reconciler) exit() bool {
 
 // limitedBroadcast is the one entry the darwin kernel installs that carries no
 // flag separating it from a route of ours: scoped, RTF_STATIC, and leaving
-// through the interface itself, the same shape that backend writes. It
-// is not created for a tun configured the way this backend configures one
-// (measured on a throwaway utun carrying a /24 and a /48, where every entry
-// the kernel added named an address as its gateway and so was already
-// excluded), but it is present on every broadcast-capable interface on that
-// machine and on the utun another overlay configures differently.
+// through the interface itself, the same shape that backend writes.
 var limitedBroadcast = netip.MustParsePrefix("255.255.255.255/32")
 
 // holdMetric is where a retraction sits among the routes to the same prefix:

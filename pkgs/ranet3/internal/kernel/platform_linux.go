@@ -26,8 +26,7 @@ import (
 // netlinkConn is everything this backend asks of a netlink socket. Reaching
 // AddRoute, DelRoute or AddAddr without it means opening a real socket, which
 // needs root, so the checks skip them and a change to what this backend writes
-// goes unnoticed on the platform the fleet runs. darwin's rtSocket is the same
-// seam.
+// goes unnoticed on linux. darwin's rtSocket is the same seam.
 type netlinkConn interface {
 	execute(kind, flags uint16, body []byte) ([]netlink.Message, error)
 	link(index uint32, name string) (linkInfo, error)

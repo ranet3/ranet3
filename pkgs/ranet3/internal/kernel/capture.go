@@ -26,8 +26,7 @@ func (r *Reconciler) captures(route Route) bool {
 // MinCaptureGrace is the shortest grace a configuration may name. The gate is
 // sampled once a reconcile pass and a pass is a route dump and an address
 // dump, so a grace shorter than this cannot be honored and only sets how often
-// that happens. A second is already far below the twenty a session
-// takes to stop counting as live.
+// that happens.
 const MinCaptureGrace = time.Second
 
 // captureGate decides when the mesh may be handed this machine's own traffic.
@@ -91,13 +90,10 @@ func (g *captureGate) sample(now time.Time, live int) (open, changed bool) {
 // deadline is when the next sample has to happen for the grace to be honored,
 // for a caller that would otherwise wait for its own next wake-up.
 //
-// It answers while the gate is open, not only while the grace is running. A
-// session stops counting as live because it went quiet, and nothing fires when
-// that happens, so a gate waiting for its first idle sample would not learn of
-// it until the periodic sweep: with a thirty second sweep behind a twenty
-// second liveness window, a ten second grace took about a minute. Asking to be
-// woken one grace after the last live sample bounds it at the grace plus one
-// sample instead.
+// It answers while the gate is open, not only while the grace runs: a session
+// stops counting as live when it goes quiet and nothing fires then, so a wake
+// one grace after the last live sample bounds the withdrawal at the grace plus
+// one sample.
 func (g *captureGate) deadline() (time.Time, bool) {
 	if !g.open {
 		return time.Time{}, false
