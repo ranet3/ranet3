@@ -20,7 +20,7 @@ import (
 // the underlay's IKE and ESP datagrams leave by the uplink with the source address and port they were sent from,
 // from the shared socket and from a pair's socket, in both families,
 // beside Cilium's rule and kube-proxy's masquerade, which read bits of a mark under a mask
-// so no bit of the underlay's mark lies in kubetest.CiliumMask or kubetest.KubeProxyBit,
+// so no bit of the underlay's mark lies in Cilium's mask or kube-proxy's bit,
 // and the masquerade's counter, ahead of it in its rule, counts no packet
 func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.T) {
 	far, _, netlink := vethPair(t, 1, nearAddresses)
