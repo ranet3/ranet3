@@ -103,13 +103,14 @@ func (s *Speaker) receiveFragment(peer *netstack.Peer, raw []byte) bool {
 	if !forSpeaker(src, dst, s.linkLocal) {
 		return false
 	}
+	now := time.Now()
 	s.mu.Lock()
 	n := s.neighbors[peer.ID]
 	if n == nil || n.peer != peer {
 		s.mu.Unlock()
 		return true // never deliver a retired session's control traffic to TUN
 	}
-	whole := n.reassembly.add(raw, src, dst, time.Now())
+	whole := n.reassembly.add(raw, src, dst, now)
 	if whole == nil {
 		s.mu.Unlock()
 		return true
@@ -127,7 +128,7 @@ func (s *Speaker) receiveFragment(peer *netstack.Peer, raw []byte) bool {
 	stats.Read++
 	stats.Largest = max(stats.Largest, len(whole))
 	s.mu.Unlock()
-	s.receive(peer, src, payload)
+	s.receive(peer, src, payload, now)
 	return true
 }
 

@@ -24,7 +24,7 @@ func (s *Speaker) OriginateFrom(dest, source netip.Prefix) {
 // handlePacket hands n one Babel payload, without its IPv6 and UDP headers,
 // through receive, from the address n already has
 func (s *Speaker) handlePacket(n *neighborState, raw []byte) {
-	s.receive(n.peer, n.addr, raw)
+	s.receive(n.peer, n.addr, raw, time.Now())
 }
 
 // flushUpdates sends the periodic dump out of band with the wake an arriving

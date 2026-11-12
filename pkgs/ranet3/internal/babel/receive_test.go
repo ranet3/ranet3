@@ -118,3 +118,48 @@ func TestUndecodablePacketLeavesTheNeighborsAddress(t *testing.T) {
 		})
 	}
 }
+
+// lockHeld is how long TestReceiveTimestampIsTakenBeforeTheSpeakersLock holds the speaker's lock while a packet arrives
+const lockHeld = 80 * time.Millisecond
+
+// RFC 9616 section 3.2: "receive timestamps SHOULD be computed just after the packet is received from the network stack"
+// a packet that arrives while the speaker's lock is held yields a round trip sample without the wait for the lock, whether it arrives whole or its last fragment does
+func TestReceiveTimestampIsTakenBeforeTheSpeakersLock(t *testing.T) {
+	for _, fragmented := range []bool{false, true} {
+		t.Run(map[bool]string{false: "whole", true: "fragmented"}[fragmented], func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(neighbor)
+			// the neighbor answers this node's Hello sent at sent in no time, so the round trip is the time the packet takes to reach the speaker
+			sent := nowMicros()
+			raw := buildPacket(neighbor.addr, multicastGroup, EncodePacket([]RawTLV{
+				EncodeHello(Hello{Seqno: 1, Interval: 400, TxTS: 5000, HasTS: true}),
+				EncodeIHU(IHU{RxCost: 96, Interval: 400, OriginTS: sent, ReceiveTS: 5000, HasTS: true}),
+			}))
+			arriving := [][]byte{raw}
+			if fragmented {
+				arriving = fragment(raw, 1, 8)
+			}
+			for _, f := range arriving[:len(arriving)-1] {
+				speaker.Receive(neighbor.peer, f)
+			}
+			speaker.mu.Lock()
+			done := make(chan struct{})
+			go func() {
+				speaker.Receive(neighbor.peer, arriving[len(arriving)-1])
+				close(done)
+			}()
+			time.Sleep(lockHeld)
+			speaker.mu.Unlock()
+			<-done
+
+			speaker.mu.Lock()
+			defer speaker.mu.Unlock()
+			if !neighbor.haveRTT {
+				t.Fatal("no round trip sample was taken")
+			}
+			if neighbor.measuredRTT >= lockHeld/2 {
+				t.Errorf("the sample is %s for a packet that arrived at once and waited %s for the lock", neighbor.measuredRTT, lockHeld)
+			}
+		})
+	}
+}

@@ -382,14 +382,15 @@ func (s *Speaker) Receive(peer *netstack.Peer, raw []byte) bool {
 	if !forSpeaker(src, dst, s.linkLocal) {
 		return false
 	}
+	now := time.Now()
 	payload, err := parsePacket(raw)
 	if err != nil {
 		s.mu.Lock()
-		s.malformedLocked(src, err, time.Now())
+		s.malformedLocked(src, err, now)
 		s.mu.Unlock()
 		return true
 	}
-	s.receive(peer, src, payload)
+	s.receive(peer, src, payload, now)
 	return true
 }
 
@@ -400,15 +401,16 @@ func (s *Speaker) malformedLocked(src netip.Addr, err error, now time.Time) {
 	}
 }
 
-// receive hands the payload of one Babel packet from src to the neighbor registered for peer
-func (s *Speaker) receive(peer *netstack.Peer, src netip.Addr, payload []byte) {
+// receive hands the payload of one Babel packet from src, read off the network stack at now, to the neighbor registered for peer
+// now is read before s.mu, since RFC 9616 section 3.2 takes the receive timestamp "just after the packet is received from the network stack"
+func (s *Speaker) receive(peer *netstack.Peer, src netip.Addr, payload []byte, now time.Time) {
 	s.mu.Lock()
 	n := s.neighbors[peer.ID]
 	if n == nil || n.peer != peer {
 		s.mu.Unlock()
 		return // never deliver a retired session's control traffic to TUN
 	}
-	actions, acked := s.handlePacketLocked(n, src, payload, time.Now())
+	actions, acked := s.handlePacketLocked(n, src, payload, now)
 	send := s.emitLocked(actions)
 	s.wakeForPacketLocked()
 	s.mu.Unlock()
