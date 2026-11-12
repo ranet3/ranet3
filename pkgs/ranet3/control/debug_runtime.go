@@ -25,7 +25,7 @@ type RuntimeSource interface {
 type RuntimeInfo struct {
 	Version   string `json:"version"`
 	GoVersion string `json:"go_version"`
-	// Revision is the commit the build came from, whole where the toolchain recorded it
+	// Revision is the commit the build came from, empty where the build recorded none
 	// Modified says that commit's tree had uncommitted changes
 	Revision   string `json:"revision,omitempty"`
 	Modified   bool   `json:"modified"`

@@ -11,10 +11,12 @@ import (
 	"strings"
 )
 
-// Value is set at link time from version.txt by the nix build, and Revision
-// from the commit that build came from. A plain `go build` leaves Value at
-// "dev", which is the honest answer for one, and reads the revision out of the
-// build info the toolchain embeds instead.
+// Value is set at link time from version.txt by the nix build, and a plain
+// `go build` leaves it at "dev", which is the honest answer for one. Revision
+// is the commit the build came from where the build passes one at link time,
+// as a nix build of a git checkout does with the short revision, ending in
+// -dirty for a modified tree. Otherwise the revision and whether the tree was
+// modified come from the toolchain's build info.
 var (
 	Value    = "dev"
 	Revision = ""
@@ -23,9 +25,6 @@ var (
 // String is Value with the revision the build came from, which tells two nodes
 // apart during a migration: version.txt moves once per release and the fleet
 // converts one node at a time in between.
-//
-// The revision comes from the build info the go toolchain embeds rather than
-// from a second link flag, so it is right for a plain `go build` as well.
 func String() string {
 	revision, modified := VCS()
 	if len(revision) > shortRevision {
@@ -41,12 +40,9 @@ func String() string {
 	}
 }
 
-// VCS is the revision the build came from, whole, and whether its tree had uncommitted changes
-// a revision passed in at link time says the latter by ending in -dirty
+// VCS is the revision the build came from and whether its tree had uncommitted changes
 func VCS() (revision string, modified bool) {
 	if Revision != "" {
-		// A nix build has no .git in its source, so the toolchain embeds
-		// nothing and the flake passes the revision in instead.
 		return strings.CutSuffix(Revision, "-dirty")
 	}
 	info, ok := debug.ReadBuildInfo()
