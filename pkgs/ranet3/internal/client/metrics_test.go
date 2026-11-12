@@ -23,6 +23,9 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
+// hubCountWait bounds each wait for the hub to count what was sent to it
+const hubCountWait = 10 * time.Second
+
 // countingWriter counts writes rather than keeping them, the unit a report
 // that must not be one line per packet is measured in.
 type countingWriter struct{ n *atomic.Int64 }
@@ -86,8 +89,25 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 	if err := queue.RegisterESP(0x07070707); err != nil {
 		t.Fatal(err)
 	}
+	// An ESP SPI no Mux holds, which anyone who can reach the port can send
+	// and which an operator needs to be able to see, and an RFC 3948 NAT
+	// keepalive, which the hub counts on a counter of its own.
+	// They go before the flood, which can fill the socket's receive buffer so the kernel drops whatever follows it.
+	for _, datagram := range [][]byte{{9, 9, 9, 9, 0, 0, 0, 1, 0, 0, 0, 0}, {0xff}} {
+		if _, err := sender.Write(datagram); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(hubCountWait)
+	for hub.Refused() == 0 || hub.Keepalives() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the hub counted %d refused and %d keepalives for one of each, so this proves nothing", hub.Refused(), hub.Keepalives())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// the flood's SPI is registered, so none of it is refused or a keepalive and the scrape carries one of each and no refusal of another cause
 	flood := append([]byte{7, 7, 7, 7}, make([]byte, 60)...)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(hubCountWait)
 	for hub.Dropped() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the hub dropped nothing for the full queue, so this proves nothing")
@@ -95,20 +115,6 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 		if _, err := sender.Write(flood); err != nil {
 			t.Fatal(err)
 		}
-	}
-	// An ESP SPI no Mux holds, which anyone who can reach the port can send
-	// and which an operator needs to be able to see, and an RFC 3948 NAT
-	// keepalive, which the hub counts on a counter of its own.
-	for _, datagram := range [][]byte{{9, 9, 9, 9, 0, 0, 0, 1, 0, 0, 0, 0}, {0xff}} {
-		if _, err := sender.Write(datagram); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for hub.Refused() == 0 || hub.Keepalives() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the hub refused or ignored nothing, so this proves nothing")
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 
 	// the flood's last datagrams may still be dropping, so the line holds a count between the two reads
@@ -123,13 +129,16 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 	}
 	want := []string{
 		"# TYPE ranet3_receive_refused_total counter",
-		fmt.Sprintf("ranet3_receive_keepalives_total %d\n", hub.Keepalives()),
+		"ranet3_receive_keepalives_total 1\n",
 	}
-	// every cause is a series, the unknown ESP SPI's the one the datagram raised
-	for i, cause := range transport.RefusalCauses {
-		want = append(want, fmt.Sprintf("ranet3_receive_refused_total{cause=%q} %d\n", cause, hub.Refusals()[i]))
+	// every cause is a series, the unknown ESP SPI's the one the probe raised
+	for _, cause := range transport.RefusalCauses {
+		refused := 0
+		if cause == "unknown_esp" {
+			refused = 1
+		}
+		want = append(want, fmt.Sprintf("ranet3_receive_refused_total{cause=%q} %d\n", cause, refused))
 	}
-	want = append(want, fmt.Sprintf("ranet3_receive_refused_total{cause=\"unknown_esp\"} %d\n", hub.Refused()))
 	for _, line := range want {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("the scrape does not carry %q:\n%s", line, out.String())
