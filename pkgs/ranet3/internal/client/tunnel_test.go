@@ -342,9 +342,9 @@ func TestWithdrawnChildSAAsksOnceForItsReplacement(t *testing.T) {
 // forbids reusing a sequence number, so refusing to send is right. RFC 7296
 // section 1.3.1 says what to do about it ("A failed attempt to create a
 // Child SA SHOULD NOT tear down the IKE SA"), and the margin
-// ProactiveRekeySequence leaves exists precisely for the case where a rekey
-// has already failed once. Closing the mux there loses the session at the one
-// moment a replacement matters most.
+// ProactiveRekeySequence leaves is sized for a rekey that failed and is
+// retried. Closing the mux there loses the session at the one moment a
+// replacement matters most.
 func TestSpentSequenceSpaceAsksForAReplacementAndKeepsTheSession(t *testing.T) {
 	child := tunnelChild(1)
 	tunnel := &tunnel{}

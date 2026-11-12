@@ -268,7 +268,7 @@ func directedBroadcast(prefix netip.Prefix) bool {
 	return (uint32(address[0])<<24|uint32(address[1])<<16|uint32(address[2])<<8|uint32(address[3]))&host == host
 }
 
-// effectivePeers is who this node dials: the configured list, or when all is set that list followed by every other node the trust document names, the N-to-N reconciliation ranet does
+// effectivePeers is who this node dials: the configured list, or when all is set that list followed by every other node the trust document names
 // this node is never in it, and the document's order is kept, so one pair of files gives one order on every start
 func effectivePeers(cfg *config.Config, x *registry.Index) []identity.Identity {
 	if !cfg.Dial.All {
