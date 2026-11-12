@@ -210,6 +210,11 @@ const (
 	defaultRTTWeight = 1024
 )
 
+// sendAheadShare is the share of its interval by which the next Hello and the next periodic update go ahead of the time the last one named
+// it is the margin RFC 8966 section 3.1 asks of such a TLV, "to allow for propagation delays", and section 3.4.1 lets a scheduled Hello go ahead of time
+// a share rather than a fixed time keeps the margin under every interval Config.Validate accepts
+const sendAheadShare = 16
+
 // hysteresisHellos is the small multiple of the Hello interval RFC 8966 Appendix A.3 recommends as the hysteresis time constant
 const hysteresisHellos = 3
 

@@ -82,7 +82,7 @@ func (c Config) HelloInterval() time.Duration {
 func (c Config) UpdateInterval() time.Duration {
 	if c.Update == 0 {
 		// Cap before multiplying, including for invalid very large inputs.
-		return 4 * min(c.HelloInterval(), maxInterval/4)
+		return 4 * min(c.HelloInterval(), maxUpdateInterval/4)
 	}
 	return c.Update.Duration()
 }
@@ -130,10 +130,12 @@ func (c Config) Validate() error {
 	for _, named := range []struct {
 		field    string
 		interval time.Duration
-	}{{"hello", c.HelloInterval()}, {"update", c.UpdateInterval()}} {
-		if named.interval < 10*time.Millisecond || named.interval > maxInterval {
-			return fmt.Errorf("babel: cap.babel %s is %s, and an interval is between 10ms and %s",
-				named.field, named.interval, maxInterval)
+		longest  time.Duration
+	}{{"hello", c.HelloInterval(), maxInterval}, {"update", c.UpdateInterval(), maxUpdateInterval}} {
+		// the wire names it in centiseconds as an upper bound, RFC 8966 section 4.6.5, so a part of one would be named shorter than it is
+		if named.interval < 10*time.Millisecond || named.interval > named.longest || named.interval%(10*time.Millisecond) != 0 {
+			return fmt.Errorf("babel: cap.babel %s must be a whole number of centiseconds between 10ms and %s, not %s",
+				named.field, named.longest, named.interval)
 		}
 	}
 	// Only these two have a spelling. The speaker runs any other value as

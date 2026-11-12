@@ -28,7 +28,7 @@ func drawnConfig(ht *hegel.T) Config {
 		cfg.Hello = dur(time.Duration(hegel.Draw(ht, pbt.Spanning[int64](drawnHelloFloor, 65535))) * 10 * time.Millisecond)
 	}
 	if hegel.Draw(ht, hegel.Booleans()) {
-		cfg.Update = dur(time.Duration(hegel.Draw(ht, pbt.Spanning[int64](drawnHelloFloor, 65535))) * 10 * time.Millisecond)
+		cfg.Update = dur(time.Duration(hegel.Draw(ht, pbt.Spanning[int64](drawnHelloFloor, 65534))) * 10 * time.Millisecond)
 	}
 	if hegel.Draw(ht, hegel.Booleans()) {
 		cfg.Quality = LinkQualityNone

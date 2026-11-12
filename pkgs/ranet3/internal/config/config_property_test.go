@@ -279,11 +279,16 @@ func routes() hegel.Generator[babel.Routes] {
 // transits draws cap.transit, which has no field
 func transits() hegel.Generator[babel.Transit] { return hegel.Just(babel.Transit{}) }
 
-// speakers draws cap.babel. Every interval sits inside what the protocol can
-// carry, and the cost window cannot be written backwards whichever half is
-// left at its default.
+// speakers draws cap.babel. Every interval is a whole number of centiseconds
+// the protocol can carry, an update short of FFFF, which names no interval,
+// and the cost window cannot be written backwards whichever half is left at
+// its default.
 func speakers() hegel.Generator[babel.Config] {
-	intervals := unset(between(10*time.Millisecond, 65535*10*time.Millisecond))
+	intervals := func(longest int64) hegel.Generator[schema.Duration] {
+		return unset(hegel.Map(edges[int64](1, longest), func(n int64) schema.Duration {
+			return schema.Duration(time.Duration(n) * 10 * time.Millisecond)
+		}))
+	}
 	// now and then a node key is a bare name or an endpoint, which Validate refuses
 	nodeKeys := hegel.Composite(func(tc hegel.TestCase) string {
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
@@ -316,8 +321,8 @@ func speakers() hegel.Generator[babel.Config] {
 	}
 	return hegel.Composite(func(tc hegel.TestCase) babel.Config {
 		return babel.Config{
-			Hello:   hegel.Draw(tc, intervals),
-			Update:  hegel.Draw(tc, intervals),
+			Hello:   hegel.Draw(tc, intervals(65535)),
+			Update:  hegel.Draw(tc, intervals(65534)),
 			Quality: hegel.Draw(tc, hegel.SampledFrom([]babel.LinkQuality{babel.LinkQualityETX, babel.LinkQualityNone})),
 			Cost: babel.CostOptions{
 				Rx: hegel.Draw(tc, hegel.Optional(edges[uint16](1, 1024))),

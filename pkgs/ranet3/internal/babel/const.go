@@ -66,6 +66,11 @@ const MetricInfinity uint16 = 0xffff
 // 8966 section 4.6 carry.
 const maxInterval = 65535 * 10 * time.Millisecond
 
+// maxUpdateInterval is the longest update interval that names a time: RFC 8966
+// section 4.6.9 gives FFFF the meaning "this announcement will not be repeated
+// unless a request is received".
+const maxUpdateInterval = maxInterval - 10*time.Millisecond
+
 // historyDepth is the width of the Hello history vector, and rebootDrift the
 // gap past which Appendix A.1 treats the sender as having rebooted and lost its
 // counter.

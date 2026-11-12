@@ -123,8 +123,47 @@ func TestLongerHelloIntervalIsAnnouncedBeforeItIsInForce(t *testing.T) {
 	speaker.mu.Lock()
 	next := speaker.nextHello
 	speaker.mu.Unlock()
-	if next.Before(before.Add(longer.HelloInterval())) || next.After(after.Add(longer.HelloInterval())) {
-		t.Errorf("the next hello is due %s after the change, want the new interval from the hello that announced it", next.Sub(before))
+	interval := longer.HelloInterval()
+	early := interval - interval/16
+	if next.Before(before.Add(early)) || next.After(after.Add(early)) {
+		t.Errorf("the next hello is due %s after the change, want %s, a sixteenth before the new interval from the hello that announced it", next.Sub(before), early)
+	}
+}
+
+// firstPassWait bounds how long a test waits for the run loop's first pass
+const firstPassWait = 5 * time.Second
+
+// RFC 8966 section 3.1 has a TLV whose timeout a previous one named "sent early enough to meet the explicit deadline (with a small margin to allow for propagation delays)", and section 3.4.1 lets a scheduled Hello go ahead of time
+// a pass of the run loop sets the next Hello, with its IHU, and the next periodic update a sixteenth of their interval early
+func TestNextHelloAndUpdateGoBeforeTheIntervalTheyName(t *testing.T) {
+	const hello, update = 4 * time.Second, 16 * time.Second
+	speaker, _, _ := captureSpeaker(t, Config{Hello: dur(hello), Update: dur(update)})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	before := time.Now()
+	go func() {
+		defer close(done)
+		_ = speaker.Run(ctx)
+	}()
+	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the run loop made no pass in %s", firstPassWait)
+		}
+	}
+	after := time.Now()
+	cancel()
+	<-done
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	for _, timer := range []struct {
+		name     string
+		next     time.Time
+		interval time.Duration
+	}{{"hello", speaker.nextHello, hello}, {"update", speaker.nextUpdate, update}} {
+		early := timer.interval - timer.interval/16
+		if timer.next.Before(before.Add(early)) || timer.next.After(after.Add(early)) {
+			t.Errorf("the next %s is due %s after the pass, want %s, a sixteenth before the %s it names", timer.name, timer.next.Sub(before), early, timer.interval)
+		}
 	}
 }
 

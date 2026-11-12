@@ -300,7 +300,7 @@ func (s *Speaker) SetConfig(cfg Config) {
 	}
 	actions = append(actions, s.updateActions(now)...)
 	s.updatePending = false
-	s.nextHello, s.nextUpdate = now.Add(s.hello), now.Add(s.update)
+	s.nextHello, s.nextUpdate = now.Add(sendPeriod(s.hello)), now.Add(sendPeriod(s.update))
 	send := s.emitLocked(actions)
 	s.wakeForPacketLocked()
 	s.events.Emit("babel.config.applied", "",
@@ -768,6 +768,9 @@ func (s *Speaker) deadlineLocked() time.Time {
 	return deadline
 }
 
+// sendPeriod is how long after a Hello or a periodic update the next one goes: the interval the last one named, less the sendAheadShare of it that is the margin
+func sendPeriod(interval time.Duration) time.Duration { return interval - interval/sendAheadShare }
+
 // Run owns the timers and waits for all of its work before returning.
 // Remote Hello, IHU and Update deadlines are independent of our send intervals.
 func (s *Speaker) Run(ctx context.Context) error {
@@ -795,7 +798,7 @@ func (s *Speaker) Run(ctx context.Context) error {
 		// reason the protocol deviations page gives under Sending and link cost
 		helloDue := !now.Before(s.nextHello)
 		if helloDue {
-			s.nextHello = now.Add(s.hello)
+			s.nextHello = now.Add(sendPeriod(s.hello))
 		}
 		for _, n := range s.neighbors {
 			if helloDue || !n.sentHello {
@@ -806,7 +809,7 @@ func (s *Speaker) Run(ctx context.Context) error {
 			actions = append(actions, s.updateActions(now)...)
 			s.updatePending = false
 			if !now.Before(s.nextUpdate) {
-				s.nextUpdate = now.Add(s.update)
+				s.nextUpdate = now.Add(sendPeriod(s.update))
 			}
 		} else {
 			actions = append(actions, s.triggeredActions(now)...)
