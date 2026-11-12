@@ -412,8 +412,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 // ranet3's transport takes UDP-encapsulated ESP alone, so the initiator must conclude that this end is behind a NAT, as strongSwan's own force_encap makes it (ike_natd.c)
 // both notifies go, since strongSwan enables NAT traversal only on a source and a destination notify and takes one alone for a peer without RFC 7296 section 2.23, which leaves it building raw ESP no userspace transport sees
 // the destination hash is the honest one, over the address the datagram came from
-// so the peer must reach this end on the port it knows: an initiator that sees the mismatch moves to UDP 4500 by RFC 7296 section 2.23, nothing binds 4500 apart, and the registry port is the one both ends keep
-// strongSwan keeps it with charon.port_nat_t set to it, as the fleet and the integration test configure, and config refuses port 500, where the non-ESP marker cannot be used
+// so the peer must reach this end on the port it knows: an initiator that sees the mismatch moves to UDP 4500 by RFC 7296 section 2.23, nothing binds 4500 apart, and the endpoint's one port, which IKE and ESP alike use, is the one both ends keep
+// strongSwan keeps it with charon.port_nat_t set to it, and config refuses port 500, where the non-ESP marker cannot be used
 // intermediate and fragments tell whether the request carried INTERMEDIATE_EXCHANGE_SUPPORTED and IKEV2_FRAGMENTATION_SUPPORTED, which the response then returns
 func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, suite SASuite, dh *DHKeyPair, nr []byte, endpoint transport.Endpoint, intermediate, fragments bool) ([]byte, error) {
 	hashAlgos := make([]byte, 2)

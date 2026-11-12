@@ -161,8 +161,7 @@ type TrafficSelector struct {
 	EndAddr   net.IP
 }
 
-// FullRangeV4 / FullRangeV6 are the 0.0.0.0/0 and ::/0 selectors ranet
-// configures for every child SA (tunnel mode, no per-node subnetting).
+// FullRangeV4 / FullRangeV6 are the 0.0.0.0/0 and ::/0 selectors of every Child SA.
 //
 // Both start addresses are copies. net.IPv4zero and net.IPv6zero are single
 // slices shared by everything in the process that names them, and To4 hands

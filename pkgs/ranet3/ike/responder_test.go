@@ -1201,7 +1201,7 @@ func testDeleteIKEReachesPeerWithoutRunLoop(t *testing.T) {
 // A link that carries nothing but babel hellos and DPD has no ESP to refresh
 // the liveness clock, so an answered exchange has to count as proof on its
 // own. Without it Active()'s window silently becomes a function of
-// babel.hello_interval, which nothing validates against it.
+// cap.babel.hello, which nothing validates against it.
 func TestAnsweredExchangeRefreshesLivenessClock(t *testing.T) {
 	bubble.Run(testAnsweredExchangeRefreshesLivenessClock)(t)
 }

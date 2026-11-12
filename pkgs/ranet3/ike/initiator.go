@@ -38,7 +38,7 @@ type PeerConfig struct {
 	Aliases Aliases
 
 	RemoteAddr net.IP
-	RemotePort int // ranet registry endpoint port (often non-standard, e.g. 13000), the only port ever used, IKE and ESP alike
+	RemotePort int // the peer's one port, which IKE and ESP alike use
 	// Hub is required, and the session's mux is made on it
 	Hub *transport.Hub
 
@@ -506,11 +506,8 @@ func newChildSPI(replaced uint32) uint32 {
 // InitiateContext runs IKE_SA_INIT, an IKE_INTERMEDIATE exchange for the
 // additional key exchange of RFC 9370 where the responder took one, then IKE_AUTH
 // against cfg.RemoteAddr:RemotePort and returns an established Session with
-// one Child SA. It implements exactly RFC 7815's minimal-initiator surface
-// plus that additional key exchange and what ranet's strongSwan deployments
-// require: raw Ed25519 signature auth and unconditional UDP encapsulation on
-// that one explicit port. Every IKE message, from IKE_SA_INIT onward, carries
-// the non-ESP marker. There is no NAT-T floating to a separate port,
+// one Child SA. Every IKE message, from IKE_SA_INIT onward, carries the
+// non-ESP marker. There is no NAT-T floating to a separate port,
 // certificates, EAP, or MOBIKE.
 //
 // ctx cancels only the handshake's mux

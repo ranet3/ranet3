@@ -872,8 +872,7 @@ func (s *Session) probe(pending *pendingRequest) (*pendingRequest, error) {
 	return pending, nil
 }
 
-// request starts a serialized local exchange through Run. Future Child SA
-// rekey support uses this path rather than receiving directly from the mux.
+// request starts a serialized local exchange through Run.
 func (s *Session) request(exchange ExchangeType, inner []RawPayload) ([]RawPayload, error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
