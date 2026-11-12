@@ -69,27 +69,11 @@ import (
 const (
 	// nonESPMarkerLen is the four zero octets of RFC 3948 section 2.2 that
 	// tell an IKE message from an ESP packet on one port.
-	//
-	// A NAT keepalive is one octet of 0xff, section 2.3, which says "The
-	// receiver SHOULD ignore a received NAT-keepalive packet": recognized by
-	// name below rather than swept up by the length test, so a peer that sends
-	// one every twenty seconds does not spend the counter an operator reads
-	// for hostile traffic. It raises keepalives instead, because ignoring a
-	// datagram is a rule about processing it and not about counting it.
-	//
-	// This end sends none, which section 4 asks for: "A peer SHOULD send a
-	// NAT-keepalive packet if a need for it is detected according to [RFC3947]
-	// and if no other packet to the peer has been sent in M seconds. M is a
-	// locally configurable parameter with a default value of 20 seconds." What
-	// keeps the mapping open here is the babel hellos, and nothing else does:
-	// the liveness probe fires only once inbound traffic has stopped for its
-	// interval, so a peer that keeps sending draws no outbound IKE at all.
-	// babel.hello_interval is configurable and Validate accepts up to 655
-	// seconds, which is past the two minute mapping timer RFC 4787 REQ-5
-	// permits, so a NATed node at a long interval can lose the mapping while
-	// traffic is still arriving.
 	nonESPMarkerLen = 4
-	// natKeepaliveByte is the payload of that one octet datagram.
+	// natKeepaliveByte is the payload of a NAT keepalive, one octet of 0xff,
+	// RFC 3948 section 2.3: "The receiver SHOULD ignore a received
+	// NAT-keepalive packet". This end sends none. The protocol deviations page
+	// gives the reason under NAT traversal and ports.
 	natKeepaliveByte = 0xff
 )
 
@@ -243,8 +227,7 @@ func (h *Hub) addRefusals(r *refusals) {
 }
 
 // Keepalives reports the RFC 3948 section 2.3 NAT keepalives this hub read and
-// ignored. They are separate from Refused because a NATed peer holding its
-// mapping open is expected traffic, not traffic nothing wanted.
+// ignored.
 func (h *Hub) Keepalives() uint64 { return h.keepalives.Load() }
 
 // noteDrop counts refused datagrams and reports them at most once an interval.

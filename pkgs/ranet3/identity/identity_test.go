@@ -19,7 +19,7 @@ func TestParseRefusesEveryOtherSpelling(t *testing.T) {
 		"example:1/gateway",
 		"example/gateway@0",
 		"example/gateway:1@0",
-		"example/gate way",
+		"example/my laptop",
 		"example/gateway%3a1",
 		"example/%41gateway",
 		"example/gateway%2",

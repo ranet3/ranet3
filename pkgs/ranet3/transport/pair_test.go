@@ -230,15 +230,15 @@ type fakeConnector struct {
 	// and keeps whether such a socket still carries its pair after the refusal
 	refuse error
 	keeps  bool
-	// gate holds each connect until it receives, where it is not nil
-	gate chan struct{}
+	// release holds each connect until it receives, where it is not nil
+	release chan struct{}
 	// fails is the error each connect from now on fails with, where it is not nil
 	fails error
 }
 
 func (c *fakeConnector) connectPair(pairKey) (pairSocket, receiveFunc, error) {
-	if c.gate != nil {
-		<-c.gate
+	if c.release != nil {
+		<-c.release
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -672,7 +672,7 @@ func TestNetworkChangeClosesEveryPairSocket(t *testing.T) {
 	if !fake.connected()[0].isClosed() || p.socket.Load() != nil || openSockets(hub) != 0 {
 		t.Fatal("the pair's socket is still open after the network changed")
 	}
-	fake.gate = make(chan struct{})
+	fake.release = make(chan struct{})
 	if err := mux.SendESP([]byte("after the change")); err != nil {
 		t.Fatal(err)
 	}
@@ -682,13 +682,13 @@ func TestNetworkChangeClosesEveryPairSocket(t *testing.T) {
 		}
 	}
 	hub.NetworkChanged()
-	fake.gate <- struct{}{}
+	fake.release <- struct{}{}
 	for deadline := time.Now().Add(arrivalBudget); len(fake.connected()) < 2 || openSockets(hub) != 0; time.Sleep(pairPoll) {
 		if time.Now().After(deadline) {
 			t.Fatal("the connect the change overtook kept its socket")
 		}
 	}
-	close(fake.gate)
+	close(fake.release)
 	if err := mux.SendESP([]byte("after the second change")); err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +804,7 @@ func TestConnectThatOutlivesItsPairKeepsNoSocket(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = hub.Close() })
 			fake := fakePairs(hub)
-			fake.gate = make(chan struct{})
+			fake.release = make(chan struct{})
 			at := listenPeer(t, "udp4", "127.0.0.1").LocalAddr().(*net.UDPAddr)
 			mux, err := hub.NewMux(at.IP, at.Port)
 			if err != nil {
@@ -816,7 +816,7 @@ func TestConnectThatOutlivesItsPairKeepsNoSocket(t *testing.T) {
 				t.Fatal("the busy pair started no connect")
 			}
 			end.act(hub, mux)
-			close(fake.gate)
+			close(fake.release)
 			waitForOpen(t, hub, p)
 			sockets := fake.connected()
 			if len(sockets) != 1 || !sockets[0].isClosed() || p.socket.Load() != nil || hub.PairSockets() != 0 {
