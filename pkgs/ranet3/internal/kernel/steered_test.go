@@ -63,7 +63,7 @@ func host(sid netip.Addr, value *netstack.Peer) mirrorEntry {
 
 // Mode 3 installs its two defaults, and no route that counts, exactly while
 // every SID of via resolves to a peer through its own /128, or for a SID after
-// the first to this node, and the mesh holds a live session
+// the first to this node, and capture is allowed
 func TestSteeredDefaultsStandWhileEverySegmentResolves(t *testing.T) {
 	both := []mirrorEntry{host(waypointSID, learned), host(exitSID, learned)}
 	for name, c := range map[string]struct {
