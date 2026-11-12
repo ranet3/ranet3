@@ -1012,6 +1012,10 @@ fails no pass.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
+- While the last pass wanted a route that
+  [counts as a default](#routes-that-count-as-a-default), a pass runs one
+  `cap.table.capture_grace` after the last pass that found a session live, so
+  those routes leave on time once no session is.
 - A reload that changes `cap.table`, the addresses it assigns, `overlay` or
   `cap.exit`, or whose `cap.route` announcements make this node an exit or stop
   making it one, `ranet3 enable reconciler` and `ranet3 disable reconciler`
@@ -1398,9 +1402,9 @@ rejects where `fallback = "none"`, or leaves by the uplink with
 switch drops it.
 
 The cover of a family goes in and out whole, with the route it stands in for.
-The capture gate judges that route, so the cover waits for a live session and
-leaves when no session has been live for `capture_grace`. Each family's cover a
-pass puts in or takes out logs
+That route counts as a default, so the cover waits for a live session and leaves
+when no session has been live for `capture_grace`. Each family's cover a pass
+puts in or takes out logs
 `kernel changed the cover a zero route is installed as` and records a
 `kernel.cover` event, which the withdrawal of `ranet3 down` or
 `ranet3 disable reconciler` does not, as

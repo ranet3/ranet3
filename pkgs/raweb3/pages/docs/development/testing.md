@@ -424,11 +424,10 @@ every property the same terms: 200 cases, or 10 under `go test -short`, where
 Hegel replaces the count `Check` sets, no example database, and a derandomized
 engine. Hegel seeds the labels of nested generators per process, so two runs
 need not draw the same sample, and a boundary the code branches on is drawn
-outright, with `pbt.Spanning` or by name, rather than left to the sample. A
-failing property prints the smallest input it found. Hegel is a test dependency
-only: `internal/notices` fails when a non-test file outside `internal/pbt`
-imports it, or when a non-test file imports `internal/pbt`, so it never reaches
-the binary or its notices.
+outright, with `pbt.Spanning` or by name, rather than left to the sample. Hegel
+is a test dependency only: `internal/notices` fails when a non-test file outside
+`internal/pbt` imports it, or when a non-test file imports `internal/pbt`, so it
+never reaches the binary or its notices.
 
 Hegel runs on a library of its own. The `go-test` check sets
 `HEGEL_LIBHEGEL_PATH` to the library in the vendored Hegel module, and fails if
