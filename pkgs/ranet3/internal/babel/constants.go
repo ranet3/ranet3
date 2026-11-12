@@ -221,8 +221,4 @@ const hysteresisHellos = 3
 // sendRetriesPerHello is how many times a pass that could not send everything it built retries inside one hello interval
 // a refused Hello thus gets several attempts inside the three and a half intervals that withdraw the routes through the neighbor, each costing a pass rather than a packet
 // at the shortest interval Config.Validate accepts, the first retry still comes before the neighbor's dead timeout
-// minSendRetry is the least time between two such retries
-const (
-	sendRetriesPerHello = 4
-	minSendRetry        = time.Millisecond
-)
+const sendRetriesPerHello = 4

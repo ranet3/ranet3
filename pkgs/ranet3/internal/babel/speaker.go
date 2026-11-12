@@ -729,7 +729,7 @@ func (s *Speaker) noteSendRetryLocked(now time.Time) {
 // not send. hello is written under both s.mu and lostMu, so the sender
 // goroutine may ask too, holding lostMu.
 func (s *Speaker) sendRetryInterval() time.Duration {
-	return max(s.hello/sendRetriesPerHello, minSendRetry)
+	return s.hello / sendRetriesPerHello
 }
 
 // deadlineLocked is when the run loop next has to do something on its own,

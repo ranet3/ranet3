@@ -3361,12 +3361,10 @@ func TestCongestedPeerDoesNotReopenTheWakeThroughARefusedDump(t *testing.T) {
 	}
 }
 
-// The floor under the send retry, at the shortest hello interval Validate
-// accepts. A pass that could not send its Hello has until deadTimeout, three
-// and a half intervals, before the remote withdraws every route through this
-// node. The retry has to fit several attempts inside that. A fifty millisecond
-// floor, the value this replaced, puts the first attempt after the remote
-// has already given up.
+// The send retry at the shortest hello interval Validate accepts. A pass that
+// could not send its Hello has until deadTimeout, three and a half intervals,
+// before the remote withdraws every route through this node. The retry has to
+// fit several attempts inside that.
 func TestSendRetryFitsInsideTheDeadTimeout(t *testing.T) {
 	const shortest = 10 * time.Millisecond
 	speaker, _, _ := captureSpeaker(t, Config{Hello: dur(shortest), Update: dur(time.Minute)})
@@ -3384,8 +3382,8 @@ func TestSendRetryFitsInsideTheDeadTimeout(t *testing.T) {
 	if delay >= dead {
 		t.Errorf("the retry is %v away and the remote declares this node dead at %v, so the first attempt is too late", delay, dead)
 	}
-	// Several attempts, not one that happens to land: the point of the floor
-	// is that a lost Hello has more than one chance inside the window.
+	// Several attempts, not one that happens to land: the point of the retry
+	// interval is that a lost Hello has more than one chance inside the window.
 	if attempts := int(dead / delay); attempts < 4 {
 		t.Errorf("the retry allows %d attempts before the remote gives up, want several", attempts)
 	}
