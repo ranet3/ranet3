@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
+
 	"ranet3.com/pkgs/ranet3/internal/dnstest"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -27,30 +29,36 @@ const handoverLookup = 5 * time.Second
 // mark where the overlay it is handed holds that nameserver, and the underlay's
 // mark where it does not or there is none. Go's resolver reads the resolv.conf
 // this test binds in its own mount namespace, so the query goes where the
-// daemon's would. It runs as root under unshare -rmn.
+// daemon's would. Each asks for its endpoint's declared family alone. It runs
+// as root under unshare -rmn.
 func TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded(t *testing.T) {
 	nameserver := dnstest.Start(t, handoverNameservers...)
 	name := "gateway.example."
-	endpoint := Endpoint{SerialNumber: "1", AddressFamily: "ip4", Address: &name, Port: 13000}
-	for _, test := range []struct {
-		name    string
-		overlay []schema.Prefix
-		want    uint32
-	}{
-		{"inside the overlay", overlayOf("127.0.0.0/8", "::1/128"), 0},
-		{"with no overlay", nil, schema.UnderlayMark},
-		{"outside the overlay", overlayOf("192.0.2.0/24", "3fff::/20"), schema.UnderlayMark},
-	} {
-		ctx, cancel := context.WithTimeout(context.Background(), handoverLookup)
-		_, err := endpoint.ResolveRemote(ctx, test.overlay, underlay.Marked())
-		cancel()
-		queries := nameserver.Take()
-		if len(queries) != len(handoverNameservers) {
-			t.Errorf("%s: %d queries reached the %d nameservers, want 1 each: %v, lookup %v", test.name, len(queries), len(handoverNameservers), queries, err)
-		}
-		for _, query := range queries {
-			if query.Mark != test.want {
-				t.Errorf("%s: the query to %s carried mark %#x, want %#x", test.name, query.To, query.Mark, test.want)
+	for family, question := range map[string]dnsmessage.Type{"ip4": dnsmessage.TypeA, "ip6": dnsmessage.TypeAAAA} {
+		endpoint := Endpoint{SerialNumber: "1", AddressFamily: family, Address: &name, Port: 13000}
+		for _, test := range []struct {
+			name    string
+			overlay []schema.Prefix
+			want    uint32
+		}{
+			{"inside the overlay", overlayOf("127.0.0.0/8", "::1/128"), 0},
+			{"with no overlay", nil, schema.UnderlayMark},
+			{"outside the overlay", overlayOf("192.0.2.0/24", "3fff::/20"), schema.UnderlayMark},
+		} {
+			ctx, cancel := context.WithTimeout(context.Background(), handoverLookup)
+			_, err := endpoint.ResolveRemote(ctx, test.overlay, underlay.Marked())
+			cancel()
+			queries := nameserver.Take()
+			if len(queries) != len(handoverNameservers) {
+				t.Errorf("%s endpoint %s: %d queries reached the %d nameservers, want 1 each: %v, lookup %v", family, test.name, len(queries), len(handoverNameservers), queries, err)
+			}
+			for _, query := range queries {
+				if query.Mark != test.want {
+					t.Errorf("%s endpoint %s: the query to %s carried mark %#x, want %#x", family, test.name, query.To, query.Mark, test.want)
+				}
+				if query.Type != question {
+					t.Errorf("%s endpoint %s: the query to %s asked for %v, want %v alone", family, test.name, query.To, query.Type, question)
+				}
 			}
 		}
 	}

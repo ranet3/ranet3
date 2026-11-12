@@ -235,7 +235,8 @@ func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix, pr
 		}
 		return ip, nil
 	}
-	ips, err := resolverFor(overlay, prepare).LookupIP(ctx, resolverNetwork(e.AddressFamily), *e.Address)
+	// Validate admits only ip4 and ip6, which are Go network names
+	ips, err := resolverFor(overlay, prepare).LookupIP(ctx, e.AddressFamily, *e.Address)
 	if err != nil {
 		return nil, fmt.Errorf("registry: resolve %s: %w", *e.Address, err)
 	}
@@ -245,20 +246,6 @@ func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix, pr
 		}
 	}
 	return nil, fmt.Errorf("registry: %s has no %s address", *e.Address, e.AddressFamily)
-}
-
-// resolverNetwork narrows the lookup to the family this endpoint declares, so
-// a name with only the other family's records fails at the resolver rather
-// than after it.
-func resolverNetwork(family string) string {
-	switch family {
-	case "ip4":
-		return "ip4"
-	case "ip6":
-		return "ip6"
-	default:
-		return "ip"
-	}
 }
 
 // Dialable reports whether this endpoint could ever be reached, deciding it

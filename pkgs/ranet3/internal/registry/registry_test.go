@@ -186,22 +186,6 @@ func TestResolveRemoteRefusesAMissingPrepare(t *testing.T) {
 	}
 }
 
-// The lookup is narrowed to the family the endpoint declares, so a name that
-// has only the other family's records fails at the resolver rather than after
-// it, and a dual-stack name costs one query rather than two.
-func TestResolverNetworkFollowsTheDeclaredFamily(t *testing.T) {
-	for family, want := range map[string]string{
-		"ip4": "ip4",
-		"ip6": "ip6",
-		"":    "ip",
-		"ip":  "ip",
-	} {
-		if got := resolverNetwork(family); got != want {
-			t.Errorf("family %q resolves over %q, want %q", family, got, want)
-		}
-	}
-}
-
 // a common name listed twice names one node with two entries, and an organization split across several blocks, each with its own key, is a supported shape
 func TestValidateRefusesADuplicateNodeInOneBlock(t *testing.T) {
 	reg := fixture(t)

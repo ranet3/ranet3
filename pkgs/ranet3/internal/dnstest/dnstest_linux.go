@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
@@ -45,11 +46,13 @@ const (
 	awaitStep = 100 * time.Millisecond
 )
 
-// Query is one query the nameserver read: the address it was sent to and the
-// mark it arrived with, all ones where the kernel handed no mark
+// Query is one query the nameserver read: the address it was sent to, the
+// mark it arrived with, all ones where the kernel handed no mark, and its
+// question's type, zero where the query holds no question
 type Query struct {
 	To   netip.Addr
 	Mark uint32
+	Type dnsmessage.Type
 }
 
 // Nameserver answers every query on port 53 of its addresses with SERVFAIL, so
@@ -157,6 +160,12 @@ func (n *Nameserver) serve(conn *net.UDPConn, address netip.Addr) {
 				if message.Header.Level == unix.SOL_SOCKET && message.Header.Type == unix.SO_MARK && len(message.Data) >= 4 {
 					query.Mark = binary.NativeEndian.Uint32(message.Data)
 				}
+			}
+		}
+		var parser dnsmessage.Parser
+		if _, err := parser.Start(buf[:size]); err == nil {
+			if question, err := parser.Question(); err == nil {
+				query.Type = question.Type
 			}
 		}
 		n.mu.Lock()
