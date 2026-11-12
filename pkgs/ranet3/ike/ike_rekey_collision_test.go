@@ -29,10 +29,10 @@ func testLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1), ikeRekeyNonce: func(n []byte) error {
+	s := seamed(&Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1), ikeRekeyNonce: func(n []byte) error {
 		copy(n, bytes.Repeat([]byte{1}, len(n)))
 		return nil
-	}}
+	}})
 	done := rekeying(s)
 	request := requested(t, s, done, CREATE_CHILD_SA)
 	dh, err := GenerateDH(DH_CURVE25519)
@@ -139,11 +139,11 @@ func newCollisionPeer(t *testing.T, established time.Time) *collisionPeer {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519}
 	old := &ikeContext{suite: suite, spiI: collisionOldSPIi, spiR: collisionOldSPIr, nextLocalMID: 2, established: established,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1),
+	s := seamed(&Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1),
 		ikeRekeyNonce: func(n []byte) error {
 			copy(n, collisionLocalNonce)
 			return nil
-		}}
+		}})
 	if err := mux.RegisterIKE(collisionOldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -540,8 +540,8 @@ func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 			ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR,
 				skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 			mux, _ := lifecycleMuxes(t)
-			s := &Session{mux: mux, current: ctx, old: &ikeContext{suite: suite, spiI: retained, spiR: retained + 1},
-				localRekey: &ikeRekey{old: ctx, spiI: inFlight}}
+			s := seamed(&Session{mux: mux, current: ctx, old: &ikeContext{suite: suite, spiI: retained, spiR: retained + 1},
+				localRekey: &ikeRekey{old: ctx, spiI: inFlight}})
 			proposed := make([]byte, 8)
 			binary.BigEndian.PutUint64(proposed, offered)
 			raw, err := s.handleIKERekey(ctx, 0, []RawPayload{
@@ -616,7 +616,7 @@ func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR,
 			skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-		return &Session{mux: mux, current: ctx, started: time.Now()}, ctx
+		return seamed(&Session{mux: mux, current: ctx, started: time.Now()}), ctx
 	}
 
 	t.Run("the first is answered", bubble.Run(func(t *testing.T) {
@@ -676,7 +676,7 @@ func TestLocalFailureAnsweringARekeyIsTemporary(t *testing.T) {
 			mux, other := lifecycleMuxes(t)
 			ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR,
 				skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-			s := &Session{mux: mux, current: ctx, started: time.Now()}
+			s := seamed(&Session{mux: mux, current: ctx, started: time.Now()})
 			breaks(s, other)
 
 			raw, err := s.handleIKERekey(ctx, 0, request)

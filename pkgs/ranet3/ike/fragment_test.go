@@ -759,7 +759,7 @@ func TestRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 func testRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	mtu := 9000
-	s := &Session{mux: mux, current: testContext(), fragments: true, pathMTU: func() (int, error) { return mtu, nil }}
+	s := seamed(&Session{mux: mux, current: testContext(), fragments: true, pathMTU: func() (int, error) { return mtu, nil }})
 	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{bulkyStatus(2000)}})
 	if err != nil {
 		t.Fatal(err)
@@ -1474,7 +1474,7 @@ func fragmentingSessionAt(t *testing.T, events *recorder) (*Session, *transport.
 	if err := mux.RegisterIKE(ctx.spiI); err != nil {
 		t.Fatal(err)
 	}
-	return &Session{mux: mux, current: ctx, fragments: true, events: events.record}, peer, hub
+	return seamed(&Session{mux: mux, current: ctx, fragments: true, events: events.record}), peer, hub
 }
 
 // openedOf is the request datagrams carry as s opens them, whole or reassembled in a queue of its own

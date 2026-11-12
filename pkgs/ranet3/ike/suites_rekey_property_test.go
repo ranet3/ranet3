@@ -305,7 +305,7 @@ func testOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 		if lists.IKE.Kex == nil {
 			suites.kex = classicalLists.kex
 		}
-		s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return suites }}
+		s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return suites }})
 		done := make(chan error, 1)
 		go func() { done <- s.RekeyIKE() }()
 		next := func() *localRequest {
@@ -421,7 +421,7 @@ func testOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsOffersThatEntryFirst(t *testi
 	lists := Suites{kex: []kexEntry{{group: DH_CURVE25519, addition: ML_KEM_768}, {group: DH_ECP_384}}}
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
 		spiI: randUint64Nonzero(), spiR: randUint64Nonzero(), skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }}
+	s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }})
 	done := make(chan error, 1)
 	go func() { done <- s.RekeyIKE() }()
 	var request *localRequest

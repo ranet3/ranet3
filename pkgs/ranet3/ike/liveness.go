@@ -162,11 +162,7 @@ func randomRekeyJitter(max time.Duration) (time.Duration, error) {
 }
 
 func (s *Session) drawRekeyJitter() (time.Duration, error) {
-	source := s.rekeyJitterSource
-	if source == nil {
-		source = randomRekeyJitter
-	}
-	jitter, err := source(s.timing.RekeyJitter)
+	jitter, err := s.rekeyJitterSource(s.timing.RekeyJitter)
 	if err != nil {
 		return 0, fmt.Errorf("ike: generate rekey jitter: %w", err)
 	}
@@ -218,12 +214,8 @@ func (s *Session) rekeyRetryDelay(failures uint) time.Duration {
 		delay *= 2
 		failures--
 	}
-	source := s.rekeyJitterSource
-	if source == nil {
-		source = randomRekeyJitter
-	}
 	// A retry that cannot draw randomness is still better run unjittered.
-	jitter, err := source(delay / 2)
+	jitter, err := s.rekeyJitterSource(delay / 2)
 	if err != nil || jitter < 0 || jitter > delay/2 {
 		return delay
 	}
@@ -311,23 +303,6 @@ func nextDueRekey(schedules []*rekeySchedule, running *rekeySchedule) *rekeySche
 		}
 	}
 	return nil
-}
-
-// dpdInterval is how long a session goes without an authenticated message
-// before it probes. A test that has to reach the probe overrides it, and zero
-// means the default.
-func (s *Session) dpdInterval() time.Duration {
-	if s.dpdEvery > 0 {
-		return s.dpdEvery
-	}
-	return defaultDPDInterval
-}
-
-func (s *Session) retransmitTimeout() time.Duration {
-	if s.retransmitAfter > 0 {
-		return s.retransmitAfter
-	}
-	return requestTimeout
 }
 
 // Run is the sole post-handshake IKE receiver. It dispatches authenticated
@@ -537,13 +512,13 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	livenessHeld := func() bool { return expired() || deleted || s.quiet.Load() || s.closing.Load() }
 	livenessDue := func() time.Time {
 		if livenessHeld() {
-			return time.Now().Add(s.dpdInterval())
+			return time.Now().Add(s.dpdEvery)
 		}
-		return lastAuthenticated.Add(s.dpdInterval())
+		return lastAuthenticated.Add(s.dpdEvery)
 	}
 	// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up
 	peerAlive := func(request *pendingRequest) bool {
-		return time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(request.context)
+		return time.Since(lastAuthenticated) < s.dpdEvery && !s.ikeExpired(request.context)
 	}
 	closeSignal := s.closingSignal()
 	timer := time.NewTimer(time.Hour)
@@ -555,10 +530,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		// the sweeps and the lifetime and retirement deadlines of a pass take this one reading, so a lifetime a sweep did not reach is one the wait below is offered
 		// every other reading in the pass takes time.Now itself, where a stale reading would do no harm
-		now := time.Now()
-		if s.clock != nil {
-			now = s.clock()
-		}
+		now := s.clock()
 		if err := s.expireChild(now); err != nil {
 			fail(err)
 		}
@@ -991,7 +963,7 @@ func (s *Session) counted(pending *pendingRequest, again bool) {
 	}
 	pending.sent++
 	pending.attempts = min(pending.attempts+1, maxRetransmits)
-	pending.deadline = time.Now().Add(retransmitDelay(s.retransmitTimeout(), pending.attempts))
+	pending.deadline = time.Now().Add(retransmitDelay(s.retransmitAfter, pending.attempts))
 }
 
 // noteSend warns at the first failed send of an outage and records when the outage starts and ends

@@ -40,8 +40,8 @@ func spiSession(t *testing.T) (*Session, *transport.MemoryConn, *transport.Hub, 
 	if err := mux.RegisterIKE(current.spiI); err != nil {
 		t.Fatal(err)
 	}
-	return &Session{mux: mux, current: current, requests: make(chan *localRequest, 1), probes: make(chan struct{}, 1),
-		dpdEvery: time.Hour, retransmitAfter: time.Hour}, peer, hub, other
+	return seamed(&Session{mux: mux, current: current, requests: make(chan *localRequest, 1), probes: make(chan struct{}, 1),
+		dpdEvery: time.Hour, retransmitAfter: time.Hour}), peer, hub, other
 }
 
 // offeredSPI is the SPI of the one proposal a request's SA payload holds, the inbound SPI the session picked

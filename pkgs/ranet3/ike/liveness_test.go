@@ -33,7 +33,7 @@ func TestSessionRunStopsOnContextCancellation(t *testing.T) {
 
 func testSessionRunStopsOnContextCancellation(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
-	s := &Session{mux: mux}
+	s := seamed(&Session{mux: mux})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan error, 1)
@@ -42,6 +42,33 @@ func testSessionRunStopsOnContextCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Session.Run did not stop after context cancellation")
+	}
+}
+
+// a dialed session whose peer stays silent sends its liveness check defaultDPDInterval after Run starts, and sends it again requestTimeout later
+func TestDialedSessionChecksASilentPeerOnTheIntervalsItRuns(t *testing.T) {
+	bubble.Run(testDialedSessionChecksASilentPeerOnTheIntervalsItRuns)(t)
+}
+
+func testDialedSessionChecksASilentPeerOnTheIntervalsItRuns(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	initiator, responder := dialPaused(t, h, h.peerConfig())
+	t.Cleanup(func() {
+		initiator.Mux().Close()
+		responder.Mux().Close()
+	})
+	// nothing runs the responder's loop, so nothing answers the check
+	started := time.Now()
+	runSession(t, initiator)
+	var sends []time.Duration
+	for range 2 {
+		if _, err := recvIKEUntil(responder.Mux(), started.Add(defaultDPDInterval+requestTimeout+quietPeriod)); err != nil {
+			t.Fatalf("the silent peer received %d sends of a liveness check: %v", len(sends), err)
+		}
+		sends = append(sends, time.Since(started))
+	}
+	if want := []time.Duration{defaultDPDInterval, defaultDPDInterval + requestTimeout}; !slices.Equal(sends, want) {
+		t.Errorf("the liveness check went out at %v after Run started, want %v", sends, want)
 	}
 }
 
@@ -123,7 +150,7 @@ func TestRekeyRetryDelay(t *testing.T) {
 // Two ends of a simultaneous rekey fail at the same instant and reset the same
 // backoff, so an unjittered retry collides again on every attempt.
 func TestRekeyRetryDelayIsSpreadOverUpperHalfOfWindow(t *testing.T) {
-	s := &Session{timing: RekeyTiming{RekeyRetryInitial: 5 * time.Second, RekeyRetryMax: time.Minute}}
+	s := seamed(&Session{timing: RekeyTiming{RekeyRetryInitial: 5 * time.Second, RekeyRetryMax: time.Minute}})
 	seen := make(map[time.Duration]bool)
 	for range 64 {
 		got := s.rekeyRetryDelay(3)
@@ -199,7 +226,7 @@ func testStartRequestConsumesMessageIDWhetherOrNotItsSendGoesOut(t *testing.T) {
 		suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
 		skei:  make([]byte, 20), spiI: 1, spiR: 2, nextLocalMID: 7,
 	}
-	s := &Session{mux: mux, current: ctx}
+	s := seamed(&Session{mux: mux, current: ctx})
 	if _, err := s.startRequest(&localRequest{exchange: INFORMATIONAL}); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +238,7 @@ func testStartRequestConsumesMessageIDWhetherOrNotItsSendGoesOut(t *testing.T) {
 		suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
 		skei:  make([]byte, 20), spiI: 3, spiR: 4, nextLocalMID: 11,
 	}
-	failed := &Session{mux: unsendableMux(t), current: failedCtx}
+	failed := seamed(&Session{mux: unsendableMux(t), current: failedCtx})
 	pending, err := failed.startRequest(&localRequest{exchange: INFORMATIONAL})
 	if err != nil {
 		t.Fatalf("a request whose send failed was refused rather than left pending: %v", err)
@@ -241,7 +268,7 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 	t.Run("local request", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		ctx := &ikeContext{nextLocalMID: maxMessageID}
-		s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1)}
+		s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1)})
 		runDone := make(chan error, 1)
 		go func() { runDone <- s.Run(context.Background()) }()
 		if _, err := s.request(INFORMATIONAL, nil); !errors.Is(err, errMessageIDExhausted) {
@@ -445,7 +472,7 @@ func newAnsweredSession(t *testing.T) *answeredSession {
 		t.Fatal(err)
 	}
 	moves := &recorder{}
-	return &answeredSession{s: &Session{mux: mux, current: ctx, fragments: true, events: moves.record}, ctx: ctx, configured: configured, moves: moves}
+	return &answeredSession{s: seamed(&Session{mux: mux, current: ctx, fragments: true, events: moves.record}), ctx: ctx, configured: configured, moves: moves}
 }
 
 // ask starts a liveness check, which configured reads
@@ -1840,7 +1867,7 @@ func testRekeyTimingIsRefusedBeforeAnyPacket(t *testing.T) {
 // nanosecond timestamp is six orders of magnitude larger than any offset from
 // a session's own start.
 func TestLivenessClockIsOffsetRatherThanWallTimestamp(t *testing.T) {
-	s := &Session{started: time.Now()}
+	s := seamed(&Session{started: time.Now()})
 	s.noteEstablished()
 	if got := s.lastActive.Load(); got <= 0 || got > int64(time.Hour) {
 		t.Fatalf("lastActive = %d, want a small offset from the session start", got)
@@ -1851,7 +1878,7 @@ func TestLivenessClockIsOffsetRatherThanWallTimestamp(t *testing.T) {
 }
 
 func TestActiveExpiresAndComesBack(t *testing.T) {
-	s := &Session{started: time.Now().Add(-time.Hour)}
+	s := seamed(&Session{started: time.Now().Add(-time.Hour)})
 	s.lastActive.Store(1) // last proof of life at the session's start
 	if s.Active() {
 		t.Fatal("a session last active an hour ago reads as live")
@@ -2014,7 +2041,7 @@ func TestRunReturnsTheFirstReasonItClosedFor(t *testing.T) {
 	t.Run("a local failure, then a silent peer", bubble.Run(func(t *testing.T) {
 		s, _, _ := probedSession(t)
 		// the liveness check runs out of sends on the intervals a session runs
-		s.retransmitAfter = 0
+		s.retransmitAfter = requestTimeout
 		s.childFailed = make(chan error, 1)
 		ended := runSession(t, s)
 		s.Probe()
@@ -2094,7 +2121,7 @@ func firstReasonSession(t *testing.T) *Session {
 	t.Cleanup(func() { mux.Close() })
 	held := testContext()
 	held.answeredAuth, held.authMID, held.nextPeerMID = true, 1, 2
-	return &Session{mux: mux, current: held}
+	return seamed(&Session{mux: mux, current: held})
 }
 
 // dispatchPeerRequest has s take a request of the peer's carrying inner at the Message ID after IKE_AUTH
@@ -2316,7 +2343,7 @@ func TestCloseSendIsOneOfTheRequestsCountedSends(t *testing.T) {
 		t.Run(test.name, bubble.Run(func(t *testing.T) {
 			s, peer, _ := probedSession(t)
 			// the retransmissions run on the intervals a session runs
-			s.retransmitAfter = 0
+			s.retransmitAfter = requestTimeout
 			ended := runSession(t, s)
 			first := time.Now()
 			s.Probe()
@@ -2416,7 +2443,7 @@ func TestRunLoopWakesForRetirement(t *testing.T) { bubble.Run(testRunLoopWakesFo
 func testRunLoopWakesForRetirement(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	retired := make(chan uint32, 1)
-	s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest)}
+	s := seamed(&Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest)})
 	s.SetChildRetireHandler(func(spi uint32) error { retired <- spi; return nil })
 	const spi = uint32(0x11223344)
 	s.childMu.Lock()
@@ -2449,7 +2476,7 @@ func testRunLoopWakesForRetainedIKESA(t *testing.T) {
 	mine, theirs := lifecycleMuxes(t)
 	const spi = uint64(0x1122334455667788)
 	replaced := &ikeContext{spiI: spi, spiR: 2}
-	s := &Session{mux: mine, current: &ikeContext{spiI: 3, spiR: 4}, requests: make(chan *localRequest)}
+	s := seamed(&Session{mux: mine, current: &ikeContext{spiI: 3, spiR: 4}, requests: make(chan *localRequest)})
 	if err := mine.RegisterIKE(spi); err != nil {
 		t.Fatal(err)
 	}
@@ -2528,7 +2555,7 @@ func unbuildableSession(t *testing.T, dpdEvery time.Duration) (*Session, string)
 	if refused == nil {
 		t.Fatal("encrypt took a three-byte key, so this session proves nothing")
 	}
-	return &Session{mux: mux, current: ikeCtx, requests: make(chan *localRequest), probes: make(chan struct{}, 1), dpdEvery: dpdEvery},
+	return seamed(&Session{mux: mux, current: ikeCtx, requests: make(chan *localRequest), probes: make(chan struct{}, 1), dpdEvery: dpdEvery}),
 		"ike: start a liveness check: " + refused.Error()
 }
 
@@ -2566,8 +2593,8 @@ func testSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
 	// and its attempts wait 1, 2, 4, 8 and 16 times first
 	budget := interval + first*(1+2+4+8+16)
 	events := &recorder{}
-	s := &Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest),
-		dpdEvery: interval, retransmitAfter: first, events: events.record}
+	s := seamed(&Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest),
+		dpdEvery: interval, retransmitAfter: first, events: events.record})
 	started := time.Now()
 	done := runSession(t, s)
 	select {
@@ -2689,8 +2716,8 @@ func probedSession(t *testing.T) (*Session, *transport.MemoryConn, *recorder) {
 		t.Fatal(err)
 	}
 	events := &recorder{}
-	return &Session{mux: mux, current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
-		dpdEvery: time.Hour, retransmitAfter: time.Hour, events: events.record}, peer, events
+	return seamed(&Session{mux: mux, current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
+		dpdEvery: time.Hour, retransmitAfter: time.Hour, events: events.record}), peer, events
 }
 
 // readRequest checks the session sent an empty INFORMATIONAL request
@@ -2839,8 +2866,8 @@ func TestProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
 
 func testProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
 	const first, every = 20 * time.Millisecond, 5 * time.Millisecond
-	s := &Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
-		dpdEvery: time.Hour, retransmitAfter: first}
+	s := seamed(&Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
+		dpdEvery: time.Hour, retransmitAfter: first})
 	started := time.Now()
 	done := runSession(t, s)
 	stop := make(chan struct{})

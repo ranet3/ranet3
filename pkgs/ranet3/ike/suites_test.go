@@ -642,7 +642,7 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 		ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_384},
 			spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 		lists := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm", "chacha20poly1305"}, Kex: []string{"p256", "x25519"}}})
-		s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }}
+		s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }})
 		done := make(chan error, 1)
 		go func() { done <- s.RekeyIKE() }()
 		request := <-s.requests
@@ -687,7 +687,7 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 		ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256},
 			spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 		lists := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256", "x25519"}}})
-		s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }}
+		s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }})
 		done := make(chan error, 1)
 		go func() { done <- s.RekeyIKE() }()
 		request := <-s.requests
@@ -723,7 +723,7 @@ func testIKESARekeyLeavesAnUnlistedPRFToTheReplacement(t *testing.T) {
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
 		spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 	lists := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha384"}}})
-	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }}
+	s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }})
 	done := make(chan error, 1)
 	go func() { done <- s.RekeyIKE() }()
 	select {

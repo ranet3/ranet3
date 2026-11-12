@@ -227,13 +227,13 @@ type Session struct {
 
 	timing            RekeyTiming
 	rekeyJitterSource func(time.Duration) (time.Duration, error)
-	// clock is time.Now where nil, read once for each pass of Run's loop
+	// clock is read once for each pass of Run's loop
 	clock func() time.Time
 	// temporary is run's alone
 	temporary temporaryStreak
-	// dpdEvery overrides defaultDPDInterval, and zero means the default.
+	// dpdEvery is how long a session goes without an authenticated message before it probes
 	dpdEvery time.Duration
-	// retransmitAfter overrides requestTimeout for Run's requests, and zero means the default
+	// retransmitAfter is the first retransmission timeout of Run's requests
 	retransmitAfter time.Duration
 
 	// events is the configuration's Recorder, set with the two ends before the session is handed out
@@ -447,21 +447,26 @@ func (s *Session) contextRetired(ctx *ikeContext) bool {
 // pathMTU stands in for the mux's PathMTU, and nil reads the mux
 func newSession(mux *transport.Mux, current *ikeContext, timing RekeyTiming, suites func() Suites, fragments bool, pathMTU func() (int, error)) *Session {
 	return &Session{
-		started:          time.Now(),
-		childRetireDelay: childRetireDelay,
-		mux:              mux,
-		current:          current,
-		requests:         make(chan *localRequest, 1),
-		probes:           make(chan struct{}, 1),
-		childRekeyEnded:  make(chan struct{}, 1),
-		childSpent:       make(chan struct{}, 1),
-		childFailed:      make(chan error, 1),
-		suites:           suites,
-		rechecks:         make(chan struct{}, 1),
-		contacted:        make(chan struct{}, 1),
-		fragments:        fragments,
-		pathMTU:          pathMTU,
-		timing:           timing,
+		started:           time.Now(),
+		childRetireDelay:  childRetireDelay,
+		mux:               mux,
+		current:           current,
+		requests:          make(chan *localRequest, 1),
+		probes:            make(chan struct{}, 1),
+		childRekeyEnded:   make(chan struct{}, 1),
+		childSpent:        make(chan struct{}, 1),
+		childFailed:       make(chan error, 1),
+		suites:            suites,
+		rechecks:          make(chan struct{}, 1),
+		contacted:         make(chan struct{}, 1),
+		fragments:         fragments,
+		pathMTU:           pathMTU,
+		timing:            timing,
+		rekeyJitterSource: randomRekeyJitter,
+		ikeRekeyNonce:     randomIKERekeyNonce,
+		clock:             time.Now,
+		dpdEvery:          defaultDPDInterval,
+		retransmitAfter:   requestTimeout,
 	}
 }
 
@@ -1242,7 +1247,7 @@ func refusal(exchange string, answer []RawPayload) error {
 // in that window could keep different sessions.
 func (s *Session) Active() bool {
 	last := s.lastActive.Load()
-	return last != 0 && time.Since(s.started)-time.Duration(last-1) < activeDPDIntervals*s.dpdInterval()
+	return last != 0 && time.Since(s.started)-time.Duration(last-1) < activeDPDIntervals*s.dpdEvery
 }
 
 // noteActive records that the peer has just proved it is still there.

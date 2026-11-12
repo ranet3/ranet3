@@ -28,8 +28,8 @@ func answeringSession(t testing.TB, mux *transport.Mux, suite SASuite, child Chi
 	t.Helper()
 	ctx := &ikeContext{suite: suite, spiI: randUint64Nonzero(), spiR: randUint64Nonzero(), skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
-	s := &Session{mux: mux, current: ctx, child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: group}},
-		suites: func() Suites { return lists }, rechecks: make(chan struct{}, 1), started: time.Now()}
+	s := seamed(&Session{mux: mux, current: ctx, child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: group}},
+		suites: func() Suites { return lists }, rechecks: make(chan struct{}, 1), started: time.Now()})
 	s.SetChildHandler(func(ChildSA) error { return nil })
 	return s
 }
@@ -438,7 +438,7 @@ func testIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256},
 		spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
+	s := seamed(&Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }})
 	done := make(chan error, 1)
 	go func() { done <- s.RekeyIKE() }()
 	offered := func(request *localRequest) (uint16, []Transform) {

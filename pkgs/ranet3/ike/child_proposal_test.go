@@ -630,7 +630,7 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 				skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
-			s := &Session{mux: mux, current: ctx, child: old, rechecks: make(chan struct{}, 1)}
+			s := seamed(&Session{mux: mux, current: ctx, child: old, rechecks: make(chan struct{}, 1)})
 			s.SetChildHandler(func(ChildSA) error { return nil })
 			handle := s.handleChildRekey
 			if test.ike {

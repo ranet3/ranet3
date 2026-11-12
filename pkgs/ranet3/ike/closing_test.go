@@ -245,7 +245,7 @@ func closingAfterAuthThrough(t *testing.T, pass func(fromInitiator bool, header 
 	if err := conn.SetDeadline(time.Now().Add(answerBudget)); err != nil {
 		t.Fatal(err)
 	}
-	return &closingPeer{conn: conn, held: held}, &Session{mux: mux, current: held}
+	return &closingPeer{conn: conn, held: held}, seamed(&Session{mux: mux, current: held})
 }
 
 func (p *closingPeer) read(t *testing.T) closingMessage {

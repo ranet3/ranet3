@@ -58,7 +58,7 @@ func initiatingSession(t *testing.T, suite SASuite, lists Suites) (*Session, *re
 	t.Helper()
 	mux, _ := lifecycleMuxes(t)
 	events := &recorder{}
-	return &Session{mux: mux, current: chainContext(t, suite), requests: make(chan *localRequest, 1), suites: func() Suites { return lists }, events: events.record}, events
+	return seamed(&Session{mux: mux, current: chainContext(t, suite), requests: make(chan *localRequest, 1), suites: func() Suites { return lists }, events: events.record}), events
 }
 
 // answeringChain is a session answering rekeys of an IKE SA in suite under lists, which holds a Child SA of local SPI 21 and remote SPI 22

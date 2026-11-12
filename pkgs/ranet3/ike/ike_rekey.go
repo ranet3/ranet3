@@ -43,7 +43,7 @@ func (s *Session) RekeyIKE() (err error) {
 		return errors.New("ike: IKE SA rekey: the peer's own rekey runs its additional key exchange")
 	}
 	ni := make([]byte, nonceLen)
-	if err := s.fillIKERekeyNonce(ni); err != nil {
+	if err := s.ikeRekeyNonce(ni); err != nil {
 		return fmt.Errorf("ike: generate IKE SA rekey nonce: %w", err)
 	}
 	lists := s.lists()
@@ -290,7 +290,7 @@ func (s *Session) followup(method uint16, link []byte, answered time.Time) ([]by
 	// RFC 9370 section 2.2.4: "The initiator MUST send back this notification intact in the request message of the next IKE_FOLLOWUP_KE exchange."
 	// the peer's wait runs from the answer, and followupWait is scaled to the timeout Run resends on
 	result := s.awaitLocked(&localRequest{exchange: IKE_FOLLOWUP_KE, inner: []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}, linkPayload(link)},
-		context: s.currentContext(), result: make(chan requestResult, 1), lateFrom: answered.Add(s.retransmitTimeout() * (followupWait / requestTimeout))})
+		context: s.currentContext(), result: make(chan requestResult, 1), lateFrom: answered.Add(s.retransmitAfter * (followupWait / requestTimeout))})
 	if result.err != nil {
 		return nil, fmt.Errorf("ike: IKE_FOLLOWUP_KE: %w", result.err)
 	}
@@ -530,7 +530,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		return malformed(err)
 	}
 	nr := make([]byte, nonceLen)
-	if err := s.fillIKERekeyNonce(nr); err != nil {
+	if err := s.ikeRekeyNonce(nr); err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
@@ -594,10 +594,7 @@ func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool 
 	return true
 }
 
-func (s *Session) fillIKERekeyNonce(nonce []byte) error {
-	if s.ikeRekeyNonce != nil {
-		return s.ikeRekeyNonce(nonce)
-	}
+func randomIKERekeyNonce(nonce []byte) error {
 	_, err := rand.Read(nonce)
 	return err
 }

@@ -174,7 +174,7 @@ func testRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
+	s := seamed(&Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }})
 	done := make(chan error, 1)
 	go func() { done <- s.RekeyIKE() }()
 	request := <-s.requests
@@ -219,7 +219,7 @@ func testRekeyIKERefusesAnAnswerWithoutAKeyExchange(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
+	s := seamed(&Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }})
 	done := make(chan error, 1)
 	go func() { done <- s.RekeyIKE() }()
 	request := <-s.requests
@@ -256,8 +256,8 @@ func TestEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt(t *testing.T) {
 func testEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	s := &Session{mux: mux, current: &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)},
-		requests: make(chan *localRequest, 1)}
+	s := seamed(&Session{mux: mux, current: &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)},
+		requests: make(chan *localRequest, 1)})
 	nonceOf := func(request *localRequest) []byte {
 		t.Helper()
 		nonce := findType(request.inner, PayloadNonce)
@@ -297,7 +297,7 @@ func TestRekeyIKETakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) 
 		mux, _ := lifecycleMuxes(t)
 		suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 		old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-		s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
+		s := seamed(&Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }})
 		done := make(chan error, 1)
 		go func() { done <- s.RekeyIKE() }()
 		request := <-s.requests

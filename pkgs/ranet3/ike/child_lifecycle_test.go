@@ -327,7 +327,7 @@ func TestLocalMessageIDIsNotAllocatedTwiceAtOnce(t *testing.T) {
 
 func testLocalMessageIDIsNotAllocatedTwiceAtOnce(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
-	s := &Session{
+	s := seamed(&Session{
 		mux: mux,
 		current: &ikeContext{
 			suite:        SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256},
@@ -336,7 +336,7 @@ func testLocalMessageIDIsNotAllocatedTwiceAtOnce(t *testing.T) {
 			nextLocalMID: 2,
 		},
 		requests: make(chan *localRequest),
-	}
+	})
 
 	payloads := deleteIKEPayloads()
 	seen := make(chan uint32, 64)

@@ -1141,8 +1141,8 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		if err := mux.RegisterESP(old.LocalSPI); err != nil {
 			t.Fatal(err)
 		}
-		s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest), child: old, dpdEvery: noDPD,
-			timing: RekeyTiming{ChildRekeyInterval: time.Hour}, childEstablished: time.Now().Add(-time.Hour + left)}
+		s := seamed(&Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest), child: old, dpdEvery: noDPD,
+			timing: RekeyTiming{ChildRekeyInterval: time.Hour}, childEstablished: time.Now().Add(-time.Hour + left)})
 		keys := newDataplane(s)
 		ends := s.childEstablished.Add(time.Hour)
 		if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
@@ -1166,9 +1166,9 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		events := &recorder{}
 		// the rekey falls due at once and fails, since the SA has no outbound half, and its retry is past the test
-		s := &Session{mux: mux, current: chainContext(t, classicalSuite), requests: make(chan *localRequest), child: ChildSA{LocalSPI: 0x11111111}, dpdEvery: noDPD,
+		s := seamed(&Session{mux: mux, current: chainContext(t, classicalSuite), requests: make(chan *localRequest), child: ChildSA{LocalSPI: 0x11111111}, dpdEvery: noDPD,
 			timing:           RekeyTiming{ChildRekeyInterval: time.Hour, RekeyMargin: time.Hour / 2, RekeyRetryInitial: time.Hour, RekeyRetryMax: time.Hour},
-			childEstablished: time.Now().Add(-time.Hour + left), events: events.record}
+			childEstablished: time.Now().Add(-time.Hour + left), events: events.record})
 		ends := s.childEstablished.Add(time.Hour)
 		clockShortOf(s, ends)
 		runSession(t, s)

@@ -50,7 +50,7 @@ func testSessionFollowsTheLastFreshMessageAsTheModelDoes(t *testing.T) {
 			ht.Fatal(err)
 		}
 		moves := &recorder{}
-		s := &Session{mux: mux, current: ctx, fragments: true, events: moves.record}
+		s := seamed(&Session{mux: mux, current: ctx, fragments: true, events: moves.record})
 		seal := func(flags uint8, mid uint32) []byte {
 			raw, err := EncryptMessage(ctx.suite, ctx.sker, Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: flags, MessageID: mid}, nil, nil)
 			if err != nil {

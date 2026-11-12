@@ -74,14 +74,14 @@ func testSessionScheduledRekeyFailureRetries(t *testing.T) {
 	const spiI = 0x0102030405060708
 	const spiR = 0x1112131415161718
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	s := &Session{
+	s := seamed(&Session{
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
 		child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080},
 		childEstablished: time.Now(),
 		requests:         make(chan *localRequest, 1),
-	}
+	})
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
@@ -191,14 +191,14 @@ func testSessionScheduledRekeyChild(t *testing.T) {
 	const oldRemoteSPI = 0x50607080
 	const newRemoteSPI = 0x90a0b0c0
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	s := &Session{
+	s := seamed(&Session{
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
 		child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: oldLocalSPI, RemoteSPI: oldRemoteSPI},
 		childEstablished: time.Now(),
 		requests:         make(chan *localRequest, 1),
-	}
+	})
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func testSessionRekeyIKE(t *testing.T) {
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
-	s := &Session{mux: mux, current: old, child: child, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
+	s := seamed(&Session{mux: mux, current: old, child: child, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }})
 	if err := mux.RegisterIKE(oldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +613,7 @@ func testSessionHandlesPeerIKERekey(t *testing.T) {
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
-	s := &Session{mux: mux, current: old, child: child, requests: make(chan *localRequest, 1)}
+	s := seamed(&Session{mux: mux, current: old, child: child, requests: make(chan *localRequest, 1)})
 	if err := mux.RegisterIKE(oldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -826,10 +826,10 @@ func testSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 		peerNonce[i] = 1
 	}
 	events := &recorder{}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }, events: events.record, ikeRekeyNonce: func(n []byte) error {
+	s := seamed(&Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }, events: events.record, ikeRekeyNonce: func(n []byte) error {
 		copy(n, localNonce)
 		return nil
-	}}
+	}})
 	if err := mux.RegisterIKE(oldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -2154,12 +2154,12 @@ func testSessionRequestSerializesLocalMessageIDs(t *testing.T) {
 	const spiI = 0x0102030405060708
 	const spiR = 0x1112131415161718
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	s := &Session{
+	s := seamed(&Session{
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20)},
 		requests: make(chan *localRequest, 1),
-	}
+	})
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
@@ -2234,7 +2234,7 @@ func testSessionRunUsesOldIKEContext(t *testing.T) {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	current := &ikeContext{suite: suite, spiI: 0x0102030405060708, spiR: 0x1112131415161718, skei: make([]byte, 20), sker: make([]byte, 20)}
 	old := &ikeContext{suite: suite, spiI: 0x2122232425262728, spiR: 0x3132333435363738, skei: []byte("old initiator key---"), sker: []byte("old responder key---")}
-	s := &Session{mux: mux, current: current, old: old, requests: make(chan *localRequest, 1)}
+	s := seamed(&Session{mux: mux, current: current, old: old, requests: make(chan *localRequest, 1)})
 	if err := mux.RegisterIKE(current.spiI); err != nil {
 		t.Fatal(err)
 	}
