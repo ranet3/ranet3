@@ -105,7 +105,7 @@ func TestCaptureGateReportsEachTransitionOnce(t *testing.T) {
 
 // An open gate asks to be woken one grace after its last live sample, and a
 // gate that has seen nothing or has withdrawn asks for nothing.
-func TestCaptureGateAsksToBeWokenOnlyWhileTheGraceRuns(t *testing.T) {
+func TestCaptureGateAsksToBeWokenOnlyWhileOpen(t *testing.T) {
 	const grace = 10 * time.Second
 	gate := captureGate{grace: grace}
 	if _, ok := gate.deadline(); ok {
