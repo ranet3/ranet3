@@ -98,7 +98,7 @@ func (n *neighborState) destination() netip.Addr {
 	return multicastGroup
 }
 
-func deadTimeout(interval time.Duration) time.Duration { return interval * 7 / 2 }
+func deadTimeout(interval time.Duration) time.Duration { return interval * holdHalves / 2 }
 
 func (n *neighborState) helloExpiry() time.Time {
 	var deadline time.Time

@@ -38,6 +38,8 @@ type routeInfo struct {
 	rxMetric  uint16
 	hold      time.Duration
 	expiresAt time.Time
+	// refreshAt is when the route, if selected, is asked for again, see refreshAfter, and zero once asked or never due
+	refreshAt time.Time
 	// smoothed is ms(R) of RFC 8966 Appendix A.3. It only damps selection and
 	// is never advertised.
 	smoothed   float64
@@ -74,6 +76,16 @@ type starveRequest struct {
 	once bool
 }
 
+// refreshRequest is one Route Request the route table wants sent to the neighbor of a selected route
+type refreshRequest struct {
+	key      routeKey
+	neighbor *neighborState
+}
+
+// refreshAfter is how long after an update that holds its route for hold the route is asked for again, refreshHalves of the half intervals hold is made of, as BIRD does
+// RFC 8966 section 3.8.2.3: "shortly before a selected route expires, a Babel node SHOULD send a unicast route request to the neighbour that advertised this route", so a route whose periodic updates were lost is answered for before it goes
+func refreshAfter(hold time.Duration) time.Duration { return hold / holdHalves * refreshHalves }
+
 // Speaker.mu owns the route table, the source table AND forwarding-table
 // publication. No selection may escape that critical section and later
 // overwrite a newer one.
@@ -108,6 +120,8 @@ type routeTable struct {
 	// Both are drained by the Speaker, which owns all transmission.
 	dirty   map[routeKey]struct{}
 	starved []starveRequest
+	// refresh collects the route requests of RFC 8966 section 3.8.2.3, at most one per selected key for each update its neighbor sent
+	refresh []refreshRequest
 	// tau is the hysteresis time constant of Appendix A.3. Zero keeps each
 	// smoothed metric at the route's current one, which margin still weighs.
 	// trigger is how much worse a selected route must get before it is worth
@@ -145,7 +159,7 @@ type routeTable struct {
 
 	overfullWarning, originsWarning spacedLog
 
-	// nextExpiryAt is the earliest route.expiresAt or end of a hold in the
+	// nextExpiryAt is the earliest route.expiresAt, route.refreshAt or end of a hold in the
 	// table, the deadline the run loop sleeps on, kept rather than recomputed
 	// by a walk of the whole table on every pass. Only ever moved earlier
 	// between sweeps, so dropping a route or a hold leaves it early rather
@@ -238,6 +252,7 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 	switch {
 	case adv.metric != MetricInfinity:
 		route.hold, route.expiresAt = hold, now.Add(hold)
+		route.refreshAt = now.Add(refreshAfter(hold))
 	case retracting && route.hold > 0:
 		route.expiresAt = now.Add(route.hold)
 	}
@@ -396,6 +411,8 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	var bestCost, incumbentCost uint16
 	var bestSmoothed float64
 	var unfeasible []*neighborState
+	// due is the selected route's neighbor when its refresh fell due in this pass
+	var due *neighborState
 	flushed := false
 	for n, route := range entry.routes {
 		if !now.Before(route.expiresAt) {
@@ -413,6 +430,17 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 		// minimum, whether or not it can be selected: a retracted one still
 		// has to be flushed when its hold runs out.
 		rt.noteExpiry(route.expiresAt)
+		// a refresh is asked once, and only of the route selected when it falls due
+		if !route.refreshAt.IsZero() {
+			if now.Before(route.refreshAt) {
+				rt.noteExpiry(route.refreshAt)
+			} else {
+				route.refreshAt = time.Time{}
+				if n == entry.selected.neighbor {
+					due = n
+				}
+			}
+		}
 		cost := route.cost(n, now, rt.cost)
 		if cost == MetricInfinity {
 			// Deliberately not smoothed. ms(R) follows an increase
@@ -472,6 +500,10 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 		entry.retractID, entry.retractSeqno = selected.routerID, selected.seqno
 	}
 	entry.selected = selected
+	// the route whose refresh fell due is asked for only if this pass kept it selected
+	if due != nil && selected.neighbor == due {
+		rt.refresh = append(rt.refresh, refreshRequest{key: key, neighbor: due})
+	}
 	// Section 3.8.2.1: the last feasible route is gone while unfeasible ones
 	// remain, so ask their origins for a new sequence number. Only the
 	// transition asks: a prefix that stays starved would otherwise repeat the
@@ -745,6 +777,12 @@ func (rt *routeTable) takeDirty() []routeKey {
 func (rt *routeTable) takeStarved() []starveRequest {
 	requests := rt.starved
 	rt.starved = nil
+	return requests
+}
+
+func (rt *routeTable) takeRefresh() []refreshRequest {
+	requests := rt.refresh
+	rt.refresh = nil
 	return requests
 }
 

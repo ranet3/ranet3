@@ -711,7 +711,9 @@ func (s *Speaker) wakeForPacketLocked() {
 // `routes.starved` is drained by `starvedActions` on the last line of
 // handlePacketLocked, so it is empty by the time the receive path asks. It is
 // here for a writer that does not go through that path, and the run loop asks
-// too.
+// too. `routes.refresh` is drained by Run alone and needs no term here: a
+// refresh falls due at a refreshAt the route table folded into the deadline
+// the run loop sleeps to, so the loop wakes for it on its own.
 func (s *Speaker) pendingWorkLocked() bool {
 	return s.updatePending || len(s.routes.dirty) != 0 || len(s.routes.starved) != 0
 }
@@ -815,6 +817,7 @@ func (s *Speaker) Run(ctx context.Context) error {
 			actions = append(actions, s.triggeredActions(now)...)
 		}
 		actions = append(actions, s.starvedActions(now)...)
+		actions = append(actions, s.refreshActions()...)
 		actions = append(actions, s.retryStarvedLocked(now)...)
 		// Emitted before the deadline is computed: emitLocked is where a
 		// refused packet is learned about, and the retry it schedules for that is

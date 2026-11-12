@@ -944,11 +944,17 @@ func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 // updateFrom hands speaker an Update for prefix from neighbor n, under the
 // router id router, at a 60 second interval
 func updateFrom(speaker *Speaker, n *neighborState, router byte, prefix netip.Prefix, metric uint16) {
-	speaker.handlePacket(n, EncodePacket([]RawTLV{
+	speaker.handlePacket(n, updatePacket(router, routeKey{dest: prefix}, metric, time.Minute))
+}
+
+// updatePacket is a Babel payload of one Update for key under the router id
+// router, naming interval
+func updatePacket(router byte, key routeKey, metric uint16, interval time.Duration) []byte {
+	return EncodePacket([]RawTLV{
 		EncodeRouterID([8]byte{router}),
-		EncodeUpdate(Update{AE: AEIPv6, Plen: prefix.Bits(), Prefix: prefix.Addr().AsSlice(),
-			Interval: 6000, Seqno: 1, Metric: metric}),
-	}))
+		EncodeUpdate(Update{AE: updateAE(key.dest), Plen: key.dest.Bits(), Prefix: key.dest.Addr().AsSlice(),
+			Interval: uint16(interval / (10 * time.Millisecond)), Seqno: 1, Metric: metric, SourcePrefix: key.source}),
+	})
 }
 
 // dumpAt sends the periodic dump as flushUpdates does, as if at the moment at,

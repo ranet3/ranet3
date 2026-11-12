@@ -218,6 +218,13 @@ const sendAheadShare = 16
 // hysteresisHellos is the small multiple of the Hello interval RFC 8966 Appendix A.3 recommends as the hysteresis time constant
 const hysteresisHellos = 3
 
+// holdHalves is the IHU Hold time and the Route Expiry time RFC 8966 Appendix B suggests, 3.5 times the interval a TLV advertised, in halves of that interval
+// a neighbor's Hellos are held as long
+const holdHalves = 7
+
+// refreshHalves is how long after its update a selected route is asked for again, in halves of the interval the update advertised, see refreshAfter
+const refreshHalves = 5
+
 // sendRetriesPerHello is how many times a pass that could not send everything it built retries inside one hello interval
 // a refused Hello thus gets several attempts inside the three and a half intervals that withdraw the routes through the neighbor, each costing a pass rather than a packet
 // at the shortest interval Config.Validate accepts, the first retry still comes before the neighbor's dead timeout

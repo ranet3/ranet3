@@ -822,6 +822,23 @@ func (s *Speaker) retryStarvedLocked(now time.Time) []sendAction {
 	return actions
 }
 
+// refreshActions turns the route table's pending refreshes into unicast Route Requests
+// the neighbor answers each with an update or a retraction, RFC 8966 section 3.8.1.1
+func (s *Speaker) refreshActions() []sendAction {
+	var actions []sendAction
+	for _, request := range s.routes.takeRefresh() {
+		n := request.neighbor
+		if s.neighbors[n.peer.ID] != n {
+			continue // the peer was replaced or removed since the request was queued
+		}
+		s.events.Emit("babel.request.sent", n.peer.ID, slog.String("route", describeRoute(request.key)))
+		actions = append(actions, sendAction{neighbor: n, dest: n.destination(), priority: priorityRequest, tlvs: []RawTLV{
+			EncodeRouteRequest(RouteRequest{AE: aeFor(request.key.dest), Prefix: request.key.dest, SourcePrefix: request.key.source}),
+		}})
+	}
+	return actions
+}
+
 // allowAsk rate-limits the seqno requests this node originates, per neighbor
 // and per prefix. The route table can queue the same starve twice, once from
 // the update that made the route unfeasible and once from the selection that
