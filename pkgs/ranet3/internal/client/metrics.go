@@ -269,7 +269,7 @@ func (c *Client) renderEgress(w io.Writer) {
 		fmt.Fprint(w, "# TYPE ranet3_egress_untranslated_flows_total counter\n")
 		fmt.Fprintf(w, "ranet3_egress_untranslated_flows_total %d\n", status.Untranslated)
 	}
-	fmt.Fprint(w, "# HELP ranet3_egress_refused_total Packets refused because their source already held as many flows open through this node as cap.egress flows_per_source lets one source hold, each retry of a refused flow counted, answered host unreachable over IPv4 and administratively prohibited over IPv6.\n")
+	fmt.Fprint(w, "# HELP ranet3_egress_refused_total Packets refused past their source's share of the flows through this node, each retry of a refused flow counted, answered host unreachable over IPv4 and administratively prohibited over IPv6.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv4\"} %d\n", status.Refused.IPv4)
 	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv6\"} %d\n", status.Refused.IPv6)

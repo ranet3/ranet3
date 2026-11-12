@@ -204,6 +204,9 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 
 var errUnknownSPI = errors.New("no matching inbound ESP SA")
 
+// decryptBatch appends one result per packet in their order, an unknown SPI or
+// a packet too short to name one included, which the receive path pairs with
+// each datagram's outer ECN field
 func (t *tunnel) decryptBatch(packets [][]byte, results []inboundDecrypted) []inboundDecrypted {
 	current := t.sas.Load()
 	for len(packets) > 0 {

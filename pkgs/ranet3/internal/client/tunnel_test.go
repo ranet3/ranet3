@@ -89,10 +89,19 @@ func TestTunnelRekeyPreservesInflightKeys(t *testing.T) {
 			t.Fatal("accepted truncated data or a retired SPI")
 		}
 	}
-	result := tunnel.decryptBatch([][]byte{sealTestPacket(t, remoteSA(t, next), 3)}, nil)
+	// packets naming no SPI before and after one the replacement opens keep their places in the results
+	result := tunnel.decryptBatch([][]byte{nil, sealTestPacket(t, remoteSA(t, next), 3), {0, 1}}, nil)
 	esp.CommitBatch(result)
-	if _, _, err := result[0].Plaintext(); err != nil {
-		t.Fatalf("retiring old SA disturbed the replacement: %v", err)
+	if len(result) != 3 {
+		t.Fatalf("a batch of 3 packets gave %d results", len(result))
+	}
+	for _, i := range []int{0, 2} {
+		if _, _, err := result[i].Plaintext(); err == nil {
+			t.Fatalf("the result in place %d opened, where the packet there names no SPI", i)
+		}
+	}
+	if _, _, err := result[1].Plaintext(); err != nil {
+		t.Fatalf("retiring old SA disturbed the replacement, or its result left second place: %v", err)
 	}
 	if err := tunnel.retire(next.LocalSPI); err != nil {
 		t.Fatal(err)

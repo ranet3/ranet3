@@ -40,7 +40,9 @@ func class(size int) int { return (size + 5) / 4 }
 // top is the largest inner size of class k
 func top(k int) int { return 4*k - 2 }
 
-// searchPhase is where a session's search of its path MTU stands
+// searchPhase is where a session's search of its path MTU stands. searchingUp
+// and searchingDown differ only for apply's steering warning and the debug
+// pmtu view.
 type searchPhase int
 
 const (
@@ -48,13 +50,9 @@ const (
 	confirming searchPhase = iota
 	// searchingUp probes between the largest class the path carried and the target
 	// the budget stands on the largest class carried
-	// no branch of the search tells it from searchingDown
-	// the debug pmtu view is the reader that tells the two apart
 	searchingUp
 	// searchingDown probes under a size the budget stood on and the path lost
 	// the budget stands at the floor until the path carries more
-	// no branch of the search tells it from searchingUp
-	// the debug pmtu view is the reader that tells the two apart
 	searchingDown
 	// confirmed holds the budget, confirms it every confirmInterval while data flows and searches up after raiseInterval
 	confirmed
