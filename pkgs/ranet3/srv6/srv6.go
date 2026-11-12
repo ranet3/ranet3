@@ -89,11 +89,6 @@ const (
 	nextHeaderDestOpts = 60
 	nextHeaderFragment = 44
 	extensionUnit      = 8
-	// maxExtensionHeaders bounds the extension headers walk and carriesUnanswerable step past in one packet, so a sender sets no cost per packet past it
-	maxExtensionHeaders = 8
-	// maxEdgeHeaders bounds the extension headers WalkEdge steps past in a packet entering the mesh, and the error search of a packet walk refuses past maxExtensionHeaders
-	// it is at least maxExtensionHeaders, so the edge steps past every header a SID's walk does
-	maxEdgeHeaders = 16
 	// nextHeaderAuth is the authentication header of RFC 4302, which may sit
 	// between the routing header and the upper-layer header.
 	nextHeaderAuth = 51
@@ -127,11 +122,6 @@ const (
 	// through a list is refused below it, and an ICMP error stays inside it so
 	// it reaches the sender without fragmenting.
 	MinimumIPv6MTU = 1280
-
-	// MaxSegments bounds a segment list this node builds or acts on, so the
-	// 16 bytes each segment puts in front of every packet are this node's
-	// choice rather than a peer's.
-	MaxSegments = 16
 )
 
 var (
@@ -298,12 +288,6 @@ func writeOuter(out, inner []byte, innerNext uint8, source netip.Addr, path []ne
 		copy(srh[srhFixedLen+addrLen*(len(path)-1-i):], addr16(segment))
 	}
 }
-
-// DefaultHopLimit is the outer budget an IPv4 inner packet gets, since its TTL
-// is not an IPv6 hop limit to copy. It takes 64, the hop limit linux gives the
-// packets it sends (IPV6_DEFAULT_HOPLIMIT), rather than a mesh-sized number,
-// so a segment list that loops dies at the same count anything else does.
-const DefaultHopLimit = 64
 
 // segmentsLeft is the Segments Left of the SRH at srh, whose Hdr Ext Len lies
 // within raw, once it is checked as RFC 8754 section 4.3.1.1 checks it with

@@ -33,12 +33,6 @@ const (
 	NextHeaderNone = 59
 
 	headerLen = 8 // SPI + 32-bit Sequence Number
-	// ProactiveRekeySequence is where a non-ESN SA asks to be replaced. The
-	// margin is a time budget rather than a packet count, two round trips
-	// that may wait for an exchange already outstanding, and the scheduled
-	// rekey reaches the mark first unless a link exhausts the space inside
-	// one rekey interval, which is the case where a rekey has already failed.
-	ProactiveRekeySequence = uint64(0xffffffff - 1<<28)
 )
 
 // OutboundSA encrypts packets for the direction this client originates.
@@ -110,13 +104,6 @@ type AuthenticatedPacket struct {
 
 // InboundOption configures inbound ESP processing.
 type InboundOption func(*InboundSA)
-
-// MaxReplayWindow is the widest anti-replay window this implementation will
-// build. The circular index arithmetic adds a window to a position, so a
-// window above half the sequence space would overflow the 32-bit counter it
-// is computed in. Config refuses anything above this too. The cap is here as
-// well because this option is exported and takes any uint32.
-const MaxReplayWindow uint32 = 1 << 20
 
 // WithReplayWindow sets the anti-replay window, clamped to MaxReplayWindow. A
 // zero value disables replay checking, matching strongSwan's
@@ -209,11 +196,11 @@ func (o *OutboundSA) reserveSequenceNumbers(count int) (uint64, uint64, error) {
 	// Asked on every reservation past the mark rather than once for the life
 	// of the SA, so an ask the callback turns away, as its floor between
 	// attempts does one that comes too soon, is made again by the next
-	// reservation. The margin above is sized for "a rekey has already
-	// failed", which the session retries on its own delay whatever the asks
-	// in between. The callback carries its own one-at-a-time guard and its
-	// own floor between attempts, so this costs a compare past the mark and
-	// nothing before it.
+	// reservation. ProactiveRekeySequence's margin is sized for a rekey that
+	// has already failed, which the session retries on its own delay whatever
+	// the asks in between. The callback carries its own one-at-a-time guard
+	// and its own floor between attempts, so this costs a compare past the
+	// mark and nothing before it.
 	//
 	// A reservation that is wholly past the end asks too. That SA will never
 	// carry another packet, so it is the moment a replacement matters most,

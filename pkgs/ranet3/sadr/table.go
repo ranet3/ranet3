@@ -72,11 +72,6 @@ type srcIndex[V comparable] struct {
 	m    map[netip.Prefix]V
 }
 
-// indexThreshold is the mean number of sources one length carries before a map
-// per length beats the ordered scan, since a map probe costs about two
-// Prefix.Contains and the edit path pays for the build.
-const indexThreshold = 4
-
 // indexSrcs derives byLen and anySrc. srcs is ordered longest first, so the
 // runs of one length are contiguous, the groups come out in the same order,
 // and the first that answers is the longest match.
