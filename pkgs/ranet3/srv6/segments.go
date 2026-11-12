@@ -20,9 +20,8 @@ import (
 // and neither needs one when the process carrying the packet is the one acting
 // on the header. A local segment needs overlay beside it.
 type Segments struct {
-	// Source is the outer source address an encapsulation is sent from, which
-	// the fleet sets once per node with `ip sr tunsrc`. A steering entry
-	// inherits it unless it names its own.
+	// Source is the outer source address an encapsulation is sent from. A
+	// steering entry inherits it unless it names its own.
 	Source schema.Addr `yaml:"source,omitempty" json:"source,omitzero" toml:"source,omitempty"`
 	// Local is the segments this node answers for.
 	Local []Segment `yaml:"local,omitempty" json:"local,omitempty" toml:"local,omitempty"`
@@ -41,11 +40,12 @@ type Segments struct {
 // neither costs a restart.
 //
 // Both lists are read as sets: the local segments become a map keyed by SID
-// and the steering entries a trie keyed by their selector, and a duplicate key
-// in either is refused rather than resolved by position. An egress segment's
-// allow list is a set too, sorted here and refused with a duplicate. The
-// segments inside one steering entry are the exception and are left alone,
-// because Via is the order a packet visits its waypoints.
+// and the steering entries a trie keyed by their selector, and NewLocalTable
+// and NewSteerTable refuse a duplicate key in either rather than resolve it by
+// position. An egress segment's allow list is a set too, sorted here, and
+// checkAllow refuses a duplicate in it. The segments inside one steering entry
+// are the exception and are left alone, because Via is the order a packet
+// visits its waypoints.
 func (s Segments) Normalized() Segments {
 	if len(s.Local) == 0 {
 		s.Local = nil

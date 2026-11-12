@@ -90,8 +90,8 @@ func TestReplayWindowMatchesReference(t *testing.T) {
 
 // The cost of one commit must not depend on how far the peer chose to jump.
 func BenchmarkReplayCommitJumpDistances(b *testing.B) {
-	// The largest window Config.Validate accepts is measured too: a peer
-	// jumping just under it skips the whole window on every packet, which is
+	// The largest window Config.Validate accepts is one of the windows, since
+	// a peer jumping just under it skips the whole window on every packet,
 	// the case clearSpan's memclr exists for.
 	for _, window := range []uint32{DefaultReplayWindow, 1 << 20} {
 		for _, jump := range []uint32{1, window / 2, window - 1, window} {
@@ -142,14 +142,12 @@ func TestClearRangeClearsExactlyItsBits(t *testing.T) {
 }
 
 // A peer chooses its own sequence numbers, so the cost of one commit must not
-// be proportional to how far it jumped. Both figures are measured in the same
-// run on the same machine.
+// be proportional to how far it jumped. Both figures come from one run, so the
+// ratio holds on any machine.
 //
-// The threshold has to sit below what the word-at-a-time loop costs, not only
-// below the per-bit loop it replaced: the per-bit form was about three
-// thousand times the in-order case and the word form is thirty to forty-five,
-// so a threshold sized for the first passes with the second still in place.
-// Twenty is under the word loop and well over the memclr's fifteen.
+// The bound lies below the ratio a word-at-a-time clear reaches and above the
+// memclr's, so it fails on a clear one word at a time as well as one bit at a
+// time.
 func TestReplayCommitCostDoesNotFollowJumpDistance(t *testing.T) {
 	const window = DefaultReplayWindow
 	measure := func(jump uint32) time.Duration {
@@ -184,11 +182,9 @@ func TestReplayCommitCostDoesNotFollowJumpDistance(t *testing.T) {
 // The margin between asking for a rekey and refusing to send is a time budget:
 // two round trips have to complete inside it, possibly behind an exchange that
 // is already outstanding. Expressed as a packet count it shrinks with the link
-// rate, and this implementation's own measured rate left it at milliseconds.
+// rate.
 func TestProactiveRekeyLeavesTimeAndNotJustPackets(t *testing.T) {
 	margin := uint64(0xffffffff) - ProactiveRekeySequence
-	// A million packets per second is 12.7 Gbit/s at path MTU, and small
-	// packets go several times faster.
 	const perSecond = 1_000_000
 	if seconds := margin / perSecond; seconds < 60 {
 		t.Errorf("the rekey margin is %d packets, %d seconds at %d packets per second, "+

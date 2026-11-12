@@ -15,10 +15,6 @@ import (
 // segment with, rather than dropping it in silence. It takes bytes and returns
 // bytes like the rest of the package: whether an answer is sent at all, and
 // how often, is the dataplane's to decide.
-//
-// Without these a converted waypoint is invisible to traceroute, where a node
-// still running seg6local answers through ip6_forward, so a fleet migrating
-// node by node loses the tool it debugs paths with one node at a time.
 
 const (
 	// icmpv6Next is the protocol number of the header these messages carry.

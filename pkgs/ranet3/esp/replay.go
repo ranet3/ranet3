@@ -67,17 +67,13 @@ func (w *replayWindow) commit(seq uint32) {
 
 // clearRange clears n bits from start, wrapping at the window. The positions a
 // forward jump skips are one or two contiguous runs, so they come out as two
-// partial words and one memclr rather than one division and one mask per bit.
+// partial words and one memclr.
 //
 // A peer chooses how far to jump, so it chooses how much of this it pays for,
 // on the per-session commit emitter, which is single-threaded and holds the
 // inbound SA's lock. Sequence numbers just under a window apart are the worst
 // case: they skip the whole window on every packet and miss the full-clear
-// path by one. Measured per packet against 3.3 ns for a peer that counts by
-// one, before and after the memclr: 94 ns and 17 ns at the 4096 default, 24.8
-// us and 1.07 us at the 1048576 the configuration allows. The second figure is
-// now what the full clear beside it costs, which is the floor for a window
-// that size. See BenchmarkReplayCommitJumpDistances.
+// path by one.
 func (w *replayWindow) clearRange(start, n uint32) {
 	if n == 0 {
 		return

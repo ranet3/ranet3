@@ -6,9 +6,8 @@
 // encapsulation/decapsulation for exactly the Child SA negotiated by
 // package ike: AES-GCM or ChaCha20-Poly1305, no ESN, one SA per direction.
 // Peer-initiated Child SA rekeys replace these instances in the production
-// data plane. Packets are carried UDP-encapsulated (RFC 3948) since ranet's
-// strongSwan deployments force that unconditionally. See the Mux in package
-// transport for the shared socket.
+// data plane. Packets are carried UDP-encapsulated (RFC 3948), on the socket
+// package transport shares between IKE and ESP.
 package esp
 
 import (
@@ -34,16 +33,11 @@ const (
 	NextHeaderNone = 59
 
 	headerLen = 8 // SPI + 32-bit Sequence Number
-	// ProactiveRekeySequence is where a non-ESN SA asks to be replaced, and
-	// the margin it leaves is a time budget rather than a packet count: what
-	// has to happen before the space runs out is two round trips, and it may
-	// have to wait for an exchange already outstanding. 65535 packets was
-	// 58 milliseconds at this implementation's own measured 12.7 Gbit/s, and
-	// under 5 at small packets. 2^28 is about four minutes at a million
-	// packets per second and six percent of the space, which the hourly
-	// scheduled rekey reaches long before in any case: this is the backstop
-	// for a link fast enough to exhaust the space inside one interval, and
-	// the case where it matters is the one where a rekey has already failed.
+	// ProactiveRekeySequence is where a non-ESN SA asks to be replaced. The
+	// margin is a time budget rather than a packet count, two round trips
+	// that may wait for an exchange already outstanding, and the scheduled
+	// rekey reaches the mark first unless a link exhausts the space inside
+	// one rekey interval, which is the case where a rekey has already failed.
 	ProactiveRekeySequence = uint64(0xffffffff - 1<<28)
 )
 

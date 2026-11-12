@@ -583,9 +583,7 @@ func TestDeliverSpellsMeshOrEgress(t *testing.T) {
 	}
 }
 
-// The spelling is RFC 8986's and `ip route ... encap seg6local action`'s, so a
-// configuration converted from the fleet's own reads the same.
-func TestBehaviorSpellsItselfTheWayTheFleetWritesIt(t *testing.T) {
+func TestBehaviorSpellsItselfAsRFC8986Does(t *testing.T) {
 	for name, want := range map[string]Behavior{
 		"End":      BehaviorEnd,
 		"end":      BehaviorEnd,

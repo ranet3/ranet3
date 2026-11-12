@@ -18,14 +18,8 @@ import (
 // what it does with a packet that arrives addressed to one. The sending half
 // is Encapsulate in srv6.go.
 //
-// On linux the fleet spells these as seg6local routes in a table of their own,
-// reached by a policy rule, and the kernel acts on them after strongSwan has
-// decrypted the packet. Here the same decision is made one step earlier, on
-// the decrypted packet before it reaches the tun, which is the only place the
-// other three platforms have. The two interoperate: a packet this node
-// encapsulates is the same bytes the kernel would have produced, but for an
-// IPv4 packet's ECN field, which RFC 6040 section 4.1's normal mode copies
-// into the outer traffic class where __seg6_do_srh_encap writes 0.
+// A SID acts on the decrypted packet before it reaches the tun, the one place
+// every platform has.
 
 // Behavior names the action a node takes on a packet addressed to one of its
 // own segments, RFC 8986. Only the two this mesh uses are implemented, and a
@@ -52,8 +46,7 @@ func (b Behavior) String() string {
 }
 
 // ParseBehavior reads the spelling an operator writes, which is the one RFC
-// 8986 uses and the one `ip route ... encap seg6local action` takes, so a
-// configuration converted from the fleet's own reads the same.
+// 8986 uses and the one `ip route ... encap seg6local action` takes.
 func ParseBehavior(name string) (Behavior, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "end":
@@ -65,9 +58,7 @@ func ParseBehavior(name string) (Behavior, error) {
 }
 
 // Segment is one entry of the cap.segment capability: one local SID and what
-// this node does with a packet that arrives on it. The behavior is spelled as
-// RFC 8986 spells it and as `ip route ... encap seg6local action` takes it, so
-// a converted configuration reads the same.
+// this node does with a packet that arrives on it.
 type Segment struct {
 	SID      schema.Addr `yaml:"sid" json:"sid" toml:"sid"`
 	Behavior Behavior    `yaml:"behavior" json:"behavior" toml:"behavior"`

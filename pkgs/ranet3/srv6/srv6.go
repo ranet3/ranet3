@@ -128,12 +128,9 @@ const (
 	// it reaches the sender without fragmenting.
 	MinimumIPv6MTU = 1280
 
-	// MaxSegments bounds a segment list this node will build or act on. The
-	// fleet's longest path is a handful of waypoints, and the cap exists so
-	// the number is ours rather than a peer's: every segment is 16 bytes in
-	// front of every packet, and a list long enough to matter is a list
-	// somebody else chose the cost of. A list this node builds is bounded
-	// tighter than this by the MTU, which refuses a fifth segment.
+	// MaxSegments bounds a segment list this node builds or acts on, so the
+	// 16 bytes each segment puts in front of every packet are this node's
+	// choice rather than a peer's.
 	MaxSegments = 16
 )
 
@@ -172,9 +169,7 @@ func refuse(code uint8, pointer int, what string) *Refusal {
 // header carries the rest.
 //
 // path is in the order the packet visits, so a caller writes the waypoints and
-// then the exit, and this reverses them for the wire. source is the address
-// the outer header is sent from, which the fleet sets with `ip sr tunsrc` and
-// which here is an argument because nothing global decides it.
+// then the exit, and this reverses them for the wire.
 //
 // The inner packet is not modified. RFC 8986 section 5.1 S05 decrements its
 // hop limit and this does not, matching __seg6_do_srh_encap: a

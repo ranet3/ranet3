@@ -56,35 +56,12 @@ type trieNode[V comparable] struct {
 	anySrc   V
 	srcs     []srcEntry[V]
 	// byLen is srcs as one map per distinct source prefix length, longest
-	// first, and anySrc is the entry whose source matches everything. Both are
-	// derived from srcs, which stays the record. A walk of srcs was linear in
-	// a number a neighbor chooses (babel holds one entry per source and
-	// destination pair, up to maxSourcesPerNeighbor of them from one neighbor,
-	// and nothing makes the destinations distinct, so one short prefix can
-	// carry the lot), and that walk is inline on every TUN reader. This makes
-	// it one masked map lookup per distinct length, which the address width
-	// bounds at 129 per destination node however many entries there are. A
-	// packet pays that at every node on its path, not once.
-	//
-	// Measured per lookup on one node with every entry on one destination and
-	// the answer the match-all one, scanning against indexed: 9.6 ns at one
-	// source, 68 us against 13.6 ns at 16384 all at one length. indexSrcs
-	// declines to build one where it would not pay, which is the other half of
-	// the trade.
-	//
-	// Those are one node. A packet pays at every node on its path, and the
-	// path is as deep as the destination prefixes a neighbor announces, so the
-	// figure a forwarding decision actually costs is the product: 16.7 ns at
-	// one node holding 448 sources at one length, 510 ns down a chain of 32
-	// such nodes, and 1.7 us and 54 us for the same two with those 448 spread
-	// over 112 lengths. The last is a shape a neighbor can build with the
-	// source prefix sub-TLV of RFC 9079, and 54 us inline on the TUN reader is
-	// about 18,000 forwarding decisions a second on one core. Bounding it
-	// needs a different structure for the sources rather than a better
-	// threshold, so it is measured here rather than claimed away. See
-	// BenchmarkLookupBySourceCount, BenchmarkLookupByDistinctLengths,
-	// BenchmarkLookupDownADestinationChain, BenchmarkRouteChangeOnOneDestination
-	// and BenchmarkFillOneDestination.
+	// first, and anySrc the entry whose source matches every address, both
+	// derived from srcs, which stays the record. A neighbor chooses how many
+	// sources one destination carries and a packet pays at every node on its
+	// path, so where indexSrcs builds byLen a lookup probes one map per
+	// distinct length, which the address width bounds, rather than scanning
+	// the sources.
 	byLen     []srcIndex[V]
 	indexOnce sync.Once
 }
@@ -95,12 +72,9 @@ type srcIndex[V comparable] struct {
 	m    map[netip.Prefix]V
 }
 
-// indexThreshold is how many sources one length has to carry, on average,
-// before maps beat scanning them. A map probe is about twice what
-// Prefix.Contains costs, so an index over lengths that carry one prefix each
-// is slower than the ordered scan it replaces (measured at 471 ns against
-// about 1.2 us for 128 sources at 128 distinct lengths), and it is the edit
-// path that pays to build it.
+// indexThreshold is the mean number of sources one length carries before a map
+// per length beats the ordered scan, since a map probe costs about two
+// Prefix.Contains and the edit path pays for the build.
 const indexThreshold = 4
 
 // indexSrcs derives byLen and anySrc. srcs is ordered longest first, so the
@@ -126,8 +100,7 @@ func indexSrcs[V comparable](srcs []srcEntry[V]) []srcIndex[V] {
 	if runs == 0 || specific < runs*indexThreshold {
 		return nil
 	}
-	// Sized per run rather than grown from one, which had a rebuild walking
-	// log2(n) growth rounds for every length it held.
+	// Sized per run, so a rebuild grows no slice.
 	byLen := make([]srcIndex[V], 0, runs)
 	for i := 0; i < len(srcs); {
 		if !srcs[i].src.IsValid() {

@@ -122,8 +122,7 @@ func TestSteeringRefusesWhatWouldClaimItsOwnEncapsulation(t *testing.T) {
 	}
 }
 
-// An entry naming no source of its own takes the block's, which is how the
-// fleet's one `ip sr tunsrc` per node carries over.
+// An entry naming no source of its own takes the block's.
 func TestSteeringEntryInheritsTheBlockSource(t *testing.T) {
 	entry := Steer{From: sprefix("2001:db8::/32"), Via: []schema.Addr{saddr("3fff:b:0:206::1")}}
 	table, err := NewSteerTable([]Steer{entry}, saddr("3fff:b:0:100::1"))

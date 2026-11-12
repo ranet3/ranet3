@@ -16,12 +16,9 @@ import (
 // This file is the sending half of steering: which of this node's own packets
 // go through a segment list, and which list.
 //
-// It is keyed the way the forwarding table is keyed, by source and destination
-// prefix together, because that is the selector the fleet's own steering uses:
-// A steering tool sends the traffic sourced from this node's announced address through a
-// list and leaves everything else alone. Reusing the same trie means the two
-// tables answer the same question the same way rather than nearly the same
-// way.
+// It is keyed as the forwarding table is, by source and destination prefix
+// together through the same trie, so the two tables answer one question the
+// same way.
 
 // Policy is one steering decision: the outer source an encapsulation is sent
 // from, and the segments the packet visits in order.
@@ -29,10 +26,7 @@ type Policy struct {
 	// From and To are the selector as the entry wrote it, the zero prefix for
 	// a half it left out
 	From, To netip.Prefix
-	// Source is the outer header's source address, which the fleet sets once
-	// per node with `ip sr tunsrc` and which is per policy here because
-	// nothing global decides it.
-	Source netip.Addr
+	Source   netip.Addr
 	// Path is in the order the packet visits, so an operator writes the
 	// waypoints and then the exit.
 	Path []netip.Addr
