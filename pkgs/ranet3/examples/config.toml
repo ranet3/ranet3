@@ -133,9 +133,8 @@ hello = "4s"
 update = "16s"
 
 # How a link's Hello loss becomes a cost, RFC 8966 Appendix A.2, spelled the
-# way BIRD spells it: "etx", which the fleet runs on these same tunnels, or
-# "none" to leave this node's own Hello loss out of the cost, taking what each
-# neighbor reports as it comes.
+# way BIRD spells it: "etx", or "none" to leave this node's own Hello loss out
+# of the cost, taking what each neighbor reports as it comes.
 # quality = "etx"
 
 # A route replaces the selected one only where its cost is lower and its
@@ -164,13 +163,12 @@ update = "16s"
 # org = { other = 2048 }
 # node = { "example/gateway" = 300 }
 
-# Mirror the routes babel learns into a routing table of its own, taking over
-# from BIRD's kernel protocols. Absent, this node touches no routes and the
-# addresses and routes of its device are yours to configure. The reconciler
-# deletes only routes carrying its own protocol, in its own table, out of the
-# device, and an install refuses a key another writer already holds rather than
-# taking it over. Give it a table no other daemon writes, or the routes it
-# refuses are routes the mesh wanted.
+# Mirror the routes babel learns into a routing table of its own. Absent, this
+# node touches no routes and the addresses and routes of its device are yours
+# to configure. The reconciler deletes only routes carrying its own protocol,
+# in its own table, out of the device, and an install refuses a key another
+# writer already holds rather than taking it over. Give it a table no other
+# daemon writes, or the routes it refuses are routes the mesh wanted.
 # [cap.table]
 # id = 200
 # proto = 155
