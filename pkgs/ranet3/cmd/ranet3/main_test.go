@@ -244,7 +244,7 @@ func TestDebugAccessIsAnUnknownFlag(t *testing.T) {
 
 // notDaemon is the directories of the module no daemon is built from: the generator under internal/cmd,
 // and the packages only tests import
-var notDaemon = []string{"internal/cmd", "internal/dnstest", "internal/egress/egresstest", "internal/goldentest", "internal/kubetest", "internal/logtest", "internal/netnstest"}
+var notDaemon = []string{"internal/bubble", "internal/cmd", "internal/dnstest", "internal/egress/egresstest", "internal/goldentest", "internal/kubetest", "internal/logtest", "internal/netnstest", "internal/pbt"}
 
 // daemonSources parses, as far as mode asks, every non-test file of the module but those of notDaemon and of testdata
 func daemonSources(tb testing.TB, mode parser.Mode) (*token.FileSet, []*ast.File) {

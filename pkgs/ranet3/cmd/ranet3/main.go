@@ -207,9 +207,8 @@ func notifySignals() daemonSignals {
 	// time any node joins the mesh, and a restart to pick that up would drop
 	// every SA this node is carrying.
 	signal.Notify(s.reload, syscall.SIGHUP)
-	// SIGUSR1 dumps the current mesh route table to the log, the fastest way
-	// to see what babel has actually installed without wiring up a separate
-	// debug endpoint.
+	// SIGUSR1 writes the mesh's forwarding table to the log whole, which no
+	// control socket view lists, so a node serving no socket has it too
 	signal.Notify(s.dump, syscall.SIGUSR1)
 	return s
 }

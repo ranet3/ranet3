@@ -119,9 +119,6 @@ func serve(t *testing.T, src control.Source) string {
 	return path
 }
 
-// socketPath names a socket of at most control.MaxSocketPath bytes, a guard
-// that leaves out the bind directory control.Listen adds. See the same helper
-// in control/server_test.go for what t.TempDir() costs on darwin.
 func socketPath(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "rl")
@@ -129,11 +126,7 @@ func socketPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	path := filepath.Join(dir, "control.sock")
-	if len(path) > control.MaxSocketPath {
-		t.Fatalf("this TMPDIR leaves no room for a socket: %s is %d bytes", path, len(path))
-	}
-	return path
+	return filepath.Join(dir, "control.sock")
 }
 
 // execute drives the real command tree with its output captured, which is the
