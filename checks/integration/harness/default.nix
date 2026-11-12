@@ -13,8 +13,7 @@
 {
   cores ? 1,
   profile ? false,
-  # responder inverts the exchange: strongSwan dials and ranet3 answers,
-  # which is the direction upstream could not do at all.
+  # responder inverts the exchange: strongSwan dials and ranet3 answers.
   responder ? false,
   # kernel turns on the route reconciler, so the routes babel learns from BIRD
   # have to reach a real kernel table rather than only the in-process trie.
@@ -437,7 +436,7 @@ testers.runNixOSTest {
           # A node answering for a segment is a router for it, and a kernel
           # with forwarding off drops the packet in ip6_forward and counts
           # Ip6InAddrErrors, which reads as an address problem rather than as
-          # a policy one. The fleet's own nodes set this too.
+          # a policy one.
           "net.ipv6.conf.all.forwarding" = 1;
         };
 
@@ -1528,7 +1527,7 @@ testers.runNixOSTest {
             print(gateway.execute("birdc show route")[1])
       '';
 
-      # strongSwan answers, ranet3 dials: upstream's original exchange.
+      # strongSwan answers, ranet3 dials.
       initiator = ''
         try:
             gateway.wait_for_unit("systemd-networkd-wait-online.service")
@@ -1689,9 +1688,8 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnelV4}", timeout=timeout)
             if kernel_enabled:
-                # What replaces kbabel4 and kbabel6 on a fleet node: a route babel
-                # learned has to be in the kernel table the policy rules look up,
-                # carrying this reconciler's protocol.
+                # A route babel learned has to be in the kernel table the policy
+                # rules look up, carrying this reconciler's protocol.
                 client.wait_until_succeeds(f"ip -4 route show table {kernel_table} | grep -q '10.99.0.0/24'", timeout=timeout)
                 client.wait_until_succeeds(f"ip -6 route show table {kernel_table} | grep -q 'fd00:99::/64'", timeout=timeout)
                 v4 = client.succeed(f"ip -4 route show table {kernel_table}")
@@ -1703,8 +1701,8 @@ testers.runNixOSTest {
                 # The main table is not this reconciler's to write.
                 leaked = client.succeed(f"ip -4 route show proto {kernel_protocol}")
                 assert "10.99.0.0/24" not in leaked, leaked
-            # The endpoint that replaces prometheus-bird-exporter has to report a
-            # live neighbor and a selected route, not just answer.
+            # The metrics endpoint has to report a live neighbor and a selected
+            # route, not just answer.
             client.wait_until_succeeds("curl -sf http://127.0.0.1:9669/metrics | grep -q '^ranet3_babel_neighbor_up{.*} 1$'", timeout=timeout)
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
             print(metrics)
