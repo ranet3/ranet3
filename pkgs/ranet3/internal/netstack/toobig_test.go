@@ -912,27 +912,105 @@ func TestReaderSendsTheFragmentsItCutToThePeer(t *testing.T) {
 // nextSegment is the segment after thisWaypoint that the End tests below send a packet on to
 var nextSegment = segAddr("3fff:d::1")
 
-// an IPv4 packet without DF past its session whose header fails RFC 1812 section 5.2.2's checks, by its checksum, is dropped unanswered
-// rather than cut into fragments whose fresh checksums would hide the fault, on a read off the tun and at End
-func TestPacketsPastTheirSessionWithABadChecksumAreDropped(t *testing.T) {
+// an IPv4 packet without DF past its session whose header fails RFC 1812 section 5.2.2's checks is never cut into fragments, whose fresh checksums would hide the fault
+// one failing by its checksum is dropped unanswered, on a read off the tun and at End, where the segment carrying it is not answered either
+// at End one whose checksum holds and that fails another check, its version, a header of 4 words, a total length below its header or past its octets, is no whole packet
+// so the segment is answered about itself, to its outer source, as one carrying no packet is
+func TestPacketsPastTheirSessionWithABadHeaderAreNotCut(t *testing.T) {
 	inner := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, false)
-	inner[10] ^= 0x5a
+	badSum := bytes.Clone(inner)
+	badSum[10] ^= 0x5a
 	t.Run("read off the tun", func(t *testing.T) {
-		b, peer, answers := readOff(t, inner, nil, srv6.MinimumIPv6MTU, holding(map[int]bool{4: true}))
+		b, peer, answers := readOff(t, badSum, nil, srv6.MinimumIPv6MTU, holding(map[int]bool{4: true}))
 		if len(answers) != 0 || len(b.cut.fragments) != 0 || b.shares[peer].count != 0 {
 			t.Errorf("the packet left %d answers and %d fragments counted as %d", len(answers), len(b.cut.fragments), b.shares[peer].count)
 		}
 	})
-	t.Run("End", func(t *testing.T) {
-		after := nextSegment
-		session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
-		m, sender := waypointOf(t, after, session)
-		m.SetAnswerSources(holding(map[int]bool{4: true}))
-		m.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU, nil, nil)
-		if sent, answers, counters := next.packets(t), sender.packets(t), m.SegmentCounters(); len(sent) != 0 || len(answers) != 0 || counters.Dropped != 1 || counters.Answered != 0 {
-			t.Errorf("the segment went on as %d packets with %d answers, counted %+v", len(sent), len(answers), counters)
-		}
-	})
+	// headerFailing is inner with change made to its header and the checksum of its first 20 octets following
+	headerFailing := func(change func([]byte)) []byte {
+		out := bytes.Clone(inner)
+		change(out)
+		binary.BigEndian.PutUint16(out[10:], 0)
+		binary.BigEndian.PutUint16(out[10:], ^uint16(packet.Sum(0, out[:20])))
+		return out
+	}
+	mtu := srv6.MinimumIPv6MTU + srv6.Overhead(2)
+	for _, c := range []struct {
+		name     string
+		carried  []byte
+		answered bool
+	}{
+		{"its checksum", badSum, false},
+		{"its version", headerFailing(func(p []byte) { p[0] = 5<<4 | 5 }), true},
+		{"a header of 4 words", headerFailing(func(p []byte) { p[0] = 4<<4 | 4 }), true},
+		{"a total length below its header", headerFailing(func(p []byte) { binary.BigEndian.PutUint16(p[2:], 16) }), true},
+		{"a total length past its octets", headerFailing(func(p []byte) { binary.BigEndian.PutUint16(p[2:], uint16(len(p)+8)) }), true},
+	} {
+		t.Run("End, "+c.name, func(t *testing.T) {
+			after := nextSegment
+			session, next := sessionOf(t, mtu)
+			m, sender := waypointOf(t, after, session)
+			m.SetAnswerSources(holding(map[int]bool{4: true}))
+			// a way back to the segment's own source too, which an answer about the segment takes
+			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(steeredFrom, 128), sender.sender)
+			// steered whole, then given the failing header, which the steering would refuse
+			outer := steeredThrough(t, inner, after)
+			copy(outer[len(outer)-len(inner):], c.carried)
+			rewritten := bytes.Clone(outer)
+			if _, err := srv6.End(rewritten); err != nil {
+				t.Fatal(err)
+			}
+			m.applySegments(framed(outer), DefaultMTU, nil, nil)
+			sent, answers, counters := next.packets(t), sender.packets(t), m.SegmentCounters()
+			want := 0
+			if c.answered {
+				want = 1
+			}
+			if len(sent) != 0 || len(answers) != want || counters.Dropped != 1 || counters.Answered != uint64(want) {
+				t.Fatalf("the segment went on as %d packets with %d answers, counted %+v, want %d answers", len(sent), len(answers), counters, want)
+			}
+			if c.answered {
+				checkICMPv6(t, answers[0], rewritten, thisWaypoint, 2, 0, uint32(mtu))
+			}
+		})
+	}
+}
+
+// RFC 8200 section 4.4: past a routing header, a packet larger than its next link is discarded and answered with packet too big to its source
+// so at End a segment carrying an IPv4 packet without DF that the cut cannot carry is answered about itself, as End rewrote it, to its outer source, with the session's MTU
+// one whose data runs past 65535 octets from its fragment offset, and one behind TLVs that leave the session fewer than 8 octets of its data
+// counted dropped, answered and answered about its size, and nothing of it goes on
+func TestSegmentCarryingIPv4TheCutCannotCarryIsAnsweredAboutItself(t *testing.T) {
+	after := nextSegment
+	mtu := srv6.MinimumIPv6MTU + srv6.Overhead(2)
+	pastTheEnd := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, false)
+	// a fragment offset that puts its data past 65535 octets
+	binary.BigEndian.PutUint16(pastTheEnd[6:], 8100)
+	// the TLVs take all of the session but the outer headers, the carried packet's header and fewer than 8 octets
+	behind := headerShape{tlv: (srv6.MinimumIPv6MTU - 20) &^ 7}
+	for name, outer := range map[string][]byte{
+		"past 65535 octets":    steeredThrough(t, withTTL(pastTheEnd, 64), after),
+		"no room for 8 octets": behind.around(steeredThrough(t, udpPacket(tooBigSource[4], tooBigDestination[4], 100, false), after)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			session, next := sessionOf(t, mtu)
+			m, sender := waypointOf(t, after, session)
+			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(steeredFrom, 128), sender.sender)
+			rewritten := bytes.Clone(outer)
+			if _, err := srv6.End(rewritten); err != nil {
+				t.Fatal(err)
+			}
+			m.applySegments(framed(outer), DefaultMTU, nil, nil)
+			sent, answers := next.packets(t), sender.packets(t)
+			if len(sent) != 0 || len(answers) != 1 {
+				t.Fatalf("the segment went on as %d packets with %d answers, want one answer", len(sent), len(answers))
+			}
+			checkICMPv6(t, answers[0], rewritten, thisWaypoint, 2, 0, uint32(mtu))
+			if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Answered != 1 || m.TooBigAnswered() != 1 {
+				t.Errorf("the segment counted %+v and %d answers about its size, want it dropped and answered about its size", counters, m.TooBigAnswered())
+			}
+		})
+	}
 }
 
 // an IPv4 packet without DF past its session whose option list cannot be framed is answered with parameter problem at the option's type octet

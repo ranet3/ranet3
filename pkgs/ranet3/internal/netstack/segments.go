@@ -628,7 +628,7 @@ func (m *Mesh) answerNextSegment(segment *forwardedSegment, src, dst netip.Addr,
 // segmentTooBig takes a forwarded segment larger than mtu, the largest the session to its next segment carries
 // the packet it carries is held to mtu less the headers in front of it, which each fragment keeps
 // it reports how many fragments it queued in cut and their bytes, and an answer goes back as sendTooBig sends it
-// for a segment it queued none of it reports the answer's kind and fate as tooBig does, TraceNoAnswer for one the cut refused for anything but its options
+// for a segment it queued none of it reports the answer's kind and fate as tooBig does, TraceNoAnswer for one carrying an IPv4 header that fails its checks
 func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
 	var answer []byte
 	var tun bool
@@ -638,22 +638,25 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 		var fragment bool
 		if answer, fragment, tun = m.answerTooBig(inner, mtu-offset, true, segment.sid, take); fragment {
 			count, bytes, fault := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu)
-			if count != 0 {
+			switch {
+			case count != 0:
 				return count, bytes, answerNone, TraceNoAnswer
-			}
-			if fault == 0 {
+			case fault != 0:
+				// a packet that was to be cut is answered about its options, not its size
+				kind = answerParameter
+				answer, tun = m.answerOptions(inner, fault, true, take)
+			case !packet.HeaderValid(inner):
+				// RFC 1812 section 5.2.2 discards a header failing its checks silently
+				// carriedPacket took a whole packet, so its checksum is the one check left to fail
 				m.dropTooBig(segment, mtu)
 				return 0, 0, answerNone, TraceNoAnswer
+			default:
+				// every other refusal of the cut is about size
+				answer, tun = m.answerSegmentTooBig(segment, mtu, take)
 			}
-			// a packet that was to be cut is answered about its options, not its size
-			kind = answerParameter
-			answer, tun = m.answerOptions(inner, fault, true, take)
 		}
 	} else {
-		// a segment carrying no IP packet behind its SRH is answered about itself, as End rewrote it, to its outer source, RFC 4443 section 3.2
-		var source netip.Addr
-		source, tun = m.answerFrom(segment.raw, true, segment.sid)
-		answer = srv6.PacketTooBig(segment.raw, source, mtu, m.allowAnswer(take, netip.Addr{}))
+		answer, tun = m.answerSegmentTooBig(segment, mtu, take)
 	}
 	m.dropTooBig(segment, mtu)
 	switch {
@@ -666,6 +669,14 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 		m.tooBigAnswered.Add(1)
 	}
 	return 0, 0, kind, TraceSent
+}
+
+// answerSegmentTooBig is the packet too big about segment itself, as End rewrote it, to its outer source, naming mtu, and reports one that goes into the tun
+// RFC 8200 section 4.4 has a node discard a packet its routing header sends onto a link too small for it and answer the packet's source
+// the builder draws through take, on no limit, as every packet too big does
+func (m *Mesh) answerSegmentTooBig(segment *forwardedSegment, mtu int, take takeAnswer) ([]byte, bool) {
+	source, tun := m.answerFrom(segment.raw, true, segment.sid)
+	return srv6.PacketTooBig(segment.raw, source, mtu, m.allowAnswer(take, netip.Addr{})), tun
 }
 
 func (m *Mesh) dropTooBig(segment *forwardedSegment, mtu int) {
