@@ -20,9 +20,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// darwinNetTestEnv gates the only test in this package that speaks to the real
-// routing socket. It is off by default and stays off: the machine running the
-// suite is the laptop this backend was written for, and it is on the mesh.
+// darwinNetTestEnv turns on the tests that create a utun and write to the
+// running kernel's routing table. It is off by default, since they change the
+// routes of the machine running them.
 const darwinNetTestEnv = "RANET3_DARWIN_NETTEST"
 
 // The prefixes this test is allowed to name, and the only ones it ever does.

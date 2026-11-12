@@ -270,13 +270,13 @@ func overlays() hegel.Generator[[]schema.Prefix] {
 }
 
 // interpreted is one drawn host: ranet3's table and runtime, the reconciler's
-// gate, the host's other tables and rules, and the model holding them with
+// capture decision, the host's other tables and rules, and the model holding them with
 // ranet3's derived rules and mirror
 type interpreted struct {
-	routes *netstack.RouteTable
-	rt     Runtime
-	gate   bool
-	exit   bool
+	routes  *netstack.RouteTable
+	rt      Runtime
+	capture bool
+	exit    bool
 	// own is this node's own prefixes as routing.md's policy rules name them,
 	// sources every prefix of a Local or an Assigned entry, and assigned the
 	// addresses cap.table assigns
@@ -285,7 +285,7 @@ type interpreted struct {
 	kernel                 fib
 	desired                []Route
 	mode                   exitView
-	// via is mode 3, and pathUp its path resolving while the mesh holds a live session, which installs the steered defaults
+	// via is mode 3, and pathUp its path resolving while capture is allowed, which installs the steered defaults
 	via, pathUp bool
 }
 
@@ -375,7 +375,7 @@ func drawInterpretedIn(t *testing.T, ht *hegel.T, mode func(*hegel.T, []schema.P
 		entries = append(entries, mirrorEntry{destination: counted, value: netstack.Local})
 		advertised[counted] = input == "a counted advertisement"
 	}
-	gate := hegel.Draw(ht, hegel.WeightedBooleans(0.75))
+	capture := hegel.Draw(ht, hegel.WeightedBooleans(0.75))
 	host, drawn := drawHost(ht), mode(ht, overlay)
 	// mode 3 three times in four that mode 2's rules are drawn, its exit's segment's /128 learned most of the time and its
 	// path down otherwise, the segment then most of the time under a learned subnet alone, which is no route of its own
@@ -391,7 +391,7 @@ func drawInterpretedIn(t *testing.T, ht *hegel.T, mode func(*hegel.T, []schema.P
 	return func(unaddressed []Family) interpreted {
 		m := drawn
 		m.unaddressed = unaddressed
-		return interpret(t, overlay, entries, advertised, egressSegment, gate, host, m, via)
+		return interpret(t, overlay, entries, advertised, egressSegment, capture, host, m, via)
 	}
 }
 
@@ -457,12 +457,12 @@ func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 // interpret builds the kernel of a host holding host's rules and tables, whose
 // ranet3 holds entries under overlay, advertises the prefixes of its own
 // advertised names through cap.egress and announces the rest through
-// cap.route, holds an egress segment where egressSegment says, whose capture
-// gate is open where gate says, and which runs mode, whose links but the
+// cap.route, holds an egress segment where egressSegment says, whose
+// capture is allowed where capture says, and which runs mode, whose links but the
 // loopback hold their connected networks in main, under fallback = "none" with
 // the own prefixes the mirror throws as a pass reads them, and mode 3 along via
 // where it names a SID
-func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib, mode exitView, via []netip.Addr) interpreted {
+func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, capture bool, host fib, mode exitView, via []netip.Addr) interpreted {
 	routes := netstack.NewRouteTable()
 	routes.SetOverlay(overlay)
 	for _, entry := range entries {
@@ -500,8 +500,8 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	}
 	exit := rt.EgressSegment || slices.ContainsFunc(rt.Advertised, counts) || slices.ContainsFunc(rt.Announced, counts)
 	table := Table{}.Normalized()
-	// the path is up while every SID resolves to a peer from the path's source through its own /128, and the mesh holds a live session
-	pathUp := len(via) > 0 && gate
+	// the path is up while every SID resolves to a peer from the path's source through its own /128, and capture is allowed
+	pathUp := len(via) > 0 && capture
 	if len(via) > 0 {
 		mode := &ExitMode{}
 		for _, sid := range via {
@@ -512,7 +512,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 		table = Table{}.WithMode(mode).WithPathSource(interpretedSource).Normalized()
 	}
 	reconciler := newReconciler(table, rt, nil, routes, newFakeKernel(t))
-	reconciler.capture = gate
+	reconciler.capture = capture
 	snapshot := routes.Snapshot()
 	desired := reconciler.desired(snapshot, reconciler.readNetwork())
 	if mode.fallback {
@@ -541,7 +541,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	host.tables = tables
 	kernel := fib{rules: slices.Concat(host.rules, derivedRules(DefaultTable, overlay, reconciler.ownPrefixes(snapshot), mode)), tables: tables}
 	slices.SortStableFunc(kernel.rules, func(a, b Rule) int { return cmp.Compare(a.Priority, b.Priority) })
-	return interpreted{routes: routes, rt: rt, gate: gate, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired, mode: mode,
+	return interpreted{routes: routes, rt: rt, capture: capture, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired, mode: mode,
 		via: len(via) > 0, pathUp: pathUp}
 }
 
@@ -872,7 +872,7 @@ func (h interpreted) expected(p fibPacket) string {
 		return h.pastOwn(p, landing, past)
 	}
 	// mode 3 installs no route that counts, the steered defaults standing in their place while its path is up
-	installed := h.gate && !h.exit && !h.via
+	installed := h.capture && !h.exit && !h.via
 	switch {
 	case verdict == netstack.RoutePeer && (mesh && !match.Counted || own && (!match.Counted || installed)):
 		return tunDevice
@@ -940,8 +940,8 @@ func TestRuleWalkSendsEveryPacketWhereTheRulesSay(t *testing.T) {
 			}
 			for _, p := range packets {
 				if got, want := h.kernel.walk(p), h.expected(p); got != want {
-					ht.Fatalf("%s went to %s, want %s\nranet3's table:\n%s\nexit %v, gate %v, own %v, mode 2 %v forwarding %v over %v, unaddressed %v, mode 3 %v with the path up %v\nthe mirror:\n%v\nthe rules:\n%s",
-						p, got, want, strings.Join(h.routes.Debug(), "\n"), h.exit, h.gate, h.own, h.mode.on, h.mode.forwarded, h.mode.links(), h.mode.unaddressed, h.via, h.pathUp, h.desired, rulesText(h.kernel.rules))
+					ht.Fatalf("%s went to %s, want %s\nranet3's table:\n%s\nexit %v, capture allowed %v, own %v, mode 2 %v forwarding %v over %v, unaddressed %v, mode 3 %v with the path up %v\nthe mirror:\n%v\nthe rules:\n%s",
+						p, got, want, strings.Join(h.routes.Debug(), "\n"), h.exit, h.capture, h.own, h.mode.on, h.mode.forwarded, h.mode.links(), h.mode.unaddressed, h.via, h.pathUp, h.desired, rulesText(h.kernel.rules))
 				}
 			}
 		}

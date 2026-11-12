@@ -1135,8 +1135,8 @@ func TestWhereComesFromThePlatform(t *testing.T) {
 // A learned prefix a class holds whole is not installed, warning once with the
 // class, since the host keys its own entries for that space per interface and
 // a route at the same key shadows them. A learned default's halves only hold
-// class addresses, and go on to the capture rules: installed with the gate
-// open and held back with it shut, unwarned.
+// class addresses, and go on to the capture rules: installed with capture
+// allowed and held back without it, unwarned.
 func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 	refused := map[netip.Prefix]string{
 		prefix("ff00::/8"):             "holds multicast addresses, ff00::/8,",
@@ -1155,10 +1155,10 @@ func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 		prefix("::ffff:192.0.2.0/120"): "holds IPv4-mapped addresses, ::ffff:0:0/96,",
 	}
 	wanted, halves := prefix("2001:db8::/48"), []netip.Prefix{prefix("128.0.0.0/1"), prefix("::/1")}
-	for _, gate := range []bool{true, false} {
+	for _, capture := range []bool{true, false} {
 		said := logged(t)
 		r, table, kernel := harness(t, Table{})
-		r.capture = gate
+		r.capture = capture
 		peer := &netstack.Peer{ID: "example/peer"}
 		for p := range refused {
 			table.Set(netip.Prefix{}, p, peer)
@@ -1176,20 +1176,20 @@ func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 			installed = append(installed, route.Destination)
 		}
 		want := []netip.Prefix{wanted}
-		if gate {
+		if capture {
 			want = append(want, halves...)
 		}
 		slices.SortFunc(installed, comparePrefixes)
 		slices.SortFunc(want, comparePrefixes)
 		if !slices.Equal(installed, want) {
-			t.Errorf("with the gate open %v the reconciler installed %v, want %v", gate, installed, want)
+			t.Errorf("with capture allowed %v the reconciler installed %v, want %v", capture, installed, want)
 		}
 		if n := strings.Count(said.String(), `msg="kernel is not installing a prefix the mesh cannot carry"`); n != len(refused) {
-			t.Errorf("with the gate open %v the reconciler warned %d times, want once for each of %d:\n%s", gate, n, len(refused), said)
+			t.Errorf("with capture allowed %v the reconciler warned %d times, want once for each of %d:\n%s", capture, n, len(refused), said)
 		}
 		for p, class := range refused {
 			if n := strings.Count(said.String(), "destination="+p.String()+" detail=\""+class); n != 1 {
-				t.Errorf("with the gate open %v %s was warned of %d times naming %q:\n%s", gate, p, n, class, said)
+				t.Errorf("with capture allowed %v %s was warned of %d times naming %q:\n%s", capture, p, n, class, said)
 			}
 		}
 	}

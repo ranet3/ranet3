@@ -200,8 +200,8 @@ type Runtime struct {
 	// Sessions reports how many of this node's mesh sessions have recently
 	// proved their peer is there. Until one has, and once none has for
 	// Table.CaptureGrace, no route that would carry this machine's own
-	// traffic is installed: see captureGate, which is the whole of why. Nil
-	// installs every route the mesh announces as soon as it announces it,
+	// traffic is installed: see captureLiveness, which is the whole of why.
+	// Nil installs every route the mesh announces as soon as it announces it,
 	// which is right for a reconciler in mode off driven by something that
 	// has no sessions, and New and SetTable refuse cap.exit with it. It is
 	// here rather than in the capability because no operator writes it down.
@@ -327,7 +327,7 @@ func (t Table) Validate() error {
 		return fmt.Errorf("kernel: cap.table capture_grace %s is not an interval", t.CaptureGrace)
 	}
 	if t.CaptureGrace > 0 && t.CaptureGrace.Duration() < MinCaptureGrace {
-		return fmt.Errorf("kernel: cap.table capture_grace %s is shorter than %s, which the reconciler cannot honor: the gate is sampled once a pass and a pass reads the routing table",
+		return fmt.Errorf("kernel: cap.table capture_grace %s is shorter than %s, which the reconciler cannot honor: the sessions' liveness is sampled once a pass and a pass reads the routing table",
 			t.CaptureGrace, MinCaptureGrace)
 	}
 	if t.mode != nil {
@@ -710,13 +710,13 @@ type Reconciler struct {
 	lookFailed bool
 	installed  map[Route]bool
 
-	// gate holds back the routes that would carry this machine's own traffic
-	// until the mesh has proved it can carry them. Only the reconcile
+	// liveness holds back the routes that would carry this machine's own
+	// traffic until the mesh has proved it can carry them. Only the reconcile
 	// goroutine touches it, and capture is its answer for the pass now
 	// running, sampled once so every route of a pass is judged the same way.
-	gate    captureGate
-	capture bool
-	// now is the clock the gate reads, replaced by a test that drives the
+	liveness captureLiveness
+	capture  bool
+	// now is the clock liveness reads, replaced by a test that drives the
 	// grace without sleeping through it.
 	now func() time.Time
 
@@ -874,7 +874,7 @@ func newOn(t Table, rt Runtime, src RouteSource, open func(Table, Runtime) (plat
 		return nil, err
 	}
 	t = t.Normalized()
-	if err := refuseUngated(t, rt.Sessions); err != nil {
+	if err := refuseWithoutSessions(t, rt.Sessions); err != nil {
 		return nil, err
 	}
 	addresses, err := resolveAddresses(t, rt.Announced)
@@ -888,10 +888,10 @@ func newOn(t Table, rt Runtime, src RouteSource, open func(Table, Runtime) (plat
 	return newReconciler(t, rt, addresses, src, plat), nil
 }
 
-// refuseUngated refuses modes 2 and 3 with no session source
-// the gate is the only thing that keeps the mode's default out of the kernel until the mesh has proved it can carry traffic, and with no source it is open from the first pass
+// refuseWithoutSessions refuses modes 2 and 3 with no session source
+// captureLiveness is the only thing that keeps the mode's default out of the kernel until the mesh has proved it can carry traffic, and with no source the reconciler allows capture from the first pass
 // so the mode would put this host's traffic in a tun nothing has ever answered on
-func refuseUngated(t Table, sessions func() int) error {
+func refuseWithoutSessions(t Table, sessions func() int) error {
 	if t.Mode() != nil && sessions == nil {
 		return errors.New("kernel: cap.exit needs a session source, or the mode would take this host's traffic before the mesh has carried anything")
 	}
@@ -962,7 +962,7 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 		table: t, rt: rt, addresses: addresses,
 		src:       src,
 		owned:     make(map[netip.Prefix]bool),
-		gate:      captureGate{grace: t.CaptureGrace.Duration()},
+		liveness:  captureLiveness{grace: t.CaptureGrace.Duration()},
 		now:       time.Now,
 		wake:      make(chan struct{}, 1),
 		reload:    make(chan struct{}, 1),
@@ -1061,7 +1061,7 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	if setting := r.Table().Unreloadable(t); setting != "" {
 		return fmt.Errorf("kernel: cap.table %s changed, restart to apply", setting)
 	}
-	if err := refuseUngated(t, r.rt.Sessions); err != nil {
+	if err := refuseWithoutSessions(t, r.rt.Sessions); err != nil {
 		return err
 	}
 	addresses, err := resolveAddresses(t, announced)
@@ -1111,7 +1111,7 @@ func (r *Reconciler) adopt() bool {
 	if r.rt.Selection != nil {
 		r.rt.Selection.holdOverlay(r.rt.Overlay)
 	}
-	r.gate.grace = next.table.CaptureGrace.Duration()
+	r.liveness.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
 	r.inForce.Store(&next.table)
 	r.reloaded = true
@@ -1338,10 +1338,10 @@ func (r *Reconciler) sampleCapture() {
 		r.capture = true
 		return
 	}
-	open, changed := r.gate.sample(r.now(), r.rt.Sessions())
-	r.capture = open
-	// an opening is reported by applyRoutes, since an exit installs nothing the gate lets in
-	if changed && !open && r.capturing {
+	allowed, changed := r.liveness.sample(r.now(), r.rt.Sessions())
+	r.capture = allowed
+	// capture becoming allowed is reported by applyRoutes, since an exit installs no route that counts
+	if changed && !allowed && r.capturing {
 		slog.Warn("kernel is withdrawing the routes that would carry this machine's own traffic",
 			"grace", r.table.CaptureGrace,
 			"detail", "no session has been live for that long, so this node falls back to its own uplink")
@@ -1356,7 +1356,7 @@ func (r *Reconciler) captureDeadline() (time.Time, bool) {
 	if !r.capturing {
 		return time.Time{}, false
 	}
-	return r.gate.deadline()
+	return r.liveness.deadline()
 }
 
 // recordPass publishes the pass applyRoutes counted, with the whole pass's
@@ -1825,7 +1825,7 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 		// the host's own traffic that ends at it with an error. RFC 8966 section
 		// 3.5.4 is kept for it by the mesh's own lookup, for each tun read no
 		// steering policy takes past it.
-		// An exit declines every route that counts, whatever the gate says:
+		// An exit declines every route that counts, capture allowed or not:
 		// with another exit's default in this table, on linux the exit's own
 		// traffic from its own prefixes would take it into the tun at 5430 and
 		// out of that exit (routing.md, where a lookup ends on Linux).

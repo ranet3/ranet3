@@ -90,8 +90,8 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 				t.Errorf("a bound socket lost %s to a set covering no zero address: %v", target, reachErr)
 			}
 			// The predicate has to agree with the kernel: every set that
-			// strands has a member the gate holds back, and holding those
-			// back restores the fallback.
+			// strands has a member the capture rule holds back, and holding
+			// those back restores the fallback.
 			held := false
 			for _, one := range test.set {
 				if schema.CapturesTheMachine(prefix(one), nil) {
@@ -99,7 +99,7 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 				}
 			}
 			if test.strands && !held {
-				t.Error("the set strands a bound socket and the gate holds none of it back")
+				t.Error("the set strands a bound socket and the capture rule holds none of it back")
 			}
 		})
 	}

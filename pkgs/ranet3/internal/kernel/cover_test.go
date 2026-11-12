@@ -275,10 +275,10 @@ func coverMembers(fake *fakeKernel) (v4, v6 int) {
 	return v4, v6
 }
 
-// The cover is gated as the default is: nothing before a session is live,
+// The cover is held back as the default is: nothing before a session is live,
 // every member once one is, all of them through the grace, and none after
 // it. Each change of a family's cover is one event.
-func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGate(t *testing.T) {
+func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGrace(t *testing.T) {
 	live := 0
 	bus := events.New()
 	reconciler, fake, set := coveringHarness(t,

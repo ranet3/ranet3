@@ -21,110 +21,108 @@ import (
 // the offset it is.
 var start = time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 
-// step is one liveness observation at an offset from start, and what the gate
-// must answer for it.
+// step is one sample at an offset from start, with the sessions live then, and
+// whether capture must be allowed for it.
 type step struct {
-	at   time.Duration
-	live int
-	open bool
+	at      time.Duration
+	live    int
+	allowed bool
 }
 
-// The three rules the gate exists to hold, each stated as a sequence of
+// The three rules captureLiveness exists to hold, each stated as a sequence of
 // observations: nothing capturing before the first live session, a withdrawal
 // once none has been live for the grace, and a restore on the next one.
-func TestCaptureGateOpensOnlyWhileTheMeshIsLive(t *testing.T) {
+func TestCaptureLivenessAllowsCaptureFromTheFirstLiveSessionUntilTheGraceExpires(t *testing.T) {
 	const grace = 10 * time.Second
 	for name, steps := range map[string][]step{
 		"a node that has never had a session installs nothing": {
-			{at: 0, live: 0, open: false},
-			{at: time.Hour, live: 0, open: false},
+			{at: 0, live: 0, allowed: false},
+			{at: time.Hour, live: 0, allowed: false},
 		},
-		"the first live session opens it": {
-			{at: 0, live: 0, open: false},
-			{at: time.Second, live: 1, open: true},
+		"the first live session allows capture": {
+			{at: 0, live: 0, allowed: false},
+			{at: time.Second, live: 1, allowed: true},
 		},
 		"the grace runs from the last live sample, not from the first idle one": {
-			{at: 0, live: 1, open: true},
-			{at: 2 * time.Second, live: 0, open: true},
-			{at: 9 * time.Second, live: 0, open: true},
-			{at: grace, live: 0, open: false},
+			{at: 0, live: 1, allowed: true},
+			{at: 2 * time.Second, live: 0, allowed: true},
+			{at: 9 * time.Second, live: 0, allowed: true},
+			{at: grace, live: 0, allowed: false},
 		},
 		"a session that comes back before the grace expires restarts it": {
-			{at: 0, live: 1, open: true},
-			{at: 9 * time.Second, live: 0, open: true},
-			{at: 9500 * time.Millisecond, live: 2, open: true},
-			{at: 19 * time.Second, live: 0, open: true},
-			{at: 19500 * time.Millisecond, live: 0, open: false},
+			{at: 0, live: 1, allowed: true},
+			{at: 9 * time.Second, live: 0, allowed: true},
+			{at: 9500 * time.Millisecond, live: 2, allowed: true},
+			{at: 19 * time.Second, live: 0, allowed: true},
+			{at: 19500 * time.Millisecond, live: 0, allowed: false},
 		},
 		"a session after a withdrawal restores it at once": {
-			{at: 0, live: 1, open: true},
-			{at: grace, live: 0, open: false},
-			{at: grace + time.Second, live: 1, open: true},
+			{at: 0, live: 1, allowed: true},
+			{at: grace, live: 0, allowed: false},
+			{at: grace + time.Second, live: 1, allowed: true},
 		},
-		"a pass that finds nothing live long after the grace keeps it shut": {
-			{at: 0, live: 1, open: true},
-			{at: time.Hour, live: 0, open: false},
-			{at: 2 * time.Hour, live: 0, open: false},
+		"a pass that finds nothing live long after the grace keeps capture not allowed": {
+			{at: 0, live: 1, allowed: true},
+			{at: time.Hour, live: 0, allowed: false},
+			{at: 2 * time.Hour, live: 0, allowed: false},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			gate := captureGate{grace: grace}
+			liveness := captureLiveness{grace: grace}
 			for _, s := range steps {
-				open, _ := gate.sample(start.Add(s.at), s.live)
-				if open != s.open {
-					t.Errorf("at %s with %d live sessions the gate reported %v, want %v",
-						s.at, s.live, open, s.open)
+				allowed, _ := liveness.sample(start.Add(s.at), s.live)
+				if allowed != s.allowed {
+					t.Errorf("at %s with %d live sessions capture allowed was %v, want %v",
+						s.at, s.live, allowed, s.allowed)
 				}
 			}
 		})
 	}
 }
 
-// changed says a caller may report the transition once. A gate that reported
-// it on every pass would log a line per pass for as long as the mesh is down,
-// which is exactly the stretch an operator is reading the log.
-func TestCaptureGateReportsEachTransitionOnce(t *testing.T) {
-	gate := captureGate{grace: 10 * time.Second}
+// changed says a caller may report the transition once. A captureLiveness that
+// reported it on every pass would log a line per pass for as long as the mesh
+// is down, which is exactly the stretch an operator is reading the log.
+func TestCaptureLivenessReportsEachTransitionOnce(t *testing.T) {
+	liveness := captureLiveness{grace: 10 * time.Second}
 	var transitions []bool
 	for _, s := range []step{
 		{at: 0, live: 0}, {at: time.Second, live: 1}, {at: 2 * time.Second, live: 1},
 		{at: 3 * time.Second, live: 0}, {at: 20 * time.Second, live: 0},
 		{at: 30 * time.Second, live: 0}, {at: 40 * time.Second, live: 1},
 	} {
-		open, changed := gate.sample(start.Add(s.at), s.live)
+		allowed, changed := liveness.sample(start.Add(s.at), s.live)
 		if changed {
-			transitions = append(transitions, open)
+			transitions = append(transitions, allowed)
 		}
 	}
-	// Opened at the first live session, shut once the grace expired, opened
-	// again on the session after it, and nothing in between.
+	// Allowed at the first live session, not allowed once the grace expired,
+	// allowed again on the next, and nothing in between.
 	if want := []bool{true, false, true}; !slices.Equal(transitions, want) {
-		t.Errorf("the gate reported the transitions %v, want %v", transitions, want)
+		t.Errorf("sample reported the transitions %v, want %v", transitions, want)
 	}
 }
 
-// An open gate asks to be woken one grace after its last live sample, and a
-// gate that has seen nothing or has withdrawn asks for nothing.
-func TestCaptureGateAsksToBeWokenOnlyWhileOpen(t *testing.T) {
+// A session stops counting as live when it goes quiet and nothing fires then,
+// so while capture is allowed captureLiveness asks to be woken one grace after
+// its last live sample, and with nothing seen or after a withdrawal it asks for
+// nothing.
+func TestCaptureLivenessAsksToBeWokenOnlyWhileCaptureIsAllowed(t *testing.T) {
 	const grace = 10 * time.Second
-	gate := captureGate{grace: grace}
-	if _, ok := gate.deadline(); ok {
-		t.Error("a gate that has seen nothing asked to be woken")
+	liveness := captureLiveness{grace: grace}
+	if _, ok := liveness.deadline(); ok {
+		t.Error("captureLiveness that has seen nothing asked to be woken")
 	}
-	// Open, and asking to be woken one grace after the last live sample. A
-	// session stops counting as live because it went quiet and nothing fires
-	// when that happens, so a gate that waited for its own next pass to
-	// notice took the periodic sweep rather than the grace.
-	gate.sample(start, 1)
-	at, ok := gate.deadline()
+	liveness.sample(start, 1)
+	at, ok := liveness.deadline()
 	if !ok {
-		t.Fatal("an open gate did not ask to be woken, so nothing samples it until the sweep")
+		t.Fatal("captureLiveness allowing capture did not ask to be woken, so nothing samples it until the sweep")
 	}
 	if want := start.Add(grace); !at.Equal(want) {
-		t.Errorf("an open gate asks to be woken at %s, want %s", at, want)
+		t.Errorf("captureLiveness allowing capture asks to be woken at %s, want %s", at, want)
 	}
-	gate.sample(start.Add(time.Second), 0)
-	at, ok = gate.deadline()
+	liveness.sample(start.Add(time.Second), 0)
+	at, ok = liveness.deadline()
 	if !ok {
 		t.Fatal("a running grace did not ask to be woken")
 	}
@@ -133,14 +131,14 @@ func TestCaptureGateAsksToBeWokenOnlyWhileOpen(t *testing.T) {
 	if want := start.Add(grace); !at.Equal(want) {
 		t.Errorf("the grace expires at %s, want %s", at, want)
 	}
-	gate.sample(start.Add(grace), 0)
-	if _, ok := gate.deadline(); ok {
-		t.Error("a gate that has already withdrawn asked to be woken again")
+	liveness.sample(start.Add(grace), 0)
+	if _, ok := liveness.deadline(); ok {
+		t.Error("captureLiveness that has already withdrawn asked to be woken again")
 	}
 }
 
-// The gate as the reconciler applies it: an announced default reaches the
-// kernel only while the mesh can carry it, and the ordinary mesh prefixes
+// captureLiveness as the reconciler applies it: an announced default reaches
+// the kernel only while the mesh can carry it, and the ordinary mesh prefixes
 // around it are never held back, because a prefix route leaves the machine's
 // own uplink alone.
 func TestReconcileInstallsAnAnnouncedDefaultOnlyWhileASessionIsLive(t *testing.T) {
@@ -210,7 +208,7 @@ func TestReconcileInstallsAnAnnouncedDefaultOnlyWhileASessionIsLive(t *testing.T
 	}
 }
 
-// The gate's opening and closing are logged only where they move a route that
+// Capture becoming allowed or not is logged only where it moves a route that
 // carries this machine's traffic: a leaf that learns a default says it installs
 // it and withdraws it, once each, and an exit that announces its own default
 // says nothing, since it installs none.
@@ -257,8 +255,8 @@ func TestCaptureIsLoggedOnlyWhereARouteCarriesTheMachine(t *testing.T) {
 
 // The install is logged from the routes a pass installed: again at the start
 // after a stop, not at an install the kernel refused, and at the pass after it
-// that lands. A gate that closes at the start after a stop logs no withdrawal
-// of the routes the stop removed.
+// that lands. Capture not allowed at the start after a stop logs no
+// withdrawal of the routes the stop removed.
 func TestCaptureIsLoggedFromWhatAPassInstalled(t *testing.T) {
 	const (
 		installed = "kernel is installing the routes that carry this machine's own traffic over the mesh"
@@ -303,13 +301,13 @@ func TestCaptureIsLoggedFromWhatAPassInstalled(t *testing.T) {
 		t.Errorf("logged the install %d times over an install, a stop and a start, a refused install and the one after it, want 3:\n%s", got, text)
 	}
 	if got := strings.Count(text, withdrawn); got != 0 {
-		t.Errorf("logged the withdrawal %d times with the gate closing only after a stop, want 0:\n%s", got, text)
+		t.Errorf("logged the withdrawal %d times with capture not allowed only after a stop, want 0:\n%s", got, text)
 	}
 }
 
 // A stop that fails leaves the capture as the kernel holds it: where the
-// listing or the capturing route's delete fails, the start's pass under a gate
-// that has closed withdraws the route and logs that, and where only another
+// listing or the capturing route's delete fails, the start's pass with capture
+// not allowed withdraws the route and logs that, and where only another
 // route's delete fails, it logs nothing.
 func TestCaptureWithdrawalIsLoggedForWhatAFailedStopLeft(t *testing.T) {
 	const withdrawn = "kernel is withdrawing the routes that would carry this machine's own traffic"
@@ -358,7 +356,7 @@ func TestCaptureWithdrawalIsLoggedForWhatAFailedStopLeft(t *testing.T) {
 				t.Fatal(err)
 			}
 			if left := fake.snapshot(); slices.ContainsFunc(left, reconciler.captures) {
-				t.Fatalf("the start's pass with the gate closed left %v, want no capture", left)
+				t.Fatalf("the start's pass with capture not allowed left %v, want no capture", left)
 			}
 			if got := strings.Count(said.String(), withdrawn); got != test.want {
 				t.Errorf("logged the withdrawal %d times, want %d:\n%s", got, test.want, said.String())
@@ -369,7 +367,7 @@ func TestCaptureWithdrawalIsLoggedForWhatAFailedStopLeft(t *testing.T) {
 
 // A retracted default is a hold: unscoped it answers with an error for every
 // destination, which is the same machine with no network in a different shape.
-// It is held back by the same gate.
+// captureLiveness holds it back the same way.
 func TestReconcileHoldsBackARetractedDefaultToo(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 0 }})
 	reconciler.now = func() time.Time { return start }
@@ -509,7 +507,7 @@ func TestReconcilerAsksToBeWokenWhenTheGraceExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := reconciler.captureDeadline(); !ok {
-		t.Fatal("a reconciler holding a capture did not ask to be woken, so nothing samples the gate until the sweep")
+		t.Fatal("a reconciler holding a capture did not ask to be woken, so nothing samples the sessions until the sweep")
 	}
 	live = 0
 	clock = start.Add(time.Second)
@@ -526,9 +524,9 @@ func TestReconcilerAsksToBeWokenWhenTheGraceExpires(t *testing.T) {
 }
 
 // cap.exit with nothing to ask about liveness is refused at startup and at a
-// reload, on every platform. The gate is the only thing keeping the mode's
-// default out of the kernel until the mesh has carried traffic. The same
-// runtime with a session source starts, and mode off needs none.
+// reload, on every platform. captureLiveness is the only thing keeping the
+// mode's default out of the kernel until the mesh has carried traffic. The
+// same runtime with a session source starts, and mode off needs none.
 func TestModeNeedsASessionSource(t *testing.T) {
 	table := netstack.NewRouteTable()
 	moded := Table{}.WithMode(&ExitMode{})
@@ -615,8 +613,8 @@ func TestGraceWakesOnlyWhileACaptureIsInPlay(t *testing.T) {
 }
 
 // And a grace too short to honor is refused by name rather than spun on. The
-// gate is sampled once a pass and a pass reads the routing table, so a
-// millisecond grace only sets how often that happens.
+// sessions' liveness is sampled once a pass and a pass reads the routing
+// table, so a millisecond grace only sets how often that happens.
 func TestCaptureGraceBelowTheFloorIsRefused(t *testing.T) {
 	for name, grace := range map[string]time.Duration{
 		"a millisecond":       time.Millisecond,

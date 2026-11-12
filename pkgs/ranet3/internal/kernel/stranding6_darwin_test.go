@@ -103,7 +103,7 @@ func TestDarwinStrandsABoundIPv6SocketThroughTheZeroAddress(t *testing.T) {
 				}
 			}
 			if test.strands && !held {
-				t.Error("the set strands a bound IPv6 socket and the gate holds none of it back")
+				t.Error("the set strands a bound IPv6 socket and the capture rule holds none of it back")
 			}
 		})
 	}

@@ -127,8 +127,8 @@ func classWhole(prefix netip.Prefix) bool {
 // unreachable hold for each overlay prefix and a throw for each carve-out,
 // which takes the place of the hold of an overlay prefix it equals and gives
 // way to an entry of its own destination for every source. policy is a
-// platform with the policy rules, gate the capture gate's answer.
-func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []netip.Prefix, exit, gate, policy bool) map[Route]bool {
+// platform with the policy rules, capture whether capture is allowed.
+func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []netip.Prefix, exit, capture, policy bool) map[Route]bool {
 	out := map[Route]bool{}
 	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, overlay) }
 	for _, entry := range entries {
@@ -138,8 +138,8 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 		}
 		route := Route{Destination: d, Source: entry.source}
 		switch {
-		case entry.value == learned && counts(d) && (exit || !gate):
-			// a learned route that counts, on an exit or while the gate is shut
+		case entry.value == learned && counts(d) && (exit || !capture):
+			// a learned route that counts, on an exit or while capture is not allowed
 			continue
 		case entry.value == learned && d.Addr().Is4():
 			// at the kernel's default priority, 0 for IPv4 and IP6_RT_PRIO_USER for IPv6
@@ -173,7 +173,7 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 }
 
 // The mirror installs what routing.md's table says for every kind of entry,
-// on an exit and on a node that is none, with the gate open and shut, on a
+// on an exit and on a node that is none, with capture allowed and not, on a
 // platform with the policy rules and on one without, and each route once,
 // half the time with a carve-out of a whole overlay prefix holding an entry.
 // The overlay is one the loader takes, as the reconciler's always is.
@@ -252,7 +252,7 @@ func sortedRoutes(set map[Route]bool) []Route {
 }
 
 // Each of an exit's three inputs alone makes the node an exit, which withholds
-// a learned default with the gate open, and a node with none installs it
+// a learned default with capture allowed, and a node with none installs it
 func TestEachExitInputWithholdsALearnedDefault(t *testing.T) {
 	for name, c := range map[string]struct {
 		rt   Runtime
@@ -270,7 +270,7 @@ func TestEachExitInputWithholdsALearnedDefault(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if !reconciler.capture {
-			t.Fatalf("%s: the gate is shut", name)
+			t.Fatalf("%s: capture is not allowed", name)
 		}
 		if got := fake.has(learnedDefault); got == c.exit {
 			t.Errorf("%s: the learned default is installed %v, want %v", name, got, !c.exit)
@@ -313,8 +313,8 @@ func TestOverlayHoldsHoldEachPrefixOnce(t *testing.T) {
 // On a platform whose kernel rewrites a host route at an address of the
 // tun's, a pass writes what it writes on one that keeps it, but each route, a
 // hold or a reachable one, at one address the tun holds that is not an overlay
-// prefix's own hold, whatever the entries, their sources, the overlay, the
-// gate, and the halves and pieces the pass makes of them: the tun holds the
+// prefix's own hold, whatever the entries, their sources, the overlay,
+// whether capture is allowed, and the halves and pieces the pass makes of them: the tun holds the
 // address of an entry now and then, at a drawn length, and the overlay now and
 // then the prefix one bit short of an address the tun holds, a /31 or a /127,
 // with a learned route at it, which goes in as its halves

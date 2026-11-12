@@ -410,7 +410,7 @@ func TestPassTakingOffAnAddressAReloadDroppedIsRecorded(t *testing.T) {
 }
 
 // A reload that announces a default makes the node an exit from the next
-// pass on, which takes the learned default out with the gate open.
+// pass on, which takes the learned default out with capture allowed.
 func TestReloadAnnouncingADefaultWithdrawsTheLearnedOne(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{})
 	learnedDefault := Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}

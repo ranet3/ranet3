@@ -258,41 +258,41 @@ func TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault(t *testing.T) {
 }
 
 // heldSocket is a monitor's socket whose reads wait while a test holds them, as a reader too slow for a burst does
-// a read waits for gate, which is closed while reads pass
+// a read waits for released, which is closed while reads pass
 type heldSocket struct {
 	*os.File
 	mu       sync.Mutex
-	gate     chan struct{}
+	released chan struct{}
 	overruns atomic.Int32
 }
 
 func newHeldSocket(file *os.File) *heldSocket {
-	gate := make(chan struct{})
-	close(gate)
-	return &heldSocket{File: file, gate: gate}
+	released := make(chan struct{})
+	close(released)
+	return &heldSocket{File: file, released: released}
 }
 
 func (s *heldSocket) hold() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.gate = make(chan struct{})
+	s.released = make(chan struct{})
 }
 
 func (s *heldSocket) release() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	select {
-	case <-s.gate:
+	case <-s.released:
 	default:
-		close(s.gate)
+		close(s.released)
 	}
 }
 
 func (s *heldSocket) Read(buf []byte) (int, error) {
 	s.mu.Lock()
-	gate := s.gate
+	released := s.released
 	s.mu.Unlock()
-	<-gate
+	<-released
 	n, err := s.File.Read(buf)
 	if errors.Is(err, unix.ENOBUFS) {
 		s.overruns.Add(1)
