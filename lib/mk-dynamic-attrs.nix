@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: MIT
 
-# Adapted from stepbrobd/inc, MIT, which carries the original of this file and
-# of the two beside it.
+# Adapted from stepbrobd/inc, MIT.
 { lib }:
 
 # mkDynamicAttrs { dir, fun }

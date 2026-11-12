@@ -1,9 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: MIT
 
-# Adapted from stepbrobd/inc, MIT. The scope recursion is kept as it is there
-# so that a package directory added here behaves the same way it would in inc
-# or in howfastly.
+# Adapted from stepbrobd/inc, MIT.
 { lib }:
 
 # importPackagesTree { dir, currentFinal, currentPrev, inheritedArgs }
