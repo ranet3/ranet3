@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-11-09
+updated: 2026-11-12
 order: 10
 ---
 
@@ -25,7 +25,7 @@ Ed25519 key it signs with.
 | Part           | Standard                                                                                                                                                                                                                                                                                                |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Transport      | ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303)) in tunnel mode, in UDP ([RFC 3948](https://www.rfc-editor.org/rfc/rfc3948))                                                                                                                                                                    |
-| Handshake      | IKEv2 ([RFC 7296](https://www.rfc-editor.org/rfc/rfc7296)) in the minimal shape of [RFC 7815](https://www.rfc-editor.org/rfc/rfc7815), as initiator and as responder, with the IKE fragmentation of [RFC 7383](https://www.rfc-editor.org/rfc/rfc7383)                                                  |
+| Handshake      | IKEv2 ([RFC 7296](https://www.rfc-editor.org/rfc/rfc7296)), as initiator and as responder, with the IKE fragmentation of [RFC 7383](https://www.rfc-editor.org/rfc/rfc7383)                                                                                                                             |
 | Authentication | Ed25519 signatures ([RFC 7427](https://www.rfc-editor.org/rfc/rfc7427), [RFC 8420](https://www.rfc-editor.org/rfc/rfc8420))                                                                                                                                                                             |
 | Key exchange   | X25519, P-256 or P-384, alone or followed by ML-KEM-768 or ML-KEM-1024 ([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) in `IKE_INTERMEDIATE` at setup and `IKE_FOLLOWUP_KE` at a rekey ([RFC 9242](https://www.rfc-editor.org/rfc/rfc9242), [RFC 9370](https://www.rfc-editor.org/rfc/rfc9370)) |
 | Ciphers        | AES-GCM or ChaCha20-Poly1305                                                                                                                                                                                                                                                                            |

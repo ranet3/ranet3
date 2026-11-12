@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-11-10
+updated: 2026-11-12
 order: 10
 ---
 
@@ -57,7 +57,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `control`                    | the control socket's wire format, its client and server, the text renderers and the debug views, with golden files in `testdata/debug`                                                                        |
 | `esp`                        | userspace ESP (RFC 4303) in tunnel mode, carried in UDP (RFC 3948)                                                                                                                                            |
 | `identity`                   | the name of a node and of each of its endpoints                                                                                                                                                               |
-| `ike`                        | an IKEv2 initiator and responder in the minimal shape of RFC 7815                                                                                                                                             |
+| `ike`                        | an IKEv2 initiator and responder                                                                                                                                                                              |
 | `sadr`                       | source address dependent routing tables                                                                                                                                                                       |
 | `schema`                     | the scalar spellings a config file is written in, and which routes count as a default                                                                                                                         |
 | `srv6`                       | SRv6 in userspace: the routing header (RFC 8754), H.Encaps, End and End.DT46 (RFC 8986)                                                                                                                       |

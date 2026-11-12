@@ -29,16 +29,11 @@ retransmission timer, a lifetime or a read deadline costs no real time. A bubble
 still running past a bound in real time fails its test by name, so a test that
 never blocks ends there rather than at `go test`'s timeout. The network delivers
 a datagram to what holds the port it is sent to, whole, copied and in order,
-keeps it until it is read, and answers a send to port 0 as the host's loopback
-answers the same socket, which Linux decides in
+keeps it until it is read, and refuses a send to port 0 from an open hub or
+socket with EINVAL, the answer Linux gives in
 [`ipv4/udp.c`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/udp.c#L1296)
 and
-[`ipv6/udp.c`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/udp.c#L1562)
-and macOS in
-[`udp_usrreq.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1884),
-[`in_pcb.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1556)
-and
-[`udp6_output.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/udp6_output.c#L287).
+[`ipv6/udp.c`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/udp.c#L1562).
 A mux on it reads a path MTU of 65535 for IPv4 and 65536 for IPv6 with DF set,
 what a mux reads over Linux's
 [loopback](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/drivers/net/loopback.c#L202)
