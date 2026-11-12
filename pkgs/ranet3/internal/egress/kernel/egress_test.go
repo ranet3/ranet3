@@ -750,6 +750,24 @@ func TestNothingIsAnnouncedWhileTheRuleWillNotInstall(t *testing.T) {
 	}
 }
 
+// A counted rule in the translator's chain that no desired rule spells, such
+// as another writer's, which a failed apply leaves held, counts as no flow,
+// refusal or drop
+func TestHeldRuleNoDesiredRuleSpellsCountsAsNothing(t *testing.T) {
+	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	be := &fakeBackend{failApply: true, flows: 7}
+	be.held = []Installed{{Spec: "", Family: egress.FamilyIPv4, Chain: ChainName, Counted: true, Bytes: 420}}
+	tr := translator(t, cfg, Runtime{}, be)
+	if err := tr.reconcile(); err == nil {
+		t.Fatal("a pass that could not install reported success")
+	}
+	status := tr.Status()
+	if status.Rules.Flows != 0 || status.Rules.Bytes != 0 || status.Refused4 != 0 || status.Dropped4 != 0 {
+		t.Errorf("a rule no desired rule spells counted %d flows, %d bytes, %d refused and %d dropped, want none",
+			status.Rules.Flows, status.Rules.Bytes, status.Refused4, status.Dropped4)
+	}
+}
+
 // Readiness is per family, because a host can forward one and not the other
 // and an exit that withheld both would take away a working half.
 func TestOnlyTheForwardableFamilyIsAnnounced(t *testing.T) {

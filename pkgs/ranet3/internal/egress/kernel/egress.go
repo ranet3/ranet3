@@ -858,7 +858,11 @@ func (t *Translator) reconcile() error {
 	var flows, bytes, untranslated uint64
 	refused, dropped := map[uint8]uint64{}, map[uint8]uint64{}
 	for _, rule := range held {
-		switch want := kinds[rule.Spec]; want.kind() {
+		want, ok := kinds[rule.Spec]
+		if !ok {
+			continue
+		}
+		switch want.kind() {
 		case screening, passing, timing:
 			// nf_tables' counters alone hold a screen's, which no Status field
 			// reads, and a pass and the timeouts keep none
