@@ -134,8 +134,10 @@ drops its offers. For a wider prefix, a source-specific route a neighbor offers
 for the same destination is another route: the node learns it and prefers it for
 packets from its source, by RFC 9079 section 4's destination-first ordering. A
 peer's packet for an address inside a prefix this node originates goes to the
-tun, and the host decides it. A read off the tun for such an address is dropped
-with no answer. Neither follows a covering route such as a default.
+tun, and the host decides it. A read off the tun for such an address goes back
+into the tun where it is an address `cap.table` assigns, and is otherwise
+dropped, answered or not as [transit](#transit) gives. Neither follows a
+covering route such as a default.
 
 With transit on, the node relays every route it selects to its other neighbors
 and forwards the packets they bring, as [transit](#transit) describes. With
@@ -1031,8 +1033,8 @@ fails no pass.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
 - While the last pass wanted a route that
   [counts as a default](#routes-that-count-as-a-default), a pass runs one
-  `cap.table.capture_grace` after the last pass that found a session live, so
-  those routes leave on time once no session is.
+  `cap.table.capture_grace` after the most recent pass that found a session
+  live, so those routes leave on time once no session is live.
 - A reload that changes `cap.table`, the addresses it assigns, `overlay` or
   `cap.exit`, or whose `cap.route` announcements make this node an exit or stop
   making it one, `ranet3 enable reconciler` and `ranet3 disable reconciler`

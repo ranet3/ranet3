@@ -809,7 +809,9 @@ anchor, its spelling past 63 bytes.
 | `pf dropped the record of a reference it no longer lists under its pid, which a reboot or another program stopping pf ends`                                                                                                                                                   | info  | on macOS, a start found the record naming a reference pf no longer lists under its pid, or a pass's renewal dropped the daemon's own ended reference beside the renewal's warning, with `token` and `pid` |
 | `antispoof filter gave back the pf anchor and reference an earlier run left, since overlay is not written`                                                                                                                                                                    | info  | on macOS, a start without `overlay` found the record naming a reference pf still listed under its pid, emptied the anchor and gave it back, with `where`. One pfctl refused fails the start, naming it    |
 
-A stop the daemon was asked for logs `antispoof filter not ready` at info.
+A stop of a filter that is ready, the one a failed tun causes among them, logs
+`antispoof filter not ready` at info. A stop of a filter that is not ready logs
+no such line.
 
 A pass that rewrote its chains or a set, or failed, records an `antispoof.pass`
 event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A

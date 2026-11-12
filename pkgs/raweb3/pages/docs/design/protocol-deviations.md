@@ -1698,13 +1698,13 @@ The periodic update and the retraction hold cover a lost triggered update.
 
 [Section 3.7.1](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.7.1) says
 "Every Babel speaker MUST advertise each of its selected routes on every
-interface, at least once every Update interval", and sections 3.8.1.1 and
-3.8.1.2 have a node send an update for a requested prefix it has a selected
-route to. With `cap.transit` off a node advertises only the prefixes it
-originates. It answers a route request for any other prefix, and a seqno request
-its selected route satisfies from a neighbor other than that route's next hop,
-with a retraction. A seqno request it cannot satisfy, one from the next hop and
-one for a prefix with no selected route draw nothing.
+interface, at least once every Update interval". Sections 3.8.1.1 and 3.8.1.2
+have a node send an update for a requested prefix it has a selected route to.
+With `cap.transit` off a node advertises only the prefixes it originates. It
+answers a route request for any other prefix, and a seqno request its selected
+route satisfies from a neighbor other than that route's next hop, with a
+retraction. A seqno request it cannot satisfy, one from the next hop and one for
+a prefix with no selected route draw nothing.
 [Appendix C](https://www.rfc-editor.org/rfc/rfc8966.html#appendix-C) allows it:
 "Babel can use any metric that is strictly monotonic, including one that assigns
 an infinite metric to a selected subset of routes", where "requests for

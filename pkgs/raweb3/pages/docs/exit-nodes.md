@@ -1199,9 +1199,9 @@ kernel exit's on Linux:
 | `egress could not withdraw its chains, retrying`                    | warn  | `ranet3 down` could not remove them                                                                                                      |
 | `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                                         |
 
-A stop the daemon was asked for, `ranet3 down` included, logs `egress not ready`
-and `egress advertisement changed` at info, and nothing before the exit's first
-pass.
+A stop, `ranet3 down` included, logs at info `egress not ready` for each family
+that was ready and `egress advertisement changed` where the exit announced any
+prefix, and a stop before the exit's first pass logs neither of the two.
 
 On Linux a pass that writes the chains, changes the announced prefixes or fails
 records an `egress.pass` event, and so does `ranet3 down`, with `trigger`,
