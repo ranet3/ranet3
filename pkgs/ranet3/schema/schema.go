@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 // Package schema holds the scalar spellings a configuration file is written
-// in: a duration, a prefix, an address, a routing table and one announcement.
+// in, a duration, a prefix, an address, a routing table and one announcement.
+// It also holds the prefix rules more than one capability reads and the mark
+// the underlay's sockets carry.
 // Every capability takes its fields from here, which fixes one spelling per
 // scalar wherever it appears and gives a later generator or DSL one definition
 // of each to target. A configuration file commits to these spellings, and
@@ -260,9 +262,8 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 //     the same union.
 //
 //   - Any prefix containing the family's unspecified address, however small.
-//     That is the darwin kernel's own trigger,
-//     measured on Darwin 27.2.0 by TestZMeasureWhichSetsStrandABoundSocket and
-//     kept as TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress: a socket
+//     That is the darwin kernel's own trigger, which
+//     TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress keeps: a socket
 //     bound with IP_BOUND_IF loses a destination exactly when the tun's
 //     unscoped routes best-match both that destination and the all-zeros
 //     address of its family. The scoped lookup falls back to a longest-prefix
@@ -274,8 +275,7 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 // The second arm makes this a property of the set rather than of one route: no
 // set can cover a family without some member containing that family's zero
 // address, so holding those back breaks every full cover and restores the
-// kernel's fallback. Measured: with 0.0.0.0/1 withdrawn, 128.0.0.0/1 alone
-// leaves both probes reaching.
+// kernel's fallback.
 func CapturesTheMachine(prefix netip.Prefix, overlay []Prefix) bool {
 	if HoldsUnspecified(prefix) {
 		return true
@@ -514,9 +514,7 @@ func (t *TableID) UnmarshalYAML(value *yaml.Node) error {
 //	  - 2001:db8::/48
 //	  - { prefix: "::/0", from: 2001:db8::/48 }
 //
-// What the pair may say is decided where the announcement is made rather than
-// here, so this package stays a spelling and the routing rules stay with the
-// protocol carrying them.
+// What the pair may say is decided where the announcement is made.
 type Announce struct {
 	Prefix Prefix `yaml:"prefix" json:"prefix" toml:"prefix"`
 	From   Prefix `yaml:"from,omitempty" json:"from,omitzero" toml:"from,omitempty"`

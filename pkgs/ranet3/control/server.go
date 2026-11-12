@@ -340,8 +340,8 @@ func readRequest(w http.ResponseWriter, r *http.Request) (Request, bool) {
 // answerResult writes what a write came to
 func answerResult(w http.ResponseWriter, result Result, err error) {
 	if err != nil {
-		// The caller named something this node does not run, which is a
-		// request to correct rather than a failure on this side.
+		// every refusal is a 400 whatever its cause, a node-side failure such
+		// as an unwritable state directory too, and the body says why
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

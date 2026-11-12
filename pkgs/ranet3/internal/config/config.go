@@ -147,13 +147,12 @@ type Endpoint struct {
 
 // Dial is who this node opens sessions to.
 type Dial struct {
-	// All dials every node the trust document names, the N-to-N
-	// reconciliation ranet performs. Reach on a fleet whose other speaker
-	// exports only its own directly connected routes needs it: a node learns
-	// a prefix from the node originating it or not at all, so dialing a few
-	// exits reaches those exits and nothing behind them. To still applies,
-	// and an entry there wins for its node, which is the only way to pin a
-	// serial since a generated peer names none.
+	// All dials every node the trust document names. A mesh whose speakers do
+	// not relay one another's routes needs it: a node learns a prefix from the
+	// node originating it or not at all, so dialing a few nodes reaches those
+	// nodes and nothing behind them. To still applies, and an entry there wins
+	// for its node, which is the only way to pin a serial since a generated peer
+	// names none.
 	All bool `yaml:"all,omitempty" json:"all,omitempty" toml:"all,omitempty"`
 	// To is each peer this node dials, a node or the one endpoint of it to dial
 	// a node takes the first of its endpoints in a matching address family

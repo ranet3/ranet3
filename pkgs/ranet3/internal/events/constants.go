@@ -5,7 +5,7 @@ package events
 
 const (
 	// ringSize is how many events each subsystem's flight recorder keeps
-	// a few minutes of a busy subsystem, at a few hundred kilobytes each
+	// a few minutes of a busy subsystem
 	ringSize = 1024
 	// queueSize is how many events one subscriber may fall behind by before its events are dropped and counted
 	// several flushes' worth, so a reader that keeps up never sees a drop
