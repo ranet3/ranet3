@@ -432,8 +432,8 @@ func TestDecisionWritesIPv6LinkLocalToTheTunAndDropsGroups(t *testing.T) {
 func TestBuildAnswerBuildsOnlyTheKindsItNames(t *testing.T) {
 	type icmp struct{ kind, code byte }
 	built := map[int]map[answerKind]icmp{
-		4: {answerNoRoute: {3, 0}, answerHostUnreachable: {3, 1}, answerProhibited: {3, 13}, answerExpired: {11, 0}, answerParameter: {12, 0}, answerTooBig: {3, 4}},
-		6: {answerNoRoute: {1, 0}, answerHostUnreachable: {1, 0}, answerProhibited: {1, 1}, answerExpired: {3, 0}, answerParameter: {4, 0}, answerTooBig: {2, 0}},
+		4: {answerNoRoute: {3, 0}, answerHostUnreachable: {3, 1}, answerProhibited: {3, 13}, answerExpired: {11, 0}, answerParameter: {12, 0}, answerTooBig: {3, 4}, answerAddressUnreachable: {3, 1}},
+		6: {answerNoRoute: {1, 0}, answerHostUnreachable: {1, 0}, answerProhibited: {1, 1}, answerExpired: {3, 0}, answerParameter: {4, 0}, answerTooBig: {2, 0}, answerAddressUnreachable: {1, 3}},
 	}
 	allow := func() bool { return true }
 	for family, header := range map[int]int{4: 20, 6: 40} {

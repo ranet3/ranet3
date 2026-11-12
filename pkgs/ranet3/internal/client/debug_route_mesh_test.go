@@ -273,7 +273,7 @@ func TestDebugRouteFollowsAReadIntoTheMesh(t *testing.T) {
 }
 
 // This host's own packet to an address of this node's own that the kernel routes into the tun, as macOS routes one, goes on through the mesh's checks
-// which deliver it where the tun holds the address, the mesh writing it back into the tun, and drop it as looped where it does not, as ExplainRead names each
+// which deliver it where the tun holds the address, the mesh writing it back into the tun, and answer it as looped where it does not, as ExplainRead names each
 // and the walk counts and writes nothing
 func TestDebugRouteFollowsAReadToAnAddressTheTunHolds(t *testing.T) {
 	own := netip.MustParseAddr("192.0.2.2")
@@ -287,7 +287,7 @@ func TestDebugRouteFollowsAReadToAnAddressTheTunHolds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decision, reason := netstack.TraceDrop, "looped"
+		decision, reason := netstack.TraceAnswer, "looped"
 		if held {
 			decision, reason = netstack.TraceDeliver, ""
 		}

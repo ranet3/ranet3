@@ -38,6 +38,23 @@ func explainOff(t *testing.T) *Mesh {
 // explainLeaf is a tracedLeaf, under an exit's default
 func explainLeaf(t *testing.T) *Mesh { m, _ := tracedLeaf(t); return m }
 
+// ownPrefix is a prefix of this node's own in each family, wider than a host, whose base and IPv4 all-ones addresses name no host
+var ownPrefix = map[int]netip.Prefix{4: segPrefix("192.0.2.128/25"), 6: segPrefix("3fff:0:0:80::/64")}
+
+// explainOwnPrefix is explainLeaf with ownPrefix this node's own
+func explainOwnPrefix(t *testing.T) *Mesh {
+	m := explainLeaf(t)
+	setOwnPrefix(m)
+	return m
+}
+
+// setOwnPrefix gives m ownPrefix as entries of its own
+func setOwnPrefix(m *Mesh) {
+	for _, prefix := range ownPrefix {
+		m.Routes.Set(netip.Prefix{}, prefix, Local)
+	}
+}
+
 // explainBare is an edgeMesh, with no default
 func explainBare(t *testing.T) *Mesh { m, _ := edgeMesh(t); return m }
 
@@ -182,7 +199,9 @@ var readCases = func() []explainCase {
 		{"an unowned source toward another node, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[4], transitFar[4], 100, false), explainedDrop("unowned_source", far4)},
 		{"an unowned source toward a link-local address, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[6], segAddr("fe80::9"), 100, false), explainedDrop("unowned_source", exit)},
 		{"a carried packet carrying another", explainLeaf, encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false))), explainedDrop("nested", Match{Bits: 64})},
-		{"this node's own", explainLeaf, udpPacket(transitOwn[4], edgeAssigned[4], 100, false), explainedDrop("looped", Match{Bits: 32})},
+		{"this node's own", explainLeaf, udpPacket(transitOwn[4], edgeAssigned[4], 100, false), explainedAnswer("looped", "address_unreachable", Match{Bits: 32})},
+		{"the base of a prefix of this node's own", explainOwnPrefix, udpPacket(transitOwn[6], ownPrefix[6].Addr(), 100, false), explainedDrop("looped", Match{Bits: 64})},
+		{"the all-ones host of a prefix of this node's own", explainOwnPrefix, udpPacket(transitOwn[4], segAddr("192.0.2.255"), 100, false), explainedDrop("looped", Match{Bits: 25})},
 		{"an address the tun holds", explainLeaf, udpPacket(transitOwn[6], edgeHeld[6], 100, false), Explanation{Decision: TraceDeliver, Match: Match{Bits: 128}}},
 		{"a hold", explainLeaf, udpPacket(transitOwn[4], transitHeldHost[4], 100, false), explainedAnswer("held", "host_unreachable", Match{Bits: 32})},
 		{"no route", explainBare, udpPacket(transitOwn[6], transitUnrouted[6], 100, false), explainedAnswer("no_route", "no_route", Match{})},

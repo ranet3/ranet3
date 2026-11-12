@@ -488,14 +488,15 @@ func traceReasonName(reason transitReason) string {
 }
 
 var answerKindNames = [...]string{
-	answerNoRoute:         "no_route",
-	answerHostUnreachable: "host_unreachable",
-	answerProhibited:      "prohibited",
-	answerExpired:         "expired",
-	answerParameter:       "parameter",
-	answerTooBig:          "too_big",
-	answerBeyondScope:     "beyond_scope",
-	answerNone:            "",
+	answerNoRoute:            "no_route",
+	answerHostUnreachable:    "host_unreachable",
+	answerProhibited:         "prohibited",
+	answerExpired:            "expired",
+	answerParameter:          "parameter",
+	answerTooBig:             "too_big",
+	answerBeyondScope:        "beyond_scope",
+	answerAddressUnreachable: "address_unreachable",
+	answerNone:               "",
 }
 
 // traceHold holds what a record of one packet needs, copied before a step that rewrites the packet, and the clients it was copied for

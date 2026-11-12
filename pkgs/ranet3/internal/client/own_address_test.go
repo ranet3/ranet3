@@ -15,7 +15,7 @@ import (
 )
 
 // a node started on a table hands its mesh the addresses cap.table assigns as those its tun holds, so a read to one goes back into the tun
-// and a reload that moves an address hands the mesh the new one, a read to the old one then dropped as looped, a prefix cap.route announces still holding it
+// and a reload that moves an address hands the mesh the new one, a read to the old one then answered as looped, a prefix cap.route announces still holding it
 func TestNodeHandsTheMeshTheAddressesItsTunHolds(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	dir := t.TempDir()
@@ -55,7 +55,7 @@ func TestNodeHandsTheMeshTheAddressesItsTunHolds(t *testing.T) {
 	c.Republish()
 	for address, want := range map[string]string{
 		"192.0.2.6": "deliver", "3fff:1::6": "deliver",
-		"192.0.2.5": "drop looped", "3fff:1::5": "drop looped",
+		"192.0.2.5": "answer looped", "3fff:1::5": "answer looped",
 	} {
 		if got := decides(address); got != want {
 			t.Errorf("after a reload moving the table from 192.0.2.5 and 3fff:1::5 to 192.0.2.6 and 3fff:1::6, a read to %s decides %q, want %q", address, got, want)

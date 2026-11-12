@@ -498,16 +498,22 @@ func (m *Mesh) classify(b *outboundBatch) {
 				if trace != nil {
 					trace.read(TraceDeliver, transitDelivered, netip.Addr{}, raw)
 				}
-			case verdict == RouteLocal:
-				m.dropTransit(&tally, transitLooped, src, dst)
-				if trace != nil {
-					trace.read(TraceDrop, transitLooped, netip.Addr{}, raw)
-				}
 			default:
-				tally.add(unroutedReason(verdict))
-				if trace != nil {
-					trace.unroutedRead(m, raw, verdict, match, src, dst, segment)
+				reason := unroutedReason(verdict)
+				if verdict == RouteLocal {
+					m.dropTransit(&tally, reason, src, dst)
 				} else {
+					tally.add(reason)
+				}
+				switch {
+				// no error answers a broadcast or comes from an address naming no host
+				case verdict == RouteLocal && namesNoHost(dst, match.Bits):
+					if trace != nil {
+						trace.read(TraceDrop, reason, segment, raw)
+					}
+				case trace != nil:
+					trace.unroutedRead(m, raw, verdict, match, src, dst, segment)
+				default:
 					m.answerUnroutedRead(raw, verdict, match, src, dst, (*Mesh).takeICMPToken)
 				}
 			}
@@ -549,7 +555,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 // answerUnroutedRead answers raw, where an ICMP error may answer it and as src's bucket and the node's cap allow, a packet the host routed into the tun from src to dst, where the table, answering verdict and match, reaches dst by no route or holds it
 // the answer is the one unreachable gives, from dst, and goes back into the tun, the one link the packet came by, whatever src is
 // answer's reply route is a session's, and would send the answer to a host packet from an uplink address out through the mesh or nowhere
-// verdict is RouteNone or RouteHeld, since the caller has taken a read the table answers with a peer or as this node's own
+// verdict is RouteNone or RouteHeld, or RouteLocal for a read the table answers as this node's own, its own default included, that the tun does not hold and the mesh could only hand back to the host
 // a steered read whose first segment firstUnrouted finds unrouted is answered as RouteNone, RFC 4443 section 3.1 having the originating node's IPv6 layer answer it
 // it draws through take, and reports the kind of the answer and its fate as answerTaking does
 func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr, take takeAnswer) (answerKind, TraceOutcome) {

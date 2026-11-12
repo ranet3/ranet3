@@ -69,7 +69,7 @@ var classifyKinds = []siteKind{
 	{"nested", v6, func(f int) []byte {
 		return encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false)))
 	}, TraceDrop, "nested", false, false},
-	{"looped", both, func(f int) []byte { return udpPacket(transitOwn[f], edgeAssigned[f], 100, false) }, TraceDrop, "looped", false, false},
+	{"looped", both, func(f int) []byte { return udpPacket(transitOwn[f], edgeAssigned[f], 100, false) }, TraceAnswer, "looped", false, false},
 	{"written back", both, func(f int) []byte { return udpPacket(transitOwn[f], edgeHeld[f], 100, false) }, TraceDeliver, "", false, false},
 	{"unparseable", v4, func(int) []byte { return []byte{0x45, 0, 0, 10, 0, 0, 0, 0, 64, 17} }, TraceDrop, "invalid", false, false},
 	{"held", both, func(f int) []byte { return udpPacket(transitOwn[f], transitHeldHost[f], 100, false) }, TraceAnswer, "held", false, false},

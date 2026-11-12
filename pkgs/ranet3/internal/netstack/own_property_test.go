@@ -41,8 +41,9 @@ func transportVerifies(raw []byte) bool {
 // over drawn tables of this node's own and assigned host keys, another node's, and a shorter prefix of this node's own or another node's
 // drawn sets of addresses the tun holds, among them and beyond them, with and without ownedOnly
 // and reads of both families from this node's own address or another node's to destinations held or not, drawn outright
-// a read goes into the tun exactly when the table answers it as this node's own, its source is this node's, which the edge passes, and the tun holds its destination
+// a read goes back into the tun exactly when the table answers it as this node's own, its source is this node's, which the edge passes, and the tun holds its destination
 // each in the order read, the read with nothing changed but an IPv6 UDP or TCP checksum, which verifies after and is left alone where it verified before
+// every other packet the reads put into the tun is an answer, address unreachable from the destination of a read the tun does not hold, in the order read, and at least as many as the source's bucket holds
 // and delivered and looped together move by exactly the reads from this node's own address the table answers as this node's own
 func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -71,7 +72,7 @@ func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 		held := pbt.Subset(ht, candidates, 0, len(candidates))
 		m.SetTunAddresses(held)
 
-		var reads, want [][]byte
+		var reads, want, loops [][]byte
 		var local uint64
 		for range hegel.Draw(ht, pbt.Spanning(1, 12)) {
 			family := []int{4, 6}[hegel.Draw(ht, pbt.Spanning(0, 1))]
@@ -94,6 +95,8 @@ func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 				source, own = ownPropertyAnother[family], false
 			}
 			var raw []byte
+			// later is a fragment past the first, which no ICMP error answers, RFC 1812 section 4.3.2.7
+			later := false
 			switch {
 			case family == 4:
 				raw = udpPacket(source, destination, 100, false)
@@ -102,7 +105,7 @@ func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 					binary.BigEndian.PutUint16(raw[20+6:], 0x1234)
 				}
 				// a later fragment whose identification and fragment octet an IPv6 reading takes for a payload length and next header UDP or TCP
-				if hegel.Draw(ht, hegel.Booleans()) {
+				if later = hegel.Draw(ht, hegel.Booleans()); later {
 					binary.BigEndian.PutUint16(raw[4:], uint16(hegel.Draw(ht, pbt.Spanning(tcpHeaderLen, len(raw)-40))))
 					raw[6] = []byte{17, tcpProtocol}[hegel.Draw(ht, pbt.Spanning(0, 1))]
 				}
@@ -115,8 +118,11 @@ func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 			_, verdict, _ := m.Routes.Resolve(source, destination)
 			if verdict == RouteLocal && own {
 				local++
-				if slices.Contains(held, destination) {
+				switch {
+				case slices.Contains(held, destination):
 					want = append(want, raw)
+				case !later:
+					loops = append(loops, raw)
 				}
 			}
 		}
@@ -125,7 +131,16 @@ func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 		for i, read := range reads {
 			copies[i] = bytes.Clone(read)
 		}
-		written := classifyWritten(m, dev, copies...)
+		// the reads are UDP and TCP, so an ICMP packet in the tun is an answer
+		var written, answers [][]byte
+		for _, raw := range classifyWritten(m, dev, copies...) {
+			if raw[0]>>4 == 4 && raw[9] == 1 || raw[0]>>4 == 6 && raw[6] == 58 {
+				answers = append(answers, raw)
+			} else {
+				written = append(written, raw)
+			}
+		}
+		checkLoopAnswers(ht, answers, loops)
 		if len(written) != len(want) {
 			ht.Fatalf("%d reads put %d packets into the tun, want %d, the tun holding %v", len(reads), len(written), len(want), held)
 		}
@@ -155,4 +170,43 @@ func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
 			ht.Fatalf("%d reads from this node's own address to its own destinations moved delivered and looped by %d, %+v", local, moved, now)
 		}
 	})
+}
+
+// checkLoopAnswers holds answers, the packets reads put into the tun beside those written back, to loops, the reads in the order read from this node's own address to its own destinations the tun does not hold that an error may answer
+// each answer quotes the next read of loops it answers, with address unreachable from that read's destination, RFC 4443 section 3.1 code 3 over IPv6 and host unreachable over IPv4
+// and each family draws at least as many as its reads of loops or the burst of its one source's bucket, whichever is fewer
+func checkLoopAnswers(tb testing.TB, answers, loops [][]byte) {
+	tb.Helper()
+	answered, next := map[byte]int{}, 0
+	for _, answer := range answers {
+		version := answer[0] >> 4
+		// the quote follows the IP header and the 8 octets of the ICMP header
+		quote := answer[40+8:]
+		if version == 4 {
+			quote = answer[20+8:]
+		}
+		for next < len(loops) && !bytes.Equal(quote, loops[next]) {
+			next++
+		}
+		if next == len(loops) {
+			tb.Fatalf("the answer %x in the tun quotes no read to this node's own destination the tun does not hold after the one answered last", answer)
+		}
+		_, destination, _, _ := addrsOf(loops[next])
+		if version == 6 {
+			checkICMPv6(tb, answer, loops[next], destination, 1, 3, 0)
+		} else {
+			checkICMPv4(tb, answer, loops[next], destination, 3, 1, 0)
+		}
+		answered[version]++
+		next++
+	}
+	looped := map[byte]int{}
+	for _, read := range loops {
+		looped[read[0]>>4]++
+	}
+	for version, n := range looped {
+		if least := min(n, icmpSourceBurst); answered[version] < least {
+			tb.Fatalf("%d reads over IPv%d to this node's own destinations the tun does not hold drew %d answers, want at least %d", n, version, answered[version], least)
+		}
+	}
 }

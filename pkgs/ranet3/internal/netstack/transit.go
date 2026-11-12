@@ -493,21 +493,47 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) []
 	return out
 }
 
-// unreachable is the answer to a packet no route reaches, verdict and match being what the table answered for it
-// RFC 4443 section 3.1 code 0 over IPv6, and over IPv4 RFC 1812 section 5.2.7.1's last rule
+// unreachable is the answer to a packet no route reaches, verdict and match being what the table answered for it, or to a read off the tun the table answers as this node's own that the tun does not hold, RouteLocal
+// that read over IPv6 gets RFC 4443 section 3.1 code 3, the code for a reason no other code fits, since an entry matches it, and over IPv4 under an entry that does not count as a default host unreachable
+// any other over IPv6 gets code 0, and over IPv4 RFC 1812 section 5.2.7.1's last rule
 // host unreachable where other hosts of the destination's network may be reachable, inside a hold that does not count as a default or inside the overlay
 // network unreachable where no network of hosts holds it, under an entry counting as a default or none
 func (m *Mesh) unreachable(verdict Verdict, match Match, destination netip.Addr) answerKind {
-	if destination.Is4() && (verdict == RouteHeld && !match.Counted || m.inOverlay(destination)) {
+	switch {
+	case verdict == RouteLocal && (destination.Is6() || !match.Counted):
+		return answerAddressUnreachable
+	case destination.Is4() && (verdict == RouteHeld && !match.Counted || m.inOverlay(destination)):
 		return answerHostUnreachable
 	}
 	return answerNoRoute
 }
 
-// unroutedReason is the reason for a packet no route reaches, verdict being RouteNone or RouteHeld
+// namesNoHost reports whether destination, which the table matched with an entry of bits, is that entry's base address or an IPv4 entry's all-ones host
+// the base names no host, RFC 1812 section 4.2.2.11, and over IPv6 it is the Subnet-Router anycast address, RFC 4291 section 2.6.1, which RFC 4443 section 2.2 (b) bars as an error's source
+// the all-ones host is the directed broadcast, which RFC 1812 section 4.2.2.11 bars as a source and section 4.3.2.7 lets no error answer
+// a /31 and a /127 have neither, their two addresses being hosts, RFC 3021 and RFC 6164, and a /32 and a /128 are their one host
+func namesNoHost(destination netip.Addr, bits int) bool {
+	if bits >= destination.BitLen()-1 {
+		return false
+	}
+	if netip.PrefixFrom(destination, bits).Masked().Addr() == destination {
+		return true
+	}
+	if !destination.Is4() {
+		return false
+	}
+	address := destination.As4()
+	host := uint32(1)<<(32-bits) - 1
+	return (uint32(address[0])<<24|uint32(address[1])<<16|uint32(address[2])<<8|uint32(address[3]))&host == host
+}
+
+// unroutedReason is the reason for a packet no route reaches, verdict being RouteNone or RouteHeld, or for a read off the tun the table answers as this node's own that the tun does not hold, RouteLocal
 func unroutedReason(verdict Verdict) transitReason {
-	if verdict == RouteHeld {
+	switch verdict {
+	case RouteHeld:
 		return transitHeld
+	case RouteLocal:
+		return transitLooped
 	}
 	return transitNoRoute
 }
@@ -717,6 +743,8 @@ const (
 	answerTooBig
 	// answerBeyondScope is RFC 4443 section 3.1 code 2, which answerBeyondScope sends rather than buildAnswer
 	answerBeyondScope
+	// answerAddressUnreachable is RFC 4443 section 3.1 code 3, and RFC 1812 section 5.2.7.1 host unreachable
+	answerAddressUnreachable
 	// answerNone is the kind reported beside TraceNoAnswer, where no error is due, which no record or counter reads
 	answerNone
 )
@@ -738,13 +766,15 @@ func buildAnswer(raw []byte, version byte, kind answerKind, value int, source ne
 			return srv6.PacketTooBig(raw, source, value, allow)
 		case answerParameter:
 			return srv6.ParameterProblem(raw, source, &srv6.Refusal{Code: 0, Pointer: value}, allow)
+		case answerAddressUnreachable:
+			return srv6.Unreachable(raw, source, srv6.DefaultHopLimit, 3, allow)
 		}
 		return nil
 	}
 	switch kind {
 	case answerNoRoute:
 		return packet.NetUnreachable(raw, source, ttl, allow)
-	case answerHostUnreachable:
+	case answerHostUnreachable, answerAddressUnreachable:
 		return packet.HostUnreachable(raw, source, ttl, allow)
 	case answerProhibited:
 		return packet.Prohibited(raw, source, ttl, allow)

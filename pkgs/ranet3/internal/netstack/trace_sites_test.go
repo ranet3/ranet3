@@ -185,7 +185,12 @@ var outcomeCases = func() []outcomeCase {
 		{"a read to this node's SID", transitOwnSID, classified(udpPacket(transitOwn[6], edgeOwnSID, 100, false)), read(TraceDrop, "sid")},
 		{"a read from the LAN to the internet", transitUnownedSource, classified(udp(4, edgeLAN, edgeInternet, 100, false)), read(TraceDrop, "unowned_source")},
 		{"a read carrying a carried packet", transitNested, classified(encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udp(6, transitOwn, transitFar, 100, false)))), read(TraceDrop, "nested")},
-		{"a read to this node", transitLooped, classified(udp(4, transitOwn, edgeAssigned, 100, false)), read(TraceDrop, "looped")},
+		{"a read to this node", transitLooped, classified(udp(4, transitOwn, edgeAssigned, 100, false)), with(read(TraceAnswer, "looped"), func(r *TraceRecord) { r.Answer, r.Outcome = "address_unreachable", TraceSent })},
+		{"a read to the base of a prefix of this node's own", transitLooped, func(t *testing.T) []TraceRecord {
+			m, feed := tracedLeaf(t)
+			setOwnPrefix(m)
+			return readTraced(m, feed, udpPacket(transitOwn[4], ownPrefix[4].Addr(), 100, false))
+		}, read(TraceDrop, "looped")},
 		{"a read to an address the tun holds", transitDelivered, classified(udp(6, transitOwn, edgeHeld, 100, false)), read(TraceDeliver, "")},
 		{"a read queued for its peer", transitForwarded, classified(udp(4, transitOwn, transitFar, 100, false)), with(read(TraceForward, ""), func(r *TraceRecord) { r.Next = "peer" })},
 		{"a read a policy steers", transitForwarded, func(t *testing.T) []TraceRecord {

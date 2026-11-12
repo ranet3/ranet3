@@ -49,7 +49,7 @@ var ownLayouts = []struct {
 // hands a datagram from an unbound socket to its own address back to the kernel, which delivers it and its reply the same way, and a TCP connect completes and echoes
 // and so do a bulk TCP echo and a datagram larger than any of those, which log their time and the longest read written back
 // in both families, counted delivered and never looped
-// under the subnet layout a datagram to an address of the mesh's own prefix the utun does not hold is counted looped and never written back
+// under the subnet layout a datagram to an address of the mesh's own prefix the utun does not hold is counted looped, answered and never written back
 // creating a utun needs root, which a run does here only with RANET3_DARWIN_NETTEST=1
 func TestTUNHandsAReadToItsOwnAddressBack(t *testing.T) {
 	requireUTUN(t)
@@ -57,6 +57,8 @@ func TestTUNHandsAReadToItsOwnAddressBack(t *testing.T) {
 	for _, layout := range ownLayouts {
 		t.Run(layout.name, func(t *testing.T) {
 			m := openUTUNMesh(t, true)
+			// the TTL the daemon hands the mesh from the host's default, without which the mesh builds no ICMPv4 error
+			m.SetAnswerTTL(64)
 			for _, family := range []int{4, 6} {
 				aliasUTUN(t, m.Name, netip.PrefixFrom(ownBack[family], layout.bits[family]))
 				m.Routes.Set(netip.Prefix{}, hostPrefix(ownBack[family]), Local)
@@ -90,15 +92,49 @@ func TestTUNHandsAReadToItsOwnAddressBack(t *testing.T) {
 			}
 			for _, family := range []int{4, 6} {
 				was := m.TransitCounters()
-				if err := sendUnbound(unheldBack[family]); err != nil {
-					t.Fatalf("send to %s: %v", unheldBack[family], err)
-				}
-				waitUntil(t, fmt.Sprintf("the read to %s counted looped", unheldBack[family]), func() bool { return m.TransitCounters().Looped-was.Looped == 1 })
+				waitLoopedAndAnswered(t, m, unheldBack[family])
 				if now := m.TransitCounters(); now.Delivered != was.Delivered {
 					t.Errorf("the read to %s, which the utun does not hold, was counted delivered %d times", unheldBack[family], now.Delivered-was.Delivered)
 				}
 			}
 		})
+	}
+}
+
+// waitLoopedAndAnswered sends one datagram to unheld, an address of the mesh's own prefix the utun does not hold, and waits for the read to be counted looped and answered, each once
+// a failed wait reports the looped and answered counts and the answers the limits withheld, before and after, and what a trace of the read recorded
+func waitLoopedAndAnswered(t *testing.T, m *Mesh, unheld netip.Addr) {
+	t.Helper()
+	feed, err := m.Trace(TraceFilter{Destinations: []netip.Prefix{hostPrefix(unheld)}}, 0, control.TraceRateMax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer feed.Close()
+	was := m.TransitCounters()
+	wasBySource, wasByNode := m.ICMPWithheld()
+	if err := sendUnbound(unheld); err != nil {
+		t.Fatalf("send to %s: %v", unheld, err)
+	}
+	for deadline := time.Now().Add(deliveryTimeout); ; time.Sleep(deliveryPoll) {
+		now := m.TransitCounters()
+		if now.Looped-was.Looped == 1 && now.Answered-was.Answered == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			bySource, byNode := m.ICMPWithheld()
+			var records []string
+			for len(records) < 8 {
+				select {
+				case r := <-feed.Records():
+					records = append(records, fmt.Sprintf("%s %s from %s, %s %s, answer %q %s", r.Decision, r.Reason, r.Source, r.Destination, r.Headers, r.Answer, r.Outcome))
+					continue
+				default:
+				}
+				break
+			}
+			t.Fatalf("waited %s for the read to %s counted looped and answered once: looped %d to %d, answered %d to %d, withheld by source %d to %d and by node %d to %d, the trace recording %q",
+				deliveryTimeout, unheld, was.Looped, now.Looped, was.Answered, now.Answered, wasBySource, bySource, wasByNode, byNode, records)
+		}
 	}
 }
 

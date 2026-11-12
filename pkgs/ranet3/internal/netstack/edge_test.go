@@ -527,8 +527,8 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 	}
 }
 
-// a read off the tun the table answers this node's own is dropped and counted looped, since the mesh could only hand it back to the tun
-// to a host route of its own, to an address cap.table assigns it and toward the internet through its own default, while one into a hold is answered and counted so
+// a read off the tun the table answers this node's own is dropped, answered and counted looped, since the mesh could only hand it back to the tun
+// to a host route of its own, to an address cap.table assigns it and toward the internet through its own default, while one into a hold is answered and counted held
 // and a steered packet whose first segment is this node's own counts as its steering's failure, unrouted, no_route and answered, and not as looped
 func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 	for _, family := range []int{4, 6} {
@@ -546,8 +546,8 @@ func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 		if !slices.Equal(went, make([]*Peer, 4)) {
 			t.Errorf("IPv%d reads to its own host route, its assigned address, the internet through its own default and a hold went to %v, want none", family, went)
 		}
-		if got := m.TransitCounters(); got != (TransitCounters{Looped: 3, Held: 1, Answered: 1}) {
-			t.Errorf("IPv%d the read counted %+v, want 3 looped and 1 held and answered", family, got)
+		if got := m.TransitCounters(); got != (TransitCounters{Looped: 3, Held: 1, Answered: 4}) {
+			t.Errorf("IPv%d the read counted %+v, want 3 looped and 1 held, each answered", family, got)
 		}
 
 		steered, _ := edgeMesh(t)

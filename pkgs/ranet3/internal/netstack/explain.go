@@ -154,12 +154,13 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 		}
 	}
 	switch verdict {
-	case RouteLocal:
-		if m.holdsAddress(dst) {
+	case RouteLocal, RouteNone, RouteHeld:
+		switch {
+		case verdict == RouteLocal && m.holdsAddress(dst):
 			return e.decided(readSite(TraceDeliver, transitDelivered))
+		case verdict == RouteLocal && namesNoHost(dst, match.Bits):
+			return e.decided(readSite(TraceDrop, transitLooped))
 		}
-		return e.decided(readSite(TraceDrop, transitLooped))
-	case RouteNone, RouteHeld:
 		return e.decided(readSite(TraceAnswer, unroutedReason(verdict)).answered(m.unreachable(verdict, match, dst), TraceNoAnswer))
 	}
 	return e.sized(site, raw, header, peer)
