@@ -92,10 +92,9 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # mtu = 1400
 
 [dial]
-# Dial every node the trust document names, the N-to-N reconciliation ranet
-# does. Needed for reach against a fleet whose other speaker exports only its
-# own directly connected routes: a node hears about a prefix from the node that
-# originates it or not at all, so dialing a few exits reaches those exits and
+# Dial every node the trust document names. A mesh whose speakers do not relay
+# one another's routes needs it: a node hears about a prefix from the node that
+# originates it or not at all, so dialing a few nodes reaches those nodes and
 # nothing behind them. The entries below still apply and win for their node,
 # which is the only way to pin a serial.
 # all = true
