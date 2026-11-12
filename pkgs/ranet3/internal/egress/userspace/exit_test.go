@@ -347,7 +347,7 @@ func TestNewRefusesWhatTheExitCannotCarry(t *testing.T) {
 	}{
 		{"a class of none", none, rt, "translates 192.0.2.0/25 with none, and the exit this build carries opens its own sockets"},
 		{"return", withReturn, rt, "return is set, and the exit this build carries ends each connection a leaf opens"},
-		{"a subnet", subnet, rt, "advertises 198.51.100.0/24, a subnet, and this build's exit carries only defaults"},
+		{"a subnet", subnet, rt, "advertises 198.51.100.0/24, a subnet, and this build's exit carries only defaults, the routes that count as one (outside overlay and shorter than /"},
 		{"no prepare", exitConfig(), noPrepare, "given no Prepare"},
 		{"no mesh", exitConfig(), noMesh, "given no mesh"},
 		{"no route lookup", exitConfig(), noRoute, "no route or held address lookup"},

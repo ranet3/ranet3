@@ -214,7 +214,7 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	}
 	for _, prefix := range cfg.Advertise {
 		if !schema.CapturesTheMachine(prefix.Prefix, rt.Overlay) {
-			return nil, fmt.Errorf("egress: cap.egress advertises %s, a subnet, and this build's exit carries only defaults, the routes that count as one (outside cap.border.overlay and shorter than /%d or /%d), and egress segments: advertise those alone here, and route the subnet from a node whose exit forwards it",
+			return nil, fmt.Errorf("egress: cap.egress advertises %s, a subnet, and this build's exit carries only defaults, the routes that count as one (outside overlay and shorter than /%d or /%d), and egress segments: advertise those alone here, and route the subnet from a node whose exit forwards it",
 				prefix, schema.MinSubnetBits4, schema.MinSubnetBits6)
 		}
 	}
