@@ -363,7 +363,7 @@ func (c *Client) renderTransitCounters(w io.Writer) {
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
-	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took, reads off the tun it dropped and an egress segment's inner packets to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.\n")
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took, reads off the tun it dropped and an egress segment's inner packets to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors about them, about an egress segment's inner packets of a family not ready and about the packets the userspace exit answers itself, each sent, found no source for, or due and not sent.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)

@@ -1,4 +1,4 @@
-# HELP ranet3_transit_packets_total Packets the forwarding decision took, reads off the tun it dropped and an egress segment's inner packets to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.
+# HELP ranet3_transit_packets_total Packets the forwarding decision took, reads off the tun it dropped and an egress segment's inner packets to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors about them, about an egress segment's inner packets of a family not ready and about the packets the userspace exit answers itself, each sent, found no source for, or due and not sent.
 # TYPE ranet3_transit_packets_total counter
 ranet3_transit_packets_total{decision="forwarded",reason=""} 1200
 ranet3_transit_packets_total{decision="delivered",reason=""} 340
