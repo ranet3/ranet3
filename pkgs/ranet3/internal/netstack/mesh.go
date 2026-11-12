@@ -917,12 +917,34 @@ func (m *Mesh) WriteHost(frames [][]byte, hold Hold) {
 		return
 	}
 
-	groups := make([][][]byte, len(m.queues))
-	for _, frame := range frames {
-		lane := int(innerFlowHash(frame[TUNHeadroom:]) % uint64(len(m.queues)))
-		groups[lane] = append(groups[lane], frame)
+	// a lane reads its group after this returns, when the caller may have reused frames, so the groups lie in one slice of their own
+	// they do not overlap, each keeps its frames in delivery order, and each is capped at its end so an append to one cannot reach the next
+	var onStack [inboundWriteBatchSize]uint16
+	laneOf := onStack[:0]
+	if len(frames) > len(onStack) {
+		laneOf = make([]uint16, 0, len(frames))
 	}
-	for lane, group := range groups {
+	// next is each lane's count, then where its next frame goes, then where its group ends
+	next := make([]int, len(m.queues))
+	for _, frame := range frames {
+		lane := uint16(innerFlowHash(frame[TUNHeadroom:]) % uint64(len(m.queues)))
+		laneOf = append(laneOf, lane)
+		next[lane]++
+	}
+	start := 0
+	for lane, count := range next {
+		next[lane] = start
+		start += count
+	}
+	grouped := make([][]byte, len(frames))
+	for i, frame := range frames {
+		grouped[next[laneOf[i]]] = frame
+		next[laneOf[i]]++
+	}
+	start = 0
+	for lane, end := range next {
+		group := grouped[start:end:end]
+		start = end
 		if len(group) == 0 {
 			continue
 		}

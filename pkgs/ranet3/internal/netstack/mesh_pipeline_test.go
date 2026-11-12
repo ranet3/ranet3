@@ -403,8 +403,9 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 	devices := make([]tun.Device, queueCount)
 	recorders := make([]*recordingDevice, queueCount)
 	for i := range devices {
+		// a lane's writer waits here only past 8 unread writes, more than both deliveries can make one lane, so a case that fails before reading them leaves no writer for Close to wait on
 		recorders[i] = &recordingDevice{
-			writes: make(chan recordedWrite, 1),
+			writes: make(chan recordedWrite, 8),
 			events: make(chan tun.Event),
 		}
 		devices[i] = recorders[i]
@@ -414,40 +415,47 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 	m.startInboundWriters()
 	t.Cleanup(m.Close)
 
-	packets := make([][]byte, 0, 32)
-	want := make([][][]byte, queueCount)
-	for stream := range 16 {
-		for sequence := range 2 {
-			packet := ipv6TCPPacket(uint16(40000+stream), 5201, byte(sequence))
-			packets = append(packets, packet)
-			lane := int(innerFlowHash(packet) % queueCount)
-			want[lane] = append(want[lane], packet)
-		}
-	}
-	m.DeliverInboundBatch(framed(packets...), DefaultMTU, nil, nil)
-
-	active := 0
-	for lane, expected := range want {
-		if len(expected) == 0 {
-			continue
-		}
-		active++
-		select {
-		case got := <-recorders[lane].writes:
-			if len(got.packets) != len(expected) {
-				t.Fatalf("queue %d wrote %d packets, want %d", lane, len(got.packets), len(expected))
+	// the second delivery holds more frames than one tun write carries
+	for _, streams := range []int{16, inboundWriteBatchSize/2 + 16} {
+		packets := make([][]byte, 0, 2*streams)
+		want := make([][][]byte, queueCount)
+		for stream := range streams {
+			for sequence := range 2 {
+				packet := ipv6TCPPacket(uint16(40000+stream), 5201, byte(sequence))
+				packets = append(packets, packet)
+				lane := int(innerFlowHash(packet) % queueCount)
+				want[lane] = append(want[lane], packet)
 			}
-			for i := range expected {
-				if !bytes.Equal(got.packets[i], expected[i]) {
-					t.Fatalf("queue %d packet %d did not preserve flow order", lane, i)
+		}
+		m.DeliverInboundBatch(framed(packets...), DefaultMTU, nil, nil)
+
+		active := 0
+		for lane, expected := range want {
+			if len(expected) == 0 {
+				continue
+			}
+			active++
+			var got [][]byte
+			for len(got) < len(expected) {
+				select {
+				case write := <-recorders[lane].writes:
+					got = append(got, write.packets...)
+				case <-time.After(time.Second):
+					t.Fatalf("%d streams: timed out waiting for queue %d, which wrote %d of %d packets", streams, lane, len(got), len(expected))
 				}
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("timed out waiting for queue %d", lane)
+			if len(got) != len(expected) {
+				t.Fatalf("%d streams: queue %d wrote %d packets, want %d", streams, lane, len(got), len(expected))
+			}
+			for i := range expected {
+				if !bytes.Equal(got[i], expected[i]) {
+					t.Fatalf("%d streams: queue %d packet %d did not preserve flow order", streams, lane, i)
+				}
+			}
 		}
-	}
-	if active < queueCount/2 {
-		t.Fatalf("16 TCP streams used only %d/%d queues", active, queueCount)
+		if active < queueCount/2 {
+			t.Fatalf("%d TCP streams used only %d/%d queues", streams, active, queueCount)
+		}
 	}
 
 	forward := ipv6TCPPacket(40000, 5201, 0)
@@ -459,22 +467,23 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 	}
 }
 
-// WriteHost runs for each batch the mesh writes to the tun, so a batch
-// allocates nothing over one lane, and over several lanes no more than its
-// grouping of the batch by lane takes
-func TestWriteHostAllocatesNoMoreThanItsLanesGroups(t *testing.T) {
-	packets := make([][]byte, 0, 32)
-	for stream := range 16 {
-		for sequence := range 2 {
-			packets = append(packets, ipv6TCPPacket(uint16(40000+stream), 5201, byte(sequence)))
-		}
-	}
-	frames := framed(packets...)
+// WriteHost runs for each batch the mesh writes to the tun, so a batch over one
+// lane allocates nothing, and one over several lanes at most three times
+// whatever the lane count: the slice its groups lie in, the lanes' counts, and
+// past one tun write's frames each frame's lane
+func TestWriteHostAllocatesAtMostThreeTimesWhateverTheLaneCount(t *testing.T) {
 	for _, c := range []struct {
-		lanes int
-		most  float64
-	}{{1, 0}, {2, 12}, {16, 30}} {
-		t.Run(fmt.Sprintf("%d lanes", c.lanes), func(t *testing.T) {
+		lanes, streams int
+		most           float64
+	}{{1, 16, 0}, {2, 16, 1}, {16, 16, 2}, {16, inboundWriteBatchSize/2 + 16, 3}} {
+		packets := make([][]byte, 0, 2*c.streams)
+		for stream := range c.streams {
+			for sequence := range 2 {
+				packets = append(packets, ipv6TCPPacket(uint16(40000+stream), 5201, byte(sequence)))
+			}
+		}
+		frames := framed(packets...)
+		t.Run(fmt.Sprintf("%d lanes %d packets", c.lanes, len(frames)), func(t *testing.T) {
 			m := discardLanes(t, c.lanes)
 			if allocs := leastAllocs(func() { m.WriteHost(frames, nil) }); allocs > c.most {
 				t.Errorf("a write of %d packets over %d lanes allocated %v times, want at most %v", len(frames), c.lanes, allocs, c.most)
