@@ -78,15 +78,15 @@ func (s *sequencedPeer) transmitted() (int, bool) {
 }
 
 // dispatchStep is one reservation a reader makes
-// a share of count packets coming to bytes for peer, the reader's gate, or a control place on peer after its read
+// a share of count packets coming to bytes for peer, the reader's parking point, or a control place on peer after its read
 type dispatchStep struct {
 	peer         int
 	count, bytes int
-	gate         bool
+	park         bool
 	control      bool
 }
 
-// dispatchEvent says a reader parked at its gate or finished its reads
+// dispatchEvent says a reader parked or finished its reads
 type dispatchEvent struct {
 	reader int
 	parked bool
@@ -126,12 +126,12 @@ func shareBytes(ht *hegel.T, count int) int {
 	}
 }
 
-// several readers dispatch reads for the same peers, each parking at a gate of its own at a drawn point among a read's reservations
-// and the scheduler runs one reader at a time from one gate to the next, in a drawn order
+// several readers dispatch reads for the same peers, each parking on a peer of its own at a drawn point among a read's reservations
+// and the scheduler runs one reader at a time from one parking point to the next, in a drawn order
 // so the readers interleave between any two reservations of a read, holding places of some peers
 // while the others fill those peers' budgets behind the places they hold, by shares of every size the charge tells apart, and take control places
 // the transport takes nothing until every reader is done, so each step is held to a model of the budgets
-// every reader runs from one gate to the next without waiting
+// every reader runs from one parking point to the next without waiting
 // a reservation is admitted exactly when the model has room for its charge, and a refusal counts its packets
 // then the transport opens and either every reserved place drains or the peers close with places on their way
 // each peer's transport carries its packets in the order of the sequence numbers their reservations took
@@ -158,7 +158,7 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 					read = append(read, dispatchStep{peer: remaining[i], count: count, bytes: shareBytes(ht, count)})
 					remaining = slices.Delete(remaining, i, i+1)
 				}
-				read = slices.Insert(read, hegel.Draw(ht, pbt.Spanning(0, len(read))), dispatchStep{count: 1, bytes: 1, gate: true})
+				read = slices.Insert(read, hegel.Draw(ht, pbt.Spanning(0, len(read))), dispatchStep{count: 1, bytes: 1, park: true})
 				if hegel.Draw(ht, hegel.Booleans()) {
 					read = append(read, dispatchStep{peer: hegel.Draw(ht, hegel.Integers(0, len(peers)-1)), count: 1, control: true})
 				}
@@ -168,10 +168,10 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 
 		events := make(chan dispatchEvent, readers*4)
 		resume := make([]chan struct{}, readers)
-		gates := make([]*Peer, readers)
-		for r := range gates {
+		parkers := make([]*Peer, readers)
+		for r := range parkers {
 			resume[r] = make(chan struct{})
-			gates[r] = NewPeer(fmt.Sprintf("gate%d", r), func(int) (BatchSealer, error) {
+			parkers[r] = NewPeer(fmt.Sprintf("park%d", r), func(int) (BatchSealer, error) {
 				events <- dispatchEvent{reader: r, parked: true}
 				<-resume[r]
 				return passThrough, nil
@@ -197,8 +197,8 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 				return
 			}
 			m.Close()
-			for _, gate := range gates {
-				gate.Close()
+			for _, parker := range parkers {
+				parker.Close()
 			}
 			for _, peer := range peers {
 				peer.Close()
@@ -212,12 +212,12 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 					b := &outboundBatch{shares: make(map[*Peer]outboundShare), batches: make(map[*Peer]*peerBatch)}
 					var places []*Peer
 					for _, step := range read {
-						p := gates[r]
+						p := parkers[r]
 						switch {
 						case step.control:
 							places = append(places, peers[step.peer].Peer)
 							continue
-						case !step.gate:
+						case !step.park:
 							p = peers[step.peer].Peer
 						}
 						b.peerOrder = append(b.peerOrder, p)
@@ -265,7 +265,7 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 			for read, step := cursor[r][0], cursor[r][1]; read < len(plans[r]); read, step = read+1, 0 {
 				for ; step < len(plans[r][read]); step++ {
 					s := plans[r][read][step]
-					if s.gate {
+					if s.park {
 						cursor[r] = [2]int{read, step + 1}
 						break walk
 					}

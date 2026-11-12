@@ -53,26 +53,26 @@ func (h *countedHold) released(tb testing.TB, what string) {
 	}
 }
 
-// gatedDevice is a lane whose every write waits at its gate, saying when one has started, and records what it wrote once it is let through
-type gatedDevice struct {
+// pausedDevice is a lane whose every write says when it has started and waits for resume, and records what it wrote once it is let through
+type pausedDevice struct {
 	recordingDevice
 	entered chan struct{}
-	gate    chan struct{}
+	resume  chan struct{}
 	// open lets every write through from now on
 	open func()
 }
 
-func (d *gatedDevice) Write(bufs [][]byte, offset int) (int, error) {
+func (d *pausedDevice) Write(bufs [][]byte, offset int) (int, error) {
 	d.entered <- struct{}{}
-	<-d.gate
+	<-d.resume
 	return d.recordingDevice.Write(bufs, offset)
 }
 
 // pass lets one write through
-func (d *gatedDevice) pass() { d.gate <- struct{}{} }
+func (d *pausedDevice) pass() { d.resume <- struct{}{} }
 
-// inside waits until a write has started and waits at the gate
-func (d *gatedDevice) inside(tb testing.TB) {
+// inside waits until a write has started and waits for resume
+func (d *pausedDevice) inside(tb testing.TB) {
 	tb.Helper()
 	select {
 	case <-d.entered:
@@ -82,7 +82,7 @@ func (d *gatedDevice) inside(tb testing.TB) {
 }
 
 // wrote is the packets of the next write the lane finished
-func (d *gatedDevice) wrote(tb testing.TB) [][]byte {
+func (d *pausedDevice) wrote(tb testing.TB) [][]byte {
 	tb.Helper()
 	select {
 	case write := <-d.writes:
@@ -93,31 +93,31 @@ func (d *gatedDevice) wrote(tb testing.TB) [][]byte {
 	}
 }
 
-// gatedLanes gives m a multiqueue tun of count gated lanes and starts its writers
-// every gate opens before the mesh closes, so a test that fails with a write waiting still ends
-func gatedLanes(tb testing.TB, m *Mesh, count int) []*gatedDevice {
+// pausedLanes gives m a multiqueue tun of count paused lanes and starts its writers
+// every lane opens before the mesh closes, so a test that fails with a write waiting still ends
+func pausedLanes(tb testing.TB, m *Mesh, count int) []*pausedDevice {
 	tb.Helper()
-	gated := make([]*gatedDevice, count)
+	paused := make([]*pausedDevice, count)
 	devices := make([]tun.Device, count)
-	for i := range gated {
-		gate := make(chan struct{})
-		gated[i] = &gatedDevice{
+	for i := range paused {
+		resume := make(chan struct{})
+		paused[i] = &pausedDevice{
 			recordingDevice: recordingDevice{writes: make(chan recordedWrite, 8)},
 			entered:         make(chan struct{}, 8),
-			gate:            gate,
-			open:            sync.OnceFunc(func() { close(gate) }),
+			resume:          resume,
+			open:            sync.OnceFunc(func() { close(resume) }),
 		}
-		devices[i] = gated[i]
+		devices[i] = paused[i]
 	}
 	m.setDevice(lanesOf(devices...))
 	m.startInboundWriters()
 	tb.Cleanup(func() {
-		for _, d := range gated {
+		for _, d := range paused {
 			d.open()
 		}
 		m.Close()
 	})
-	return gated
+	return paused
 }
 
 // laneFlows is a TCP packet for each of count lanes, packet i of a flow whose hash names lane i
@@ -137,7 +137,7 @@ func laneFlows(count int) [][]byte {
 // so the receive storage the frames lie in outlives every write that reads it, and goes back once the last lane is done
 func TestLanesHoldTheFramesUntilTheirWritesReturn(t *testing.T) {
 	m := ownEverything(&Mesh{closed: make(chan struct{})})
-	lanes := gatedLanes(t, m, 2)
+	lanes := pausedLanes(t, m, 2)
 	flows := laneFlows(2)
 	hold := newCountedHold()
 	m.WriteHost(framed(flows...), hold)
@@ -162,7 +162,7 @@ func TestLanesHoldTheFramesUntilTheirWritesReturn(t *testing.T) {
 // a lane that merges the frames of two deliveries into one write keeps both until that write returns, and gives each back once
 func TestLaneMergingTwoDeliveriesHoldsBoth(t *testing.T) {
 	m := ownEverything(&Mesh{closed: make(chan struct{})})
-	lanes := gatedLanes(t, m, 2)
+	lanes := pausedLanes(t, m, 2)
 	flow := laneFlows(2)[0]
 	first := newCountedHold()
 	m.WriteHost(framed(flow), first)
@@ -192,7 +192,7 @@ func TestLaneMergingTwoDeliveriesHoldsBoth(t *testing.T) {
 // a lane whose merged deliveries pass what one write carries writes them in two, and keeps every one of their holds until the last write has returned
 func TestLaneHoldsMergedDeliveriesUntilItsLastWrite(t *testing.T) {
 	m := ownEverything(&Mesh{closed: make(chan struct{})})
-	lanes := gatedLanes(t, m, 2)
+	lanes := pausedLanes(t, m, 2)
 	flow := laneFlows(2)[0]
 	first := newCountedHold()
 	m.WriteHost(framed(flow), first)
@@ -267,7 +267,7 @@ func TestEgressCarriesTheHoldToTheLane(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
-			lanes := gatedLanes(t, m, 2)
+			lanes := pausedLanes(t, m, 2)
 			m.SetExit(tunExit{m.WriteHost})
 			m.SetTransit(true)
 			m.SetOverlay(transitOverlay)
@@ -303,7 +303,7 @@ func TestEgressCarriesTheHoldToTheLane(t *testing.T) {
 // and a write after Close returns, keeping its reference only where it lands in a lane
 func TestCloseWithFramesInALaneReleasesNoneTwice(t *testing.T) {
 	m := ownEverything(&Mesh{closed: make(chan struct{})})
-	lanes := gatedLanes(t, m, 2)
+	lanes := pausedLanes(t, m, 2)
 	flow := laneFlows(2)[0]
 	first := newCountedHold()
 	m.WriteHost(framed(flow), first)
