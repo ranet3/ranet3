@@ -994,12 +994,12 @@ func TestSessionSetReportsEstablishedPath(t *testing.T) {
 	}
 }
 
-// The count the route reconciler gates this machine's own traffic on is the
-// narrow one: a peer that has recently proved it is there, not a session
-// object in a map. A peer that rebooted leaves an entry looking established
-// for over a minute, and counting it opens the gate on a mesh that carries
-// nothing, which installs an announced default out of a dead tun and takes the
-// machine's network with it.
+// The count the route reconciler waits on before it hands the mesh this
+// machine's own traffic is the narrow one: a peer that has recently proved it
+// is there, not a session object in a map. A peer that rebooted leaves an entry
+// looking established for over a minute, and counting it hands the machine's
+// traffic to a mesh that carries nothing, which installs an announced default
+// out of a dead tun and takes the machine's network with it.
 func TestLiveCountCountsOnlyWhatProvedItsPeerIsThere(t *testing.T) {
 	set := newSessionSet()
 	set.close = func(*ike.Session) {}
@@ -1837,19 +1837,19 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	// And the rendered line carries it, so nothing above the helper reaches
 	// for %q again.
 	c := testClient(t)
-	peer := &netstack.Peer{ID: "gate\tway"}
+	peer := &netstack.Peer{ID: "lap\ttop"}
 	handle := c.speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	// A live session too: the path label is the other value built from a name
 	// a peer chooses, and with no sessions its line is never rendered.
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	if _, adopted := c.sessions.adoptPreferred(t, "example/gate\tway:0@0", &ike.Session{}, true, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred(t, "example/lap\ttop:0@0", &ike.Session{}, true, nil); !adopted {
 		t.Fatal("the session was not adopted, so the path line would be empty")
 	}
 	var out bytes.Buffer
 	c.Metrics(&out)
-	for _, want := range []string{"{peer=\"gate\tway\"}", "{path=\"example/gate\tway:0@0\"}"} {
+	for _, want := range []string{"{peer=\"lap\ttop\"}", "{path=\"example/lap\ttop:0@0\"}"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the rendered line does not carry %q:\n%s", want, out.String())
 		}

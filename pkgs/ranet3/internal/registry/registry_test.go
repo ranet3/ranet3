@@ -294,7 +294,7 @@ func TestLoadRefusesRepeatedOrMisspelledNamesAndInvalidUTF8(t *testing.T) {
 		"public_key with a Kelvin sign beside public_key": block(`"public_key":` + first + `,"public_` + kelvin + `ey":` + second + `,"nodes":[` + gateway + `]`),
 		"nodes with a long s beside nodes":                block(`"public_key":` + first + `,"nodes":[` + gateway + `],"node` + longS + `":[` + laptop + `]`),
 		"byte 0xff in a name inside remarks":              withNode("{\"common_name\":\"gateway\",\"endpoints\":[],\"remarks\":{\"si\xffte\":\"a\"}}"),
-		"a lone surrogate escape in a common_name":        withNode(`{"common_name":"gate\ud800way","endpoints":[],"remarks":{}}`),
+		"a lone surrogate escape in a common_name":        withNode(`{"common_name":"lap\ud800top","endpoints":[],"remarks":{}}`),
 		"an unknown member":                               block(`"public_key":` + first + `,"nodes":[` + gateway + `],"extra":1`),
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -237,7 +237,7 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 			return err
 		}
 		rt := node.KernelRuntime()
-		// a session counts as live throughout, so the gate is open and only the exit's own rule keeps another exit's halves out of the mesh's table
+		// a session counts as live throughout, so capturing routes install, and only the exit's own rule keeps another exit's halves out of the mesh's table
 		rt.Sessions = func() int { return 1 }
 		routes, err = kernel.New(*cfg.ReconcilerTable(), rt, node.Mesh.Routes)
 		return err

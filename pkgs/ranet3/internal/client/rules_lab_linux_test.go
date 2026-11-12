@@ -319,7 +319,7 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 	var routes *kernel.Reconciler
 	if err := leaf.Do(func() (err error) {
 		rt := node.KernelRuntime()
-		// a session counts as live throughout, so the gate is open and a route that counts as a default, unless it is a hold or this node is an exit, is the mirror's to install
+		// a session counts as live throughout, so capturing routes install, and a route that counts as a default, unless it is a hold or this node is an exit, is the mirror's to install
 		rt.Sessions = func() int { return 1 }
 		rt.Sends = func() []kernel.Send { return rulesSends }
 		routes, err = kernel.New(*cfg.Cap.Table, rt, node.Mesh.Routes)

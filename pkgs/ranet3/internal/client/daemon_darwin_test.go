@@ -56,8 +56,8 @@ const otherProgramIndex = 425
 
 // What the mesh announces to this node, what this node announces back, and
 // where the machine under it reaches the world. capturingPrefix takes the
-// machine and ordinaryPrefix does not, which is the distinction the whole
-// capture gate rests on.
+// machine and ordinaryPrefix does not, which is the distinction the
+// reconciler's wait for a live session rests on.
 var (
 	capturingPrefix = netip.MustParsePrefix("::/0")
 	// halfCapture takes the machine too and holds ::, so under cap.exit it
@@ -203,7 +203,7 @@ func (d *daemon) announce(prefix netip.Prefix) {
 }
 
 // live adopts one session that has proved its peer is there, the one thing
-// that opens the capture gate.
+// that lets a capturing route in.
 func (d *daemon) live(t *testing.T) {
 	t.Helper()
 	if _, adopted := d.node.sessions.adoptPreferred(t, "example/gateway:1@0", &ike.Session{}, true, nil); !adopted {
@@ -272,8 +272,8 @@ func (d *daemon) heldBack(t *testing.T, prefix, witness netip.Prefix) bool {
 func TestExitModeInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 
-	// An ordinary prefix installs at once: the gate holds back what would
-	// carry this machine's own traffic and nothing else.
+	// An ordinary prefix installs at once: only what would carry this
+	// machine's own traffic waits for a live session.
 	d.announce(ordinaryPrefix)
 	waitForKernel(t, "the ordinary prefix reaches the kernel", func() bool {
 		plain, _ := d.host.installed(ordinaryPrefix)

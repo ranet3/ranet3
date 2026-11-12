@@ -37,26 +37,26 @@ func newCountedHold() *countedHold {
 func (h *countedHold) Retain()  { h.refs.Add(1) }
 func (h *countedHold) Release() { h.refs.Add(-1) }
 
-// gatedTun is a tun of two queues whose every write says it has started and waits at gate, then records each packet it was handed, copied out
-type gatedTun struct {
+// pausedTun is a tun of two queues whose every write says it has started and waits for resume, then records each packet it was handed, copied out
+type pausedTun struct {
 	entered chan struct{}
-	gate    chan struct{}
+	resume  chan struct{}
 	mu      sync.Mutex
 	packets [][]byte
 }
 
-func (d *gatedTun) File() *os.File                             { return nil }
-func (d *gatedTun) Read([]byte, []tun.ReadPacket) (int, error) { return 0, os.ErrClosed }
-func (d *gatedTun) MTU() (int, error)                          { return netstack.DefaultMTU, nil }
-func (d *gatedTun) Name() (string, error)                      { return "ranet0", nil }
-func (d *gatedTun) Events() <-chan tun.Event                   { return nil }
-func (d *gatedTun) Close() error                               { return nil }
-func (d *gatedTun) BatchSize() int                             { return 128 }
-func (d *gatedTun) Queues() []tun.Queue                        { return []tun.Queue{d, d} }
+func (d *pausedTun) File() *os.File                             { return nil }
+func (d *pausedTun) Read([]byte, []tun.ReadPacket) (int, error) { return 0, os.ErrClosed }
+func (d *pausedTun) MTU() (int, error)                          { return netstack.DefaultMTU, nil }
+func (d *pausedTun) Name() (string, error)                      { return "ranet0", nil }
+func (d *pausedTun) Events() <-chan tun.Event                   { return nil }
+func (d *pausedTun) Close() error                               { return nil }
+func (d *pausedTun) BatchSize() int                             { return 128 }
+func (d *pausedTun) Queues() []tun.Queue                        { return []tun.Queue{d, d} }
 
-func (d *gatedTun) Write(bufs [][]byte, offset int) (int, error) {
+func (d *pausedTun) Write(bufs [][]byte, offset int) (int, error) {
 	d.entered <- struct{}{}
-	<-d.gate
+	<-d.resume
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, buf := range bufs {
@@ -65,12 +65,12 @@ func (d *gatedTun) Write(bufs [][]byte, offset int) (int, error) {
 	return len(bufs), nil
 }
 
-func (d *gatedTun) WriteTo(_ int, bufs [][]byte, offset int) (int, error) {
+func (d *pausedTun) WriteTo(_ int, bufs [][]byte, offset int) (int, error) {
 	return d.Write(bufs, offset)
 }
 
 // written is every packet the tun recorded so far
-func (d *gatedTun) written() [][]byte {
+func (d *pausedTun) written() [][]byte {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([][]byte(nil), d.packets...)
@@ -151,11 +151,11 @@ func TestEmitterReleasesItsPendingBatchesAtItsEnd(t *testing.T) {
 // so the lane keeps a reference while it writes, after the emitter gave back its own, and gives it back once its write has returned
 func TestSessionEmitHandsItsHoldToTheLane(t *testing.T) {
 	c := writable(t)
-	dev := &gatedTun{entered: make(chan struct{}, 1), gate: make(chan struct{})}
-	open := sync.OnceFunc(func() { close(dev.gate) })
+	dev := &pausedTun{entered: make(chan struct{}, 1), resume: make(chan struct{})}
+	resume := sync.OnceFunc(func() { close(dev.resume) })
 	c.Mesh = netstack.NewOnDevice(dev)
 	t.Cleanup(func() {
-		open()
+		resume()
 		c.Mesh.Close()
 	})
 	c.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("198.51.100.1/32"), netstack.Local)
@@ -177,7 +177,7 @@ func TestSessionEmitHandsItsHoldToTheLane(t *testing.T) {
 	if got := hold.refs.Load(); got != 1 {
 		t.Fatalf("the hold counts %d references while the lane writes, want the lane's", got)
 	}
-	open()
+	resume()
 	waitFor(t, deliveryWait, "the lane to give back its reference once its write returned", func() bool { return hold.refs.Load() == 0 })
 	if got := dev.written(); len(got) != 1 || !bytes.Equal(got[0], sent) {
 		t.Errorf("the tun was written %x, want the packet sent", got)

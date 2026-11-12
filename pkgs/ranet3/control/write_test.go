@@ -165,7 +165,7 @@ func TestVerbBodyRefusesRepeatedOrUnknownMembersAndInvalidUTF8(t *testing.T) {
 		"Peer":              `{"Peer":"example/gateway"}`,
 		"PEER beside peer":  `{"PEER":"example/laptop","peer":"example/gateway"}`,
 		"an unknown member": `{"peer":"example/gateway","bogus":1}`,
-		"byte 0xff in peer": "{\"peer\":\"example/gate\xffway\"}",
+		"byte 0xff in peer": "{\"peer\":\"example/lap\xfftop\"}",
 		"a second object":   `{"peer":"example/gateway"}{"peer":"example/laptop"}`,
 		"a stray brace":     `{"peer":"example/gateway"}}`,
 	} {

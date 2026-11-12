@@ -430,8 +430,8 @@ const refusedRounds = 3
 func TestStoppedResponderRefusesLiveHandshakes(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
 	// Bravo answers and never dials, so the only session that can exist is the
-	// one alpha opens through the gate under test. With bravo dialing too, a
-	// session would form in the other direction whatever the gate did.
+	// one alpha opens past the stopped responder's check. With bravo dialing
+	// too, a session would form in the other direction whatever that check did.
 	quiet := *bravo.cfg
 	quiet.Dial.To = nil
 	bravo.client.cfg.Store(&quiet)

@@ -665,7 +665,7 @@ func TestPeerMatchingTakesEveryShapeOfTheName(t *testing.T) {
 		"example/gateway":     true,
 		"example/gateway:1@0": true,
 		"other/gateway":       false,
-		"gate":                false,
+		"gat":                 false,
 		"example":             false,
 		"":                    false,
 	} {
