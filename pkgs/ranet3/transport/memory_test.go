@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -133,6 +134,40 @@ func TestClosingMemoryHubsAndSocketsEndsWhatTheyRan(t *testing.T) {
 			}
 		}
 	})(t)
+}
+
+// a send to port 0 from a hub's mux or from a socket, in either family, is refused with EINVAL, and a closed socket's with net.ErrClosed
+func TestMemoryNetworkRefusesASendToPortZero(t *testing.T) {
+	network := NewMemoryNetwork()
+	hub, err := network.NewHub()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hub.Close() })
+	for _, ip := range []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback} {
+		mux, err := hub.NewMux(ip, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mux.SendIKE([]byte("refused")); !errors.Is(err, syscall.EINVAL) {
+			t.Errorf("a hub's send to port 0 at %s answered %v, want EINVAL", ip, err)
+		}
+		mux.Close()
+		conn, err := network.ListenUDP(ip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zero := &net.UDPAddr{IP: ip}
+		if _, err := conn.WriteToUDP([]byte{1}, zero); !errors.Is(err, syscall.EINVAL) {
+			t.Errorf("a socket's send to port 0 at %s answered %v, want EINVAL", ip, err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.WriteToUDP([]byte{1}, zero); !errors.Is(err, net.ErrClosed) {
+			t.Errorf("a closed socket's send to port 0 at %s answered %v, want net.ErrClosed", ip, err)
+		}
+	}
 }
 
 // a mux on a memory network reads the path MTU linux gives a loopback path of its family, and sends with DF

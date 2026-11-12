@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -85,13 +86,8 @@ func (n *MemoryNetwork) release(p *memoryPort) bool {
 	return true
 }
 
-// send drops data where nothing holds to's port
+// send refuses a send from a port let go with net.ErrClosed, then one to port zero with EINVAL, and drops data where nothing holds to's port
 func (n *MemoryNetwork) send(p *memoryPort, data []byte, to netip.AddrPort) error {
-	if to.Port() == 0 {
-		if err := portZeroRefusal(p.local); err != nil {
-			return err
-		}
-	}
 	to = netip.AddrPortFrom(to.Addr().Unmap(), to.Port())
 	source := p.local
 	if !source.IsValid() {
@@ -106,6 +102,9 @@ func (n *MemoryNetwork) send(p *memoryPort, data []byte, to netip.AddrPort) erro
 	defer n.mu.Unlock()
 	if n.ports[p.port] != p {
 		return net.ErrClosed
+	}
+	if to.Port() == 0 {
+		return syscall.EINVAL
 	}
 	receiver := n.ports[to.Port()]
 	if receiver == nil {

@@ -162,7 +162,7 @@ func scriptDatagram(shape, spi, step, size int) []byte {
 
 // a memory network carries what loopback carries, over drawn scripts run on both side by side
 // hubs and sockets in both families, sends of IKE messages with the non-ESP marker, ESP, keepalives, datagrams under four octets and empty ones,
-// SPIs registered or not, Listen on and off, sends to a port nobody holds, a socket's and a hub's sends to port zero, reads shorter than their datagram, and closes
+// SPIs registered or not, Listen on and off, sends to a port nobody holds, a hub's sends to port zero, reads shorter than their datagram, and closes
 // after each step what each hub's muxes and unclaimed queue received, in order and with the source by role, its counters, and what each socket read are the same on both
 func TestMemoryNetworkCarriesWhatLoopbackCarries(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -238,8 +238,8 @@ func TestMemoryNetworkCarriesWhatLoopbackCarries(t *testing.T) {
 					}
 				}
 			case (kind == 4 && hubs > 0 || kind == 5) && peers > 0:
-				p, shape, spi, size, zero := draw(0, peers-1), draw(0, 4), draw(0, 3), draw(0, 48), draw(0, 3) == 0
-				// a hub, a socket of the sender's family, port zero, or a port nobody holds
+				p, shape, spi, size := draw(0, peers-1), draw(0, 4), draw(0, 3), draw(0, 48)
+				// a hub, a socket of the sender's family, or a port nobody holds
 				hub, target := -1, -1
 				if kind == 4 {
 					hub = draw(0, hubs-1)
@@ -252,17 +252,20 @@ func TestMemoryNetworkCarriesWhatLoopbackCarries(t *testing.T) {
 				datagram := scriptDatagram(shape, spi, step, size)
 				for _, n := range networks {
 					var addr *net.UDPAddr
+					var to string
 					switch {
 					case hub >= 0 && hubOpen[hub]:
 						addr = &net.UDPAddr{IP: scriptLoopbacks[families[p]], Port: n.hubs[hub].LocalAddr().(*net.UDPAddr).Port}
 					case target >= 0 && target < peers && peerOpen[target]:
 						addr = n.peers[target].LocalAddr().(*net.UDPAddr)
-					case zero:
-						addr = &net.UDPAddr{IP: scriptLoopbacks[families[p]]}
 					case len(n.closed) > 0:
-						addr = &net.UDPAddr{IP: scriptLoopbacks[families[p]], Port: n.closed[0]}
+						// the two networks draw different ports, and the role of a socket of the other family names none at this address
+						addr, to = &net.UDPAddr{IP: scriptLoopbacks[families[p]], Port: n.closed[0]}, "the first port let go"
 					default:
 						continue
+					}
+					if to == "" {
+						to = n.role(addr.AddrPort())
 					}
 					sent := slices.Clone(datagram)
 					written, err := n.peers[p].WriteToUDP(sent, addr)
@@ -270,7 +273,7 @@ func TestMemoryNetworkCarriesWhatLoopbackCarries(t *testing.T) {
 					for i := range sent {
 						sent[i] = 0xee
 					}
-					n.note("step %d peer %d sends %x to %s: %d %v", step, p, datagram, n.role(addr.AddrPort()), written, err != nil)
+					n.note("step %d peer %d sends %x to %s: %d %v", step, p, datagram, to, written, err != nil)
 				}
 				switch {
 				case hub >= 0 && hubOpen[hub]:
