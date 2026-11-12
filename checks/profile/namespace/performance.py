@@ -241,8 +241,8 @@ def wait_for(test, message, timeout=15):
     raise RuntimeError(message)
 
 
-# The client keeps the unsuffixed artifact names the strongSwan mode has always
-# written, so one output directory reads the same way in both modes.
+# The client keeps the unsuffixed artifact names the strongSwan mode writes, so
+# one output directory reads the same way in both modes.
 def suffix(name):
     return "" if name == "client" else "-" + name
 
@@ -805,12 +805,9 @@ protocol babel {
             run(["ip", "-s", "xfrm", "state", "list", "nokeys"], gateway=True).stdout
         )
         (args.output / "xfrm-stat.txt").write_text(xfrm_stat)
-        # The gateway's own error counters, collected since this harness was
-        # written and never read. A run the peer spent discarding packets is
-        # not a measurement of this dataplane, and it looks exactly like a slow
-        # one. Both directions: a transmit-side fault is as disqualifying as a
-        # receive-side one, and the read itself is checked, because a missing
-        # counter file used to pass as a clean gateway.
+        # A run the peer spent discarding packets is not a measurement of this
+        # dataplane, and it looks exactly like a slow one. The read itself is
+        # checked, since a missing counter file would pass as a clean gateway.
         discarded = {
             name: after - gateway_xfrm_before.get(name, 0)
             for name, after in parse_xfrm_stat(xfrm_stat).items()
