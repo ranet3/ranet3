@@ -31,45 +31,6 @@ type sourceEntry struct {
 	owner string
 }
 
-// Source GC time, RFC 8966 Appendix B.
-const sourceGCTime = 3 * time.Minute
-
-// maxSources bounds the source table and maxOriginsPerPrefix bounds what any
-// one prefix can spend of it. The index is a prefix and a router id: this
-// node's route table bounds the prefixes, nothing bounds the router ids, and a
-// neighbor that names a new origin for one prefix on every packet adds an
-// entry on every packet that lives for sourceGCTime.
-//
-// Past a cap an origin this node has never advertised is unfeasible. Refusing
-// a route can never close a loop, so routes already selected keep working and
-// the prefixes this node originates still record their distance. The
-// per-prefix share keeps the damage local: a global cap alone is first
-// come, so one neighbor churning the origin of one prefix would stop this node
-// learning any new origin anywhere, including a peer that restarted and drew a
-// new router id, which a node that lost its sequence number state does.
-//
-// The numbers sit far above what a legitimate prefix or a restarting neighbor
-// produces and far below what a flood needs.
-const (
-	maxSources          = 1 << 16
-	maxOriginsPerPrefix = 1 << 10
-	// maxOriginsPerPrefixPerNeighbor is one neighbor's share of one prefix's
-	// budget, and maxSourcesPerNeighbor is its share of the whole table. The
-	// first stops one neighbor denying another the same prefix, and the second
-	// stops one neighbor spending the global budget and denying every other
-	// neighbor every prefix.
-	//
-	// Both are far above what a restart produces. A ranet3 node without a
-	// usable state file, BIRD with randomize router id set and babeld with a
-	// random id and no state file draw a new router id every time they start,
-	// which makes each of their restarts a new origin for every prefix they
-	// announce, charged to whichever neighbor this node reaches it through. A
-	// cap that refuses an origin refuses a route, so it has to sit above
-	// anything a supervisor restarting a peer can produce.
-	maxOriginsPerPrefixPerNeighbor = 1 << 8
-	maxSourcesPerNeighbor          = 1 << 13
-)
-
 // originShare indexes what one neighbor has spent of one prefix's budget.
 type originShare struct {
 	route routeKey

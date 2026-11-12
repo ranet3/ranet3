@@ -4,6 +4,8 @@
 
 package babel
 
+import "time"
+
 const (
 	Magic   = 42
 	Version = 2
@@ -37,6 +39,17 @@ const (
 	SubTLVTimestamp uint8 = 3
 )
 
+// SubTLVSourcePrefix is the mandatory Source Prefix sub-TLV (RFC 9079).
+// Unknown mandatory sub-TLVs invalidate the enclosing Update.
+const SubTLVSourcePrefix uint8 = 128
+
+// updateFlagPrefix and updateFlagRouterID are flags of the Update TLV, RFC
+// 8966 section 4.6.9.
+const (
+	updateFlagPrefix   = 0x80
+	updateFlagRouterID = 0x40
+)
+
 // Address Encodings, RFC 8966 section 4.1.4.
 const (
 	AEWildcard      uint8 = 0
@@ -48,3 +61,15 @@ const (
 
 // Special metric value meaning "unreachable" / route retraction, RFC 8966 section 4.6.9.
 const MetricInfinity uint16 = 0xffff
+
+// maxInterval is the longest interval the 16-bit centisecond fields of RFC
+// 8966 section 4.6 carry.
+const maxInterval = 65535 * 10 * time.Millisecond
+
+// historyDepth is the width of the Hello history vector, and rebootDrift the
+// gap past which Appendix A.1 treats the sender as having rebooted and lost its
+// counter.
+const (
+	historyDepth = 16
+	rebootDrift  = 16
+)

@@ -80,3 +80,148 @@ const maxFragmentAge = 16 * time.Second
 // the answer comes back one hop at a time, each in a triggered update the hop before it sent, so it can arrive well after the seqnoRequestSuppress in which a repeat is redundant
 // it is BIRD's BABEL_SEQNO_FORWARD_EXPIRY
 const seqnoForwardExpiry = 10 * time.Second
+
+// seqnoRequestSuppress is the request timeout RFC 8966 Appendix B suggests. A
+// request for the same source within this window is redundant (section
+// 3.8.1.2) and is dropped instead of forwarded.
+const seqnoRequestSuppress = 2 * time.Second
+
+// seqnoRequestHopCount is the hop count of a locally originated seqno request:
+// "64 is a suitable default value", RFC 8966 section 3.8.2.1.
+const seqnoRequestHopCount = 64
+
+// sourceGCTime is the source GC time RFC 8966 Appendix B suggests.
+const sourceGCTime = 3 * time.Minute
+
+// maxPendingSeqno bounds the table of pending seqno requests, and
+// maxPendingSeqnoPerNeighbor bounds what any one neighbor can spend of it. An
+// entry is only ever created for a prefix this node has a route for, which
+// bounds one half of the index. The other half is the router id the requester
+// wrote into the packet, which nothing bounds, and many seqno requests fit in a
+// single packet. Past a cap the request is not forwarded, as the suppression
+// within seqnoRequestSuppress does with a redundant one, and is the list of
+// recently forwarded requests RFC 8966 section 3.8.1.2 asks a node to keep.
+//
+// The per-neighbor share keeps one of them from turning forwarding off for
+// the rest: a flood that filled a single global table would stop every
+// other neighbor's requests being relayed, and a prefix that starves behind
+// this node would stop recovering until the flood did.
+const (
+	maxPendingSeqno            = 1 << 12
+	maxPendingSeqnoPerNeighbor = 1 << 10
+)
+
+// maxStarveRetries bounds the prefixes this node is repeating a seqno request
+// for, and maxStarveRetriesPerNeighbor is one neighbor's share of that. The
+// index carries a router id a neighbor writes into a packet, so nothing else
+// bounds it, and every entry is walked under s.mu on each wake of the run
+// loop. Without the share one neighbor fills the table from the ordinary route
+// acquisition path, and RFC 8966 section 3.8.2.1's "repeat such a request a
+// small number of times" then stops happening for every other neighbor, so a
+// lost request or a lost reply is never covered.
+const (
+	maxStarveRetries            = 1 << 12
+	maxStarveRetriesPerNeighbor = 1 << 10
+)
+
+// seqnoRequestRetries and seqnoRetryInitial are how often and after how long
+// this node repeats a seqno request, since RFC 8966 section 3.8.2.1 says a node
+// "SHOULD repeat such a request a small number of times if no route becomes
+// feasible within a short time". One request is not enough: losing it, or its
+// reply, leaves the prefix starved for as long as the unfeasible route keeps
+// being refreshed, and the unfeasible route pins the feasibility distance so
+// that never expires either. BIRD repeats four times, doubling the delay. The
+// first delay is longer than seqnoRequestSuppress so a retry is not dropped as
+// redundant by our own suppression table.
+const (
+	seqnoRequestRetries = 4
+	seqnoRetryInitial   = 3 * time.Second
+)
+
+// routeLogInterval bounds how often a selection change is said out loud at
+// info. One neighbor alternating an update and a retraction for one prefix
+// drives a change per TLV, many to one packet, each a synchronous write on the
+// goroutine holding s.mu. Every change is still written at debug, where it
+// costs a level comparison unless somebody asked for it, and the info line
+// carries how many it stands for.
+//
+// Kept at or below a second so an operator watching a flapping mesh still sees
+// it move. TestSelectionChangesAreNotOneLogLineEach holds that bound.
+const routeLogInterval = time.Second
+
+// maxSources bounds the source table and maxOriginsPerPrefix bounds what any
+// one prefix can spend of it. The index is a prefix and a router id: this
+// node's route table bounds the prefixes, nothing bounds the router ids, and a
+// neighbor that names a new origin for one prefix on every packet adds an
+// entry on every packet that lives for sourceGCTime.
+//
+// Past a cap an origin this node has never advertised is unfeasible. Refusing
+// a route can never close a loop, so routes already selected keep working and
+// the prefixes this node originates still record their distance. The
+// per-prefix share keeps the damage local: a global cap alone is first
+// come, so one neighbor churning the origin of one prefix would stop this node
+// learning any new origin anywhere, including a peer that restarted and drew a
+// new router id, which a node that lost its sequence number state does.
+//
+// The numbers sit far above what a legitimate prefix or a restarting neighbor
+// produces and far below what a flood needs.
+const (
+	maxSources          = 1 << 16
+	maxOriginsPerPrefix = 1 << 10
+	// maxOriginsPerPrefixPerNeighbor is one neighbor's share of one prefix's
+	// budget, and maxSourcesPerNeighbor is its share of the whole table. The
+	// first stops one neighbor denying another the same prefix, and the second
+	// stops one neighbor spending the global budget and denying every other
+	// neighbor every prefix.
+	//
+	// Both are far above what a restart produces. A ranet3 node without a
+	// usable state file, BIRD with randomize router id set and babeld with a
+	// random id and no state file draw a new router id every time they start,
+	// which makes each of their restarts a new origin for every prefix they
+	// announce, charged to whichever neighbor this node reaches it through. A
+	// cap that refuses an origin refuses a route, so it has to sit above
+	// anything a supervisor restarting a peer can produce.
+	maxOriginsPerPrefixPerNeighbor = 1 << 8
+	maxSourcesPerNeighbor          = 1 << 13
+)
+
+// maxRouteKeys caps how many distinct prefixes this node will hold at once.
+// It is well above any plausible mesh, which announces a few prefixes from
+// each node, and a full internet table is not something a Babel mesh
+// carries. It exists so the number is ours rather than a peer's.
+const maxRouteKeys = 16384
+
+// rttTimestampHorizon is the largest gap between two timestamps of one clock, this node's or the neighbor's, that an RTT sample is taken from
+const rttTimestampHorizon = 3 * time.Minute
+
+// betaWindow is how many recent entries the reception probability is computed
+// over. Appendix A.2.2 suggests "a small number (say, 6)", and the whole
+// vector is chosen instead because the node at the other end of every link on
+// this mesh uses the whole of its own: BIRD popcounts hello_map over
+// hello_cnt. At six the two ends disagree by up to a factor of two on the same
+// loss, and a steady one-in-sixteen loss makes this end's advertised cost a
+// square wave while the other end reads it as flat.
+const betaWindow = historyDepth
+
+// defaultRTTMax and defaultRTTWeight are rtt-max and max-rtt-penalty, which
+// deviate from the 120 ms and 150 RFC 9616 section 4.2 RECOMMENDS,
+// deliberately. This is a global mesh: 120 ms saturates every
+// intercontinental path, so the penalty stops ranking exactly the links it
+// exists to rank, and a penalty of 150 against a wired rxcost of 96 makes a
+// satellite hop cost less than three wired ones.
+const (
+	defaultRTTMax    = 1024 * time.Millisecond
+	defaultRTTWeight = 1024
+)
+
+// hysteresisHellos is the small multiple of the Hello interval RFC 8966 Appendix A.3 recommends as the hysteresis time constant
+const hysteresisHellos = 3
+
+// sendRetriesPerHello is how many times a pass that could not send everything it built retries inside one hello interval
+// a refused Hello thus gets several attempts inside the three and a half intervals that withdraw the routes through the neighbor, each costing a pass rather than a packet
+// at the shortest interval Config.Validate accepts, the first retry still comes before the neighbor's dead timeout
+// minSendRetry is the least time between two such retries
+const (
+	sendRetriesPerHello = 4
+	minSendRetry        = time.Millisecond
+)

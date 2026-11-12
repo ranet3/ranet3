@@ -12,15 +12,6 @@ import (
 	"slices"
 )
 
-// SubTLVSourcePrefix is the mandatory Source Prefix sub-TLV (RFC 9079).
-// Unknown mandatory sub-TLVs invalidate the enclosing Update.
-const SubTLVSourcePrefix uint8 = 128
-
-const (
-	updateFlagPrefix   = 0x80
-	updateFlagRouterID = 0x40
-)
-
 // Update is RFC 8966 section 4.6.9. We always encode with Omitted=0 (no prefix
 // compression). That's fully spec-compliant, compression is a size
 // optimization a receiver must support but a sender need not use. We do

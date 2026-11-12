@@ -62,12 +62,6 @@ type keyEntry struct {
 	retractSeqno uint16
 }
 
-// maxRouteKeys caps how many distinct prefixes this node will hold at once.
-// It is well above any plausible mesh, which announces a few prefixes from
-// each node, and a full internet table is not something a Babel mesh
-// carries. It exists so the number is ours rather than a peer's.
-const maxRouteKeys = 16384
-
 // starveRequest is one seqno request the route table wants sent, RFC 8966
 // sections 3.8.2.1 and 3.8.2.2. The Speaker owns transmission and duplicate
 // suppression.

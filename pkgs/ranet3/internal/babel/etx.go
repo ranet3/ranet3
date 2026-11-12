@@ -35,13 +35,6 @@ type helloHistory struct {
 	samples int
 }
 
-// historyDepth is the width of the vector, and rebootDrift the gap past which
-// Appendix A.1 treats the sender as having rebooted and lost its counter.
-const (
-	historyDepth = 16
-	rebootDrift  = 16
-)
-
 // record applies the receive half of Appendix A.1 for one Hello carrying
 // sequence number seqno. It reports false when the two differ by more than the
 // window, which the caller answers by flushing the neighbor rather than
@@ -101,15 +94,6 @@ func (h *helloHistory) shiftIn(bit uint16, count int) {
 	h.bits = h.bits<<uint(count) | bit
 	h.samples = min(h.samples+count, historyDepth)
 }
-
-// betaWindow is how many recent entries the reception probability is computed
-// over. Appendix A.2.2 suggests "a small number (say, 6)", and the whole
-// vector is chosen instead because the node at the other end of every link on
-// this mesh uses the whole of its own: BIRD popcounts hello_map over
-// hello_cnt. At six the two ends disagree by up to a factor of two on the same
-// loss, and a steady one-in-sixteen loss makes this end's advertised cost a
-// square wave while the other end reads it as flat.
-const betaWindow = historyDepth
 
 // beta is that probability as a fraction, left undivided so the cost formula
 // rounds once rather than twice. The denominator is how much history there

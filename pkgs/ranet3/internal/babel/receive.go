@@ -399,8 +399,6 @@ func sendTLVs(n *neighborState, key routeKey, tlvs []RawTLV, spent bool) []sendA
 		tlvs: tlvs, rollback: []tlvUndo{{key: key, spent: spent}}}}
 }
 
-const rttTimestampHorizon = 3 * time.Minute
-
 func validTimestampGap(gap time.Duration) bool {
 	return gap >= 0 && gap <= rttTimestampHorizon
 }

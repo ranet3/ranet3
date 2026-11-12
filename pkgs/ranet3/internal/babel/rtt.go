@@ -107,15 +107,9 @@ func DefaultCostParams() CostParams {
 			// rtt-min = 10 ms for it. A mapping linear from zero would move
 			// the exponential average of a link with ordinary jitter, and so
 			// the cost, on most IHUs.
-			Min: schema.Duration(10 * time.Millisecond),
-			// rtt-max and max-rtt-penalty deviate from the 120 ms and 150 the
-			// same section RECOMMENDS, deliberately. This is a global mesh:
-			// 120 ms saturates every intercontinental path, so the penalty
-			// stops ranking exactly the links it exists to rank, and a penalty
-			// of 150 against a wired rxcost of 96 makes a satellite hop cost
-			// less than three wired ones.
-			Max:    schema.Duration(1024 * time.Millisecond),
-			Weight: 1024,
+			Min:    schema.Duration(10 * time.Millisecond),
+			Max:    schema.Duration(defaultRTTMax),
+			Weight: defaultRTTWeight,
 		},
 	}
 }

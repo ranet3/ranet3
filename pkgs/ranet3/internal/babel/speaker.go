@@ -68,58 +68,6 @@ func recentRequestCovers(sent uint16, sentAt time.Time, seqno uint16, now time.T
 	return now.Before(sentAt.Add(seqnoRequestSuppress)) && !seqnoGT(seqno, sent)
 }
 
-// Request timeout, RFC 8966 Appendix B. A request for the same source within
-// this window is redundant (section 3.8.1.2) and is dropped instead of
-// forwarded.
-const seqnoRequestSuppress = 2 * time.Second
-
-// maxPendingSeqno bounds that table, and maxPendingSeqnoPerNeighbor bounds
-// what any one neighbor can spend of it. An entry is only ever created for a
-// prefix this node has a route for, which bounds one half of the index. The
-// other half is the router id the requester wrote into the packet, which
-// nothing bounds, and many seqno requests fit in a single packet. Past a cap
-// the request is not forwarded, as the suppression above does with a
-// redundant one, and is the list of recently forwarded requests RFC 8966
-// section 3.8.1.2 asks a node to keep.
-//
-// The per-neighbor share keeps one of them from turning forwarding off for
-// the rest: a flood that filled a single global table would stop every
-// other neighbor's requests being relayed, and a prefix that starves behind
-// this node would stop recovering until the flood did.
-const (
-	maxPendingSeqno            = 1 << 12
-	maxPendingSeqnoPerNeighbor = 1 << 10
-)
-
-// maxStarveRetries bounds the prefixes this node is repeating a seqno request
-// for, and maxStarveRetriesPerNeighbor is one neighbor's share of that. The
-// index carries a router id a neighbor writes into a packet, so nothing else
-// bounds it, and every entry is walked under s.mu on each wake of the run
-// loop. Without the share one neighbor fills the table from the ordinary route
-// acquisition path, and RFC 8966 section 3.8.2.1's "repeat such a request a
-// small number of times" then stops happening for every other neighbor, so a
-// lost request or a lost reply is never covered.
-const (
-	maxStarveRetries            = 1 << 12
-	maxStarveRetriesPerNeighbor = 1 << 10
-)
-
-// Hop count for locally originated seqno requests: "64 is a suitable default
-// value", RFC 8966 section 3.8.2.1.
-const seqnoRequestHopCount = 64
-
-// The same section says a node "SHOULD repeat such a request a small number of
-// times if no route becomes feasible within a short time". One request is not
-// enough: losing it, or its reply, leaves the prefix starved for as long as the
-// unfeasible route keeps being refreshed, and the unfeasible route pins the
-// feasibility distance so that never expires either. BIRD repeats four times,
-// doubling the delay. The first delay is longer than seqnoRequestSuppress so a
-// retry is not dropped as redundant by our own suppression table.
-const (
-	seqnoRequestRetries = 4
-	seqnoRetryInitial   = 3 * time.Second
-)
-
 // askedKey indexes a seqno request this node sent on its own behalf.
 type askedKey struct {
 	source   sourceKey
@@ -310,7 +258,7 @@ func (s *Speaker) applyEffective(effective Effective) {
 	// multiple of the Hello interval. One link's base cost is the scale at
 	// which a metric change is worth a triggered update rather than a wait for
 	// the next periodic dump.
-	s.routes.tau, s.routes.trigger = 3*s.hello, s.cost.RxCost
+	s.routes.tau, s.routes.trigger = hysteresisHellos*s.hello, s.cost.RxCost
 	// A neighbor resets a route's expiry timer to "a small multiple of the
 	// interval value included in the update" (RFC 8966 section 3.5.3), counted
 	// from its arrival. This covers a neighbor that takes the multiple Appendix
@@ -769,12 +717,8 @@ func (s *Speaker) pendingWorkLocked() bool {
 // noteSendRetryLocked schedules the retry for a pass that built something it
 // could not send. The rollback has put the work back, and nothing else will
 // pick it up: a Hello is retried by `!n.sentHello` and a triggered update by
-// the neighbor's own `owed`, both on the next pass, whenever that is. A
-// quarter of the hello interval gives a refused Hello several attempts inside
-// the three and a half intervals that withdraw the routes through this
-// neighbor, and costs a pass rather than a packet. The floor is a millisecond,
-// so at the shortest interval Validate accepts the first retry still comes
-// before the neighbor's dead timeout.
+// the neighbor's own `owed`, both on the next pass, whenever that is. The
+// retry interval's reason is given at sendRetriesPerHello.
 func (s *Speaker) noteSendRetryLocked(now time.Time) {
 	s.retryAt = earlier(s.retryAt, now.Add(s.sendRetryInterval()))
 }
@@ -783,7 +727,7 @@ func (s *Speaker) noteSendRetryLocked(now time.Time) {
 // not send. hello is written under both s.mu and lostMu, so the sender
 // goroutine may ask too, holding lostMu.
 func (s *Speaker) sendRetryInterval() time.Duration {
-	return max(s.hello/4, time.Millisecond)
+	return max(s.hello/sendRetriesPerHello, minSendRetry)
 }
 
 // deadlineLocked is when the run loop next has to do something on its own,
@@ -886,17 +830,6 @@ func (s *Speaker) Run(ctx context.Context) error {
 		}
 	}
 }
-
-// routeLogInterval bounds how often a selection change is said out loud at
-// info. One neighbor alternating an update and a retraction for one prefix
-// drives a change per TLV, many to one packet, each a synchronous write on the
-// goroutine holding s.mu. Every change is still
-// written at debug, where it costs a level comparison unless somebody asked
-// for it, and the info line carries how many it stands for.
-//
-// Kept at or below a second so an operator watching a flapping mesh still sees
-// it move. TestSelectionChangesAreNotOneLogLineEach holds that bound.
-const routeLogInterval = time.Second
 
 // installRoute publishes one selection to the forwarding table. Called only
 // with s.mu held, after route selection, so the log line and the forwarding

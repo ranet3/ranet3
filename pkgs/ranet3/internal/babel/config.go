@@ -67,8 +67,6 @@ type Runtime struct {
 	Organization string
 }
 
-const maxInterval = 65535 * 10 * time.Millisecond
-
 // HelloInterval and UpdateInterval are the intervals in force, the default
 // filled in where the file left the field out. Two configurations have to be
 // compared through these rather than as they were written: an omitted interval
