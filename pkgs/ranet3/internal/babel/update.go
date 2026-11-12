@@ -132,6 +132,14 @@ func (d *PrefixDecoder) Decode(body []byte) (Update, error) {
 		if omitted > 0 && !d.prefixes[ae].have {
 			return Update{}, fmt.Errorf("babel: compressed IPv6 Update has no default prefix")
 		}
+	case AEIPv6LinkLocal:
+		// RFC 8966 section 4.6.9: "If AE is 3 (link-local IPv6), the Omitted field MUST be 0"
+		if plen > 128 {
+			return Update{}, fmt.Errorf("babel: link-local Update prefix length %d exceeds 128", plen)
+		}
+		if omitted != 0 {
+			return Update{}, fmt.Errorf("babel: link-local Update Omitted %d is not 0", omitted)
+		}
 	default:
 		return Update{}, fmt.Errorf("babel: Update: unsupported AE %d", ae)
 	}
@@ -139,7 +147,13 @@ func (d *PrefixDecoder) Decode(body []byte) (Update, error) {
 	if omitted > total {
 		return Update{}, fmt.Errorf("babel: Update Omitted %d exceeds prefix length", omitted)
 	}
-	sentLen := total - omitted
+	// AE 3 implies fe80::/64, RFC 8966 section 4.1.4, and its Prefix field carries the octets of the prefix past it, as babeld reads it
+	// the route is ignored below, so the implied octets stay unwritten, and only the R flag reads what the field carried
+	implied := 0
+	if ae == AEIPv6LinkLocal {
+		implied = min(total, 8)
+	}
+	sentLen := total - omitted - implied
 	if len(sent) < sentLen {
 		return Update{}, fmt.Errorf("babel: Update prefix truncated")
 	}
@@ -157,7 +171,7 @@ func (d *PrefixDecoder) Decode(body []byte) (Update, error) {
 		}
 		buf := make([]byte, size)
 		copy(buf, d.prefixes[ae].last[:omitted])
-		copy(buf[omitted:], sent[:sentLen])
+		copy(buf[omitted+implied:], sent[:sentLen])
 		clearPrefixTail(buf, plen)
 		if flags&updateFlagPrefix != 0 {
 			clear(d.prefixes[ae].last[:])
@@ -184,6 +198,10 @@ func (d *PrefixDecoder) Decode(body []byte) (Update, error) {
 		u.Ignore = true
 	}
 	if ae == AEWildcard && metric != MetricInfinity {
+		u.Ignore = true
+	}
+	// RFC 8966 Appendix C discards a route in fe80::/64, and the R flag above still sets the router-id, section 4.5
+	if ae == AEIPv6LinkLocal {
 		u.Ignore = true
 	}
 	subs, err := decodeSubTLVs(sent[sentLen:])

@@ -119,6 +119,43 @@ func TestUndecodablePacketLeavesTheNeighborsAddress(t *testing.T) {
 	}
 }
 
+// RFC 8966 section 4.5: "parsing a TLV MUST update the parser state even if the TLV is otherwise ignored", and section 4.6.9's R flag "establishes a new default router-id for this TLV and subsequent Update TLVs in the same packet"
+// an AE 3 Update with the R flag sets the router-id from its 8 octets, and the link-local route itself is not learned
+func TestLinkLocalUpdateSetsTheRouterID(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	before := [8]byte{1, 1, 1, 1, 1, 1, 1, 1}
+	flagged := [8]byte{0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11}
+	linkLocal := append([]byte{AEIPv6LinkLocal, updateFlagRouterID, 128, 0, 0x17, 0x70, 0, 1, 0, 60}, flagged[:]...)
+	dest := netip.MustParsePrefix("2001:db8:8::/48")
+	speaker.handlePacket(neighbor, EncodePacket([]RawTLV{
+		EncodeRouterID(before),
+		{Type: TLVUpdate, Body: linkLocal},
+		EncodeUpdate(Update{AE: AEIPv6, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(), Interval: 6000, Seqno: 1, Metric: 60}),
+	}))
+
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	route := speaker.routes.route(neighbor, routeKey{dest: dest})
+	if route == nil {
+		t.Fatalf("%s was not learned", dest)
+	}
+	if route.routerID != flagged {
+		t.Errorf("%s was learned under router-id %x, want %x from the AE 3 Update's R flag", dest, route.routerID, flagged)
+	}
+	if len(speaker.routes.entries) != 1 {
+		t.Errorf("the packet taught %d prefixes, want only %s", len(speaker.routes.entries), dest)
+	}
+}
+
+// RFC 8966 section 4.6.9: "If AE is 3 (link-local IPv6), the Omitted field MUST be 0", and an AE 3 Update with Omitted 1 does not decode
+func TestLinkLocalUpdateWithOmittedDoesNotDecode(t *testing.T) {
+	body := []byte{AEIPv6LinkLocal, 0, 128, 1, 0x17, 0x70, 0, 1, 0, 60, 9, 9, 9, 9, 9, 9, 9, 9}
+	if _, err := (&PrefixDecoder{}).Decode(body); err == nil {
+		t.Error("an AE 3 Update with Omitted 1 decoded")
+	}
+}
+
 // lockHeld is how long TestReceiveTimestampIsTakenBeforeTheSpeakersLock holds the speaker's lock while a packet arrives
 const lockHeld = 80 * time.Millisecond
 
