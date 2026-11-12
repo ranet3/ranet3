@@ -341,8 +341,9 @@ func (s *Speaker) seqnoReply(n *neighborState, request SeqnoRequest, now time.Ti
 			return sendTLVs(n, key, advertised, spent)
 		}
 	}
-	if request.RouterID == s.routerID || request.HopCount < 2 {
-		return nil // no other node can raise this node's sequence number
+	// no other node can raise this node's sequence number, and the section forwards only while "the node is advertising the prefix", which a node without transit never does for a learned one
+	if s.noTransit || request.RouterID == s.routerID || request.HopCount < 2 {
+		return nil
 	}
 	// RFC 8966 section 4.1.3: "A router-id MUST NOT consist of either all
 	// binary zeroes ... or all binary ones", and a forwarded request carries it
