@@ -347,16 +347,22 @@ func (s headerShape) around(outer []byte) []byte {
 	return out
 }
 
-// emptyBuckets spends the buckets of the sources the packets above come from, and then the node's cap
-func emptyBuckets(tb testing.TB, m *Mesh) {
+// spend draws every answer of each of sources' buckets on m, failing where one holds fewer
+func spend(tb testing.TB, m *Mesh, sources ...netip.Addr) {
 	tb.Helper()
-	for _, source := range tooBigSource {
+	for _, source := range sources {
 		for range icmpSourceBurst {
 			if !m.takeICMPToken(source) {
-				tb.Fatalf("a fresh bucket of %s held fewer than %d answers", source, icmpSourceBurst)
+				tb.Fatalf("the bucket of %s held fewer than %d answers", source, icmpSourceBurst)
 			}
 		}
 	}
+}
+
+// emptyBuckets spends the buckets of the sources the packets above come from, and then the node's cap
+func emptyBuckets(tb testing.TB, m *Mesh) {
+	tb.Helper()
+	spend(tb, m, tooBigSource[4], tooBigSource[6])
 	capHolding(m, 0)
 }
 
@@ -1048,6 +1054,15 @@ func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnswered(t *testing.
 func icmpv6Error(source, destination netip.Addr, size int) []byte {
 	raw := withProtocol(udpPacket(source, destination, size, false), 58)
 	raw[40] = 1
+	return raw
+}
+
+// icmpv4Error is an ICMP destination unreachable of size bytes with DF set from source to destination, which no ICMP error may answer
+func icmpv4Error(source, destination netip.Addr, size int) []byte {
+	raw := udpPacket(source, destination, size, true)
+	raw[9], raw[20] = 1, 3
+	binary.BigEndian.PutUint16(raw[10:], 0)
+	binary.BigEndian.PutUint16(raw[10:], ^uint16(packet.Sum(0, raw[:20])))
 	return raw
 }
 

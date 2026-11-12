@@ -54,8 +54,9 @@ const (
 )
 
 // SetEgressReady tells the mesh which families the egress segments carry out
-// translated, from the translator's last pass, and an egress result of a
-// family that is not ready is dropped and counted NotReady
+// translated, from the translator's last pass. An egress result of a family
+// that is not ready is dropped and counted NotReady, and its inner packet may
+// be answered with no route
 func (m *Mesh) SetEgressReady(v4, v6 bool) { m.egressReady.Store(readyBits(v4, v6)) }
 
 // EgressReady is the families SetEgressReady last named ready

@@ -134,13 +134,15 @@ func ownEgressOwned(m *Mesh) *Mesh {
 	return m
 }
 
-// routeLeaf routes each of sources to a leaf of m's, a source the mesh routes
-func routeLeaf(tb testing.TB, m *Mesh, sources ...netip.Addr) {
+// routeLeaf routes each of sources to a leaf of m's, a source the mesh routes, and returns the leaf's recorder
+func routeLeaf(tb testing.TB, m *Mesh, sources ...netip.Addr) *recordingPeer {
 	tb.Helper()
-	leaf := (&recordingPeer{}).peer(tb, "leaf")
+	leaf := &recordingPeer{}
+	peer := leaf.peer(tb, "leaf")
 	for _, source := range sources {
-		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, source.BitLen()), leaf)
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, source.BitLen()), peer)
 	}
+	return leaf
 }
 
 func tunWrites(dev *recordingDevice) [][][]byte {
@@ -529,26 +531,88 @@ func TestEgressBatchAllocatesOnceMoreThanADelivery(t *testing.T) {
 	}
 }
 
-// an egress result of a family the translator has not reported ready is dropped and counted not ready, since the host would carry it out untranslated
-// it reaches neither the tun nor the sender, while the ready family's result is written
-func TestEgressOfAFamilyNotReadyIsNotReady(t *testing.T) {
-	m, meshTUN := egressMesh(t)
+// answering has m answer from routerIDs at a TTL of 64
+func answering(m *Mesh) {
+	m.SetAnswerSources(holding(map[int]bool{4: true, 6: true}))
+	m.SetAnswerTTL(64)
+}
+
+// notReady holds neither family of m's egress segments ready, m answering as answering has it
+func notReady(m *Mesh) {
 	m.SetEgressReady(false, false)
+	answering(m)
+}
+
+// notReadyLeaf holds m notReady and returns the recorder of the leaf it routes the leaf sources to
+func notReadyLeaf(tb testing.TB, m *Mesh) *recordingPeer {
+	tb.Helper()
+	notReady(m)
+	return routeLeaf(tb, m, tooBigSource[4], tooBigSource[6])
+}
+
+// notReadyInner is a packet from the leaf source of each family to a destination outside the mesh
+func notReadyInner() (v6, v4 []byte) {
+	return plainV6(tooBigSource[6], segAddr("2001:db8:4860::8888"), "egressed over IPv6"), udpPacket(tooBigSource[4], tooBigDestination[4], 64, false)
+}
+
+// notReadyErrors is an ICMP error from the leaf source of each family to a destination outside the mesh, which no ICMP error may answer
+func notReadyErrors() (v6, v4 []byte) {
+	return icmpv6Error(tooBigSource[6], segAddr("2001:db8:4860::8888"), 64), icmpv4Error(tooBigSource[4], tooBigDestination[4], 64)
+}
+
+// atExit is a batch of inners, each steered from headend to egressExit
+func atExit(tb testing.TB, inners ...[]byte) [][]byte {
+	tb.Helper()
+	outers := make([][]byte, len(inners))
+	for i, inner := range inners {
+		outers[i] = steered(tb, inner, headend, egressExit)
+	}
+	return framed(outers...)
+}
+
+// checkNoRoute holds answers to one answer to each of inners in order, Destination Unreachable code 0 over IPv6 and network unreachable over IPv4
+// from the router-id of its family, the IPv4 one at the TTL of 64 answering sets
+func checkNoRoute(tb testing.TB, answers [][]byte, inners ...[]byte) {
+	tb.Helper()
+	if len(answers) != len(inners) {
+		tb.Fatalf("the leaf took %d answers, want one for each of %d packets", len(answers), len(inners))
+	}
+	for i, inner := range inners {
+		if inner[0]>>4 == 6 {
+			checkICMPv6(tb, answers[i], inner, routerIDs[6], 1, 0, 0)
+			continue
+		}
+		checkICMPv4(tb, answers[i], inner, routerIDs[4], 3, 0, 0)
+		if answers[i][8] != 64 {
+			tb.Errorf("the IPv4 answer carries a TTL of %d, want the mesh's 64", answers[i][8])
+		}
+	}
+}
+
+// an egress result of a family the translator has not reported ready is dropped and counted not ready, since the host would carry it out untranslated
+// and its inner packet is answered from the router-id of its family to the peer that routes the inner source, with Destination Unreachable code 0 over IPv6, RFC 4443 section 3.1, and network unreachable over IPv4, RFC 1812 section 5.2.7.1
+// counted answered among the transit counters, with neither family ready and with IPv6 alone
+// nothing reaches the tun or the headend but the ready family's result, which is written and not answered
+func TestEgressOfAFamilyNotReadyIsAnsweredNoRoute(t *testing.T) {
+	m, meshTUN := egressMesh(t)
+	leaf := notReadyLeaf(t, m)
 	back := &recordingPeer{}
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), back.peer(t, "headend"))
-	egressed6 := plainV6(segAddr("3fff:a::1"), segAddr("2001:db8:4860::8888"), "egressed over IPv6")
-	egressed4 := udpPacket(tooBigSource[4], tooBigDestination[4], 64, false)
-	batch := func() {
-		m.DeliverInboundBatch(framed(steered(t, egressed6, headend, egressExit), steered(t, egressed4, headend, egressExit)), DefaultMTU, nil, nil)
-	}
+	egressed6, egressed4 := notReadyInner()
+	batch := func() { m.DeliverInboundBatch(atExit(t, egressed6, egressed4), DefaultMTU, nil, nil) }
 
 	batch()
 	if counters := m.SegmentCounters(); counters.NotReady != 2 || counters.Egressed != 0 || counters.Dropped != 0 {
 		t.Errorf("a mesh with neither family ready counted %+v, want 2 not ready", counters)
 	}
+	if counters := m.TransitCounters(); counters != (TransitCounters{Answered: 2}) {
+		t.Errorf("a mesh with neither family ready counted the transit outcomes %+v, want 2 answered", counters)
+	}
 	if writes := tunWrites(meshTUN); len(writes) != 0 {
 		t.Errorf("an egress result not ready reached the tun as %q", writes)
 	}
+	checkNoRoute(t, leaf.packets(t), egressed6, egressed4)
+
 	m.SetEgressReady(false, true)
 	batch()
 	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], [][]byte{egressed6}, bytes.Equal) {
@@ -557,8 +621,54 @@ func TestEgressOfAFamilyNotReadyIsNotReady(t *testing.T) {
 	if counters := m.SegmentCounters(); counters.NotReady != 3 || counters.Egressed != 1 || counters.Dropped != 0 {
 		t.Errorf("with IPv6 alone ready the mesh counted %+v, want 3 not ready and 1 egressed", counters)
 	}
+	if counters := m.TransitCounters(); counters != (TransitCounters{Answered: 3}) {
+		t.Errorf("with IPv6 alone ready the mesh counted the transit outcomes %+v, want 3 answered", counters)
+	}
+	checkNoRoute(t, leaf.packets(t)[2:], egressed4)
 	if sent := back.packets(t); len(sent) != 0 {
-		t.Errorf("an egress result not ready was answered with %q", sent)
+		t.Errorf("the headend took %q, want no answer about a segment", sent)
+	}
+}
+
+// an egress result of a family not ready whose source's bucket is spent is counted not ready and left unanswered, the limits counting it withheld by its source, in either family
+// the mesh has no segmentsStarted, so its clock reads its end and no bucket refills between the draws and the batch
+func TestEgressOfAFamilyNotReadyFromASpentSourceIsLeftUnanswered(t *testing.T) {
+	m, _ := egressMesh(t)
+	leaf := notReadyLeaf(t, m)
+	spend(t, m, tooBigSource[4], tooBigSource[6])
+	bySource, byNode := m.ICMPWithheld()
+	inner6, inner4 := notReadyInner()
+	m.DeliverInboundBatch(atExit(t, inner6, inner4), DefaultMTU, nil, nil)
+	if counters := m.SegmentCounters(); counters.NotReady != 2 {
+		t.Errorf("the packets from spent sources counted %+v, want 2 not ready", counters)
+	}
+	if source, node := m.ICMPWithheld(); source != bySource+2 || node != byNode {
+		t.Errorf("the limits withheld %d by source and %d by the cap, want %d and %d", source, node, bySource+2, byNode)
+	}
+	if counters := m.TransitCounters(); counters != (TransitCounters{}) {
+		t.Errorf("the packets from spent sources counted the transit outcomes %+v, want none", counters)
+	}
+	if sent := leaf.packets(t); len(sent) != 0 {
+		t.Errorf("the leaf took %q, want no answer past the sources' buckets", sent)
+	}
+}
+
+// an egress result of a family not ready that is itself an ICMP error is counted not ready and never answered, RFC 4443 section 2.4 (e.1) and RFC 1812 section 4.3.2.7
+// and draws on no limit, so each source's bucket still holds all its answers after the batch
+func TestEgressOfAFamilyNotReadyThatIsAnICMPErrorIsNotAnswered(t *testing.T) {
+	m, _ := egressMesh(t)
+	leaf := notReadyLeaf(t, m)
+	error6, error4 := notReadyErrors()
+	m.DeliverInboundBatch(atExit(t, error6, error4), DefaultMTU, nil, nil)
+	if counters := m.SegmentCounters(); counters.NotReady != 2 {
+		t.Errorf("the ICMP errors counted %+v, want 2 not ready", counters)
+	}
+	spend(t, m, tooBigSource[4], tooBigSource[6])
+	if counters := m.TransitCounters(); counters != (TransitCounters{}) {
+		t.Errorf("the ICMP errors counted the transit outcomes %+v, want none", counters)
+	}
+	if sent := leaf.packets(t); len(sent) != 0 {
+		t.Errorf("the leaf took %q, want no answer to an ICMP error", sent)
 	}
 }
 

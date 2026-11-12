@@ -159,6 +159,7 @@ var outcomeCases = func() []outcomeCase {
 	end := func(hops byte) []byte {
 		return withTTL(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], 100, false), egressWaypoint, egressNext), hops)
 	}
+	notReadyAnswered := with(session(TraceAnswer, "not_ready"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressExit, "no_route", TraceSent })
 	return []outcomeCase{
 		{"a forward", transitForwarded, throughDecide(nil, udp(4, transitSender, transitFar, 100, false)), with(session(TraceForward, ""), func(r *TraceRecord) { r.Next = "out" })},
 		{"a forward cut into fragments", transitForwarded, throughDecide(nil, udp(4, transitSender, transitFar, tracedMTU+100, false)), with(session(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Fragments = "out", 2 })},
@@ -228,7 +229,8 @@ var outcomeCases = func() []outcomeCase {
 		{"an egress segment", transitDelivered, acted(nil, headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit)), with(session(TraceEgress, ""), func(r *TraceRecord) { r.Segment = egressExit })},
 		{"an egress segment refusing a source", transitRefused, acted(nil, headendSteered(udpPacket(stranger[6], transitNowhere[6], 100, false), egressExit)), with(session(TraceDrop, "refused"), func(r *TraceRecord) { r.Segment = egressExit })},
 		{"an egress segment dropping a group", transitSessionMulticast, acted(nil, headendSteered(udpPacket(tooBigSource[6], segAddr("ff02::fb"), 100, false), egressExit)), with(session(TraceDrop, "session_multicast"), func(r *TraceRecord) { r.Segment = egressExit })},
-		{"an egress segment not ready", transitNotReady, acted(func(m *Mesh) { m.SetEgressReady(false, false) }, headendSteered(udp(6, tooBigSource, transitNowhere, 100, false), egressExit)), with(session(TraceDrop, "not_ready"), func(r *TraceRecord) { r.Segment = egressExit })},
+		{"an egress segment not ready", transitNotReady, acted(notReady, headendSteered(udp(6, tooBigSource, transitNowhere, 100, false), egressExit)), notReadyAnswered},
+		{"an egress segment not ready over IPv4", transitNotReady, acted(notReady, headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit)), notReadyAnswered},
 		{"an egress segment after End", transitDelivered, acted(nil, headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressWaypoint, egressExit)), with(session(TraceEgress, ""), func(r *TraceRecord) { r.Segment = egressExit })},
 		{"an egress segment refusing a source after End", transitRefused, acted(nil, headendSteered(udpPacket(stranger[6], transitNowhere[6], 100, false), egressWaypoint, egressExit)), with(session(TraceDrop, "refused"), func(r *TraceRecord) { r.Segment = egressExit })},
 		{"End", transitForwarded, acted(nil, end(64)), with(session(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Segment = "next", egressNext })},
@@ -345,6 +347,51 @@ func TestTraceRecordsAnAnswerNoneIsSentFor(t *testing.T) {
 	n.m.SetAnswerSources(AnswerSources{})
 	if r := deliverTraced(n, feed, udpPacket(transitSender[6], transitUnrouted[6], 100, false)); len(r) != 1 || r[0].Outcome != TraceUnanswered {
 		t.Errorf("a node with no IPv6 address to answer from drew %+v, want an answer unanswered", r)
+	}
+}
+
+// an egress segment's packet of a family not ready, with a trace open, is answered once and recorded with its answer's fate
+// sent with room in its source's bucket, withheld with the bucket spent, and not answerable where it is an ICMP error, in either family
+func TestTraceRecordsTheFateOfAnEgressAnswerToAFamilyNotReady(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		spent bool
+		inner func() (v6, v4 []byte)
+		want  TraceOutcome
+	}{
+		{"with room in its source's bucket", false, notReadyInner, TraceSent},
+		{"with its source's bucket spent", true, notReadyInner, TraceWithheld},
+		{"an ICMP error", false, notReadyErrors, TraceNotAnswerable},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, feed := tracedSegments(t)
+			leaf := notReadyLeaf(t, m)
+			if c.spent {
+				spend(t, m, tooBigSource[4], tooBigSource[6])
+			}
+			inner6, inner4 := c.inner()
+			m.DeliverInboundBatch(atExit(t, inner6, inner4), DefaultMTU, (&recordingPeer{}).peer(t, "from"), nil)
+			want := with(session(TraceAnswer, "not_ready"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressExit, "no_route", c.want })
+			records := queued(feed)
+			if len(records) != 2 {
+				t.Fatalf("the feed took %d records, want one for each of 2 packets", len(records))
+			}
+			for _, r := range records {
+				if got := decisionOf(r); !reflect.DeepEqual(got, want) {
+					t.Errorf("the record is %+v, want %+v", got, want)
+				}
+			}
+			answers, counted := leaf.packets(t), TransitCounters{}
+			if c.want == TraceSent {
+				checkNoRoute(t, answers, inner6, inner4)
+				counted.Answered = 2
+			} else if len(answers) != 0 {
+				t.Errorf("the leaf took %q, want no answer", answers)
+			}
+			if got := m.TransitCounters(); got != counted {
+				t.Errorf("the mesh counted the transit outcomes %+v, want %+v", got, counted)
+			}
+		})
 	}
 }
 

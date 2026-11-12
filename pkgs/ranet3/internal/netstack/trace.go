@@ -691,6 +691,15 @@ func (r *segmentRecords) refusal(m *Mesh, packet []byte, err error) {
 	r.actedAs(site, packet, r.arrived)
 }
 
+// answered answers raw, an egress segment's inner packet of version, with kind as m.answer does, and records it for reason with the answer's fate, at the segment acted is addressed to
+//
+//go:noinline
+func (r *segmentRecords) answered(m *Mesh, reason transitReason, kind answerKind, acted, raw []byte, version byte) {
+	var draw answerDraw
+	fate := m.answerDrawn(raw, version, kind, 0, &draw)
+	r.actedAs(sessionSite(r.from, TraceAnswer, reason).answered(kind, fate), acted, raw)
+}
+
 // forwarded keeps the copy of the packet in hand, a forwarded segment behind before others, in arrivals sized for a batch of size packets
 //
 //go:noinline

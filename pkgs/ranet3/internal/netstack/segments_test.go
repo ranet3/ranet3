@@ -17,7 +17,6 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
-	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -714,10 +713,7 @@ func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
 	icmp6ErrorBehindAH := tooBig6(tooBigSource[6], tooBigDestination[6])
 	icmp6ErrorBehindAH[6] = 51
 	copy(icmp6ErrorBehindAH[40:], behindAH)
-	icmp4Error := tooBig4(tooBigSource[4], tooBigDestination[4])
-	icmp4Error[9], icmp4Error[20] = 1, 3
-	binary.BigEndian.PutUint16(icmp4Error[10:], 0)
-	binary.BigEndian.PutUint16(icmp4Error[10:], ^uint16(packet.Sum(0, icmp4Error[:20])))
+	icmp4Error := icmpv4Error(tooBigSource[4], tooBigDestination[4], DefaultMTU)
 	damaged4 := tooBig4(tooBigSource[4], tooBigDestination[4])
 	damaged4[10] ^= 0x01
 	answerable6, answerable4 := tooBig6(tooBigSource[6], tooBigDestination[6]), tooBig4(tooBigSource[4], tooBigDestination[4])

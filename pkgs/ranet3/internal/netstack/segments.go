@@ -308,10 +308,13 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 				continue
 			}
 			// a packet the kernel exit writes while its family's translation is missing leaves the uplink untranslated
+			// the answer is about the inner packet, since the segment's source is the headend that encapsulated it rather than its sender
 			if !m.readyFor(&check, result.Family, false) {
 				m.segmentsNotReady.Add(1)
 				if records != nil {
-					records.acted(TraceDrop, transitNotReady, packet, result.Inner)
+					records.answered(m, transitNotReady, answerNoRoute, packet, result.Inner, version)
+				} else {
+					m.answer(result.Inner, version, answerNoRoute, 0)
 				}
 				continue
 			}

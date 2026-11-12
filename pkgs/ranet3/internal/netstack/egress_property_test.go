@@ -75,7 +75,8 @@ func tagged(raw []byte, frames int) (int, bool) {
 // and an allowed packet of a family not ready is counted not ready by its own mode's word
 // so no packet with a source outside the allow list, to a group or the limited broadcast, of a subnet or of a cap.route announcement reaches the exit, and none of the exit's reaches the tun
 // each place takes its frames in batch order, the exit mode 3's in one batch and then mode 2's in another
-// an answer quotes only a refused header, never a refused source
+// an answer to the headend quotes only a refused header, never a refused source
+// and an answer to the inner source only about an egress segment's packet of a family not ready, each answered at most once and, up to the source's bucket, at least once
 // and each counter counts exactly the frames of the kinds it names
 func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -143,6 +144,8 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		m, meshTUN := egressMesh(ht)
 		exit := &recordingExit{}
 		m.SetExit(exit)
+		answering(m)
+		leaf := routeLeaf(ht, m, tooBigSource[4], tooBigSource[6])
 		var advertised []netip.Prefix
 		for _, family := range []int{4, 6} {
 			counted := exitShapes[shape[family]].prefixes[family]
@@ -206,6 +209,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		var want SegmentCounters
 		var wantDecided TransitCounters
 		var wantModes []segmentKind
+		unready := map[int]int{}
 		for i, kind := range kinds {
 			place := placeCounter
 			switch kind {
@@ -225,6 +229,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 					want.Egressed++
 				} else {
 					want.NotReady++
+					unready[families[i]]++
 				}
 			case kindOuterOutside, kindInnerOutside:
 				want.Refused++
@@ -279,6 +284,21 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			}
 		}
 		want.Answered = uint64(len(sent))
+		answered, answeredOf := map[int]bool{}, map[int]int{}
+		for _, answer := range leaf.packets(ht) {
+			i, ok := tagged(answer, len(kinds))
+			if !ok || kinds[i] != kindEgress || ready[families[i]] || answered[i] {
+				ht.Fatalf("an answer went to the inner source about frame %d of kind %d, want each egress packet of a family not ready answered at most once and no other", i, kinds[i])
+			}
+			answered[i] = true
+			answeredOf[families[i]]++
+		}
+		for family, count := range unready {
+			if least := min(count, icmpSourceBurst); answeredOf[family] < least {
+				ht.Fatalf("%d of the %d IPv%d egress packets not ready were answered, want at least the %d the source's bucket holds", answeredOf[family], count, family, least)
+			}
+		}
+		wantDecided.Answered = uint64(len(answered))
 		if got := m.SegmentCounters(); got != want {
 			ht.Fatalf("the batch %v of families %v with ready %v counted %+v, want %+v", kinds, families, ready, got, want)
 		}
