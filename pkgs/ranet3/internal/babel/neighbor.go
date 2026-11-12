@@ -144,11 +144,15 @@ func (n *neighborState) forgetLink() {
 // is not in what this node advertises: both ends measure the same round trip,
 // so adding it at both would count it twice, and BIRD does not add it there
 // either.
+//
+// It is at least 1 for a neighbor reporting an rxcost of zero, since section
+// 3.4.3 has the cost "strictly positive", and M(c, m) of section 3.5.2 is then
+// strictly monotonic, without which persistent routing loops are possible.
 func (n *neighborState) linkCost(now time.Time, cost CostParams) uint16 {
 	if !n.isAlive(now) || !n.haveReportedCost || !now.Before(n.ihuExpiry) {
 		return MetricInfinity
 	}
-	return addExtra(saturatingAdd(
+	return max(1, addExtra(saturatingAdd(
 		cost.linkQualityCost(&n.multicastHistory, n.reportedCost),
-		cost.RTTPenalty(n.measuredRTT, n.haveRTT)), n.extra)
+		cost.RTTPenalty(n.measuredRTT, n.haveRTT)), n.extra))
 }

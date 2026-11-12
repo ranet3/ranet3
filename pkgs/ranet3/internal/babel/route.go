@@ -580,11 +580,9 @@ func (r *routeInfo) advertised() advertisement {
 }
 
 // cost is M(c, m) of RFC 8966 section 3.5.2 with the recommended additive
-// metric. The link cost is clamped to one so that M stays strictly monotonic
-// even when a neighbor reports an rxcost of zero. Without M(c, m) > m,
-// persistent routing loops are possible.
+// metric, strictly monotonic because linkCost is at least 1.
 func (r *routeInfo) cost(n *neighborState, now time.Time, cost CostParams) uint16 {
-	return saturatingAdd(max(1, n.linkCost(now, cost)), r.rxMetric)
+	return saturatingAdd(n.linkCost(now, cost), r.rxMetric)
 }
 
 // smooth maintains ms(R) of RFC 8966 Appendix A.3 as an exponentially smoothed
