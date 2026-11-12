@@ -371,15 +371,14 @@ func (s *Speaker) helloAction(n *neighborState, now time.Time) sendAction {
 	n.sentHello = true
 	n.helloSeqno++
 	// The rxcost is the only thing that tells the far end about the direction
-	// this node receives on, so a neighbor this node once heard and no longer
-	// does is told so. forgetLink discards the history that would have said it
-	// through beta, and on a link that works one way the far end otherwise
-	// keeps selecting routes through a direction that is dead. A neighbor never
-	// heard from is a different thing and keeps the nominal cost, so a new
-	// adjacency forms in one exchange rather than two.
+	// this node receives on, so a neighbor this node does not hear, never heard
+	// or gone quiet, is told infinity, as both estimators of RFC 8966 Appendix
+	// A.2 give. forgetLink discards the history that would have said it through
+	// beta, and on a link that works one way the far end otherwise keeps
+	// selecting routes through a direction that is dead.
 	// the extra goes in the rxcost too, so the neighbor's link cost toward this node carries it, scaled by the neighbor's own reception
 	rxcost := addExtra(s.cost.rxCost(&n.multicastHistory), n.extra)
-	if n.heard && !n.isAlive(now) {
+	if !n.isAlive(now) {
 		rxcost = MetricInfinity
 	}
 	// an IHU goes with every Hello, against RFC 8966 section 3.4.2, for the

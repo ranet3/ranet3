@@ -329,12 +329,11 @@ func TestLinkThatComesBackIsNotCostedByItsOutage(t *testing.T) {
 	}
 }
 
-// The IHU says what this node knows about receiving from the neighbor, and
-// there are three states rather than two. Never heard from keeps the nominal
-// cost, so a new adjacency forms in one exchange. Heard and still heard reads
-// beta. Heard and gone quiet is infinite, which forgetLink erases the evidence
-// for and which on a one-way link is all that stops the far end selecting a
-// direction that is dead.
+// The IHU says what this node knows about receiving from the neighbor. Heard
+// reads beta. Gone quiet is infinite, which forgetLink erases the evidence for
+// and which on a one-way link is all that stops the far end selecting a
+// direction that is dead. Never heard from is infinite too, as both estimators
+// of RFC 8966 Appendix A.2 give.
 func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 	const interval = time.Second
 	s, _, _ := captureSpeaker(t, Config{Hello: dur(interval)})
@@ -389,8 +388,51 @@ func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 		t.Fatal("the hello action carried no IHU")
 		return 0
 	}
-	if got := freshCost(); got != 96 {
-		t.Errorf("a neighbor never heard from is advertised %d, which costs the adjacency an exchange", got)
+	if got := freshCost(); got != MetricInfinity {
+		t.Errorf("a neighbor never heard from is advertised %d, so the far end selects a direction nothing has crossed", got)
+	}
+}
+
+// two speakers that have heard nothing from each other form the adjacency one round trip after the first Hello, with no Hello timer in between
+// each answers a first Hello at once, so the infinite rxcost of the IHU with the first Hello costs that round trip and no more
+func TestAdjacencyFormsOneRoundTripAfterTheFirstHello(t *testing.T) {
+	a, toB, fromA := captureSpeaker(t, Config{})
+	b, toA, fromB := captureSpeaker(t, Config{})
+	linkCost := func(s *Speaker, n *neighborState) uint16 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return n.linkCost(time.Now(), s.cost)
+	}
+	deliver := func(packets *capture, to *Speaker, from *neighborState) int {
+		sent := packets.sent()
+		packets.reset()
+		for _, raw := range sent {
+			to.Receive(from.peer, raw)
+		}
+		return len(sent)
+	}
+	a.mu.Lock()
+	send := a.emitLocked([]sendAction{a.helloAction(toB, time.Now())})
+	a.mu.Unlock()
+	send()
+
+	if deliver(fromA, b, toA) == 0 {
+		t.Fatal("a sent b nothing")
+	}
+	if got := linkCost(b, toA); got != MetricInfinity {
+		t.Errorf("b costs its link to a %d before a has heard b", got)
+	}
+	if deliver(fromB, a, toB) == 0 {
+		t.Fatal("b did not answer a's first Hello")
+	}
+	if got := linkCost(a, toB); got == MetricInfinity {
+		t.Error("a's link to b is infinite after b's answer to a's first Hello")
+	}
+	if deliver(fromA, b, toA) == 0 {
+		t.Fatal("a did not answer b's first Hello")
+	}
+	if got := linkCost(b, toA); got == MetricInfinity {
+		t.Error("b's link to a is infinite after a's answer to b's first Hello")
 	}
 }
 

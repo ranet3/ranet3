@@ -73,7 +73,6 @@ func (s *Speaker) handlePacketLocked(n *neighborState, src netip.Addr, raw []byt
 					n.unicastHelloTime = now
 					n.unicastHelloInterval = time.Duration(h.Interval) * 10 * time.Millisecond
 				} else {
-					n.heard = true
 					n.lastHelloTime = now
 					n.helloInterval = time.Duration(h.Interval) * 10 * time.Millisecond
 					// Appendix A.1 resets the timer to 1.5 times the advertised

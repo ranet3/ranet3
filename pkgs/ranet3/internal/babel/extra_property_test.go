@@ -27,14 +27,13 @@ func TestExtraCostKeepsFiniteCostsFiniteAndInfiniteOnesInfinite(t *testing.T) {
 		bits := hegel.Draw(ht, pbt.Spanning[uint16](0, 0xffff))
 		samples := hegel.Draw(ht, pbt.Spanning(0, historyDepth))
 		alive := hegel.Draw(ht, hegel.Booleans())
-		heard := hegel.Draw(ht, hegel.Booleans())
 
 		cost := DefaultCostParams()
 		cost.RxCost, cost.RTT.Weight = rx, weight
 		speaker := &Speaker{cost: cost, hello: time.Second}
 		now := time.Now()
 		figures := func(extra uint16) (link, ihu uint16) {
-			n := &neighborState{extra: extra, heard: heard, reportedCost: reported, haveReportedCost: true,
+			n := &neighborState{extra: extra, reportedCost: reported, haveReportedCost: true,
 				measuredRTT: rtt, haveRTT: true, ihuExpiry: now.Add(time.Minute),
 				multicastHistory: helloHistory{bits: bits, started: samples > 0, samples: samples}}
 			if alive {

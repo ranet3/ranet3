@@ -34,11 +34,6 @@ type neighborState struct {
 	// whatever quality its last Hello gave it until the neighbor expires.
 	multicastHistory helloHistory
 	nextHelloDue     time.Time
-	// heard is whether a scheduled Hello has ever arrived from this neighbor.
-	// forgetLink clears the history and the promise, so it is the only thing
-	// left that tells a neighbor gone quiet from one never heard from, and the
-	// IHU says different things about the two.
-	heard bool
 
 	// RFC 9616 timestamps: echo their latest Hello in our IHU. Their reply
 	// may refer to an older local Hello, so local transmit history is unneeded.
