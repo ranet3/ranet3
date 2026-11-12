@@ -227,11 +227,12 @@ were.
 Two of the darwin tests of `internal/egress/userspace` below narrow the whole
 Mac's automatic port range, from `net.inet.ip.portrange.first` to
 `net.inet.ip.portrange.last`, to a window of 4 or 2048 ports, which they fill
-with TCP sockets of their own on purpose. While it is narrowed, every automatic
-port of the Mac, of either protocol, comes from that window, and once it is full
-the first test reads an automatic TCP bind and an unbound TCP connect refused,
-and the attack test an unbound TCP connect. Run them on a Mac nothing else
-depends on while they run, and note what
+with TCP sockets of their own on purpose. While it is narrowed, a socket of
+either protocol that asks for no port range of its own, as a socket does by
+default, takes its automatic port from that window. Once the window is full, the
+first test reads an automatic TCP bind and an unbound TCP connect refused, and
+the attack test reads an unbound TCP connect refused. Run them on a Mac nothing
+else depends on while they run, and note what
 `sysctl net.inet.ip.portrange.first net.inet.ip.portrange.last` prints before a
 run. The range is not TCP's alone: XNU's bind of port 0 reads it with no test of
 the protocol
@@ -319,25 +320,28 @@ sudo env RANET3_TIMEWAIT_ATTACK=1 "${bin:?the build failed}" -test.run '^TestHos
     root, since it writes the range, and needs an MSL whose double outlasts its
     narrowed stretch's bound of 22 seconds. It binds each of the last 4 ports of
     the range once without connecting, to check they are free, narrows the range
-    to those 4, and leaves each in TIME_WAIT. While it is narrowed, every
-    program's bind of port 0 and connect from an unbound socket draws on those 4
-    ports, and the test reads its own refused. It leaves the 4 sockets in
-    TIME_WAIT under the restored range until macOS ends them.
+    to those 4, and leaves each in TIME_WAIT. While it is narrowed, every socket
+    of the Mac that asks for no port range of its own takes its automatic port
+    from those 4, and the test reads its own automatic binds and unbound
+    connects refused. It leaves the 4 sockets in TIME_WAIT under the restored
+    range until macOS ends them.
   - `TestTimeWaitPortsBecomeAvailableAfterTheirSocketsEnd` needs no root, an MSL
-    of at most 15 seconds, and writes no setting. Of its 5 arms, 4 end a socket
-    in TIME_WAIT and then bind its port without a reuse option, at most every
-    250 milliseconds, closing each such bind at once, until one succeeds or the
-    observation ends: 3 ready the socket as the exit does and close it with a
-    linger of 0, at once, after holding it through its TIME_WAIT, or once the
-    kernel has closed it, and 1 closes it plainly. The arm that waits for the
-    kernel's close fails as setup where the socket never leaves TIME_WAIT. The
-    fifth arm binds nothing: it sets a linger of 0 on a socket not readied,
-    fails unless macOS refuses it with `EINVAL`, and closes the socket plainly.
-    A program that binds an arm's port meanwhile may find it taken. A close with
-    a linger of 0 sends the server a reset where macOS still holds the
-    TIME_WAIT, as [host ports](../exit-nodes.md#host-ports) says. The 2 arms
-    that close plainly leave their sockets in TIME_WAIT until macOS ends them.
-    Its own bound is 257 seconds.
+    of at most 15 seconds, and writes no setting. Each of its 5 arms brings a
+    socket into TIME_WAIT. The arm the test runs first then sets a linger of 0
+    on its socket, which it did not ready as the exit does, fails unless macOS
+    refuses it with `EINVAL`, and closes the socket plainly. Each of the other 4
+    binds its socket's port without a reuse option, at most every 250
+    milliseconds, closing each such bind at once, until one succeeds or the
+    observation ends. Of those 4, 3 ready the socket as the exit does and close
+    it with a linger of 0, one at once, one after holding it through its
+    TIME_WAIT, and one once the kernel has closed it, and the remaining one
+    closes it plainly. The arm that waits for the kernel's close fails as setup
+    where the socket never leaves TIME_WAIT. A program that binds an arm's port
+    meanwhile may find it taken. A close with a linger of 0 sends the server a
+    reset where macOS still holds the TIME_WAIT, as
+    [host ports](../exit-nodes.md#host-ports) says. The 2 arms that close
+    plainly leave their sockets in TIME_WAIT until macOS ends them. The test's
+    own bound is 257 seconds.
   - `TestTimeWaitRegistrarReferencesDisappearAfterTheirSocketsEnd` reads its
     variable first and then runs as root, which reading the port registrar
     through `kern.skywalk.stats.netns` needs, and skips where the kernel has no
@@ -383,13 +387,13 @@ sudo env RANET3_TIMEWAIT_ATTACK=1 "${bin:?the build failed}" -test.run '^TestHos
   connections through an exit with the bound and closes each first, as fast as
   the exit admits them, so the exit's host sockets take up to the 1024 its bound
   allows, while the test connects to its second server from an unbound socket
-  every 250 milliseconds and the rest of the Mac draws on the other 1024. Then,
-  for at most 8 seconds, a leaf runs once through the window on an exit without
-  the bound, and the test fails unless the Mac's unbound connects are then
-  refused with `EADDRNOTAVAIL`: for that stretch no program on the Mac gets a
-  TCP port of the range by a bind of port 0 or an unbound connect. It leaves the
-  sockets of the exit without the bound in TIME_WAIT under the restored range,
-  up to 2048 of them, until macOS ends them.
+  every 250 milliseconds, and the Mac's other sockets that ask for no port range
+  of their own take their automatic ports from the other 1024. Then, for at most
+  8 seconds, a leaf runs once through the window on an exit without the bound,
+  and the test fails unless at least 1 of the 5 unbound connects it then makes
+  to its second server, apart from those every 250 milliseconds, is refused with
+  `EADDRNOTAVAIL`. It leaves the sockets of the exit without the bound in
+  TIME_WAIT under the restored range, up to 2048 of them, until macOS ends them.
 - `RANET3_HOLD_SERVER` starts no test. It names a server off the Mac by an
   address and port, such as `192.0.2.10:9000`, which reads to the client's FIN
   and closes, and the subtests of
