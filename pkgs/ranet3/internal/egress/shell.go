@@ -28,6 +28,9 @@ type Shell struct {
 
 	ready4, ready6, serves bool
 	unready, skipped       string
+	// reported is whether SetReady has run, before which no pass judged the
+	// starting state it compares against
+	reported bool
 }
 
 // Readiness is one pass's judgment of both families
@@ -99,14 +102,17 @@ func (s *Shell) Publish(prefixes []netip.Prefix) bool {
 }
 
 // SetReady records r. Ready is told when either family or whether the SIDs
-// are served moves, and egress.ready is recorded when any of them or the skip
-// does.
+// are served moves, and egress.ready is recorded at the first call and when
+// any of them or the skip moves. The first call logs each family it judged, a
+// family with no reason being one the exit does not carry.
 func (s *Shell) SetReady(r Readiness) {
+	first := !s.reported
+	s.reported = true
 	s.unready = unreadyText(r.Ready4, r.Ready6, r.Why4, r.Why6)
 	// a leaf reads the SID's /128 as the exit's liveness, so a family the host carries out and the exit cannot withdraws it
 	serves := (r.Ready4 || r.Ready6) && (r.Ready4 || !r.Carries4) && (r.Ready6 || !r.Carries6)
 	moved := r.Ready4 != s.ready4 || r.Ready6 != s.ready6 || serves != s.serves
-	if !moved && r.Skipped == s.skipped {
+	if !first && !moved && r.Skipped == s.skipped {
 		return
 	}
 	for _, family := range []struct {
@@ -115,7 +121,7 @@ func (s *Shell) SetReady(r Readiness) {
 		why        string
 	}{{FamilyIPv4, s.ready4, r.Ready4, r.Why4}, {FamilyIPv6, s.ready6, r.Ready6, r.Why6}} {
 		switch {
-		case family.was == family.ready:
+		case family.was == family.ready && (!first || family.why == ""):
 		case family.ready:
 			slog.Info("egress ready", "family", FamilyName(family.family))
 		default:
