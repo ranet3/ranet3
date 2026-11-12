@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -116,7 +115,7 @@ const addressWakeBudget = time.Second
 // in mode 2 another writer's overlay address of either family on the tun brings the family's catch-all for the host in, and taking it
 // off takes it out, each on a pass the address's own notification wakes, long before the periodic sweep
 func TestNetlinkFollowsAnotherWritersAddressOnTheTun(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -201,7 +200,7 @@ func TestNetlinkFollowsAnotherWritersAddressOnTheTun(t *testing.T) {
 // systemd-networkd deletes every rule it did not ask for whenever it configures a link
 // the reconciler puts its own back within the settle window and one pass, long before the periodic sweep
 func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)

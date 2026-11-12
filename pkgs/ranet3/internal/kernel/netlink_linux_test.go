@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ import (
 // test writes routes and addresses, and the machine running the suite is
 // usually on the mesh it is being written for.
 func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -249,7 +248,7 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 // then the tun is renumbered
 // each takes the one pass that follows it
 func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -344,7 +343,7 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 // kernel's default priority beside the overlay's hold of it, and a lookup
 // inside the prefix takes the route, in each family
 func TestNetlinkRouteOfAnOverlayPrefixWinsOverItsHold(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -407,7 +406,7 @@ func TestNetlinkRouteOfAnOverlayPrefixWinsOverItsHold(t *testing.T) {
 // an IPv6 address given another length is replaced in place, since linux keys it by address alone
 // the pass after the reload then moves only what the reload changed
 func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	first, second := prefix("10.99.0.1/32"), prefix("10.99.0.2/32")
@@ -509,7 +508,7 @@ const dumpedAddresses, interruptedDumps, churnBiteDumps = 512, 100, 1000
 // an address dump that another address coming and going keeps interrupting comes back whole, with no reply the kernel flagged, or as
 // netlink.ErrDumpInterrupted, and never as a table that may miss or repeat an entry
 func TestAddressDumpUnderChurnIsWholeOrRefused(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -569,7 +568,7 @@ func TestAddressDumpUnderChurnIsWholeOrRefused(t *testing.T) {
 // the reconciler reads the tun's addresses whole every time while another device's addresses keep changing, since its dumps name
 // the tun and the kernel never flags a dump of one device interrupted
 func TestNetlinkReadsTheTunsAddressesWhileAnotherDeviceChurns(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -619,7 +618,7 @@ func TestNetlinkReadsTheTunsAddressesWhileAnotherDeviceChurns(t *testing.T) {
 // the kernel ends a dump naming a tun it no longer holds on ENODEV, which the reconciler reads as a tun holding no address, so
 // its withdraw after the tun closed releases nothing and returns no error
 func TestNetlinkReadsATunTheKernelNoLongerHoldsAsEmpty(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -785,7 +784,7 @@ func drain(signal <-chan struct{}) {
 // answers with an error, naming no output device, and has to come back from a
 // dump the same way or every pass would delete and reinstall it.
 func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -839,7 +838,7 @@ func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
 // whole ownership story and a kernel that ignored it would hand back none of
 // this reconciler's rules, which it would never withdraw.
 func TestNetlinkRulesInNetworkNamespace(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)

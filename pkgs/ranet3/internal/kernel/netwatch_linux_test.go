@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -93,7 +92,7 @@ func TestHostWakesOutsideTheMeshAndOtherTables(t *testing.T) {
 // in a fresh namespace an address and a default route on an uplink signal as they come and go
 // a route in another table, and an address and a route on the device standing in for the mesh, signal nothing
 func TestNetworkWatchInNetworkNamespace(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -185,7 +184,7 @@ const routeBurst = 64
 // a burst of routes in main that are no default costs the watch no read, since a host may hold a full table there
 // a default in main still costs one and signals
 func TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -309,7 +308,7 @@ const overrunFill, overrunBurst = 16, 256
 // which signals the burst whole within quietWindow, and an address after it still signals
 // the queue holds only what wakes nothing when the monitor reads again, so ENOBUFS is the burst's only wake
 func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -407,7 +406,7 @@ func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 // in a fresh namespace a link outside the mesh signals as it comes up with no address, as it takes an address of each family under its network's length, a point-to-point one among them, and as it goes
 // a link that is down is none, and the mesh's own device never appears among the links
 func TestNetworkWatchFollowsLinksInNetworkNamespace(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)

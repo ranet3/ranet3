@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"testing"
 
@@ -33,7 +32,7 @@ const updateMoves = 300
 // begun on the same jiffy. Each family makes at least one move taking out the
 // end at key zero after such a transaction.
 func TestNftablesUpdateMovesASetInTheKernel(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -130,7 +129,7 @@ func TestNftablesUpdateMovesASetInTheKernel(t *testing.T) {
 // coming and going, go through nf_tables as Update's one transaction each,
 // back to back, and leave the set holding the wanted intervals, read back
 func TestNftablesUpdateJoinsTwoIntervalsAndSplitsThemInTheKernel(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)

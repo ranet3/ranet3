@@ -47,7 +47,7 @@ const parkPoll = 10 * time.Millisecond
 // for each change message it reads. Changed holds every wake here, so the
 // count does not depend on when the scheduler runs the test.
 func TestMonitorWakesOnceForATransactionAfterAnOverflowDrains(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)

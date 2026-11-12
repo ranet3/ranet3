@@ -13,7 +13,6 @@ import (
 	"maps"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -33,7 +32,7 @@ import (
 // test made and proved empty
 func rootRulePlatform(t *testing.T, device string) *netlinkPlatform {
 	t.Helper()
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)

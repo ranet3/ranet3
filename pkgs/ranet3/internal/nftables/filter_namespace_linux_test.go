@@ -11,7 +11,6 @@ import (
 	"errors"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -60,7 +59,7 @@ func prefixList(prefixes ...string) []netip.Prefix {
 // connection's direction, protocol and original port against a set of ports.
 // A drop meets the sender as EPERM.
 func TestNftablesFilterExpressionsActOnPackets(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)
@@ -175,7 +174,7 @@ func TestNftablesFilterExpressionsActOnPackets(t *testing.T) {
 // reads back as a fault naming the set until the owner fills it again, and
 // the owner's own refill wakes nothing
 func TestNftablesSetElementsReadBackAndWakeOnAnothersChange(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -275,7 +274,7 @@ const largeSetIntervals = 10000
 // batch on a socket whose send buffer starts at a fraction of it, and the set
 // reads back every interval
 func TestNftablesBatchFillsASetOfTenThousandIntervals(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)

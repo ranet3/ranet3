@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/netip"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -26,7 +25,7 @@ import (
 // while forwarding is off. A packet to this host's own address takes the local
 // route of the local table
 func TestNetlinkRouteGetNamesTheMatchedRouteAndTable(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	netnstest.EnterEmpty(t)

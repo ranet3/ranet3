@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -124,7 +123,7 @@ func tableGone(t *testing.T, conn *Conn) bool {
 // no table, and the last holder's withdrawal beside another writer's chain
 // takes its own and leaves the table to that chain
 func TestNftablesWithdrawalDeletesTheTableForItsLastOwner(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -172,7 +171,7 @@ func TestNftablesWithdrawalDeletesTheTableForItsLastOwner(t *testing.T) {
 // leave the table and the owner's chain and set, and the owner's own, the
 // last, deletes the table
 func TestNftablesWithdrawalOfASetAnotherWriterUsesFails(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -220,7 +219,7 @@ func TestNftablesWithdrawalOfASetAnotherWriterUsesFails(t *testing.T) {
 // of flags 0 over it, and no owner's withdrawal deletes it, the last holder's
 // included
 func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -276,7 +275,7 @@ const concurrentTurns = 20
 // second deletion would have failed on the table gone, and none would leave
 // it there
 func TestNftablesLastTwoWithdrawalsAtOnceDeleteTheTableOnce(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -316,7 +315,7 @@ func TestNftablesLastTwoWithdrawalsAtOnceDeleteTheTableOnce(t *testing.T) {
 // takes the table first: a withdrawal that finds itself the last deletes the
 // table before the write commits or not at all
 func TestNftablesFirstWriteBesideTheLastWithdrawalKeepsItsChain(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -364,7 +363,7 @@ func TestNftablesFirstWriteBesideTheLastWithdrawalKeepsItsChain(t *testing.T) {
 // earlier instance left alone in the table, as a start without the kill
 // switch's capability does, takes its chain and set and leaves the table.
 func TestNftablesHolderThatNeverWroteOrFailedNeitherKeepsNorDeletesTheTable(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -420,7 +419,7 @@ func TestNftablesHolderThatNeverWroteOrFailedNeitherKeepsNorDeletesTheTable(t *t
 // them: the kill switch's withdrawal leaves the table and the filter's chain
 // and set, and the filter's, the last, deletes the table
 func TestNftablesHoldersThatFoundTheirObjectsHoldTheTable(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -457,7 +456,7 @@ func TestNftablesHoldersThatFoundTheirObjectsHoldTheTable(t *testing.T) {
 // other holder's withdrawal after that write leaves the table and the
 // written chain, and the holder's own next withdrawal deletes the table
 func TestNftablesHolderWritingAgainAfterItsWithdrawalHoldsTheTable(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -492,7 +491,7 @@ func TestNftablesHolderWritingAgainAfterItsWithdrawalHoldsTheTable(t *testing.T)
 // withdrawal that finds nothing of its own and removes nothing, so the
 // filter's withdrawal after it, the last, deletes the table
 func TestNftablesHolderWhoseObjectsAreGoneEndsItsHoldAtItsWithdrawal(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
@@ -555,7 +554,7 @@ func TestNftablesProcIsReadForTheKeyOnceAtTheFirstAsk(t *testing.T) {
 		askAcrossACoveredProc(t, cover)
 		return
 	}
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	executable, err := os.Executable()
@@ -674,7 +673,7 @@ const notificationQuiet = 200 * time.Millisecond
 // notification group sees the deletions of its chain, its set and the table
 // before the one generation that transaction ends with, and no other
 func TestNftablesLastHoldersWithdrawalDeletesTheTableInItsOwnTransaction(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
