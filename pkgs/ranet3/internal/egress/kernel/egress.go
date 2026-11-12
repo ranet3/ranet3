@@ -48,9 +48,7 @@
 // Announce answers the prefixes of each family that is ready, whose chains
 // read back as written, which the kernel forwards and whose route lookups
 // take a translated packet's path, and nothing at all while no family is, and
-// Republish says when that answer moves. Forwarding is the same fact
-// internal/client warns about for transit, read from the same place, and acted
-// on here because this end is the only one that knows.
+// Republish says when that answer moves.
 //
 // # The antispoof filter
 //
@@ -767,7 +765,7 @@ func (t *Translator) Run(ctx context.Context) error {
 				t.trigger = "enable"
 			}
 		case <-t.be.Changed():
-			// the steered rule may be gone or bypassed already, so the mesh stops handing this exit its packets before the pass that puts it back
+			// another writer may already have removed or bypassed the chains, so the mesh stops handing this exit its packets before the pass that puts them back
 			t.trigger = "changed"
 			// a stopped exit already reads not ready, and its next pass reads its chains back whatever was changed
 			if passing {

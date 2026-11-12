@@ -23,8 +23,7 @@ import (
 
 // FamilyIPv4 and FamilyIPv6 are AF_INET and AF_INET6, spelled here rather than
 // taken from x/sys so that this file still builds where the capability is
-// refused rather than absent from the type. internal/kernel spells them the
-// same way for the same reason.
+// refused rather than absent from the type.
 const (
 	FamilyIPv4 uint8 = 2
 	FamilyIPv6 uint8 = 10

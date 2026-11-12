@@ -30,7 +30,8 @@ import (
 )
 
 const (
-	// rigNetTest gates every darwin test that changes the host's network
+	// rigNetTest names the environment variable that must be set before a rig
+	// test changes the host's network
 	rigNetTest = "RANET3_DARWIN_NETTEST"
 	// utunControl is the kernel control a utun is made through, and
 	// sysprotoControl and utunOptIfname SYSPROTO_CONTROL and UTUN_OPT_IFNAME

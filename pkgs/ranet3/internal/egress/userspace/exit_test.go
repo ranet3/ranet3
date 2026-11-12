@@ -36,10 +36,11 @@ const (
 type fakeMesh struct {
 	reads int
 	done  chan struct{}
-	// answerGate, where set, holds every Answer until it closes, and fillGate
-	// holds every Fill once it has laid its packets until the mesh closes
-	answerGate chan struct{}
-	fillGate   bool
+	// answerBlock, where set, holds every Answer until it closes, and
+	// fillBlocks holds every Fill once it has laid its packets until the mesh
+	// closes
+	answerBlock chan struct{}
+	fillBlocks  bool
 	// laidTo, where set, takes each packet a lane laid as it is laid
 	laidTo func(raw []byte)
 	// session, where set, names the session each address sits behind, and
@@ -136,7 +137,7 @@ func (l *fakeLane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool
 			l.m.laidTo(slab[r.Offset : r.Offset+r.Size])
 		}
 	}
-	if l.m.fillGate {
+	if l.m.fillBlocks {
 		<-l.m.done
 		return false
 	}
@@ -144,8 +145,8 @@ func (l *fakeLane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool
 }
 
 func (l *fakeLane) Answer(offending []byte, kind netstack.ExitAnswer, mtu int) bool {
-	if l.m.answerGate != nil {
-		<-l.m.answerGate
+	if l.m.answerBlock != nil {
+		<-l.m.answerBlock
 	}
 	l.m.mu.Lock()
 	defer l.m.mu.Unlock()
@@ -614,9 +615,9 @@ func TestEgressReturnsWhileALaneIsBlocked(t *testing.T) {
 
 func egressReturnsWhileALaneIsBlocked(t *testing.T, lanes int64) {
 	mesh := newFakeMesh()
-	mesh.answerGate = make(chan struct{})
+	mesh.answerBlock = make(chan struct{})
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
-	t.Cleanup(func() { close(mesh.answerGate) })
+	t.Cleanup(func() { close(mesh.answerBlock) })
 	h.exit.rt.Limits.Lanes = lanes
 	h.run(t)
 	expired := ip4(leaf4, server4, protoUDP, 1, 0, 1, make([]byte, 8))
@@ -651,7 +652,7 @@ func egressReturnsWhileALaneIsBlocked(t *testing.T, lanes int64) {
 // asked, with packets still queued
 func TestMeshClosingUnderARunningExitEndsItsLanes(t *testing.T) {
 	mesh := newFakeMesh()
-	mesh.fillGate = true
+	mesh.fillBlocks = true
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
 	h.run(t)
 	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)), nil)

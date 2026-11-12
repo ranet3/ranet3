@@ -51,9 +51,9 @@ type fakeHostSockets struct {
 	ports    int
 	states   map[[2]netip.AddrPort]hostState
 	fallback hostState
-	// gate, where set, holds the next state read until it closes, and reading
+	// block, where set, holds the next state read until it closes, and reading
 	// is told of that read once it waits there. The reads after it pass.
-	gate    chan struct{}
+	block   chan struct{}
 	reading chan struct{}
 }
 
@@ -96,8 +96,8 @@ func (p *fakeHostSockets) state(raw syscall.RawConn) (hostState, error) {
 		return hostClosed, err
 	}
 	p.mu.Lock()
-	gate, reading := p.gate, p.reading
-	p.gate, p.reading = nil, nil
+	block, reading := p.block, p.reading
+	p.block, p.reading = nil, nil
 	state, set := p.states[ends]
 	for at, s := range p.states {
 		if !set && !ends[1].IsValid() && at[0] == ends[0] {
@@ -108,9 +108,9 @@ func (p *fakeHostSockets) state(raw syscall.RawConn) (hostState, error) {
 		state = p.fallback
 	}
 	p.mu.Unlock()
-	if gate != nil {
+	if block != nil {
 		reading <- struct{}{}
-		<-gate
+		<-block
 	}
 	return state, nil
 }
@@ -772,7 +772,7 @@ func resetsOn(now <-chan struct{}) func(*net.TCPConn) {
 // stack, and each dial toward server6 held until release
 func holdHarness(t *testing.T, platform *hostSockets) (h *relayHarness, bus *events.Bus, release func()) {
 	t.Helper()
-	gate := make(chan struct{})
+	block := make(chan struct{})
 	bus = events.New()
 	h = newRelayHarness(t, func(rt *Runtime, cfg *egress.Egress) {
 		rt.Platform.hostSockets = platform
@@ -782,13 +782,13 @@ func holdHarness(t *testing.T, platform *hostSockets) (h *relayHarness, bus *eve
 		prepare := rt.Platform.Prepare
 		rt.Platform.Prepare = func(network string, to netip.AddrPort, raw syscall.RawConn) error {
 			if to.Addr() == server6 {
-				<-gate
+				<-block
 				return syscall.ENETUNREACH
 			}
 			return prepare(network, to, raw)
 		}
 	})
-	release = sync.OnceFunc(func() { close(gate) })
+	release = sync.OnceFunc(func() { close(block) })
 	t.Cleanup(release)
 	allowLoopback(t, h.x.stack)
 	return h, bus, release
@@ -1132,9 +1132,9 @@ func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), readsToTheEnd)
 	c := h.open(t, netip.AddrPortFrom(leaf4, 42700), server)
 	flow := listedFlow(t, h)
-	gate, reading := make(chan struct{}), make(chan struct{})
+	block, reading := make(chan struct{}), make(chan struct{})
 	fake.mu.Lock()
-	fake.gate, fake.reading = gate, reading
+	fake.block, fake.reading = block, reading
 	fake.mu.Unlock()
 	h.x.link.deliver(tcpSegment(c.leaf, c.server, c.seq, c.ack, tcpACK|tcpFIN, nil))
 	select {
@@ -1144,7 +1144,7 @@ func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	}
 	fake.set(flow.conn, hostOther)
 	h.x.tcp.withdraw()
-	close(gate)
+	close(block)
 	h.waitConnections(t, 0)
 	kept := heldConns(h.x.tcp.holds)
 	if len(kept) != 1 {
