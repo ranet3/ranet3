@@ -565,3 +565,14 @@ func TestSmallBatchIsNeverHandedStorageALargeOneGrew(t *testing.T) {
 		t.Errorf("%d of %d ordered pairs pinned more storage than they may", over, len(shapes)*len(shapes))
 	}
 }
+
+// peerMeasuredRate is the most one peer was measured to carry, in bits a second
+const peerMeasuredRate = 9.7e9
+
+// a full data budget drains within codelTarget at peerMeasuredRate, so the budget holds no more than the fastest measured peer sends in the delay control's target
+func TestPeerDataBudgetDrainsWithinTheDelayTarget(t *testing.T) {
+	seconds := peerDataBudget * 8 / peerMeasuredRate
+	if drain := time.Duration(seconds * float64(time.Second)); drain > codelTarget {
+		t.Errorf("a full budget of %d bytes drains in %v at %g bit/s, past codelTarget's %v", peerDataBudget, drain, peerMeasuredRate, codelTarget)
+	}
+}

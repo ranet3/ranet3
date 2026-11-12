@@ -50,7 +50,8 @@ const TUNHeadroom = 16
 const reportInterval = 30 * time.Second
 
 // peerDataBudget is the bytes one peer may hold from their reservation until the transmit that carried them returns
-// a full budget drains in about codelTarget at 9.7 Gbit/s, the most one peer was measured to carry, so a peer that drains slower is bounded by the delay control and a faster one by the budget
+// a peer that takes more than codelTarget to drain a full budget reaches the delay control's target before its budget fills, and a faster one fills its budget first
+// a full budget drains within codelTarget at the most one peer was measured to carry, as TestPeerDataBudgetDrainsWithinTheDelayTarget computes
 // both see only the delay after the tun read, and a backlog in the tun's own ring is out of their reach
 // one sender drains each peer, so the budget does not grow with the cores
 const peerDataBudget = 4096 * 1400
@@ -125,9 +126,7 @@ const (
 	icmpSourceInterval6 = 100 * time.Millisecond
 	// icmpSourceBurst is the answers a full source's bucket holds, XRLIM_BURST_FACTOR
 	icmpSourceBurst = 6
-	// icmpSources is the most sources the limit holds a bucket for, 96 in each shard
-	// 4096 sources at random put about 64 in a shard with a deviation of 8, and up to about 88 in the fullest of 64
-	// so a shard of 96 holds them all, and its first eviction comes near 4800, where a shard of 64 began evicting near 3000
+	// icmpSources is the most sources the limit holds a bucket for, an equal share in each shard
 	icmpSources = 6144
 	// icmpShards is how many shards the sources lie in, more than the emitters drawing at once so draws for distinct sources rarely wait on one lock
 	icmpShards = 64
