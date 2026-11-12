@@ -175,15 +175,10 @@ func BenchmarkFillOneDestination(b *testing.B) {
 	}
 }
 
-// A lookup walks every destination node on the path, and pays that node's
-// source cost at each one. Both the depth and the sources are chosen by a
-// neighbor, so this is the product rather than either figure alone, and it is
-// inline on the TUN reader. The per-node figures beside byLen are for one
-// node, while this is the cost of one packet.
 // assertIndexed refuses a fixture that has drifted below the index threshold.
 // Both of the shapes here are named for what the index costs or saves, and a
 // fixture whose sources collapse under the mask measures the scan instead
-// while the name and the figures in table.go say otherwise.
+// while the name says otherwise.
 func assertIndexed(b *testing.B, table *Table[int], dst netip.Prefix, want int) {
 	b.Helper()
 	for node := table.roots.Load().ipv6; node != nil; node = node.child[0] {
@@ -201,6 +196,10 @@ func assertIndexed(b *testing.B, table *Table[int], dst netip.Prefix, want int) 
 	b.Fatalf("no node for %v", dst)
 }
 
+// A lookup walks every destination node on the path, and pays that node's
+// source cost at each one. Both the depth and the sources are chosen by a
+// neighbor, so this is the product rather than either figure alone, and it is
+// inline on the TUN reader.
 func BenchmarkLookupDownADestinationChain(b *testing.B) {
 	for _, depth := range []int{1, 8, 32} {
 		for _, shape := range []string{"one length", "many lengths"} {
