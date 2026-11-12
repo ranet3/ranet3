@@ -1779,8 +1779,7 @@ func TestRefusedRetractionOfADroppedPrefixIsStillOwed(t *testing.T) {
 
 // A peer whose transport keeps failing after the reservation succeeded closes
 // a loop with nothing in it to wait on: the pass gives the work back, rebuilds
-// it, reserves it, loses it and wakes. Measured at 40,000 passes a second
-// before the wake was spaced like the retry a refused reservation schedules.
+// it, reserves it, loses it and wakes.
 func TestLostPacketsDoNotWakeTheLoopPerPacket(t *testing.T) {
 	// One prefix per packet or two, so eight of them lose several packets
 	// rather than one, and a long hello interval so the retry interval the

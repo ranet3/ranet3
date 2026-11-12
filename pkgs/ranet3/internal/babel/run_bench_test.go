@@ -20,9 +20,9 @@ import (
 // from every neighbor, which is the shape a full mesh produces.
 func fillRouteTable(tb testing.TB, neighbors, prefixes int) *Speaker {
 	tb.Helper()
-	// The table is built through the real acquisition path, which says every
-	// selection out loud. Without this the measurement is interleaved with
-	// sixteen thousand log lines.
+	// The table is built through the real acquisition path, which logs its
+	// selections. Without this the measurement is interleaved with the
+	// speaker's log lines.
 	logtest.SetDefault(tb, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	s, err := New(Config{}, Routes{}, Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
 	if err != nil {
@@ -58,11 +58,6 @@ func fillRouteTable(tb testing.TB, neighbors, prefixes int) *Speaker {
 // every neighbor's receive path, the hello emitter and route installation. It
 // is the number wakeForPacketLocked exists for: a pass is affordable at the
 // rate the timers ask for one, and not at the rate a neighbor can send.
-//
-// The figures quoted at wakeForPacketLocked were taken on an otherwise idle
-// Apple M2 Max. A machine doing anything else multiplies them (measured at
-// six times with the cores saturated), which makes the argument stronger
-// rather than weaker, so they are a floor and not an estimate.
 func BenchmarkRunLoopPass(b *testing.B) {
 	for _, prefixes := range []int{1000, maxRouteKeys} {
 		b.Run(fmt.Sprintf("prefixes=%d", prefixes), func(b *testing.B) {
@@ -71,9 +66,7 @@ func BenchmarkRunLoopPass(b *testing.B) {
 			for b.Loop() {
 				// The pass drains what it advertises, so without this every
 				// iteration after the first measures a pass with the
-				// advertise half absent: 20.7 ms against 77.6 ms at
-				// maxRouteKeys, and the figures quoted elsewhere are the
-				// second number.
+				// advertise half absent.
 				b.StopTimer()
 				s.mu.Lock()
 				for key := range s.routes.entries {
@@ -166,11 +159,10 @@ func BenchmarkRunLoopDeadline(b *testing.B) {
 	}
 }
 
-// BenchmarkReceiveHello measures what an arriving Hello costs, the figure
-// the wake decision in wakeForPacketLocked trades against a full pass. It is
-// measured on the same eight-neighbor table BenchmarkRunLoopPass uses, because
-// a figure taken on a one-neighbor table and set against a pass taken on this
-// one compares two different fixtures.
+// BenchmarkReceiveHello measures what an arriving Hello costs, the recompute
+// of its neighbor's routes that wakeForPacketLocked's doc names. It runs on a
+// one-neighbor table and on the eight-neighbor table BenchmarkRunLoopPass uses,
+// so a Hello and a pass can be set against each other on one fixture.
 //
 // The neighbor holds the whole table, which is the shape one peer can build:
 // maxRouteKeys is table-wide and has no per-neighbor share.

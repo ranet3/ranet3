@@ -82,8 +82,8 @@ const maxFragmentAge = 16 * time.Second
 const seqnoForwardExpiry = 10 * time.Second
 
 // seqnoRequestSuppress is the request timeout RFC 8966 Appendix B suggests. A
-// request for the same source within this window is redundant (section
-// 3.8.1.2) and is dropped instead of forwarded.
+// request for the same source within this window is redundant
+// (section 3.8.1.2) and is dropped instead of forwarded.
 const seqnoRequestSuppress = 2 * time.Second
 
 // seqnoRequestHopCount is the hop count of a locally originated seqno request:
