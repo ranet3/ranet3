@@ -637,8 +637,6 @@ func (p *Peer) senderLoop() {
 			ready = append(ready, b)
 			if !b.control {
 				p.seals.observeWait(b.sealedAt - b.admitted)
-			}
-			if !b.control {
 				taken += b.held
 			}
 			p.shedHead(b, now, int(p.dataBudget.used.Load())-taken)
