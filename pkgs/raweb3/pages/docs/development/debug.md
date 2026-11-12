@@ -607,7 +607,7 @@ connections to the reads.
 | `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed                                          |
 | `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family                                                 |
 | `egress.pass`                         | an exit's pass that moved its prefixes, and on Linux also one that rewrote its rules or failed, or a `ranet3 down`                 |
-| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                                                                        |
+| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved, or the exit's first pass judged them                                  |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move, or the userspace exit refused a flow, 30 seconds apart |
 | `antispoof.pass`                      | an antispoof filter pass that rewrote its chains or a set, or failed                                                               |
 | `antispoof.ready`                     | the antispoof filter's chains went ready or not ready, with `ready`                                                                |

@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-11
+updated: 2026-11-12
 order: 55
 ---
 
@@ -808,6 +808,8 @@ anchor, its spelling past 63 bytes.
 | `pf released the reference an earlier run left`                                                                                                                                                                                                                               | info  | on macOS, a start, with `overlay` or without, gave back the reference the record named, with `token` and `pid`                                                                                            |
 | `pf dropped the record of a reference it no longer lists under its pid, which a reboot or another program stopping pf ends`                                                                                                                                                   | info  | on macOS, a start found the record naming a reference pf no longer lists under its pid, or a pass's renewal dropped the daemon's own ended reference beside the renewal's warning, with `token` and `pid` |
 | `antispoof filter gave back the pf anchor and reference an earlier run left, since overlay is not written`                                                                                                                                                                    | info  | on macOS, a start without `overlay` found the record naming a reference pf still listed under its pid, emptied the anchor and gave it back, with `where`. One pfctl refused fails the start, naming it    |
+
+A stop the daemon was asked for logs `antispoof filter not ready` at info.
 
 A pass that rewrote its chains or a set, or failed, records an `antispoof.pass`
 event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A

@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-11
+updated: 2026-11-12
 order: 50
 ---
 
@@ -748,7 +748,7 @@ The exit refuses at startup what it cannot carry:
 - `return`, with
   `egress: cap.egress return is set, and the exit this build carries ends each connection a leaf opens and opens its own toward the server, so no connection comes in from an advertised prefix for it to translate`
 - an `advertise` prefix that counts as no default, with
-  `egress: cap.egress advertises 198.51.100.0/24, a subnet, and this build's exit carries only defaults, the routes that count as one (outside cap.border.overlay and shorter than /8 or /16), and egress segments: advertise those alone here, and route the subnet from a node whose exit forwards it`
+  `egress: cap.egress advertises 198.51.100.0/24, a subnet, and this build's exit carries only defaults, the routes that count as one (outside overlay and shorter than /8 or /16), and egress segments: advertise those alone here, and route the subnet from a node whose exit forwards it`
 
 Per flow, it answers another protocol than TCP, UDP and ICMP with code 13 over
 IPv4 and code 1 over IPv6, on every fragment that names it, and a destination
@@ -1188,8 +1188,8 @@ kernel exit's on Linux:
 | ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's table and chains, and `userspace` under the userspace exit                |
 | `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                             |
-| `egress ready`                                                      | info  | a family went ready, with `family`                                                                                                       |
-| `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                                   |
+| `egress ready`                                                      | info  | a family went ready, or was ready at the exit's first pass, with `family`                                                                |
+| `egress not ready`                                                  | warn  | a family stopped being ready, or was not ready at the exit's first pass, with `family` and the reason as `detail`                        |
 | `stopped reading nf_tables notifications`                           | warn  | a read of the notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next sweep |
 | `egress rules installed`                                            | info  | a pass wrote the chains                                                                                                                  |
 | `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                                      |
@@ -1199,25 +1199,30 @@ kernel exit's on Linux:
 | `egress could not withdraw its chains, retrying`                    | warn  | `ranet3 down` could not remove them                                                                                                      |
 | `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                                         |
 
+A stop the daemon was asked for, `ranet3 down` included, logs `egress not ready`
+and `egress advertisement changed` at info, and nothing before the exit's first
+pass.
+
 On Linux a pass that writes the chains, changes the announced prefixes or fails
 records an `egress.pass` event, and so does `ranet3 down`, with `trigger`,
 `took`, `installed`, `announced` and, on failure, `err`. The userspace exit
 records `egress.pass` only for a pass that changes the announced prefixes, with
 `trigger` and `announced`, and none at `ranet3 down`. A change of a family's
 readiness, of whether the egress SIDs are served or of what the lookups skipped
-records `egress.ready` with `ipv4`, `ipv6`, `sid`, the reason as `reason` and
-the skip as `skipped`. A reason that changes while nothing else moves reaches
-`status` and not the event. On Linux a pass whose count of a family's refused
-packets moved records `egress.refused` with `family` and the packets refused
-since the pass before as `refused`, counted from zero after a pass that wrote
-the chains. A pass that cannot read the counters back keeps the last pass's
-counts, the dropped ones among them, unless it rewrote the chains, whose
-counters start from zero whether or not it read them back. The userspace exit
-records `egress.refused` itself when it refuses a flow, past a share, a total,
-the descriptors or, on macOS, the host ports or a share of held connections
-among the reasons, at most once every 30 seconds, with the `source` and the
-`reason` of the refusal that falls due and every flow refused since the last
-record as `refused`, so a source retrying does not flood the log.
+records `egress.ready`, and so does the exit's first pass, with `ipv4`, `ipv6`,
+`sid`, the reason as `reason` and the skip as `skipped`. A reason that changes
+while nothing else moves reaches `status` and not the event. On Linux a pass
+whose count of a family's refused packets moved records `egress.refused` with
+`family` and the packets refused since the pass before as `refused`, counted
+from zero after a pass that wrote the chains. A pass that cannot read the
+counters back keeps the last pass's counts, the dropped ones among them, unless
+it rewrote the chains, whose counters start from zero whether or not it read
+them back. The userspace exit records `egress.refused` itself when it refuses a
+flow, past a share, a total, the descriptors or, on macOS, the host ports or a
+share of held connections among the reasons, at most once every 30 seconds, with
+the `source` and the `reason` of the refusal that falls due and every flow
+refused since the last record as `refused`, so a source retrying does not flood
+the log.
 
 | Metric                                   | Meaning                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
