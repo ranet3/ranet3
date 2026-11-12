@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
-// Package netstack wires a real Linux TUN device to the ranet mesh: outbound
+// Package netstack wires the tun device to the ranet mesh: outbound
 // packets the kernel routes to it are forwarded to whichever peer's Child SA
 // can reach the destination (see RouteTable), and inbound packets decrypted
 // from any peer are decided in the same table, and are written back to the
@@ -12,9 +12,10 @@
 // It knows nothing about ESP or IKE directly: peers are just a send function
 // plus routes, so this package is testable without real crypto.
 //
-// This package never touches the device's address or route configuration:
-// creating it, bringing it up and, on linux, setting its gso_max_segs is all it does. Assigning an address,
-// and adding kernel routes to the TUN are the operator's responsibility.
+// The package creates the tun or attaches to it, and sets its MTU either way.
+// SetMTU sets the MTU again where the platform can. On linux the package also
+// brings the tun up and sets its gso_max_segs. Its addresses and routes are
+// internal/kernel's.
 // The embedded Babel speaker exchanges control traffic only inside ESP.
 package netstack
 
