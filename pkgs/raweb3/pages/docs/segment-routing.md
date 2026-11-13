@@ -474,7 +474,9 @@ routes no reply to, or whose inner destination lies inside the overlay or the
 mesh routes itself. Not ready is a packet the allow list and the other checks
 above let through whose family was not ready, as
 [exit nodes](exit-nodes.md#readiness) describes. It is this node's own state and
-is not counted among the dropped.
+is not counted among the dropped, and its answer is counted as
+[transit counters](metrics.md#transit-counters) gives, not in the Segments
+line's answered count.
 
 [Metrics](metrics.md#series) lists the series of these counts, with what each
 counts and the packets another series counts as well:

@@ -597,8 +597,8 @@ Three more limits are mode 3's own:
   host carries out a family it cannot translate withdraws its SID, and a leaf
   behind it is refused in both families under the default. An exit whose host
   carries out one family keeps serving, and the leaf's other family is lost at
-  the exit, counted `not_ready` and answered as that section gives, while the
-  first works.
+  the exit, counted in `ranet3_segments_not_ready_total` and answered as that
+  section gives, while the first works.
 - A waypoint can send the host's packets to another node through that node's
   subnet, in the case [mode 3](../routing.md#mode-3-on-linux) names.
 

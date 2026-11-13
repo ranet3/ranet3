@@ -1326,9 +1326,9 @@ be able to limit the rate at which it sends other sorts of ICMP error messages
 
 ### Transit answers
 
-The [forwarding decision](../routing.md#transit) answers a session's packet it
-does not forward from the router-id of the packet's family. A session is an
-unnumbered link, which
+The [forwarding decision's](../routing.md#transit) answer through the mesh to a
+session's packet it does not forward comes from the router-id of the packet's
+family. A session is an unnumbered link, which
 [RFC 1812 section 4.3.2.4](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.4)
 covers: "If the interface has no IP addresses associated with it, the router's
 router-id (see Section [5.2.5]) is used instead". With no IPv4 router-id, Time
@@ -1340,16 +1340,16 @@ names no host by. Record Route and Timestamp insert the same address, where
 asks for "its router-id", since a node with no IPv4 address has none to give.
 With no IPv6 router-id they come from the node's first `End` SID that an
 announced prefix covers, an address of the node the mesh routes to it, and with
-no SID they are not sent and are counted unanswered.
+no such SID they are not sent and are counted unanswered.
 [RFC 4443 section 3.3](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.3)
 says a router "MUST discard the packet and originate an ICMPv6 Time Exceeded
-message", and nothing of such a node could be that message's source: IPv6 has no
-dummy address, and an underlay address may not route back and would show where
-the node is. A Packet Too Big with no IPv6 router-id comes from the node's first
-`End` SID too, and with no IPv6 router-id and no SID from the packet's
-destination. A Fragmentation Needed with no IPv4 router-id comes from the
-packet's destination as well. Path MTU discovery needs the answer more than its
-source.
+message", which such a node does not send through the mesh. No dummy address is
+taken as its source, since IPv6 has none, nor an underlay address, which may not
+route back and would show where the node is. A Packet Too Big with no IPv6
+router-id comes from the node's first `End` SID too, and with no IPv6 router-id
+and no such SID from the packet's destination. A Fragmentation Needed with no
+IPv4 router-id comes from the packet's destination as well. Path MTU discovery
+needs the answer more than its source.
 
 An answer to a packet whose source the table answers as this node's own, through
 an entry that does not count as a default, goes into the tun and comes from the
@@ -1367,17 +1367,16 @@ forwarding such an IPv4 packet itself, drops it as a martian under
 A source that only an entry counting as a default reaches, an internet host
 behind an exit's default for one, is no network behind this host. Its packet
 gets no ICMP error of any kind, a Packet Too Big, a Fragmentation Needed and a
-Parameter Problem among them, and the drop is counted under its reason alone, as
-a drop whose answer finds no route back is. Answering would let any peer make
-this node send errors carrying bytes the peer chose to any host past its uplink,
-and the mesh routes no reply to such a source, so the host would send the answer
-out of its uplink from another node's address. A traceroute from such a source,
-from the internet toward an address behind an exit, so gets no answer from the
-hop at this node. The one exception is the Destination Unreachable with code 2
-that answers an IPv6 packet from a link-local source to a wider unicast
-destination a router forwards, RFC 4443 section 3.1. It goes back on the session
-the packet came by, never by a reply route, so it reaches the source's own link
-and no stranger.
+Parameter Problem among them, and an answer due is counted unsent, as one that
+finds no way back is. Answering would let any peer make this node send errors
+carrying bytes the peer chose to any host past its uplink, and the mesh routes
+no reply to such a source, so the host would send the answer out of its uplink
+from another node's address. A traceroute from such a source, from the internet
+toward an address behind an exit, so gets no answer from the hop at this node.
+The one exception is the Destination Unreachable with code 2 that answers an
+IPv6 packet from a link-local source to a wider unicast destination a router
+forwards, RFC 4443 section 3.1. It goes back on the session the packet came by,
+never by a reply route, so it reaches the source's own link and no stranger.
 
 A session's packet to an address the host holds that no route of this node
 covers, an underlay address for one, is decided as one to any address this node
