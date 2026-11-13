@@ -347,7 +347,8 @@ type SegmentCounters struct {
 // Forwarded counts the packets the decision handed to the next peer's send, and Delivered the ones written to the tun or handed to the exit,
 // and the reads off the tun written back into it to an address the tun holds
 // the fields from Expired to SessionMulticast count the packets a session delivered that were dropped, by reason, and Multicast to Looped the reads off the tun, which NoRoute, Held, Invalid and TooBig count as well
-// Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
+// Answered, Unanswered and Unsent count the ICMP errors about dropped packets and reads, about an egress segment's inner packets of a family not ready and about the packets the userspace exit answers itself
+// Answered counts the errors sent, and Unanswered the packets whose error finds no address of its family to come from
 // counted before the rules that keep an error from answering a packet and before the rate limits
 // Unsent counts the answers due that no way back carries
 type TransitCounters struct {

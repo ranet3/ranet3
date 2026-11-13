@@ -165,8 +165,8 @@ type TransitCounters struct {
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
 	// and Looped those to a destination of this node's own that the tun does not hold
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
-	// Answered counts the ICMP errors sent about dropped packets and reads
-	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
+	// Answered, Unanswered and Unsent count the ICMP errors about dropped packets and reads, about an egress segment's inner packets of a family not ready and about the packets the userspace exit answers itself
+	// Answered counts the errors sent, and Unanswered the packets whose error finds no address of its family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate limits
 	// Unsent counts the answers due that no way back carries
 	Answered, Unanswered, Unsent uint64
