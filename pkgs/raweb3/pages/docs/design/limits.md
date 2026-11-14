@@ -168,6 +168,19 @@ ahead of that call, as [pf on macOS](../coexistence.md#pf-on-macos) gives. Each
 pass reaches only its family, its prefix or the overlay, and its interface, or
 every interface but the mesh's utun for the shared exemptions.
 
+**On macOS a translation rule with `pass` outside the anchor decides first.** A
+translation rule with `pass` in the main ruleset, in another child of
+`com.apple`, which the stock `rdr-anchor "com.apple/*"` of `/etc/pf.conf` calls,
+or in an anchor below `com.apple/ranet3` that a call from outside it names,
+passes the packets it translates without the filter rules
+([pf.conf(5)](https://keith.github.io/xcode-man-pages/pf.conf.5.html#TRANSLATION)),
+the anchor's drops among them, and the anchor still reads back as written. The
+filter reads and flushes its own anchor's rulesets and tables alone, so an
+anchor below it outlives a stop, and a rule in the anchor itself, a call into
+such an anchor included, is a fault, as [readiness](../antispoof.md#readiness)
+gives. A state a translation rule in the anchor made before a pass replaced it
+is matched ahead of the anchor, as the limit on states below gives.
+
 **On macOS a pass ahead of the anchor's call decides first.** A `quick` pass in
 the main ruleset ahead of `anchor "com.apple/*"`, or in a child of `com.apple`
 whose name sorts before `ranet3`, passes a packet before the anchor's drop meets
@@ -268,6 +281,23 @@ pf for every interface, and pf then evaluates the main ruleset and every anchor
 it calls on every packet, those of other programs among them. A Mac with no
 `overlay` leaves pf as it found it, once it gives back what an earlier run's
 record names.
+
+**On macOS every sweep runs pfctl.** pf tells no program of another's change, so
+the pass reads pf every 5 seconds, and one that finds the anchor as written
+starts 7 pfctl processes and 1 more for each of the anchor's tables, which are
+at most 2: 3 to read pf's references, the main ruleset's call and the skipped
+interfaces, and 4 to read the anchor back. A pass that finds the reference gone
+and records a new one adds 2, a read of whether pf runs and a read of pf's
+references before it gives the old token back, or 1 where pf hands the new
+reference the old token's value, which it then keeps. One that moves the carved
+sets adds the table load and the reads of a steady pass again. One that rewrites
+the anchor after a fault starts the 3 reads of pf first, then reads the anchor
+back as far as the first line its parsers cannot read or the first translation
+or dummynet rule, or else whole with 1 read for each table it holds, another
+program's included, and after that readback starts the load, a read of the
+anchor's tables, a removal of each table the load does not define, and the reads
+of a steady pass again. A pass the mesh's table or the network watch wakes that
+asks for what the last good pass read starts none.
 
 ## Who a node dials
 

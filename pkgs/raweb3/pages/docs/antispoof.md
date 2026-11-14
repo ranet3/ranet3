@@ -544,12 +544,20 @@ Mac with no `overlay` leaves pf as it found it but for what an earlier run's
 record names, which its start gives back, as below.
 [The limits](design/limits.md#the-antispoof-filter) give what turning pf on
 means for the rest of the host. pfctl is the only program the daemon runs on pf,
-and every load and flush names the anchor: `pfctl -a com.apple/ranet3 -f -`
-loads the anchor whole in 1 transaction, which leaves it as it was where pfctl
-refuses the text, `pfctl -a com.apple/ranet3 -T load -f -` loads its tables
-alone in 1 transaction, which keeps the rules and their counters, when only the
-carved sets move, and `pfctl -a com.apple/ranet3 -F rules` and `-F Tables` empty
-it. The one write that names no anchor gives back a reference by its token, with
+and every load and flush names the anchor. `pfctl -a com.apple/ranet3 -f -`
+loads the anchor whole in 1 transaction, which replaces every ruleset it holds
+and leaves it as it was where pfctl refuses the text, then `-t <table> -T kill`
+removes each table of the anchor the load does not define, which that
+transaction keeps, by the whole name pf holds, a tab or a newline in it
+included. `pfctl -a com.apple/ranet3 -T load -f -` loads its tables alone in 1
+transaction, which keeps the rules and their counters, when only the carved sets
+move. Each pass reads the anchor back with `-sr -vv` for its filter rules,
+`-s nat` for its nat, binat and rdr rules, `-s dummynet`, `-s Tables -vv` and
+`-T show` for each table, and `-F rules`, `-F nat`, `-F dummynet` and
+`-F Tables` empty its rulesets and tables. The pass's other reads,
+`pfctl -s References`, `pfctl -sr` of the main ruleset, `pfctl -s Interfaces -v`
+and at times `pfctl -s info`, name no anchor and change nothing. The one write
+that names no anchor gives back a reference by its token, with
 `pfctl -X <token>`.
 
 The daemon keeps pf enabled with a reference of its own, which `DIOCSTARTREF`
@@ -585,9 +593,13 @@ The anchor's and the reference's lifetime:
   `antispoof filter gave back the pf anchor and reference an earlier run left, since overlay is not written`.
   Where pfctl refuses a release, the record keeps that token for the next start,
   and the start fails naming the refusal, with no such line.
-- A stop on `SIGINT` or `SIGTERM` empties the anchor, then gives the reference
-  back and empties the record, which stops pf where no other program holds a
-  reference.
+- A stop on `SIGINT` or `SIGTERM` empties the anchor's own rulesets and tables,
+  also where its readback fails, then gives the reference back and empties the
+  record, which stops pf where no other program holds a reference. Each pfctl
+  run is ended after 10 seconds, and a stop where every run hangs makes up to 6,
+  so it can outlast the 20 seconds launchd gives a stopping daemon under
+  [the nix-darwin module](service.md#nix-darwin) before it kills it, which
+  leaves the anchor and the reference as a crash does, below.
 - The stop a failed tun causes leaves the anchor, the reference and its record,
   and logs `antispoof filter is leaving its chains after the mesh failed`. pf
   keeps the anchor's rules while the supervisor starts the daemon again, and the
@@ -597,14 +609,13 @@ The anchor's and the reference's lifetime:
   source on a utun another program opens under that unit passes until the next
   start rewrites the anchor for its own utun, as
   [the limits](design/limits.md#the-antispoof-filter) say. While ranet3 stays
-  down, the operator empties the anchor with
-  `pfctl -a com.apple/ranet3 -F rules` and
-  `pfctl -a com.apple/ranet3 -F Tables`, and runs `pfctl -X <token>` with the
-  token `pf.json` holds only where `pfctl -s References` lists that token under
-  the pid `pf.json` holds beside it, the check the daemon makes, since pf may
-  have given a freed value to another program's reference, which `-X` would end.
-  A token listed under no such pid is left alone, and `pf.json` as it is for the
-  next start.
+  down, the operator empties the anchor with the 4 flushes
+  [above](#the-pf-anchor-on-macos), each under `-a com.apple/ranet3`, and runs
+  `pfctl -X <token>` with the token `pf.json` holds only where
+  `pfctl -s References` lists that token under the pid `pf.json` holds beside
+  it, the check the daemon makes, since pf may have given a freed value to
+  another program's reference, which `-X` would end. A token listed under no
+  such pid is left alone, and `pf.json` as it is for the next start.
 - A reboot ends every reference and every rule. The next start finds the record
   naming a token pf does not list under its pid, drops it unreleased and takes
   its own.
@@ -669,10 +680,19 @@ is ready only while pf evaluates it too:
 None of these reasons rewrites the anchor, which reads back as written
 throughout. The start refuses to run where the first pass reads any of them, as
 a Linux start does, and [pf on macOS](coexistence.md#pf-on-macos) gives the
-refusal and the host's fix. An anchor holding a rule of a form the filter never
-writes, such as a stateful pass another program loaded, is a fault like any
-other the readback finds, which the next pass replaces by loading the anchor
-whole.
+refusal and the host's fix. An anchor holding a rule or table the filter never
+writes, another program's stateful pass, a translation or dummynet rule such as
+an `rdr pass`, or a table of another name, whatever its bytes, is a fault like
+any other the readback finds, which the next pass replaces by loading the anchor
+whole. A rule, a table's line or a table's entry the readback's parsers cannot
+read, and any translation or dummynet rule, are logged with the fault, cut past
+1024 bytes with the count of bytes left out, as [the log lines](#watching-it)
+list. The warning comes again only for a fault whose cut text differs from the
+last one found, or for the first fault after a pass's readback that read every
+ruleset and table of the anchor, so a change past the cut that keeps the fault's
+length logs nothing. A program that puts its rule back after each load is logged
+once a pass where the readback that follows the load finds the rule gone, and
+where its rule is back by then, again only when the cut text changes.
 
 ## Nodes that forward without it
 
@@ -811,6 +831,7 @@ anchor, its spelling past 63 bytes.
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `antispoof filter in <where>, inside <interfaces>`                                                                                                                                                                                                                            | info  | the daemon starts the filter                                                                                                                                                                              |
 | `antispoof filter installed`                                                                                                                                                                                                                                                  | info  | a pass rewrote its chains, with `rules`, `replaced` and `where`                                                                                                                                           |
+| `antispoof filter found its pf anchor holding what it never writes, which the pass replaces`                                                                                                                                                                                  | warn  | on macOS, a readback found what its parsers cannot read or a translation or dummynet rule in the anchor, with `fault`, cut past 1024 bytes, and `where`, repeated as [readiness](#readiness) gives        |
 | `antispoof filter pass failed, retrying`                                                                                                                                                                                                                                      | warn  | a pass failed, with `err` and `retry_in`                                                                                                                                                                  |
 | `antispoof filter not ready`                                                                                                                                                                                                                                                  | warn  | its chains stopped reading back, with the reason as `detail`                                                                                                                                              |
 | `antispoof filter ready`                                                                                                                                                                                                                                                      | info  | its chains read back again                                                                                                                                                                                |
