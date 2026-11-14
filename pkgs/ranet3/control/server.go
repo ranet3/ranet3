@@ -353,7 +353,7 @@ func answerResult(w http.ResponseWriter, result Result, err error) {
 // ordinary close so a caller can tell a shutdown from a failure.
 func Serve(listener net.Listener, src Source) error {
 	server := newServer(src)
-	err := server.Serve(&boundedListener{Listener: listener, places: make(chan struct{}, maxConnections)})
+	err := server.Serve(Bound(listener))
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		err = nil
 	}
@@ -379,6 +379,12 @@ func newServer(src Source) *http.Server {
 		// a handler's panic the server recovers is one of its own errors
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
+}
+
+// Bound is listener under the node's bound on the connections open at once,
+// with places of its own, and its Close is listener's alone.
+func Bound(listener net.Listener) net.Listener {
+	return &boundedListener{Listener: listener, places: make(chan struct{}, maxConnections)}
 }
 
 // boundedListener hands out at most cap(places) connections at a time and

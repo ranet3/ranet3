@@ -553,25 +553,25 @@ func TestConnectionsPastTheBoundAreRefusedRatherThanQueued(t *testing.T) {
 		held = append(held, conn)
 	}
 
-	// The next one is accepted and closed rather than left waiting.
 	over, err := net.Dial("unix", path)
 	if err != nil {
 		t.Fatalf("a connection past the bound was refused at dial: %v", err)
 	}
 	defer over.Close()
-	over.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, err := io.ReadAll(over); err != nil {
-		t.Errorf("a connection past the bound was left open: %v", err)
+	over.SetDeadline(time.Now().Add(testWait))
+	// the close may come before the request
+	_, _ = over.Write([]byte("GET " + PathStatus + " HTTP/1.1\r\nHost: x\r\n\r\n"))
+	if answer, err := io.ReadAll(over); len(answer) != 0 || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("a connection past the bound was answered %q and %v, want it closed as it was accepted", answer, err)
 	}
 
-	// And the listener still answers its own close while every place is held.
 	listener.Close()
 	select {
 	case err := <-served:
 		if err != nil {
 			t.Errorf("an ordinary close reported %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Error("Serve did not return while the bound was full")
 	}
 }
