@@ -3269,6 +3269,60 @@ func testNegotiationStepAndStrayDatagramSpendNoReport(t *testing.T) {
 	}
 }
 
+func TestCookieNegotiationPreservesRefusalReport(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		lines := recordLines(t)
+		failures := &recorder{}
+		h := newResponderHarness(t, nil, failures.record)
+		h.responder.mu.Lock()
+		h.responder.halfOpen = cookieThreshold
+		h.responder.mu.Unlock()
+
+		initiator, err := h.dial(t)
+		if err != nil {
+			t.Fatalf("cookie retry failed: %v", err)
+		}
+		defer initiator.Mux().Close()
+		responder := <-h.sessions
+		defer responder.Mux().Close()
+		<-h.identities
+		time.Sleep(quietPeriod)
+		if got := lines.said(slog.LevelDebug, "ike responder sent a cookie challenge", "peer"); len(got) != 1 {
+			t.Errorf("cookie negotiation wrote %d debug lines, want one", len(got))
+		}
+		if got := lines.said(slog.LevelWarn, "ike responder handshake failed", "err"); len(got) != 0 {
+			t.Errorf("successful cookie negotiation warned of failures: %v", got)
+		}
+		initialFailures := recordedKind(failures, "ike.handshake.failed")
+		if initialFailures != 0 {
+			t.Errorf("successful cookie negotiation recorded %d failures", initialFailures)
+		}
+
+		// passing the global floor isolates the source's report interval
+		time.Sleep(2 * handshakeFloor)
+		_, wrongKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := h.peerConfig()
+		cfg.LocalPrivateKey = wrongKey
+		ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+		defer cancel()
+		if session, err := InitiateContext(ctx, cfg); err == nil {
+			session.Mux().Close()
+			t.Fatal("the responder accepted the wrong signing key")
+		}
+		time.Sleep(quietPeriod)
+		warnings := lines.said(slog.LevelWarn, "ike responder handshake failed", "err")
+		if len(warnings) != 1 || warnings[0].String() != "ike: AUTH signature verification failed" {
+			t.Errorf("refusal after cookie negotiation warned %v, want the signature failure", warnings)
+		}
+		if got := recordedKind(failures, "ike.handshake.failed") - initialFailures; got != 1 {
+			t.Errorf("refusal after cookie negotiation recorded %d new failures, want one", got)
+		}
+	})(t)
+}
+
 // RFC 7296 section 2.21.4: "If the message is marked as a response, the node ... MUST NOT respond."
 // the answer to a Delete whose exchange has ended reaches the responder this way, and it is no failed handshake
 // nor is a request of an IKE SA this node does not hold, which is stray

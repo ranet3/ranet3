@@ -280,7 +280,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if required, err := r.cookieRequired(request, ni, spiI, datagram.Endpoint); err != nil {
 		return nil, Accepted{}, err
 	} else if required {
-		return nil, Accepted{}, fmt.Errorf("ike: cookie challenge sent")
+		return nil, Accepted{}, errCookieChallenge
 	}
 
 	// the slot is taken before the key exchange, the first cost an unauthenticated datagram imposes
@@ -823,11 +823,16 @@ func contentDigest(m *opened) ([sha256.Size]byte, error) {
 // errStray is the end of a message of an IKE SA this node does not hold, such as a liveness check on one it no longer holds
 var errStray = errors.New("ike: unclaimed message of an IKE SA this node does not hold")
 
-// noteHandshakeFailure reports a handshake that failed at warn, since it is the whole responder side of a peer that cannot connect, and rate limited, since anyone who can reach the port can drive it
-// an answer naming the group to use is a step of the negotiation, and a message of an IKE SA this node does not hold is no handshake, so neither spends the source's report
+var errCookieChallenge = errors.New("ike: cookie challenge sent")
+
+// anyone who can reach the port can drive failures, so warnings and events share one limit
 func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error) {
 	if _, wrongGroup := errors.AsType[*invalidKEError](err); wrongGroup {
 		slog.Debug("ike responder asked an initiator for another group", "peer", endpoint, "err", err)
+		return
+	}
+	if errors.Is(err, errCookieChallenge) {
+		slog.Debug("ike responder sent a cookie challenge", "peer", endpoint)
 		return
 	}
 	if errors.Is(err, errStray) {
@@ -839,8 +844,7 @@ func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error)
 		return
 	}
 	slog.Warn("ike responder handshake failed", "peer", endpoint, "err", err)
-	// recorded where it is said, so a source that fails over and over costs the record what it costs the log
-	// a key failing its FIPS 203 check is among those, since anyone past IKE_SA_INIT can send one
+	// a key failing its FIPS 203 check is rate limited too, since anyone past IKE_SA_INIT can send one
 	if r.cfg.Events != nil {
 		from := slog.String("from", endpoint.String())
 		if rejected, ok := errors.AsType[*kexRejection](err); ok {
