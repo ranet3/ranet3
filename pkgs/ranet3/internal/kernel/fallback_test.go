@@ -177,26 +177,37 @@ func TestFallbackTableWhoseDeleteFailedGoesAtTheWithdrawal(t *testing.T) {
 	}
 }
 
-// A left switch of reject routes whose delete the kernel refuses with EINVAL,
-// wrapped or joined, is deleted by the next pass that does not ask for it and
-// by the withdrawal, since a routing socket's EINVAL says nothing of the
-// rejects, where for a switch in a table EINVAL and EPROTONOSUPPORT read as a
-// kernel without nf_tables, which neither asks again, and any other refusal is
-// tried again
-func TestFallbackDeleteRefusedWithEINVALIsTriedAgainOutsideATable(t *testing.T) {
-	rejects := fallbackForm{where: "rejects on lo0", keys: rejectKeys, uncounted: true}
+// orphanedFix ends the fault the read of table inet ranet3 notes where it
+// outlived its owner under the persist flag
+const orphanedFix = "only nft delete table inet ranet3 clears another"
+
+// A write the kernel refuses over a fault the read found names both in the
+// pass's error, which errors.Is still reads as the refusal, and in the
+// switch's fault, where a read that fails names its own error alone
+func TestFallbackFailedRewriteKeepsTheReadsFault(t *testing.T) {
+	const fault = "its table carries flags 0x4, where none are written and 0x1 is dormant, and " + orphanedFix
 	for name, c := range map[string]struct {
-		form fallbackForm
-		err  error
-		left bool
+		spoil func(*fakeKernel)
+		errno error
+		want  string
 	}{
-		"rejects, EINVAL wrapped": {rejects, fmt.Errorf("delete the reject at 0.0.0.0/1: %w", syscall.EINVAL), false},
-		"rejects, EINVAL joined":  {rejects, errors.Join(syscall.EBUSY, fmt.Errorf("delete the reject at ::/1: %w", syscall.EINVAL)), false},
-		"table, EINVAL":           {fakeTableForm, fmt.Errorf("netlink receive: %w", syscall.EINVAL), true},
-		"table, EPROTONOSUPPORT":  {fakeTableForm, fmt.Errorf("netlink dial: %w", syscall.EPROTONOSUPPORT), true},
-		"table, ENOBUFS":          {fakeTableForm, fmt.Errorf("netlink receive: %w", syscall.ENOBUFS), false},
+		"a refused rewrite": {func(fake *fakeKernel) {
+			fake.fallback, fake.spoiled, fake.failWrite = &fallbackSets{}, fault, syscall.EOPNOTSUPP
+		}, syscall.EOPNOTSUPP, fault + ", and the write failed: " + syscall.EOPNOTSUPP.Error()},
+		"a refused first write": {func(fake *fakeKernel) { fake.failWrite = syscall.EPERM }, syscall.EPERM, "its chains are missing, and the write failed: " + syscall.EPERM.Error()},
+		"a failed read":         {func(fake *fakeKernel) { fake.failFallback = syscall.ENOBUFS }, syscall.ENOBUFS, syscall.ENOBUFS.Error()},
 	} {
-		t.Run(name, func(t *testing.T) { deleteRefusedOnce(t, c.form, c.err, c.left) })
+		t.Run(name, func(t *testing.T) {
+			reconciler, fake := fallbackHarness(t, &ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
+			c.spoil(fake)
+			err := reconciler.reconcile()
+			if !errors.Is(err, c.errno) || !strings.Contains(err.Error(), "write the kill switch, "+fakeTableForm.where+": "+c.want) {
+				t.Errorf("the pass returned %v, want %q wrapping %v", err, c.want, c.errno)
+			}
+			if status := reconciler.Stats().Exit.Fallback; status.State != FallbackNotHolding || status.Fault != c.want {
+				t.Errorf("the switch reads %s with %q, want not holding with %q", status.State, status.Fault, c.want)
+			}
+		})
 	}
 }
 

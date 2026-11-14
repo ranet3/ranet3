@@ -510,7 +510,8 @@ func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error
 	if err != nil {
 		return nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
 	}
-	if !holdsSwitch(read.Chains) {
+	// a flag on the table keeps the read's fault, which says whether a rewrite can mend the table
+	if !holdsSwitch(read.Chains) && tables[unix.NFPROTO_INET] == 0 {
 		read.Fault = "its chains are missing"
 	}
 	return read, nil

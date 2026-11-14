@@ -276,7 +276,9 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 	case err != nil:
 		read.dropped, read.bytes = r.fallbackDropped, r.fallbackBytes
 	case read.fault != "":
-		if err = sw.writeFallback(sets, read.remake); err == nil {
+		if err = sw.writeFallback(sets, read.remake); err != nil {
+			err = fmt.Errorf("%s, and the write failed: %w", read.fault, err)
+		} else {
 			read, err = sw.readFallback(sets)
 		}
 	}

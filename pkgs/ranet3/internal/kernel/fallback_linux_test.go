@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -620,16 +621,12 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	settle(true, sources)
 }
 
-// A Run the failed mesh's stop ends leaves the kill switch's chains, which a
-// listing finds, and no rule, route or address of its own, so the switch's drop
-// alone refuses the host's datagram beyond the LAN. The next Run puts the rules
-// back and takes the chains over as it finds them, its drop's count kept, and a
-// Run stopped plainly leaves nothing for a listing to find, the table with it,
-// since the switch it took over holds the table as a write would, and leaves
-// no switch even with the antispoof filter's entry chain in the table.
-func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
-	const device, uplink = "ranetsw0", "ranetup0"
-	plat := rootRulePlatform(t, device)
+// fallbackNoneOverUplink makes uplink a tun that is up and holds
+// 198.51.100.10/25, with main's IPv4 default through it, and answers mode 2
+// under fallback = "none" on device with that network as its LAN, and its
+// runtime
+func fallbackNoneOverUplink(t *testing.T, device, uplink string) (Table, Runtime) {
+	t.Helper()
 	conn, err := dialNetlink()
 	if err != nil {
 		t.Fatal(err)
@@ -652,6 +649,20 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	rt.Network = func() NetworkState {
 		return NetworkState{IPv4: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan}}}}}
 	}
+	return tbl, rt
+}
+
+// A Run the failed mesh's stop ends leaves the kill switch's chains, which a
+// listing finds, and no rule, route or address of its own, so the switch's drop
+// alone refuses the host's datagram beyond the LAN. The next Run puts the rules
+// back and takes the chains over as it finds them, its drop's count kept, and a
+// Run stopped plainly leaves nothing for a listing to find, the table with it,
+// since the switch it took over holds the table as a write would, and leaves
+// no switch even with the antispoof filter's entry chain in the table.
+func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	tbl, rt := fallbackNoneOverUplink(t, device, uplink)
 	open := func() *Reconciler {
 		opened, err := newPlatform(tbl, rt)
 		if err != nil {
@@ -835,12 +846,120 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 	}
 }
 
-// linux's switch is chains of a table, so a delete refused with EINVAL or
-// EPROTONOSUPPORT reads as a kernel without nf_tables, which neither the next
-// pass nor the withdrawal asks again
-func TestFallbackTableDeleteRefusedForNoNFTablesIsNotTriedAgain(t *testing.T) {
-	for _, errno := range []error{unix.EINVAL, unix.EPROTONOSUPPORT} {
-		deleteRefusedOnce(t, tableForm, fmt.Errorf("netlink receive: %w", errno), true)
+// A left switch of reject routes whose delete the kernel refuses with EINVAL,
+// wrapped or joined, is deleted by the next pass that does not ask for it and
+// by the withdrawal, since a routing socket's EINVAL says nothing of the
+// rejects, where for linux's chains EINVAL and EPROTONOSUPPORT read as a
+// kernel without nf_tables, which neither asks again, and any other refusal is
+// tried again
+func TestFallbackDeleteRefusedWithEINVALIsTriedAgainOutsideATable(t *testing.T) {
+	for name, c := range map[string]struct {
+		form fallbackForm
+		err  error
+		left bool
+	}{
+		"rejects, EINVAL wrapped": {fakeRejectsForm, fmt.Errorf("delete the reject at 0.0.0.0/1: %w", unix.EINVAL), false},
+		"rejects, EINVAL joined":  {fakeRejectsForm, errors.Join(unix.EBUSY, fmt.Errorf("delete the reject at ::/1: %w", unix.EINVAL)), false},
+		"table, EINVAL":           {tableForm, fmt.Errorf("netlink receive: %w", unix.EINVAL), true},
+		"table, EPROTONOSUPPORT":  {tableForm, fmt.Errorf("netlink dial: %w", unix.EPROTONOSUPPORT), true},
+		"table, ENOBUFS":          {tableForm, fmt.Errorf("netlink receive: %w", unix.ENOBUFS), false},
+	} {
+		t.Run(name, func(t *testing.T) { deleteRefusedOnce(t, c.form, c.err, c.left) })
+	}
+}
+
+// liveOwner ends the read's fault for table inet ranet3 where a socket still
+// open owns it
+const liveOwner = "another program's open socket owns it, so nft delete table inet " + nftables.Table + " works only once that program closes the socket or stops"
+
+// flaggedTable makes table inet ranet3 with flags through a socket of its own,
+// holding the switch's chains and sets of held where it is not nil, and closes
+// that socket at once or, where live, at the test's end
+func flaggedTable(t *testing.T, flags uint32, live bool, held *fallbackSets) {
+	t.Helper()
+	setter, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := []nftables.Request{{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
+		Body: nftables.PutAttrBE32(netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, nftables.Table), unix.NFTA_TABLE_FLAGS, flags)}}
+	if held != nil {
+		batch, err := fallbackBatch(*held, nftables.Contents{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, slices.DeleteFunc(batch, func(r nftables.Request) bool { return r.Kind == requests[0].Kind })...)
+	}
+	if err := setter.Batch(requests); err != nil {
+		_ = setter.Close()
+		t.Fatalf("make the table with flags %#x: %v", flags, err)
+	}
+	if live {
+		t.Cleanup(func() { _ = setter.Close() })
+	} else if err := setter.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The switch over table inet ranet3 another socket flagged keeps the read's
+// diagnosis beside the rewrite's refusal in the error it returns and in its
+// fault, and deletes nothing of the table: one that outlived its owner under
+// the persist flag, empty or holding the switch, refuses the rewrite with
+// EOPNOTSUPP and names the delete that clears it, and one a socket still open
+// owns refuses it with EPERM and says the delete waits for that socket
+func TestNetlinkFallbackKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *testing.T) {
+	const owner, persist = 0x2, 0x4
+	for _, c := range []struct {
+		name      string
+		flags     uint32
+		live      bool
+		held      bool
+		errno     error
+		diagnosis string
+	}{
+		{"an empty orphaned persistent table", owner | persist, false, false, unix.EOPNOTSUPP, orphanedFix},
+		{"an orphaned persistent table holding the switch", owner | persist, false, true, unix.EOPNOTSUPP, orphanedFix},
+		{"a table a live socket owns", owner, true, false, unix.EPERM, liveOwner},
+		{"a persistent table a live socket owns", owner | persist, true, false, unix.EPERM, liveOwner},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			const device, uplink = "ranetsw0", "ranetup0"
+			plat := rootRulePlatform(t, device)
+			tbl, rt := fallbackNoneOverUplink(t, device, uplink)
+			plat.retable(tbl)
+			reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+			exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
+			sets, asked := reconciler.fallbackFor(exit)
+			if !asked {
+				t.Fatal("the mode does not ask for the switch")
+			}
+			var held *fallbackSets
+			if c.held {
+				held = &sets
+			}
+			flaggedTable(t, c.flags, c.live, held)
+
+			status, err := reconciler.applyFallback(sets, true)
+			if !errors.Is(err, c.errno) || !strings.Contains(err.Error(), c.diagnosis) {
+				t.Errorf("the pass returned %v, want %v beside %q", err, c.errno, c.diagnosis)
+			}
+			if status == nil || status.State != FallbackNotHolding || !strings.Contains(status.Fault, c.diagnosis) || !strings.Contains(status.Fault, c.errno.Error()) {
+				t.Errorf("the pass reports %+v, want not holding with %q beside %q", status, c.diagnosis, c.errno.Error())
+			}
+			reader, err := nftables.Dial()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reader.Close() })
+			// the owner flag goes with its socket where the persist flag keeps the table
+			want := c.flags
+			if !c.live {
+				want &^= owner
+			}
+			if tables, err := nftables.Tables(reader, nftables.Table); err != nil || len(tables) != 1 || tables[unix.NFPROTO_INET] != want {
+				t.Errorf("after the pass the table is held with %v (%v), want it kept with the flags %#x", tables, err, want)
+			}
+		})
 	}
 }
 
