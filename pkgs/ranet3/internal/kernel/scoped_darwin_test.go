@@ -8,11 +8,14 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
 
@@ -188,6 +191,281 @@ func TestDarwinScopesARouteThatCountsAsADefault(t *testing.T) {
 			t.Errorf("%s is scoped %v, want %v", destination, got, want)
 		}
 	}
+}
+
+// scopeLookupFamily is one family's addresses for TestDarwinScopedHoldUnderAWiderRouteOfTheSameUTUN: mesh and other are
+// the two utuns' own, narrow is the hold, wide holds it, target lies in narrow and beside in wide outside narrow
+type scopeLookupFamily struct {
+	name           string
+	mesh, other    netip.Prefix
+	narrow, wide   netip.Prefix
+	target, beside netip.Addr
+}
+
+var scopeLookupFamilies = []scopeLookupFamily{
+	{
+		name: "ipv4", mesh: prefix("198.51.100.1/24"), other: prefix("192.0.2.1/24"),
+		narrow: prefix("203.0.113.0/28"), wide: prefix("203.0.113.0/24"),
+		target: netip.MustParseAddr("203.0.113.9"), beside: netip.MustParseAddr("203.0.113.200"),
+	},
+	{
+		name: "ipv6", mesh: prefix("2001:db8:bb::1/64"), other: prefix("2001:db8:aa::1/64"),
+		narrow: prefix("2001:db8:ffff::/64"), wide: prefix("2001:db8:ffff::/48"),
+		target: netip.MustParseAddr("2001:db8:ffff::9"), beside: netip.MustParseAddr("2001:db8:ffff:1::9"),
+	},
+}
+
+// scopeLookupSockets are the three sockets each setting sends from: bound to nothing, bound to the mesh utun's address,
+// and bound to the mesh utun by IP_BOUND_IF or IPV6_BOUND_IF
+var scopeLookupSockets = []string{"unbound", "address", "boundif"}
+
+// A hold scoped to the mesh utun, as scopeRoute installs one, under a wider unscoped route of the same utun: an
+// unbound socket's lookup with no scope takes the primary interface's, and where its unscoped match leaves by another
+// interface it searches that interface's scope (rt_lookup_common in bsd/net/route.c), so the scoped hold may answer
+// it. The hold rejects, so a socket the hold answers gets an error and one the wider route answers puts its datagram on
+// the utun. Each cell is logged as `cell <family> <setting> <socket>: ...`, and the test fails where the unbound socket
+// under the wider route of the same utun does not reach the utun.
+func TestDarwinScopedHoldUnderAWiderRouteOfTheSameUTUN(t *testing.T) {
+	requireNetTest(t)
+	meshName, meshFD := createUTUNWithFD(t)
+	setInterfaceUp(t, meshName)
+	otherName, otherFD := createUTUNWithFD(t)
+	setInterfaceUp(t, otherName)
+	mesh := testTUNPlatform(t, meshName)
+	other := testTUNPlatform(t, otherName)
+	for _, family := range scopeLookupFamilies {
+		if err := mesh.AddAddr(family.mesh); err != nil {
+			t.Fatalf("assign %s to %s: %v", family.mesh, meshName, err)
+		}
+		if err := other.AddAddr(family.other); err != nil {
+			t.Fatalf("assign %s to %s: %v", family.other, otherName, err)
+		}
+	}
+	waitHoleDAD(t, meshName)
+	waitHoleDAD(t, otherName)
+
+	for _, family := range scopeLookupFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			lab := scopeLookupLab{family: family, mesh: mesh, other: other, meshFD: meshFD, otherFD: otherFD}
+			installRoute(t, mesh, Route{Destination: family.narrow, Unreachable: true})
+			if answer := lookUpRoute(t, family.target, mesh.index); answer.prefix != family.narrow ||
+				answer.flags&(unix.RTF_IFSCOPE|unix.RTF_REJECT) != unix.RTF_IFSCOPE|unix.RTF_REJECT {
+				t.Fatalf("a lookup scoped to %s answers %s, want the hold %s scoped and rejecting", meshName, answer.fields(""), family.narrow)
+			}
+
+			lab.measure(t, "isolated", scopeLookupSockets...)
+
+			wide := Route{Destination: family.wide}
+			installRoute(t, other, wide)
+			lab.measure(t, "other", scopeLookupSockets...)
+			withdrawRoute(t, other, wide)
+
+			installRoute(t, mesh, wide)
+			if answer := lookUpRoute(t, family.beside, 0); answer.prefix != family.wide || answer.flags&unix.RTF_IFSCOPE != 0 || answer.device != meshName {
+				t.Fatalf("an unbound lookup of %s answers %s, want %s unscoped on %s", family.beside, answer.fields(""), family.wide, meshName)
+			}
+			reached := lab.measure(t, "same", scopeLookupSockets...)
+			if !reached["unbound"] {
+				t.Errorf("under %s unscoped on %s, an unbound socket's datagram to %s did not come out of %s",
+					family.wide, meshName, family.target, meshName)
+			}
+			withdrawRoute(t, mesh, wide)
+
+			lab.measure(t, "removed", "unbound")
+		})
+	}
+}
+
+// scopeLookupLab is one family's run on the two utuns, mesh holding the hold and other standing in for another
+// interface, each with the descriptor a datagram out of it is read from
+type scopeLookupLab struct {
+	family          scopeLookupFamily
+	mesh, other     *routePlatform
+	meshFD, otherFD int
+}
+
+func installRoute(t *testing.T, on *routePlatform, r Route) {
+	t.Helper()
+	if err := on.AddRoute(r); err != nil {
+		t.Fatalf("install %s on %s: %v", r.Destination, on.rt.Interface, err)
+	}
+	t.Cleanup(func() { _ = on.DelRoute(r) })
+}
+
+func withdrawRoute(t *testing.T, on *routePlatform, r Route) {
+	t.Helper()
+	if err := on.DelRoute(r); err != nil {
+		t.Fatalf("withdraw %s from %s: %v", r.Destination, on.rt.Interface, err)
+	}
+}
+
+// measure sends one datagram to the target from each socket, logs a cell each, and reports which sockets' datagrams
+// came out of the mesh utun
+func (lab *scopeLookupLab) measure(t *testing.T, setting string, sockets ...string) map[string]bool {
+	t.Helper()
+	unscoped := lookUpRoute(t, lab.family.target, 0)
+	scoped := lookUpRoute(t, lab.family.target, lab.mesh.index)
+	reached := make(map[string]bool, len(sockets))
+	for _, socket := range sockets {
+		payload := []byte("scope " + lab.family.name + " " + setting + " " + socket)
+		errno := lab.send(t, socket, payload)
+		meshRead, otherRead := false, false
+		if errno == 0 {
+			meshRead = carriedOut(lab.meshFD, lab.family.target, payload)
+			if !meshRead {
+				otherRead = carriedOut(lab.otherFD, lab.family.target, payload)
+			}
+		}
+		reached[socket] = meshRead
+		sent := "none"
+		if errno != 0 {
+			sent = unix.ErrnoName(errno)
+		}
+		t.Logf("cell %s %s %s: err=%s utun=%s %s %s other=%s",
+			lab.family.name, setting, socket, sent, readWord(meshRead), unscoped.fields(""), scoped.fields("scoped_"), readWord(otherRead))
+	}
+	return reached
+}
+
+// send sends payload to the target at holePort from one of scopeLookupSockets and returns the errno the send answers,
+// zero where it took the datagram
+func (lab *scopeLookupLab) send(t *testing.T, socket string, payload []byte) unix.Errno {
+	t.Helper()
+	domain, level, option := unix.AF_INET6, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+	var to, from unix.Sockaddr = &unix.SockaddrInet6{Addr: lab.family.target.As16(), Port: holePort},
+		&unix.SockaddrInet6{Addr: lab.family.mesh.Addr().As16()}
+	if lab.family.target.Is4() {
+		domain, level, option = unix.AF_INET, unix.IPPROTO_IP, unix.IP_BOUND_IF
+		to, from = &unix.SockaddrInet4{Addr: lab.family.target.As4(), Port: holePort},
+			&unix.SockaddrInet4{Addr: lab.family.mesh.Addr().As4()}
+	}
+	fd, err := unix.Socket(domain, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		t.Fatalf("open a udp socket: %v", err)
+	}
+	defer unix.Close(fd)
+	switch socket {
+	case "address":
+		if err := unix.Bind(fd, from); err != nil {
+			t.Fatalf("bind to %s: %v", lab.family.mesh.Addr(), err)
+		}
+	case "boundif":
+		if err := unix.SetsockoptInt(fd, level, option, lab.mesh.index); err != nil {
+			t.Fatalf("bind to interface %d: %v", lab.mesh.index, err)
+		}
+	}
+	err = unix.Sendto(fd, payload, 0, to)
+	var errno unix.Errno
+	if err != nil && !errors.As(err, &errno) {
+		t.Fatalf("send to %s: %v", lab.family.target, err)
+	}
+	return errno
+}
+
+func readWord(read bool) string {
+	if read {
+		return "read"
+	}
+	return "none"
+}
+
+// routeAnswer is the route an RTM_GET names, with no name where the kernel has none and a name of unknown where its
+// destination does not parse
+type routeAnswer struct {
+	name   string
+	prefix netip.Prefix
+	flags  int
+	device string
+}
+
+// fields is the answer as a cell's three fields, each key led by lead
+func (a routeAnswer) fields(lead string) string {
+	if a.name == "" {
+		return fmt.Sprintf("%sroute=none %sflags=none %sif=none", lead, lead, lead)
+	}
+	return fmt.Sprintf("%sroute=%s %sflags=%s %sif=%s", lead, a.name, lead, routeFlagNames(a.flags), lead, a.device)
+}
+
+// lookUpRoute is askRoute's RTM_GET answered with the route's destination and flags as well as its interface
+func lookUpRoute(t *testing.T, destination netip.Addr, scope int) routeAnswer {
+	t.Helper()
+	fd, err := lookupSocket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	seq := int(lookupSeq.Add(1))
+	addrs := make([]route.Addr, unix.RTAX_MAX)
+	addrs[unix.RTAX_DST] = routeAddr(destination)
+	flags := unix.RTF_UP
+	if scope != 0 {
+		flags |= unix.RTF_IFSCOPE
+	}
+	raw, err := (&route.RouteMessage{
+		Version: unix.RTM_VERSION,
+		Type:    unix.RTM_GET,
+		Flags:   flags,
+		Index:   scope,
+		ID:      uintptr(os.Getpid()),
+		Seq:     seq,
+		Addrs:   addrs,
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("encode a route lookup for %s: %v", destination, err)
+	}
+	if _, err := unix.Write(fd, raw); errors.Is(err, unix.ESRCH) {
+		return routeAnswer{}
+	} else if err != nil {
+		t.Fatalf("ask for the route to %s scoped to %d: %v", destination, scope, err)
+	}
+	answer, err := readAnswer(fd, seq, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, ok := dumpedPrefix(answer)
+	name := found.String()
+	if !ok {
+		name = "unknown"
+	}
+	device := "none"
+	if answer.Index != 0 {
+		device = fmt.Sprintf("index%d", answer.Index)
+		if named, err := net.InterfaceByIndex(answer.Index); err == nil {
+			device = named.Name
+		}
+	}
+	return routeAnswer{name: name, prefix: found, flags: answer.Flags, device: device}
+}
+
+var routeFlags = []struct {
+	bit  int
+	name string
+}{
+	{unix.RTF_UP, "UP"},
+	{unix.RTF_GATEWAY, "GATEWAY"},
+	{unix.RTF_HOST, "HOST"},
+	{unix.RTF_REJECT, "REJECT"},
+	{unix.RTF_BLACKHOLE, "BLACKHOLE"},
+	{unix.RTF_STATIC, "STATIC"},
+	{unix.RTF_CLONING, "CLONING"},
+	{unix.RTF_PRCLONING, "PRCLONING"},
+	{unix.RTF_WASCLONED, "WASCLONED"},
+	{unix.RTF_IFSCOPE, "IFSCOPE"},
+}
+
+// routeFlagNames names the flags route(8) prints, joined by commas, with any other bits left as one hex number
+func routeFlagNames(flags int) string {
+	var names []string
+	for _, flag := range routeFlags {
+		if flags&flag.bit != 0 {
+			names = append(names, flag.name)
+			flags &^= flag.bit
+		}
+	}
+	if flags != 0 {
+		names = append(names, fmt.Sprintf("%#x", flags))
+	}
+	return strings.Join(names, ",")
 }
 
 // addScopedRoute and delScopedRoute install and withdraw a scoped route the
