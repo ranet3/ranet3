@@ -367,14 +367,18 @@ func newServer(src Source) *http.Server {
 		Handler:     Handler(src),
 		ConnContext: connCaller,
 		// A unix socket has no network in front of it, so these bound a local
-		// client that stops reading rather than an attacker.
-		ReadHeaderTimeout: readHeaderTimeout,
-		WriteTimeout:      writeTimeout,
+		// client that stops sending or reading rather than an attacker.
+		// net/http clears the read deadline when it starts watching for the
+		// caller to leave, before the handler of a request without a body and
+		// at the end of the body otherwise, so a stream or a verb that runs
+		// past ReadTimeout is not cut by it.
+		ReadTimeout:  requestTimeout,
+		WriteTimeout: writeTimeout,
 		// A connection that finished a request and went quiet is bounded by
 		// this and by nothing else. net/http clears the read deadline between
-		// requests and starts ReadHeaderTimeout only once the next request's
-		// first byte has arrived, so without this a client holds a goroutine
-		// and a descriptor for as long as it likes.
+		// requests and starts ReadTimeout only once the next request's first
+		// byte has arrived, so without this a client holds a goroutine and a
+		// descriptor for as long as it likes.
 		IdleTimeout: idleTimeout,
 		// a handler's panic the server recovers is one of its own errors
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),

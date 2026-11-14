@@ -150,6 +150,71 @@ func events(ctx context.Context, client *Client) ([]Event, error) {
 	return out, nil
 }
 
+// heardConn is a connection whose first octet was read before the server took it, and which gives it back first
+type heardConn struct {
+	net.Conn
+	first []byte
+}
+
+func (c *heardConn) Read(b []byte) (int, error) {
+	if len(c.first) > 0 {
+		n := copy(b, c.first)
+		c.first = c.first[n:]
+		return n, nil
+	}
+	return c.Conn.Read(b)
+}
+
+// heardListener hands its server the first connection of its socket once that connection's first octet has come, and then
+// nothing until it is closed
+type heardListener struct {
+	net.Listener
+	handed bool
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (l *heardListener) Accept() (net.Conn, error) {
+	if l.handed {
+		<-l.closed
+		return nil, net.ErrClosed
+	}
+	l.handed = true
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	first := make([]byte, 1)
+	if n, err := conn.Read(first); n != 1 {
+		conn.Close()
+		return nil, errors.Join(net.ErrClosed, err)
+	}
+	return &heardConn{Conn: conn, first: first}, nil
+}
+
+func (l *heardListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return l.Listener.Close()
+}
+
+// serveHeard serves src through newServer, shaped by shape, on the first connection to a real socket, which the server
+// takes once its first octet has come
+// net/http starts its read timeout as it takes a connection, and a loaded host can hold a client between its dial and its
+// first write for longer than a short one
+func serveHeard(t *testing.T, src Source, shape func(*http.Server)) *Client {
+	t.Helper()
+	path := socketPath(t)
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newServer(src)
+	shape(server)
+	go server.Serve(&heardListener{Listener: listener, closed: make(chan struct{})})
+	t.Cleanup(func() { server.Close() })
+	return Dial(path)
+}
+
 const (
 	// testWait is how long a test waits for something it expects, generous for a loaded machine
 	testWait = 10 * time.Second
@@ -174,11 +239,12 @@ func serveStream(t *testing.T, src Source, shape func(*http.Server)) *Client {
 	return Dial(path)
 }
 
-// a stream clears the write deadline the server puts on every answer, and its client reads with none of its own
-// an event written well past both timeouts still arrives
+// a stream clears the write deadline the server puts on every answer, the server's read deadline ends before the handler of
+// a request without a body, and its client reads with none of its own
+// an event written well past the three timeouts still arrives
 func TestStreamOutlivesTheWriteAndReadTimeouts(t *testing.T) {
 	src := newStreamSource(16)
-	client := serveStream(t, src, func(server *http.Server) { server.WriteTimeout = shortBound })
+	client := serveHeard(t, src, func(server *http.Server) { server.WriteTimeout, server.ReadTimeout = shortBound, shortBound })
 	client.http.Timeout = shortBound
 	ctx, cancel := context.WithTimeout(context.Background(), testWait)
 	defer cancel()
@@ -188,7 +254,7 @@ func TestStreamOutlivesTheWriteAndReadTimeouts(t *testing.T) {
 		got <- read
 	}()
 	f := src.nextFeed(t)
-	// four times either timeout, which a stream that kept one would not survive
+	// four times each timeout, which a stream that kept one would not survive
 	time.Sleep(4 * shortBound)
 	f.emit(Event{Seq: 2, Kind: "probe.late.event"})
 	f.end("the test is done")

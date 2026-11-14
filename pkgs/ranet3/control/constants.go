@@ -28,8 +28,8 @@ const (
 	// maxConnections is how many connections the daemon holds open at once
 	// a diagnostic makes one request and exits, and each connection costs a goroutine and a descriptor
 	maxConnections = 32
-	// readHeaderTimeout bounds a request's headers, which a local client sends at once
-	readHeaderTimeout = 5 * time.Second
+	// requestTimeout bounds reading a request, its headers and its body together, which a local client sends at once
+	requestTimeout = 5 * time.Second
 	// writeTimeout bounds writing an answer to a client that stopped reading, a stream excepted
 	writeTimeout = 30 * time.Second
 	// idleTimeout closes a connection that finished a request and went quiet, which nothing else bounds

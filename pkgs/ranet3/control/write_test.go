@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writingSource is a fakeSource that also takes the verbs, recording what it
@@ -306,6 +307,35 @@ func TestClientRoundTripsEveryVerb(t *testing.T) {
 	}
 	if sink.verb != "up" {
 		t.Errorf("up arrived as %+v", sink)
+	}
+}
+
+// slowSink takes four request timeouts over a reload, and refuses it if its context ends first
+type slowSink struct{ writingSource }
+
+func (s *slowSink) Reload(ctx context.Context) (Result, error) {
+	select {
+	case <-ctx.Done():
+		return Result{}, ctx.Err()
+	case <-time.After(4 * shortBound):
+		return s.writingSource.Reload(ctx)
+	}
+}
+
+// a verb that runs past the request timeout once its body was read is not cut by it, an empty body or not
+func TestVerbOutlivesTheRequestTimeout(t *testing.T) {
+	for name, body := range map[string]string{"an empty body": "", "an object": "{}"} {
+		t.Run(name, func(t *testing.T) {
+			client := serveHeard(t, &slowSink{}, func(server *http.Server) { server.ReadTimeout = shortBound })
+			response, err := client.Raw(t.Context(), http.MethodPost, PathReload, strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if answer, _ := io.ReadAll(response.Body); response.StatusCode != http.StatusOK {
+				t.Errorf("a reload that ran past the request timeout answered %s: %s", response.Status, answer)
+			}
+		})
 	}
 }
 

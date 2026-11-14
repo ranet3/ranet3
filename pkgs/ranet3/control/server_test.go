@@ -402,8 +402,7 @@ func TestListenRefusesALiveSocketItCannotDial(t *testing.T) {
 
 // An idle connection costs the daemon a goroutine and a descriptor until
 // something closes it. net/http clears the read deadline between requests, so
-// ReadHeaderTimeout does not bound one that has finished a request and gone
-// quiet.
+// ReadTimeout does not bound one that has finished a request and gone quiet.
 func TestIdleConnectionsAreBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits for an idle timeout")
@@ -426,6 +425,50 @@ func TestIdleConnectionsAreBounded(t *testing.T) {
 	client.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.ReadAll(client); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("an idle connection was not closed: %v", err)
+	}
+}
+
+// A body that has not come whole within the request timeout is answered and its connection closed, which gives its place
+// back, whether a verb reads the body or the server discards it after a handler that does not
+func TestBodyThatDoesNotArriveIsAnsweredAndItsConnectionClosed(t *testing.T) {
+	for name, test := range map[string]struct {
+		path   string
+		status int
+	}{
+		"a verb's body": {PathRedial, http.StatusBadRequest},
+		"a read's body": {PathStatus, http.StatusMethodNotAllowed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &writingSource{}
+			server := newServer(sink)
+			if server.ReadTimeout == 0 {
+				t.Fatal("a body that never arrives is bounded by ReadTimeout and by nothing else")
+			}
+			server.ReadTimeout = shortBound
+			client, daemon := net.Pipe()
+			defer client.Close()
+			go server.Serve(&onePipe{daemon: daemon})
+			client.SetDeadline(time.Now().Add(testWait))
+			if _, err := client.Write([]byte("POST " + test.path + " HTTP/1.1\r\nHost: x\r\nContent-Length: 64\r\n\r\n{")); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(client)
+			response, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatalf("a body held back past the request timeout was not answered: %v", err)
+			}
+			io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			if response.StatusCode != test.status {
+				t.Errorf("a body held back past the request timeout was answered %s, want %d", response.Status, test.status)
+			}
+			if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) {
+				t.Errorf("the connection of a body held back past the request timeout is still open: %v", err)
+			}
+			if sink.verb != "" {
+				t.Errorf("a body held back past the request timeout reached the verb as %+v", sink)
+			}
+		})
 	}
 }
 
