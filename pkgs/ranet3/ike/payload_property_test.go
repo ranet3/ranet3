@@ -25,6 +25,11 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
+const (
+	decoderWatchInterval = 100 * time.Millisecond
+	decoderStallTimeout  = time.Second
+)
+
 // withEdges draws from gen half the time and one of edges the rest. A run
 // draws the same 200 cases every time, so an edge a property depends on is
 // named here rather than left to the sample to reach. gen comes first so a
@@ -608,7 +613,7 @@ var encodingKinds = []string{
 	"message", "chain", "SA", "IKE offer", "ESP offer", "ESP answer", "short ESP SPI",
 	"misstated SPI Size", "misstated proposal length", "misstated transform length",
 	"TS", "full range selectors", "notify", "delete", "KE", "identity", "alias ID", "AUTH",
-	"misstated AUTH algorithm length",
+	"misstated AUTH algorithm length", "fragment", "misstated SKF length",
 }
 
 // misstate draws a value to write into a length field: one of edges, the
@@ -624,6 +629,10 @@ func misstate(tc hegel.TestCase, largest int, edges ...int) int {
 	return hegel.Draw(tc, hegel.OneOf(generators...))
 }
 
+func encodedFragment(tc hegel.TestCase, body []byte) []byte {
+	return (&Message{Header: drawHeader(tc), Payloads: []RawPayload{{Type: PayloadSKF, Body: body}}}).Encode()
+}
+
 // encodingOf draws an encoding of the given kind as this package writes it.
 func encodingOf(tc hegel.TestCase, kind string) []byte {
 	var b []byte
@@ -636,6 +645,12 @@ func encodingOf(tc hegel.TestCase, kind string) []byte {
 			m.Payloads = append(m.Payloads, RawPayload{Type: PayloadSK, Body: drawBytes(tc, 64, 7, 8, 23, 24)})
 		}
 		b = m.Encode()
+	case "fragment", "misstated SKF length":
+		b = encodedFragment(tc, drawBytes(tc, 64, 0, 1, 2, 3, 4, 27, 28))
+		if kind == "misstated SKF length" {
+			binary.BigEndian.PutUint16(b[HeaderLen+2:HeaderLen+4],
+				uint16(misstate(tc, 0xffff, 0, 3, 4, 5, 6, 7, 8, len(b)-HeaderLen, len(b)-HeaderLen+1)))
+		}
 	case "chain":
 		b = encodePayloadChain(drawPayloads(tc, innerTypes, 4))
 	case "SA":
@@ -777,8 +792,6 @@ func damage(tc hegel.TestCase, b []byte) []byte {
 func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 	signer := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	public := signer.Public().(ed25519.PublicKey)
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
-	key := make([]byte, 16+4)
 	gateway := identity.MustParse("acme/gw:1")
 	aliases := Aliases{Remote: RemoteAliases{
 		IP:    map[string]identity.Identity{"192.0.2.10": gateway, "2001:db8::10": gateway},
@@ -809,6 +822,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 
 		// reads names the encodings whose cuts a decoder is given
 		// arbitrary and damaged bytes go to every decoder
+		messages := []string{"message", "fragment", "misstated SKF length"}
 		sa := []string{"SA", "IKE offer", "ESP offer", "ESP answer", "short ESP SPI",
 			"misstated SPI Size", "misstated proposal length", "misstated transform length"}
 		selectors := []string{"TS", "full range selectors"}
@@ -818,19 +832,19 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			reads  []string
 			decode func([]byte) string
 		}{
-			{"decodeHeader", []string{"message"}, func(b []byte) string {
+			{"decodeHeader", messages, func(b []byte) string {
 				if h, err := decodeHeader(b); err == nil && h == nil {
 					return "returned neither a header nor an error"
 				}
 				return ""
 			}},
-			{"DecodeMessage", []string{"message"}, func(b []byte) string {
+			{"DecodeMessage", messages, func(b []byte) string {
 				m, err := DecodeMessage(b)
 				if err == nil && m == nil {
 					return "returned neither a message nor an error"
 				}
-				if err == nil && m.find(PayloadSK) != nil {
-					_, _ = DecryptMessage(suite, key, b, m)
+				if err == nil {
+					return readEncryptedPayload(b, m)
 				}
 				return ""
 			}},
@@ -873,7 +887,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			for i, in := range inputs {
 				// a read past the end has to panic here rather than reach spare capacity behind a cut, an append or a truncation
 				b := slices.Clip(in.bytes)
-				if in.kind == "message" && len(b) >= HeaderLen {
+				if slices.Contains(messages, in.kind) && len(b) >= HeaderLen {
 					// a cut message that kept its length field would be refused unread
 					// so the field follows the cut
 					binary.BigEndian.PutUint32(b[24:28], uint32(len(b)))
@@ -891,7 +905,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			}
 			done <- ""
 		}()
-		watch := time.NewTicker(100 * time.Millisecond)
+		watch := time.NewTicker(decoderWatchInterval)
 		defer watch.Stop()
 		mark, since := at.Load(), time.Now()
 		for {
@@ -904,17 +918,139 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			case <-watch.C:
 				if now := at.Load(); now != mark {
 					mark, since = now, time.Now()
-				} else if mark >= 0 && time.Since(since) > time.Second {
-					// a decoder still in one call a second later ends the run, the way go test's own timeout does
+				} else if mark >= 0 && time.Since(since) > decoderStallTimeout {
+					// a stalled decoder ends the run, the way go test's own timeout does
 					// the panic names the decoder and the input
 					// failing the case for hegel to shrink would leave one stuck goroutine running per case it tried
 					// and a decoder that allocates as it loops would fill memory within seconds
 					in, decoder := inputs[mark/int64(len(decoders))], decoders[mark%int64(len(decoders))]
-					hung := fmt.Sprintf("%s: %s on %x did not return within a second", t.Name(), decoder.name, slices.Clip(in.bytes))
+					hung := fmt.Sprintf("%s: %s on %x did not return within %v", t.Name(), decoder.name, slices.Clip(in.bytes), decoderStallTimeout)
 					go func() { panic(hung) }()
 					select {}
 				}
 			}
+		}
+	})
+}
+
+// RFC 7383 section 2.6: "If any of these tests fail, the message MUST be silently discarded."
+func TestShortEncryptedFragmentsAreDiscarded(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		for size := range 4 {
+			raw := encodedFragment(ht, hegel.Draw(ht, hegel.Binary(size, size)))
+			m, err := DecodeMessage(raw)
+			if err != nil {
+				ht.Fatal(err)
+			}
+			if problem := readEncryptedPayload(raw, m); problem != "" {
+				ht.Fatal(problem)
+			}
+		}
+	})
+}
+
+func readEncryptedPayload(raw []byte, m *Message) string {
+	if len(m.Payloads) == 0 {
+		return ""
+	}
+	last := m.Payloads[len(m.Payloads)-1]
+	if last.Type != PayloadSK && last.Type != PayloadSKF {
+		return ""
+	}
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
+	var key [16 + 4]byte
+	_, _, decryptErr := decryptMessagePlaintext(suite, key[:], raw, m)
+	if last.Type != PayloadSKF {
+		return ""
+	}
+	number, total := fragmentNumbers(m)
+	s := Session{fragments: true}
+	repeated := s.repeats(suite, key[:], raw, m, 0)
+	var q reassembly
+	opened, err := q.take(suite, key[:], raw, m, time.Time{})
+	if len(last.Body) < 4 && (number != 0 || total != 0 || repeated || decryptErr == nil || opened != nil || err != nil || q.chunks != nil || q.held != 0) {
+		return fmt.Sprintf("short fragment was not silently discarded: numbers %d/%d, repeated %v, decrypt %v, opened %+v, error %v, queue %+v", number, total, repeated, decryptErr, opened, err, q)
+	}
+	return ""
+}
+
+func TestLastTransformCannotPromiseAnother(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		p := drawProposal(ht)
+		last := drawTransform(ht)
+		p.Transforms = append(p.Transforms, last)
+		body := EncodeSA([]Proposal{p})
+		if _, err := DecodeSA(body); err != nil {
+			ht.Fatal(err)
+		}
+		body[len(body)-len(last.encode(true))] = 3
+		if _, err := DecodeSA(body); err == nil {
+			ht.Fatalf("accepted final transform marked more: %x", body)
+		}
+	})
+}
+
+func TestLastProposalCannotPromiseAnother(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		props := drawProposals(ht)
+		last := drawProposal(ht)
+		body := EncodeSA(append(props, last))
+		if _, err := DecodeSA(body); err != nil {
+			ht.Fatal(err)
+		}
+		body[len(body)-len(last.encode(true))] = 2
+		if _, err := DecodeSA(body); err == nil {
+			ht.Fatalf("accepted final proposal marked more: %x", body)
+		}
+	})
+}
+
+func TestZeroKeyLengthSkipsOnlyItsTransform(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		bits := hegel.Draw(ht, hegel.SampledFrom([]uint16{128, 192, 256}))
+		good := Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: bits}
+		for _, id := range []uint16{ENCR_AES_GCM_16, ENCR_CHACHA20_POLY1305} {
+			first := Transform{Type: TransEncr, ID: id, KeyLengthBits: 256}
+			p := Proposal{Number: 1, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 1},
+				Transforms: []Transform{first, good, {Type: TransESN, ID: ESN_NO}}}
+			body := EncodeSA([]Proposal{p})
+			if _, err := DecodeSA(body); err != nil {
+				ht.Fatal(err)
+			}
+			binary.BigEndian.PutUint16(body[22:24], 0)
+			props, err := DecodeSA(body)
+			if err != nil || len(props) != 1 {
+				ht.Fatalf("zero key length refused its proposal: %+v, %v", props, err)
+			}
+			bad := props[0].Transforms[0]
+			if !bad.UnsupportedAttributes || bad.KeyLengthBits != 0 || !slices.Equal(props[0].Transforms[1:], p.Transforms[1:]) {
+				ht.Fatalf("zero key length did not invalidate only its transform: %+v", props[0].Transforms)
+			}
+			if _, err := canonicalEncryptionTransform(bad); err == nil {
+				ht.Fatal("zero key length accepted for encryption")
+			}
+			if id == ENCR_CHACHA20_POLY1305 {
+				first.KeyLengthBits = 0
+			}
+			chosen, err := selectChildRequestProposal(body, []Transform{first, good}, nil, 0)
+			if err != nil || chosen.encryption != good {
+				ht.Fatalf("supported alternative = %+v, %v, want %+v", chosen.encryption, err, good)
+			}
+		}
+	})
+}
+
+func TestKnownSelectorRejectsOddLength(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		selector := drawSelector(ht)
+		body := EncodeTS([]TrafficSelector{selector})
+		if _, err := DecodeTS(body); err != nil {
+			ht.Fatal(err)
+		}
+		body = append(body, drawOctet[uint8](ht))
+		binary.BigEndian.PutUint16(body[6:8], uint16(len(body)-4))
+		if _, err := DecodeTS(body); err == nil {
+			ht.Fatalf("accepted odd selector length within buffer: %x", body)
 		}
 	})
 }
