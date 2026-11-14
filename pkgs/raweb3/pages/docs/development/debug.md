@@ -832,10 +832,10 @@ that SA runs, named as above, and its `action` what the session does about it:
 IKE SA's PRF, which no rekey changes, so the session deletes the IKE SA for a
 new handshake, as [reloading](../reloading.md#capcrypto) describes.
 
-An `INVALID_KE_PAYLOAD` answer naming the group to use, and a message of an IKE
-SA this node does not hold, record no `ike.handshake.failed`. The responder logs
-each at debug, and the warning it gives an address for a refused handshake stays
-for the next refusal from there.
+A `COOKIE` challenge, an `INVALID_KE_PAYLOAD` answer naming the group to use,
+and a message of an IKE SA this node does not hold record no
+`ike.handshake.failed`. The responder logs each at debug, and the warning it
+gives an address for a refused handshake stays for the next refusal from there.
 
 An `ike.kex.rejected` is recorded when this node refuses the peer's side of an
 ML-KEM key exchange. Its `exchange` is `IKE_INTERMEDIATE` in a handshake and
