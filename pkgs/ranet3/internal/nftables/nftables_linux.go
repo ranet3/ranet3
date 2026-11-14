@@ -282,9 +282,14 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		}
 	}
 	if flags != 0 {
-		// NewTable clears a dormant flag in place, and only deleting the table, with every other owner's chains in it, clears another
+		// NewTable clears a dormant flag in place and no other
 		fault := fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags)
-		if flags&^unix.NFT_TABLE_F_DORMANT != 0 {
+		switch {
+		case flags&0x2 != 0:
+			// nf_tables refuses every other socket's change or delete of an owned table, and drops the flag, or without persist the table, with its socket
+			fault += fmt.Sprintf(", and another program's open socket owns it, so nft delete table inet %s works only once that program closes the socket or stops", c.table())
+		case flags&^unix.NFT_TABLE_F_DORMANT != 0:
+			// deleting the table, with every other owner's chains in it, clears any other flag
 			fault += fmt.Sprintf(", and only nft delete table inet %s clears another", c.table())
 		}
 		note(fault)

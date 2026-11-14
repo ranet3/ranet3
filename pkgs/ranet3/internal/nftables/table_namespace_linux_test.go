@@ -8,6 +8,7 @@ package nftables
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"slices"
@@ -213,6 +214,31 @@ func TestNftablesWithdrawalOfASetAnotherWriterUsesFails(t *testing.T) {
 	}
 }
 
+// tableOwner and tablePersist are nf_tables' owner and persist flags of a table
+const tableOwner, tablePersist = 0x2, 0x4
+
+// orphanedFix and liveOwner end the fault a read notes for a table that
+// outlived its owner under the persist flag, and for one a socket still open
+// owns
+const (
+	orphanedFix = "only nft delete table inet " + Table + " clears another"
+	liveOwner   = "another program's open socket owns it, so nft delete table inet " + Table + " works only once that program closes the socket or stops"
+)
+
+// flaggedTable makes the table with flags through a socket of its own, which
+// it answers open and closes at the test's end
+func flaggedTable(t *testing.T, flags uint32) (*Conn, error) {
+	t.Helper()
+	setter, err := Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = setter.Close() })
+	made := Request{Kind: Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
+		Body: PutAttrBE32(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table), unix.NFTA_TABLE_FLAGS, flags)}
+	return setter, setter.Batch([]Request{made})
+}
+
 // A table carrying the persist flag past the socket that set it with the
 // owner flag reads back as a fault naming the operator's delete for every
 // owner, which no rewrite mends, since nf_tables refuses any owner's NewTable
@@ -223,18 +249,11 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	netnstest.EnterEmptyLoopbackDown(t)
-	const owner, persist = 0x2, 0x4
-	setter, err := Dial()
-	if err != nil {
-		t.Fatal(err)
+	setter, err := flaggedTable(t, tableOwner|tablePersist)
+	if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {
+		t.Skipf("this kernel takes no persist flag: %v", err)
 	}
-	made := Request{Kind: Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
-		Body: PutAttrBE32(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table), unix.NFTA_TABLE_FLAGS, owner|persist)}
-	if err := setter.Batch([]Request{made}); err != nil {
-		_ = setter.Close()
-		if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {
-			t.Skipf("this kernel takes no persist flag: %v", err)
-		}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := setter.Close(); err != nil {
@@ -246,13 +265,13 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 		t.Error("an owner's NewTable of flags 0 over the persistent table went through")
 	}
 	tables, err := Tables(conn, Table)
-	if err != nil || tables[unix.NFPROTO_INET]&persist == 0 {
+	if err != nil || tables[unix.NFPROTO_INET]&tablePersist == 0 {
 		t.Fatalf("the table outlived its owner with the flags %#x (%v), want persist", tables[unix.NFPROTO_INET], err)
 	}
 	for i, o := range owners {
 		chain := Chain{Table: Table, Name: o.chains[0], Type: "filter", Hook: unix.NF_INET_FORWARD}
 		read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
-		if err != nil || !strings.Contains(read.Fault, "nft delete table inet "+Table) || read.Remake() {
+		if err != nil || !strings.Contains(read.Fault, orphanedFix) || read.Remake() {
 			t.Errorf("the %s reads the persistent table back as %+v (%v), want a fault naming the delete and nothing to remake", owners[i].name, read, err)
 		}
 	}
@@ -261,8 +280,58 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 			t.Fatalf("the %s's withdrawal from the persistent table: %v", owners[owner].name, err)
 		}
 	}
-	if tables, err := Tables(conn, Table); err != nil || tables[unix.NFPROTO_INET]&persist == 0 {
+	if tables, err := Tables(conn, Table); err != nil || tables[unix.NFPROTO_INET]&tablePersist == 0 {
 		t.Errorf("after every owner's withdrawal the table is held with %v (%v), want it with its persist flag", tables, err)
+	}
+}
+
+// A table a socket still open owns, with the persist flag or without it,
+// reads back for every owner as a fault saying the delete waits for that
+// socket, since nf_tables refuses another socket's delete of it with EPERM,
+// and at that socket's close it goes, or under persist keeps that flag alone
+func TestNftablesTableALiveSocketOwnsReadsAsThatSocketsOwn(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	for _, c := range []struct {
+		name  string
+		flags uint32
+		after map[uint8]uint32
+	}{
+		{"an owned table", tableOwner, nil},
+		{"an owned persistent table", tableOwner | tablePersist, map[uint8]uint32{unix.NFPROTO_INET: tablePersist}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			netnstest.EnterEmptyLoopbackDown(t)
+			setter, err := flaggedTable(t, c.flags)
+			if c.flags&tablePersist != 0 && (errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL)) {
+				t.Skipf("this kernel takes no persist flag: %v", err)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn := dial(t)
+			tables, err := Tables(conn, Table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, o := range owners {
+				chain := Chain{Table: Table, Name: o.chains[0], Type: "filter", Hook: unix.NF_INET_FORWARD}
+				read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
+				if err != nil || !strings.Contains(read.Fault, liveOwner) {
+					t.Errorf("the %s reads the owned table back as %+v (%v), want a fault naming the socket that owns it", owners[i].name, read, err)
+				}
+			}
+			if err := conn.Batch([]Request{DeleteTable(unix.NFPROTO_INET, Table)}); !errors.Is(err, unix.EPERM) {
+				t.Errorf("another socket's delete of the owned table answered %v, want EPERM", err)
+			}
+			if err := setter.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if tables, err := Tables(conn, Table); err != nil || !maps.Equal(tables, c.after) {
+				t.Errorf("after the socket that owns it closed, the table is held with %v (%v), want %v", tables, err, c.after)
+			}
+		})
 	}
 }
 
