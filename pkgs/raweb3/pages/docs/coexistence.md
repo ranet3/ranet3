@@ -776,16 +776,23 @@ deletes the table, whatever it lists, so a daemon that dies between two
 withdrawals, or a start without `cap.table` that deletes the kill switch an
 earlier instance left, leaves the table for the next start to take over.
 
-A table another writer gave a flag other than dormant, such as `persist`,
-refuses every writer's pass until `nft delete table inet ranet3` clears it. The
-translator names that command in the reason it is not ready, while the antispoof
-filter and the kill switch report the write's refusal,
-`operation not supported`, and the filter's ends a start at its first pass. The
-translator's nat chain needs Linux 5.2 or later, as [Linux](platforms.md#linux)
-gives. An `inet` nat chain hooks NAT in both families, so on an exit that
-translates one family a flow of the other that no chain translates gets the
-kernel's null binding, which changes no address, and its port only where 2 flows
-would share a tuple, as on any host with a NAT chain in that family.
+A table another writer gave a flag other than dormant refuses every writer's
+rewrite, and each writer names the flag beside the refusal: the translator in
+the reason a family is not ready, beside the pass's error, the antispoof filter
+in its readiness and the pass's error, which ends a start at its first pass, and
+the kill switch in its `not holding` reason and the pass's error. Where the
+table outlived the socket that set its `persist` flag, the refusal is
+`operation not supported` and the reason names `nft delete table inet ranet3`,
+which alone clears the flag and deletes every writer's chains with the table.
+Where another program's open socket owns the table, the refusal is
+`operation not permitted` and the reason says that delete works only once that
+program closes the socket or stops. No writer deletes the table or makes it
+again over the flag. The translator's nat chain needs Linux 5.2 or later, as
+[Linux](platforms.md#linux) gives. An `inet` nat chain hooks NAT in both
+families, so on an exit that translates one family a flow of the other that no
+chain translates gets the kernel's null binding, which changes no address, and
+its port only where 2 flows would share a tuple, as on any host with a NAT chain
+in that family.
 
 An older ranet3 wrote the translator's chains in the tables `ip ranet3` and
 `ip6 ranet3`, and the kill switch's in `inet ranet3_fallback`. Its clean stop

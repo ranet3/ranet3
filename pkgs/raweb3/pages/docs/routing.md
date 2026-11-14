@@ -793,16 +793,18 @@ still wins at 5410 as in mode 2, the cost
 [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) names. While
 the chains hold, their drop takes that route's traffic beyond the LAN unless
 another line passes it. Status names the switch `not holding` with the reason,
-and the services on the uplink's address answer only where 5410 or 5445 routes
-the reply, or the mark 0x72 sends it past them to main, until the chains read
-back. The reconciler watches the notifications of the table and of its chains
-and sets, so another writer's flush or deleted line starts a pass at once, and
-the antispoof filter's and the translator's writes of their chains, rules and
-sets start none. A flush of the ruleset deletes the table and another program
-setting it dormant sets a flag on it, so each starts a pass in every writer
-once. The first writer's pass after it makes the table again or clears the flag,
-which starts none in another writer: the table it makes holds none of their
-chains, and with the flag cleared it bypasses none.
+which for a flag another writer set on the table reads as
+[sharing a host](coexistence.md#the-nftables-table) gives, and the services on
+the uplink's address answer only where 5410 or 5445 routes the reply, or the
+mark 0x72 sends it past them to main, until the chains read back. The reconciler
+watches the notifications of the table and of its chains and sets, so another
+writer's flush or deleted line starts a pass at once, and the antispoof filter's
+and the translator's writes of their chains, rules and sets start none. A flush
+of the ruleset deletes the table and another program setting it dormant sets a
+flag on it, so each starts a pass in every writer once. The first writer's pass
+after it makes the table again or clears the flag, which starts none in another
+writer: the table it makes holds none of their chains, and with the flag cleared
+it bypasses none.
 
 #### Mode 3 on Linux
 

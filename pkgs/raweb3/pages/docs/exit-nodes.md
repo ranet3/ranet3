@@ -522,10 +522,11 @@ type, hook or priority, no set's key, flags or comment and no timeout object's
 values, so when a chain, set or object of the translator's differs in one of
 those the pass deletes that one and makes it again in the same transaction,
 leaving everything else in the table as it is. Another table flag holds both
-families not ready, the reason naming `nft delete table inet ranet3`, which
-alone clears it. When the chains still do not read back as written, the host
-stops forwarding the family or a lookup fails, that pass retracts the prefix. A
-pass runs at least every `sweep` (30 seconds by default).
+families not ready, with the reason
+[sharing a host](coexistence.md#the-nftables-table) gives. When the chains still
+do not read back as written, the host stops forwarding the family or a lookup
+fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
+seconds by default).
 
 On Linux the node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on.
