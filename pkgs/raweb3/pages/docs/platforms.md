@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-11
+updated: 2026-11-15
 order: 100
 ---
 
@@ -191,8 +191,8 @@ Interface scope on macOS takes the place of the policy rules on Linux. In mode
 off it keeps the host's own traffic from being captured.
 [Where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives
 each route's scope and where each lookup ends. The reconciler installs these
-routes scoped to the tun, which no socket selects unless it asks for the tun by
-name:
+routes scoped to the tun, which answer a socket bound to neither the tun nor an
+address of it only where that section gives:
 
 - a source-specific route, but one at an address the utun holds
 - a retracted route, which it holds as a reject route, unless the route counts

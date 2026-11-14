@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-12
+updated: 2026-11-15
 order: 110
 ---
 
@@ -457,9 +457,9 @@ back as its own. A pass withdraws it when the mesh does not select it. macOS
 keeps no source with a route, so a source-specific route another program wrote
 there is withdrawn and installed again.
 
-The reconciler installs 4 kinds of route scoped to the utun. A scoped route is
-invisible to an ordinary lookup and visible to a socket bound to the utun or to
-an address on it.
+The reconciler installs 4 kinds of route scoped to the utun, which answer a
+socket bound to neither the utun nor an address on it only where
+[where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives.
 
 - A source-specific route. Interface scope is the only thing on this platform
   that draws the distinction a source prefix draws.
@@ -513,11 +513,13 @@ peer reached as its source and leaves by the interface the kernel takes for that
 address, as [routing](routing.md#the-underlays-interface-on-macos) describes.
 
 What a scoped route does not give you is automatic use of an exit-announced
-address. Invisibility to an ordinary lookup is the safety property, and it
-applies to every unbound socket, so Safari, curl and ssh keep the address of
-whatever interface the host was already using. macOS has no `ip rule`: selecting
-a scoped route means `bind()` to an address on the tun or `IP_BOUND_IF` to the
-tun itself, per application, and ranet3 provides neither. `cap.exit` takes the
+address. An unbound socket whose longest unscoped match leaves by another
+interface passes a scoped route over, so Safari, curl and ssh keep the address
+of whatever interface the host was already using outside the mesh's unscoped
+routes, as [where a lookup ends](routing.md#where-a-lookup-ends-on-macos) gives.
+macOS has no `ip rule`: outside the mesh's unscoped routes, selecting a scoped
+route means `bind()` to an address on the tun or `IP_BOUND_IF` to the tun
+itself, per application, and ranet3 provides neither. `cap.exit` takes the
 host's own traffic into the mesh unscoped instead, as above.
 
 There is a second-order effect too. On an IPv4-only network the mesh address can

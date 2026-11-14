@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-13
+updated: 2026-11-15
 order: 50
 ---
 
@@ -68,8 +68,8 @@ prefixes [counts as a default](routing.md#routes-that-count-as-a-default).
 
 [The zero-free cover](routing.md#the-zero-free-cover-on-macos) gives which `/0`
 a Mac under [`cap.exit`](configuration-reference.md#capexit) takes and how it
-installs it. A Mac without `cap.exit` scopes the `/0` to the tun, which no
-socket selects unless it asks for the tun by name.
+installs it. A Mac without `cap.exit` scopes the `/0` to the tun, which only a
+socket bound to the tun or to an address of it selects.
 
 `cap.route` may not announce a prefix `cap.egress` advertises. The daemon
 refuses that at startup and on every reload, because `cap.route` would announce
