@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-11-10
+updated: 2026-11-15
 order: 38
 ---
 
@@ -121,7 +121,11 @@ The whole document is refused, and the daemon does not start or reload, when:
 - A string or a member name, inside `remarks` too, is not valid UTF-8, or holds
   an escaped surrogate that is not half of a pair.
 - Anything follows the array.
-- An organization has no name, or its `public_key` is not an Ed25519 key in PEM.
+- An organization has no name, or its `public_key` is not an Ed25519 key in PEM,
+  is not a canonical encoding, encodes no point of the curve
+  ([RFC 8032 section 5.1.3](https://www.rfc-editor.org/rfc/rfc8032#section-5.1.3)),
+  or is a point whose order divides 8, under which a signature no private key
+  made verifies.
 - A node has no `common_name`, or its name appears twice in 1 organization,
   across all of that organization's blocks.
 - An endpoint has no `serial_number`, a `port` of 0, or an `address_family`
