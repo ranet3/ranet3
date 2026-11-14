@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-11
+updated: 2026-11-14
 order: 80
 ---
 
@@ -338,7 +338,7 @@ The table holds once the daemon serves the node. While the start waits for the
 key or the trust document, as
 [restarts and the network](service.md#restarts-and-the-network) describes, the
 socket bounds reading a request and writing its answer to 10 seconds each, and
-holds no bound on the connections open at once.
+the connections open at once as the table does.
 
 ## Acting on a running node
 
