@@ -38,7 +38,8 @@ type routeInfo struct {
 	rxMetric  uint16
 	hold      time.Duration
 	expiresAt time.Time
-	// refreshAt is when the route, if selected, is asked for again, see refreshAfter, and zero once asked or never due
+	// refreshAt is when the route's refresh request falls due. An overdue value
+	// is kept while unselected and cleared once a request is queued.
 	refreshAt time.Time
 	// smoothed is ms(R) of RFC 8966 Appendix A.3. It only damps selection and
 	// is never advertised.
@@ -303,6 +304,7 @@ func (rt *routeTable) offer(n *neighborState, key routeKey, adv advertisement, h
 	}
 	route.routerID, route.seqno, route.rxMetric = adv.routerID, adv.seqno, adv.metric
 	route.hold, route.expiresAt = hold, now.Add(hold)
+	route.refreshAt = now.Add(refreshAfter(hold))
 }
 
 func (rt *routeTable) dropOffers(gone func(*neighborState, *routeInfo) bool) {
@@ -403,21 +405,16 @@ func goesBefore(n *neighborState, cost uint16, best *neighborState, bestCost uin
 	return best == nil || cost < bestCost || cost == bestCost && n.peer.ID < best.peer.ID
 }
 
-// Every change uses the same selection procedure, including a metric increase
-// on the selected route, a link-cost change, expiry, and neighbor removal.
 func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) {
 	var best, incumbent *neighborState
 	var incumbentRoute *routeInfo
 	var bestCost, incumbentCost uint16
 	var bestSmoothed float64
 	var unfeasible []*neighborState
-	// due is the selected route's neighbor when its refresh fell due in this pass
-	var due *neighborState
 	flushed := false
 	for n, route := range entry.routes {
 		if !now.Before(route.expiresAt) {
-			// Section 3.5.3: a route expires to infinity first, which holds the
-			// prefix (section 3.5.4), and the next expiry flushes it.
+			// RFC 8966 section 3.5.3 expires a route to infinity before flushing it
 			if route.rxMetric == MetricInfinity {
 				delete(entry.routes, n)
 				flushed = true
@@ -426,39 +423,19 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 			route.rxMetric = MetricInfinity
 			route.expiresAt = now.Add(route.hold)
 		}
-		// Every route that survives the pass contributes to the table's
-		// minimum, whether or not it can be selected: a retracted one still
-		// has to be flushed when its hold runs out.
+		// a retracted route still needs a wake to flush it when its hold runs out
 		rt.noteExpiry(route.expiresAt)
-		// a refresh is asked once, and only of the route selected when it falls due
-		if !route.refreshAt.IsZero() {
-			if now.Before(route.refreshAt) {
-				rt.noteExpiry(route.refreshAt)
-			} else {
-				route.refreshAt = time.Time{}
-				if n == entry.selected.neighbor {
-					due = n
-				}
-			}
+		if now.Before(route.refreshAt) {
+			rt.noteExpiry(route.refreshAt)
 		}
 		cost := route.cost(n, now, rt.cost)
 		if cost == MetricInfinity {
-			// Deliberately not smoothed. ms(R) follows an increase
-			// immediately, so feeding it infinity pins it there, and a link
-			// that comes back after a few seconds then stays unselected for
-			// several time constants while the smoothed value decays from
-			// 65535. A retracted or expired route is absent, not merely
-			// expensive, and Appendix A.3 is about how good a route has been
-			// while it existed.
-			continue // retain the candidate until its Update expires
+			// smoothing infinity would delay reuse of a recovered route
+			continue
 		}
 		route.smooth(cost, now, rt.tau)
 		if !rt.feasible(key, route.advertised(), n.peer.ID) {
-			// Section 3.6: an unfeasible route is never selected. A stored
-			// route can turn unfeasible after the fact, either through a
-			// metric fluctuation or because this node has since advertised a
-			// better distance, so the condition is rechecked here and not only
-			// on receipt.
+			// a stored route can turn unfeasible after receipt
 			unfeasible = append(unfeasible, n)
 			continue
 		}
@@ -480,15 +457,10 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	}
 
 	previous := entry.selected
-	// Only a changed next hop changes the forwarding table. The cost goes into
-	// what this node advertises, which significant decides, and is not part of
-	// the entry, so a cost change alone, which RTT costing makes of most IHUs,
-	// writes nothing and wakes no reconciler.
+	// metric changes affect advertisements, not the forwarding entry
 	if selected.neighbor != previous.neighbor {
 		if selected.neighbor != nil {
-			// RFC 8966 section 3.5.4: the hold "is removed as soon as a
-			// finite-metric update for prefix P is received and the resulting
-			// route selected"
+			// RFC 8966 section 3.5.4 ends the hold when a finite route is selected
 			delete(rt.held, key)
 		}
 		rt.install(key, selected)
@@ -496,18 +468,16 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	if rt.significant(key, previous, selected, now) {
 		rt.dirty[key] = struct{}{}
 	}
+	entry.selected = selected
 	if selected.neighbor != nil {
 		entry.retractID, entry.retractSeqno = selected.routerID, selected.seqno
+		route := entry.routes[selected.neighbor]
+		if !route.refreshAt.IsZero() && !now.Before(route.refreshAt) {
+			rt.refresh = append(rt.refresh, refreshRequest{key: key, neighbor: selected.neighbor})
+			route.refreshAt = time.Time{}
+		}
 	}
-	entry.selected = selected
-	// the route whose refresh fell due is asked for only if this pass kept it selected
-	if due != nil && selected.neighbor == due {
-		rt.refresh = append(rt.refresh, refreshRequest{key: key, neighbor: due})
-	}
-	// Section 3.8.2.1: the last feasible route is gone while unfeasible ones
-	// remain, so ask their origins for a new sequence number. Only the
-	// transition asks: a prefix that stays starved would otherwise repeat the
-	// request on every pass for as long as the unfeasible routes are retained.
+	// RFC 8966 section 3.8.2.1 asks on starvation, not on every pass while starved
 	if selected.neighbor == nil && previous.neighbor != nil {
 		for _, n := range unfeasible {
 			rt.starve(key, n, entry.routes[n].advertised())

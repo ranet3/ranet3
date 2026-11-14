@@ -106,34 +106,60 @@ func TestSelectedRouteIsAskedForBeforeItExpires(t *testing.T) {
 	}
 }
 
-// a route that is not selected when its refresh falls due draws no request, and is not asked for once selected later
-func TestUnselectedRouteIsNotAskedFor(t *testing.T) {
-	speaker, near, _ := captureSpeaker(t, Config{})
-	makeNeighborReachable(near)
-	far := speaker.neighbors[addReachablePeer(t, speaker, "far", 96).ID]
-	makeNeighborReachable(far)
-	key := routeKey{dest: netip.MustParsePrefix("2001:db8:3::/48")}
-	learned := time.Now()
-	learnAt(speaker, near, key, 60, learned)
-	learnAt(speaker, far, key, 600, learned)
-	if speaker.routes.entries[key].selected.neighbor != near {
-		t.Fatal("the cheaper route was not selected, so this proves nothing")
-	}
-	sent := refreshesAt(t, speaker, learned.Add(refreshDue))
-	if len(sent) != 1 || sent[0].to != near {
-		t.Fatalf("at 2.5 intervals the speaker sent %+v, want 1 request to the selected route's neighbor", sent)
-	}
-	learnAt(speaker, near, key, MetricInfinity, learned.Add(refreshDue+time.Millisecond))
-	if speaker.routes.entries[key].selected.neighbor != far {
-		t.Fatal("the other route was not selected once the first was retracted, so this proves nothing")
-	}
-	if sent := refreshesAt(t, speaker, learned.Add(refreshDue+2*time.Millisecond)); len(sent) != 0 {
-		t.Errorf("a route selected past its refresh drew %+v", sent)
+// an unselected route keeps its overdue refresh until the pass that selects it
+func TestUnselectedRouteIsAskedForOnceSelected(t *testing.T) {
+	for _, remaining := range []time.Duration{refreshInterval - 2*time.Millisecond, time.Nanosecond} {
+		t.Run(remaining.String(), func(t *testing.T) {
+			speaker, near, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(near)
+			far := speaker.neighbors[addReachablePeer(t, speaker, "far", 96).ID]
+			makeNeighborReachable(far)
+			key := routeKey{dest: netip.MustParsePrefix("2001:db8:3::/48")}
+			learned := time.Now()
+			learnAt(speaker, near, key, 60, learned)
+			learnAt(speaker, far, key, 600, learned)
+			if speaker.routes.entries[key].selected.neighbor != near {
+				t.Fatal("the cheaper route was not selected")
+			}
+			sent := refreshesAt(t, speaker, learned.Add(refreshDue))
+			if len(sent) != 1 || sent[0].to != near {
+				t.Fatalf("at 2.5 intervals the speaker sent %+v, want 1 request to the selected route's neighbor", sent)
+			}
+			waiting := learned.Add(refreshDue + time.Millisecond)
+			if sent := refreshesAt(t, speaker, waiting); len(sent) != 0 {
+				t.Fatalf("while the backup remained unselected the speaker sent %+v", sent)
+			}
+			if wake := speaker.routes.nextExpiry(); !wake.After(waiting) {
+				t.Fatalf("an overdue unselected refresh scheduled a wake at %v", wake)
+			}
+
+			expires := speaker.routes.route(far, key).expiresAt
+			failover := expires.Add(-remaining)
+			learnAt(speaker, near, key, MetricInfinity, failover)
+			if speaker.routes.entries[key].selected.neighbor != far {
+				t.Fatal("the backup was not selected after the retraction")
+			}
+			if queued := speaker.routes.refresh; len(queued) != 1 || queued[0].neighbor != far || queued[0].key != key {
+				t.Fatalf("the selection pass queued %+v, want 1 request to the backup", queued)
+			}
+			want := RouteRequest{AE: aeFor(key.dest), Prefix: key.dest}
+			if sent := refreshesAt(t, speaker, failover); len(sent) != 1 || sent[0].to != far || sent[0].dest != far.addr || sent[0].request != want {
+				t.Fatalf("the selected backup drew %+v, want %+v to %s", sent, want, far.addr)
+			}
+			for range 3 {
+				if sent := refreshesAt(t, speaker, failover); len(sent) != 0 {
+					t.Fatalf("a later pass repeated the backup's request: %+v", sent)
+				}
+			}
+			if sent := refreshesAt(t, speaker, expires); len(sent) != 0 {
+				t.Fatalf("the expired backup drew %+v", sent)
+			}
+		})
 	}
 }
 
-// a route whose refresh falls due in the pass that unselects it draws no request, here the pass an IHU from its neighbor naming the link down runs
-func TestRouteUnselectedAsItsRefreshFallsDueIsNotAskedFor(t *testing.T) {
+// a pass that moves selection at the refresh time asks only the new selection
+func TestRouteSelectedAsItsRefreshFallsDueIsAskedFor(t *testing.T) {
 	speaker, near, _ := captureSpeaker(t, Config{})
 	makeNeighborReachable(near)
 	far := speaker.neighbors[addReachablePeer(t, speaker, "far", 96).ID]
@@ -152,8 +178,102 @@ func TestRouteUnselectedAsItsRefreshFallsDueIsNotAskedFor(t *testing.T) {
 	if selected != far {
 		t.Fatal("the IHU did not move the selection to the other route, so this proves nothing")
 	}
-	if sent := refreshesAt(t, speaker, learned.Add(refreshDue)); len(sent) != 0 {
-		t.Errorf("a route unselected in the pass its refresh fell due drew %+v", sent)
+	if sent := refreshesAt(t, speaker, learned.Add(refreshDue)); len(sent) != 1 || sent[0].to != far {
+		t.Errorf("the selection pass sent %+v, want only the newly selected neighbor", sent)
+	}
+}
+
+// a restored offer is asked once when its latest update's refresh falls due
+func TestRestoredOfferIsAskedForAfterItsLatestUpdate(t *testing.T) {
+	for _, setAside := range []bool{false, true} {
+		name := "new offer"
+		if setAside {
+			name = "set aside route"
+		}
+		t.Run(name, func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(neighbor)
+			key := routeKey{dest: netip.MustParsePrefix("2001:db8:3:8::/64")}
+			learned := time.Now()
+			if setAside {
+				learnAt(speaker, neighbor, key, 60, learned.Add(-refreshDue))
+			}
+			speaker.Originate(key.dest)
+			learnAt(speaker, neighbor, key, 60, learned)
+			speaker.SetOriginated(nil)
+			if entry := speaker.routes.entries[key]; entry == nil || entry.selected.neighbor != neighbor {
+				t.Fatal("the restored offer was not selected")
+			}
+			if sent := refreshesAt(t, speaker, learned.Add(refreshDue-time.Nanosecond)); len(sent) != 0 {
+				t.Fatalf("a fresh restored offer drew %+v before its refresh", sent)
+			}
+			want := RouteRequest{AE: aeFor(key.dest), Prefix: key.dest}
+			sent := refreshesAt(t, speaker, learned.Add(refreshDue))
+			if len(sent) != 1 || sent[0].to != neighbor || sent[0].dest != neighbor.addr || sent[0].request != want {
+				t.Fatalf("the restored offer drew %+v, want %+v to %s", sent, want, neighbor.addr)
+			}
+			if sent := refreshesAt(t, speaker, learned.Add(refreshDue+time.Nanosecond)); len(sent) != 0 {
+				t.Fatalf("the restored offer drew another request: %+v", sent)
+			}
+		})
+	}
+}
+
+const (
+	failoverRefreshInterval = 4 * time.Second
+	refreshPollInterval     = time.Millisecond
+)
+
+// a receive failover wakes the sleeping loop to ask the backup before expiry
+func TestReceiveFailoverWakesTheLoopForAnOverdueRefresh(t *testing.T) {
+	speaker, far, captured := captureSpeaker(t, Config{Hello: dur(4 * failoverRefreshInterval)})
+	makeNeighborReachable(far)
+	near := speaker.neighbors[addReachablePeer(t, speaker, "near", 96).ID]
+	makeNeighborReachable(near)
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:3:7::/64")}
+	hold := deadTimeout(failoverRefreshInterval)
+	learned := time.Now().Add(-refreshAfter(hold))
+	speaker.receive(near.peer, near.addr, updatePacket(1, key, 60, failoverRefreshInterval), learned)
+	speaker.receive(far.peer, far.addr, updatePacket(1, key, 61, failoverRefreshInterval), learned)
+	select {
+	case <-speaker.changed:
+	default:
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = speaker.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(refreshPollInterval) {
+		if time.Now().After(deadline) {
+			t.Fatal("the run loop made no initial pass")
+		}
+	}
+	speaker.mu.Lock()
+	selected := speaker.routes.entries[key].selected.neighbor
+	expires := speaker.routes.route(far, key).expiresAt
+	sleep := speaker.sleepUntil
+	pending := speaker.pendingWorkLocked()
+	speaker.mu.Unlock()
+	if selected != near || pending || !sleep.Equal(expires) {
+		t.Fatalf("before failover selected near=%v pending=%v sleep=%v, want expiry %v", selected == near, pending, sleep, expires)
+	}
+	if sent := routeRequestsIn(t, captured.sent()); len(sent) != 0 {
+		t.Fatalf("the unselected backup was asked for: %+v", sent)
+	}
+	speaker.Receive(near.peer, routePacket(key.dest, 1, MetricInfinity, uint16(failoverRefreshInterval/(10*time.Millisecond))))
+	want := RouteRequest{AE: aeFor(key.dest), Prefix: key.dest}
+	for {
+		sent := routeRequestsIn(t, captured.sent())
+		if !time.Now().Before(expires) {
+			t.Fatalf("the backup was not asked before expiry, requests %+v", sent)
+		}
+		if len(sent) != 0 {
+			if len(sent) != 1 || sent[0] != want {
+				t.Fatalf("the backup received %+v, want one %+v", sent, want)
+			}
+			return
+		}
+		time.Sleep(refreshPollInterval)
 	}
 }
 

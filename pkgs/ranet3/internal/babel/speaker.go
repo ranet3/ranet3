@@ -693,29 +693,11 @@ func (s *Speaker) wakeForPacketLocked() {
 	}
 }
 
-// pendingWorkLocked is work that has arrived since the last pass and that a
-// pass has not tried yet: a prefix whose selection changed, which owes a
-// triggered update under RFC 8966 section 3.7.2, or a dump somebody asked for.
-// Every pass drains both, and `updateActions` clears what a periodic dump
-// supersedes, so neither survives a pass that ran.
-//
-// What a pass tried and could not send is deliberately not here. A rollback
-// restores the neighbor's `owed` and its `sentHello`, and both stay restored
-// for as long as that one peer cannot be sent to: a peer whose Child SA the
-// other end deleted refuses every reservation, and RFC 7296 section 1.4.1
-// lets it stay that way. "A pass is owed something" would then be true
-// forever, and every packet from every other neighbor would pay for a full
-// sweep, which is the amplification this function exists to close.
-// noteSendRetryLocked puts that on a timer instead.
-//
-// `routes.starved` is drained by `starvedActions` on the last line of
-// handlePacketLocked, so it is empty by the time the receive path asks. It is
-// here for a writer that does not go through that path, and the run loop asks
-// too. `routes.refresh` is drained by Run alone and needs no term here: a
-// refresh falls due at a refreshAt the route table folded into the deadline
-// the run loop sleeps to, so the loop wakes for it on its own.
+// pendingWorkLocked reports whether untried update work or queued requests
+// need a run-loop pass. Refreshes queued outside Run count even when their
+// refresh time is already past.
 func (s *Speaker) pendingWorkLocked() bool {
-	return s.updatePending || len(s.routes.dirty) != 0 || len(s.routes.starved) != 0
+	return s.updatePending || len(s.routes.dirty) != 0 || len(s.routes.starved) != 0 || len(s.routes.refresh) != 0
 }
 
 // noteSendRetryLocked schedules the retry for a pass that built something it
