@@ -184,6 +184,37 @@ func TestVerbBodyRefusesRepeatedOrUnknownMembersAndInvalidUTF8(t *testing.T) {
 	}
 }
 
+// A body of maxRequest bytes is taken whole, and a longer one is refused before any of it runs, though its first
+// maxRequest bytes are a whole request
+func TestVerbBodyPastTheLimitIsRefusedWhole(t *testing.T) {
+	object := `{"peer":"example/gateway"}`
+	padded := object + strings.Repeat(" ", maxRequest-len(object))
+	for name, test := range map[string]struct {
+		body string
+		verb string
+	}{
+		"at the limit":          {padded, "redial"},
+		"a space past it":       {padded + " ", ""},
+		"a stray brace past it": {padded + "}", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &writingSource{}
+			server := httptest.NewServer(Handler(sink))
+			defer server.Close()
+			want := http.StatusOK
+			if test.verb == "" {
+				want = http.StatusBadRequest
+			}
+			if response := post(t, server.URL+PathRedial, test.body); response.StatusCode != want {
+				t.Errorf("a body of %d bytes answered %s, want %d", len(test.body), response.Status, want)
+			}
+			if sink.verb != test.verb {
+				t.Errorf("a body of %d bytes reached %q, want %q", len(test.body), sink.verb, test.verb)
+			}
+		})
+	}
+}
+
 // The method is the line between the two halves. A read never writes and a
 // write never answers a caller that arrived by GET, so neither half is reached
 // by aiming the other one's method at it.
