@@ -892,9 +892,7 @@ func TestDarwinReportsOccupiedRouteAsSkipped(t *testing.T) {
 	}
 }
 
-// A hold answers with an error rather than carrying the packet out of the tun,
-// and keeps whatever scope its destination would have had: a held default must
-// no more be visible to an unbound socket than a real one.
+// A hold is a reject route under its destination's scope and reads back as one.
 func TestDarwinHoldIsInstalledAsReject(t *testing.T) {
 	plat, sock := testPlatform(t, Table{}, Runtime{})
 	held := Route{Destination: prefix("2001:db8:1::/48"), Unreachable: true}
@@ -1060,14 +1058,15 @@ func TestDarwinKeepsScopedRecordWhenWithdrawalFails(t *testing.T) {
 	}
 }
 
-// An unbound socket does not reach a scoped route, so a scoped route standing
-// where the mesh asked for an unscoped one is a black hole. The diff has to see
-// the difference: it compares a desired route under the scope it would be
-// installed with and a route read back under the scope the kernel holds, so
-// the two agree for everything this reconciler installed and disagree for an
-// inherited scoped route the mesh now wants plain. Masking scope out of the
-// comparison entirely made that pair compare equal, and no later pass could
-// ever notice.
+// A send naming no interface meets a scoped route only where its longest
+// unscoped match leaves by the same interface, so a scoped route standing
+// where the mesh asked for an unscoped one strands what it should carry. The
+// diff has to see the difference: it compares a desired route under the scope
+// it would be installed with and a route read back under the scope the kernel
+// holds, so the two agree for everything this reconciler installed and
+// disagree for an inherited scoped route the mesh now wants plain. Masking
+// scope out of the comparison entirely made that pair compare equal, and no
+// later pass could ever notice.
 func TestDarwinReplacesAnInheritedScopeTheMeshDoesNotWant(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
 	dest := prefix("2001:db8:1::/48")
@@ -1514,7 +1513,7 @@ func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 		written := sock.messages(t)
 		last := written[len(written)-1]
 		if last.Flags&unix.RTF_IFSCOPE != 0 {
-			t.Errorf("cover member %s was scoped, so no ordinary socket reaches the exit through it", member.Destination)
+			t.Errorf("cover member %s was scoped, so an unbound send whose longest unscoped match leaves by another interface does not reach the exit through it", member.Destination)
 		}
 		entries = append(entries, dumpEntry{index: testIndex, flags: last.Flags, dst: member.Destination, gateway: ourGateway()})
 	}
@@ -1543,8 +1542,8 @@ func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 }
 
 // The two remaining reasons to scope hold in a covered family too. A source
-// prefix has no other spelling on this platform at all, and a hold answers
-// with an error for every destination it covers, which unscoped is the whole
+// prefix has no other spelling on this platform at all, and a hold is a reject
+// route, which unscoped shadows every other way to the prefix for the whole
 // machine.
 func TestDarwinKeepsScopingWhatTheCoverDoesNotExplain(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
@@ -1556,7 +1555,7 @@ func TestDarwinKeepsScopingWhatTheCoverDoesNotExplain(t *testing.T) {
 	}
 	held := Route{Destination: prefix("::/0"), Unreachable: true}
 	if !plat.scopeRoute(held) {
-		t.Error("a retracted default lost its scope, so the machine answers its own traffic with an error")
+		t.Error("a retracted default lost its scope")
 	}
 }
 

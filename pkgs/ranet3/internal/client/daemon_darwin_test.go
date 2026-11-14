@@ -309,9 +309,10 @@ func TestExitModeInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 		return plain == len(ipv6Cover)
 	})
 
-	// Unscoped: a route scoped to the tun is reached by nothing that did not
-	// name the tun, so this Mac would hold a mesh address and still not use a
-	// mesh exit. The default itself stays out of the kernel.
+	// Unscoped: a route scoped to the tun takes an unbound send only where its
+	// longest unscoped match leaves by the tun, never where that match is the
+	// host's own default, so this Mac would hold a mesh address and still not
+	// use a mesh exit. The default itself stays out of the kernel.
 	if _, scoped := d.host.coverInstalled(); scoped != 0 {
 		t.Error("cover members were scoped to the tun under cap.exit")
 	}

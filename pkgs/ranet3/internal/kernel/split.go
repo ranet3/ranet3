@@ -57,8 +57,9 @@ func cutAround(routes []Route, keys, rejected []netip.Prefix, keyer holdKeyer, s
 // that no unscoped route of tun at or inside the prefix holds, as linux's hold
 // does beneath every route of the mesh shorter than it (routing.md row L4),
 // and a route at or inside the prefix answers by length as there. An unbound
-// lookup passes a scoped route over, a route from a source or a hold of the
-// mesh's, so it holds no address of the prefix for the hold to give back.
+// lookup the hold matches leaves by lo0 and so passes a route scoped to the
+// tun over, a route from a source or a hold of the mesh's, so that route holds
+// no address of the prefix for the hold to give back.
 func givesWay(routes, tun, held []Route, scoped func(Route) bool) []Route {
 	return slices.DeleteFunc(routes, func(r Route) bool {
 		hold, of := -1, -1

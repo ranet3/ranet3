@@ -8,7 +8,6 @@ package kernel
 import (
 	"errors"
 	"net/netip"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -325,39 +324,6 @@ func (tun *selectTUN) add(t *testing.T, destination string, scoped bool) func() 
 	}
 	t.Cleanup(withdraw)
 	return withdraw
-}
-
-// askRoute is the interface RTM_GET answers for destination, scoped to index where it is nonzero, and zero for no route
-// XNU answers it through rt_lookup with that scope, the lookup a send scoped to index makes
-func askRoute(t *testing.T, destination netip.Addr, index int) int {
-	t.Helper()
-	fd, err := lookupSocket()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(fd)
-	seq := int(lookupSeq.Add(1))
-	addrs := make([]route.Addr, unix.RTAX_MAX)
-	addrs[unix.RTAX_DST] = routeAddr(destination)
-	request := &route.RouteMessage{Version: unix.RTM_VERSION, Type: unix.RTM_GET, Flags: unix.RTF_UP, ID: uintptr(os.Getpid()), Seq: seq, Addrs: addrs}
-	if index != 0 {
-		request.Flags |= unix.RTF_IFSCOPE
-		request.Index = index
-	}
-	raw, err := request.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := unix.Write(fd, raw); errors.Is(err, unix.ESRCH) {
-		return 0
-	} else if err != nil {
-		t.Fatalf("ask for the route to %s scoped to %d: %v", destination, index, err)
-	}
-	answer, err := readAnswer(fd, seq, destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return answer.Index
 }
 
 // On three test utuns, A and B standing in for uplinks and M for ranet3's

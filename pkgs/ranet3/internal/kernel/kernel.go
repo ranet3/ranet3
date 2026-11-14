@@ -423,7 +423,8 @@ type auditor interface {
 // "Where a lookup ends on Linux" gives. darwin installs a source-specific route
 // only where its source prefix holds an address of the tun, and that one, and
 // every route schema.CapturesTheMachine counts in a family cap.exit does not
-// cover, scoped to the tun instead, which keeps them off every unbound socket.
+// cover, scoped to the tun instead, so an unbound send meets them only where
+// its longest unscoped match leaves by the tun.
 // See the platform notes in pkgs/raweb3/pages/docs/platforms.md.
 type ruler interface {
 	// Rules returns only the rules carrying this reconciler's protocol.
@@ -1962,8 +1963,9 @@ func routeMetric(destination netip.Prefix, unreachable bool) uint32 {
 // read back under the scope the kernel actually holds, so the two agree for
 // every route this reconciler installed. They disagree only for a scoped route
 // it did not install, and that has to be replaced rather than accepted: an
-// unbound lookup does not reach a scoped route, so leaving one in place of an
-// unscoped route the mesh asked for is a black hole the diff would never
+// unbound lookup reaches a scoped route only where its longest unscoped match
+// leaves by the tun, so leaving one in place of an unscoped route the mesh
+// asked for strands what that route should carry, which the diff would never
 // notice again.
 func diffRoutes(desired, actual []Route, scopes func(Route) bool) (add, del []Route) {
 	if scopes == nil {

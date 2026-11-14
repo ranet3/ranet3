@@ -49,10 +49,10 @@ import (
 // (see scopeRoute). Any other source prefix is reported once and skipped,
 // because flattening it would turn an exit's "::/0 from <prefix>" into a plain
 // default route out of the tun. In mode off a route that counts as a default
-// is scoped as well, so that only a socket asking for the tun takes it, and
-// the two share the one scoped slot a destination has. In a family cap.exit
-// covers it goes in unscoped, a zero route as its zero-free cover (see
-// coverDefaults).
+// is scoped as well, so an unbound send meets it only where its longest
+// unscoped match leaves by the tun, and the two share the one scoped slot a
+// destination has. In a family cap.exit covers it goes in unscoped, a zero
+// route as its zero-free cover (see coverDefaults).
 //
 // There is no per-route metric either, so Route.Metric is mirrored into every
 // dump as routeMetric gives it. It is a diff key field, and reporting anything
@@ -481,9 +481,8 @@ func (p *routePlatform) sourceIsOurs(source netip.Prefix) (bool, error) {
 // picks the peer after the kernel hands over the packet, so there is no next
 // hop to name.
 //
-// RTF_IFSCOPE is set by the caller, for the routes scopeRoute names. A
-// scoped route is invisible to an ordinary lookup and visible to a socket
-// bound to an address on this interface.
+// RTF_IFSCOPE is set by the caller, for the routes scopeRoute names, whose
+// comment gives the lookups a scoped route answers.
 //
 // A full-length prefix goes in as a host route, RTF_HOST and no netmask, which
 // the kernel keys apart from an overlay hold on lo0 at the same address, a
@@ -582,10 +581,11 @@ func (p *routePlatform) AddRoute(r Route) error {
 		message.Flags |= unix.RTF_IFSCOPE
 	}
 	if r.Unreachable {
-		// A hold rather than a path, so it answers with an error instead of
-		// carrying the packet out of the tun. It keeps the scope decision
-		// above: a held route must no more be visible to an unbound socket
-		// than a real one.
+		// A hold out of the tun refuses only an IPv6 datagram whose source the
+		// kernel picks (in6_selectif in bsd/netinet6/in6_src.c). An IPv4
+		// datagram and an IPv6 one bound to an address go out of the tun all
+		// the same, since neither output path tests the flag on a utun. An
+		// overlay hold on lo0 refuses every unbound send.
 		message.Flags |= unix.RTF_REJECT
 	}
 	// darwin has no replace, so a route another program holds under the same
@@ -702,12 +702,13 @@ func (p *routePlatform) judge(prefix netip.Prefix, answer BatchAnswer) (string, 
 	return judgeRoute(prefix, answer, p.rt.Interface)
 }
 
-// scopeRoute decides whether a route is installed with RTF_IFSCOPE, which
-// hides it from an ordinary lookup and shows it to a socket bound to an
-// address on this interface. Anything it leaves unscoped is reachable from the
-// Mac without every program binding first, which is the split tailscale makes
-// on the same machine: its exit-node default is scoped to its utun, its
-// 100.64/10 is not.
+// scopeRoute decides whether a route is installed with RTF_IFSCOPE. A scoped
+// route answers a socket bound to this interface or to an address on it, and a
+// send naming neither only where its longest unscoped match leaves by this
+// interface (rt_lookup_common in bsd/net/route.c).
+// Anything it leaves unscoped is reachable from the Mac without every program
+// binding first, which is the split tailscale makes on the same machine: its
+// exit-node default is scoped to its utun, its 100.64/10 is not.
 func (p *routePlatform) scopeRoute(r Route) bool {
 	if p.heldApart(r) {
 		return false
@@ -740,10 +741,10 @@ func (p *routePlatform) scopeRoute(r Route) bool {
 // distinction a source prefix draws.
 func standsInForASource(r Route) bool { return r.Source.IsValid() }
 
-// a hold answers with an error rather than carrying the packet, and this FIB
-// is the only one the machine has, so unscoped it shadows whatever else could
-// still reach the prefix, for the life of the process if this node originates
-// it. An overlay hold is there to shadow that and is no such hold.
+// a hold is a reject route, and this FIB is the only one the machine has, so
+// unscoped it shadows whatever else could still reach the prefix, for the life
+// of the process if this node originates it. An overlay hold is there to
+// shadow that and is no such hold.
 func holdsAgainstTheFIB(r Route) bool { return r.Unreachable }
 
 // heldApart reports an overlay hold, which goes on lo0 in the rejects' shape:
@@ -937,8 +938,8 @@ func (p *routePlatform) retable(Table) {}
 
 // cover takes the pass's input to scopeRoute. A covered family's zero route
 // goes in as members since a plain default out of the tun unscoped meets
-// EEXIST beside the host's own, and scoped it carries no socket that does not
-// ask for the tun by name.
+// EEXIST beside the host's own, and scoped it carries only a socket bound to
+// the tun or to an address of it.
 func (p *routePlatform) cover(overlay []schema.Prefix, families, bare []Family, hosts hostTable) {
 	p.overlay, p.overlaid, p.covered, p.bare, p.hosts = overlay, keySet(overlayKeys(overlay)), families, bare, hosts
 }
