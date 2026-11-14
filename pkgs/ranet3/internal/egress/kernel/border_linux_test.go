@@ -88,6 +88,7 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	rules = append(rules, entries...)
 	lookup := []string{"meta", "cmp", "payload", "lookup"}
 	want := [][]string{
+		{"meta", "cmp", "payload", "bitwise", "cmp", "counter", "immediate"},
 		{"meta", "cmp", "immediate"},
 		{"meta", "cmp", "immediate"},
 		// the carved drop of IPv4 alone, the family with a carve-out

@@ -435,7 +435,7 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 		Installed: 24,
 		Dropped: BorderDrops{
 			"overlay_source_ipv4": 3, "overlay_source_ipv6": 1, "carved_source_ipv4": 2, "carved_source_ipv6": 0,
-			"mesh_entry_ipv4": 5, "mesh_entry_ipv6": 1,
+			"mesh_entry_ipv4": 5, "mesh_entry_ipv6": 1, "mapped_source_ipv6": 4,
 		},
 	}
 	var out strings.Builder

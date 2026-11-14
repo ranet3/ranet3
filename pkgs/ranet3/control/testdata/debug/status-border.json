@@ -24,6 +24,7 @@
   "dropped": {
     "carved_source_ipv4": 2,
     "carved_source_ipv6": 0,
+    "mapped_source_ipv6": 4,
     "mesh_entry_ipv4": 5,
     "mesh_entry_ipv6": 1,
     "overlay_source_ipv4": 3,

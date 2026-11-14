@@ -25,9 +25,10 @@ import (
 type BorderClass uint8
 
 const (
-	// BorderInside to BorderSource are the antispoof chain's, in the order a
+	// BorderMapped to BorderSource are the antispoof chain's, in the order a
 	// packet meets them
-	BorderInside BorderClass = iota
+	BorderMapped BorderClass = iota
+	BorderInside
 	BorderCarved
 	BorderCarveOut
 	BorderExempt
@@ -45,6 +46,13 @@ const (
 // chain lets into the tun from any source
 var entryLinkLocal = []netip.Prefix{netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8")}
 
+// mappedSources is the IPv4-mapped IPv6 addresses of RFC 4291 section
+// 2.5.5.2, which the antispoof chain's first rule drops as a source on every
+// device where the backend writes that rule, as nftables does and pf does not.
+// A dual-stack socket reads a native IPv6 packet from ::ffff:a.b.c.d under the
+// peer of an IPv4 packet from a.b.c.d.
+var mappedSources = netip.MustParsePrefix("::ffff:0:0/96")
+
 // BorderRule is one rule of the filter. The backend writes String as the rule's
 // comment, which names the line in a readback.
 type BorderRule struct {
@@ -53,8 +61,9 @@ type BorderRule struct {
 	// accepts from, the interface or the name ending in * an exemption's rule
 	// accepts from, empty for every one, and the tun the entry chain guards
 	Device string
-	// Source is the overlay prefix a source rule drops, the carve-out a
-	// carve-out's rule accepts and the prefix an exemption's rule accepts
+	// Source is the overlay prefix a source rule drops, mappedSources for the
+	// mapped rule, the carve-out a carve-out's rule accepts and the prefix an
+	// exemption's rule accepts
 	Source netip.Prefix
 	// Destination is the prefix a link-local rule returns
 	Destination netip.Prefix
@@ -76,7 +85,7 @@ func (r BorderRule) String() string {
 			return "accept exempt source " + r.Source.String()
 		}
 		return "accept exempt via " + r.Device + " source " + r.Source.String()
-	case BorderSource:
+	case BorderMapped, BorderSource:
 		return "drop " + r.Family() + " source " + r.Source.String()
 	case EntryOutside:
 		return "return via other than " + r.Device
@@ -124,7 +133,7 @@ func (r BorderRule) Verdict() string {
 	switch r.Class {
 	case BorderInside, BorderCarveOut, BorderExempt:
 		return "accept"
-	case BorderCarved, BorderSource, EntryDrop:
+	case BorderMapped, BorderCarved, BorderSource, EntryDrop:
 		return "drop"
 	}
 	return "return"
@@ -142,6 +151,8 @@ func (r BorderRule) Reason() string {
 		return "carve_out"
 	case BorderExempt:
 		return "exempt"
+	case BorderMapped:
+		return "mapped_source"
 	case BorderSource:
 		return "overlay_source"
 	case EntryOutside:
@@ -492,9 +503,10 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 // backend writes as rules of their own in the order a packet meets them, the
 // antispoof chain's ahead of the entry chain's, the sets, and the carve-outs
 // the antispoof chain accepts with the exemptions' conflicts, neither where
-// overlay is not written. The carved drops come ahead of every accept by
-// source, so neither a carve-out nor an exemption lets in a source the carved
-// sets hold.
+// overlay is not written. The mapped drop comes first, ahead of the inside
+// devices' accepts, since a peer's packet reaches the tun from any source. The
+// carved drops come ahead of every accept by source, so neither a carve-out
+// nor an exemption lets in a source the carved sets hold.
 func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 	// the sets and the rules read one configuration, so no pass carves from two
 	cfg := f.config.Load()
@@ -505,6 +517,7 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 	var rules []BorderRule
 	var reported egress.BorderSets
 	if cfg != nil {
+		rules = append(rules, BorderRule{Class: BorderMapped, Source: mappedSources, IPv6: true})
 		for _, device := range f.rt.Inside {
 			rules = append(rules, BorderRule{Class: BorderInside, Device: device})
 		}
@@ -581,8 +594,8 @@ func (f *BorderFilter) exempting(exemption egress.Exemption, links []string) []s
 	return out
 }
 
-// insideDevice reports whether name is a device inside the mesh, where the
-// antispoof chain drops nothing
+// insideDevice reports whether name is a device inside the mesh, which the
+// antispoof chain accepts ahead of its carved and overlay drops
 func (f *BorderFilter) insideDevice(name string) bool { return slices.Contains(f.rt.Inside, name) }
 
 // reportInside warns once of each exemption cfg brings in beside was that
@@ -597,7 +610,7 @@ func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
 	before := inside(was)
 	for _, exemption := range inside(cfg) {
 		if !slices.Contains(before, exemption) {
-			slog.Warn("antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing", "interface", exemption.Interface, "prefix", exemption.Prefix)
+			slog.Warn("antispoof leaves out an exemption naming a device inside the mesh, where no overlay or carved drop applies", "interface", exemption.Interface, "prefix", exemption.Prefix)
 		}
 	}
 }

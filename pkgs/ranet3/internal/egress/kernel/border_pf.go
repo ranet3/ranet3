@@ -88,9 +88,10 @@ func (b *borderPF) where(*egress.Border) string { return "pf anchor " + b.anchor
 // tun leaves the tun's packets to whatever follows, as the accept does on
 // Linux. It writes no rule of the entry chain: darwin's exit sends no reply
 // through the tun, and the tun read drops a packet from a source this node
-// does not own.
+// does not own. Nor does it write the mapped drop, since XNU's ip6_input drops
+// an IPv4-mapped source before pf sees the packet.
 func (b *borderPF) writes(rule BorderRule) bool {
-	return rule.Chain() == BorderChain && (rule.Class != BorderInside || rule.Device != b.tun)
+	return rule.Chain() == BorderChain && rule.Class != BorderMapped && (rule.Class != BorderInside || rule.Device != b.tun)
 }
 
 // holds the carved sets alone, in one table, since only the carved drops read

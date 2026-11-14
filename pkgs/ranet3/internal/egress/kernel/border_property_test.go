@@ -550,14 +550,18 @@ func (d drawnSets) borderSets(*egress.Border) egress.BorderSets {
 }
 
 // borderModel gives the verdict the chain means for a packet, as 2.2 and 2.6
-// write it: whatever arrives on a device inside the mesh passes, and from
-// outside it a source the carved sets hold is dropped, a source in a
+// write it: an IPv4-mapped IPv6 source is dropped as a mapped source from
+// every device, whatever else arrives on a device inside the mesh passes, and
+// from outside it a source the carved sets hold is dropped, a source in a
 // carve-out passes on that carve-out's link alone, a source in an exemption
 // passes on an interface its name matches, the name itself or with a
 // trailing * every name starting with what comes before it, and on every
 // interface for the shared list, any other source in the overlay is dropped,
 // each drop under its reason, and anything else passes
 func borderModel(inside []string, cfg egress.Border, sets drawnSets, p drawnPacket) (accept bool, reason string) {
+	if p.source.Is4In6() {
+		return false, "mapped_source"
+	}
 	if slices.Contains(inside, p.iif) {
 		return true, ""
 	}
@@ -652,7 +656,8 @@ func schemaPrefixesOf(prefixes []schema.Prefix) []netip.Prefix {
 }
 
 // unmappedIPv6 draws an IPv6 address that is not an IPv4 address written as
-// one, which the overlay refuses
+// one, for a prefix of the overlay or of the entry chain's sets, none of which
+// holds one. A packet's source may be one.
 func unmappedIPv6() hegel.Generator[netip.Addr] {
 	return hegel.Filter(hegel.IPAddresses().IPv6(), func(a netip.Addr) bool { return !a.Is4In6() })
 }
@@ -695,8 +700,10 @@ func overlayPrefixes() hegel.Generator[[]schema.Prefix] {
 // exemptions, and the sources sit on either side of each overlay prefix's,
 // carve-out's, exemption's and carved prefix's edges, among them IPv6 sources
 // whose bytes 4 to 7 spell an address inside an IPv4 carved or overlay prefix,
-// which an IPv4 rule with no family test would read. A third of the packets
-// aim at an exemption, from inside it on an interface its name matches.
+// which an IPv4 rule with no family test would read, and IPv4-mapped IPv6
+// sources of those edges and of any IPv4 address, on inside devices as on the
+// others. A third of the packets aim at an exemption, from inside it on an
+// interface its name matches.
 func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		inside := []string{"ranet3"}
@@ -783,6 +790,18 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		arrivals = slices.DeleteFunc(arrivals, func(name string) bool { return name == "" })
 
 		exemptions := cfg.Exemptions()
+		// edgeSet is the edges of every prefix the chain reads, of one family
+		edgeSet := func(v4 bool) []netip.Addr {
+			edges := edgesOf(v4, schemaPrefixesOf(cfg.Overlay)...)
+			for _, carveOut := range drawn.CarveOuts {
+				edges = append(edges, edgesOf(v4, carveOut.Prefix)...)
+			}
+			edges = append(edges, edgesOf(v4, drawn.Carved...)...)
+			for _, exemption := range exemptions {
+				edges = append(edges, edgesOf(v4, exemption.Prefix)...)
+			}
+			return edges
+		}
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
 			// now and then a packet aimed at an exemption: from inside it, on an
 			// interface its name matches, past a wildcard's bytes as well
@@ -794,14 +813,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			if aimed != nil {
 				v4 = aimed.Prefix.Addr().Is4()
 			}
-			edges := edgesOf(v4, schemaPrefixesOf(cfg.Overlay)...)
-			for _, carveOut := range drawn.CarveOuts {
-				edges = append(edges, edgesOf(v4, carveOut.Prefix)...)
-			}
-			edges = append(edges, edgesOf(v4, drawn.Carved...)...)
-			for _, exemption := range cfg.Exemptions() {
-				edges = append(edges, edgesOf(v4, exemption.Prefix)...)
-			}
+			edges := edgeSet(v4)
 			var p drawnPacket
 			random := hegel.IPAddresses().IPv6()
 			if v4 {
@@ -824,6 +836,15 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 					copy(raw[4:8], inner[:])
 					p.source = netip.AddrFrom16(raw)
 				}
+			}
+			// an IPv6 source that is an IPv4 address written as one, an edge of an
+			// IPv4 prefix the chain reads or any other
+			if !v4 && hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
+				inner := hegel.Draw(ht, hegel.IPAddresses().IPv4())
+				if four := edgeSet(true); len(four) != 0 && hegel.Draw(ht, hegel.Booleans()) {
+					inner = hegel.Draw(ht, hegel.SampledFrom(four))
+				}
+				p.source = netip.AddrFrom16(inner.As16())
 			}
 			p.destination = hegel.Draw(ht, random)
 			p.iif = hegel.Draw(ht, hegel.SampledFrom(arrivals))

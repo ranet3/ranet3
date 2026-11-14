@@ -187,8 +187,9 @@ type BorderRuntime struct {
 	// only as a reply, toward an IPv6 link-local or multicast destination, from
 	// a source this node owns or toward a destination a none class takes
 	Tun string
-	// Inside names the devices whose traffic the antispoof chain takes whatever
-	// it carries: the mesh tun and the loopback link
+	// Inside names the devices whose traffic the antispoof chain accepts, after
+	// its drop of an IPv4-mapped source where it holds one: the mesh tun and the
+	// loopback link
 	Inside []string
 	// Sets derives what the filter's sets hold, on each pass, from the
 	// configuration the pass runs, nil where overlay is not written. Nil holds
@@ -271,12 +272,14 @@ func (d BorderDrop) Name() string { return d.Reason + "_" + d.Family }
 
 // BorderDropKinds is each drop the filter counts, in the order every report
 // lists them: a source in the overlay or in a carve-out's mesh prefixes from
-// outside the mesh, and a packet into the tun that none of the entry chain's
-// lines BorderRuntime.Tun lists passes
+// outside the mesh, a packet into the tun that none of the entry chain's lines
+// BorderRuntime.Tun lists passes, and an IPv4-mapped IPv6 source from any
+// device, the inside ones included
 var BorderDropKinds = [...]BorderDrop{
 	{"overlay_source", "ipv4"}, {"overlay_source", "ipv6"},
 	{"carved_source", "ipv4"}, {"carved_source", "ipv6"},
 	{"mesh_entry", "ipv4"}, {"mesh_entry", "ipv6"},
+	{"mapped_source", "ipv6"},
 }
 
 // BorderDrops counts the packets each drop of BorderDropKinds took, at its

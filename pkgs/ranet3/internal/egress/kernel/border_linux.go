@@ -334,7 +334,7 @@ func borderLine(rule BorderRule) (nftables.Line, error) {
 		expressions = slices.Concat(interfaceMatch(rule.Device), nftables.NFProto(proto), nftables.SourcePrefix(rule.Source), [][]byte{accept})
 	case BorderCarved:
 		expressions = slices.Concat(nftables.NFProto(proto), [][]byte{nftables.SourceLoad(proto), nftables.Lookup(borderSet(rule.Set()), false)}, nftables.CountedDrop())
-	case BorderSource:
+	case BorderMapped, BorderSource:
 		expressions = slices.Concat(nftables.NFProto(proto), nftables.SourcePrefix(rule.Source), nftables.CountedDrop())
 	case EntryOutside:
 		if err := nftables.DeviceName(rule.Device); err != nil {

@@ -766,6 +766,168 @@ func TestPfBorderDropsAForgedOverlaySource(t *testing.T) {
 	})
 }
 
+// an IPv4-mapped source on the real pf, whose anchor holds no drop of one
+// since XNU's IPv6 input drops it before pf sees the packet. A dual-stack
+// socket on the port reads a genuine IPv4 datagram of the mesh under the
+// mapped form of its source, a native IPv6 one up the mesh utun, whole and as
+// two fragments, and a stranger's up an outside utun, and the anchor drops and
+// counts a forged native IPv6 source up that utun. A mapped source up the mesh
+// utun and up the outside utun, whole and as two fragments, reaches no socket
+// and moves no counter of the anchor. Each reading is logged with what it
+// expects, and netstat's line of the ip6 table naming scope, where XNU counts
+// that drop, is logged before and after each mapped frame and not checked, its
+// wording not read on a Mac.
+func TestPfBorderLeavesAMappedSourceToXNU(t *testing.T) {
+	requirePF(t)
+	mesh, out := newPFUTUN(t), newPFUTUN(t)
+	mesh.owned(t)
+	_, out6 := out.outside(t, 1)
+	run := startPF(t, mesh.name, t.TempDir())
+	for spec := range pfCounted(t, run.filter) {
+		if strings.Contains(spec, "::ffff:") {
+			t.Fatalf("the anchor holds %s, a rule of the mapped sources", spec)
+		}
+	}
+	// a bind to each IPv6 destination waits out its tentative time
+	for _, own := range []netip.Addr{pfMesh6, out6} {
+		_ = unix.Close(pfListen(t, own))
+	}
+	socket := pfDualStack(t)
+	mapped := netip.AddrFrom16(pfForged4.As16())
+	for i, frame := range []struct {
+		name                string
+		up                  *pfUTUN
+		source, destination netip.Addr
+		fragments           bool
+		read                bool
+		rule                string
+	}{
+		{"a genuine IPv4 datagram up the mesh utun", mesh, pfForged4, pfMesh4, false, true, ""},
+		{"a native IPv6 datagram up the mesh utun", mesh, pfForged6, pfMesh6, false, true, ""},
+		{"a native IPv6 datagram up the mesh utun as two fragments", mesh, pfForged6, pfMesh6, true, true, ""},
+		{"a stranger's native IPv6 datagram up the outside utun", out, stranger(true, 1), out6, false, true, ""},
+		{"a forged native IPv6 source up the outside utun", out, pfForged6, out6, false, false, "drop ipv6 source 3fff:10::/32"},
+		{"a mapped source up the mesh utun", mesh, mapped, pfMesh6, false, false, ""},
+		{"a mapped source up the mesh utun as two fragments", mesh, mapped, pfMesh6, true, false, ""},
+		{"a mapped source up the outside utun", out, mapped, out6, false, false, ""},
+		{"a mapped source up the outside utun as two fragments", out, mapped, out6, true, false, ""},
+	} {
+		payload := []byte(fmt.Sprintf("frame %d from %s up %s", i, frame.source, frame.up.name))
+		datagram := udpDatagram(frame.source, frame.destination, payload)
+		scope := xnuScopeLine(t)
+		before := pfCounted(t, run.filter)
+		if frame.fragments {
+			for _, fragment := range fragmented(datagram, uint32(i+1)) {
+				frame.up.inject(t, fragment)
+			}
+		} else {
+			frame.up.inject(t, datagram)
+		}
+		peer, read := pfDualRead(socket, payload)
+		after := pfCounted(t, run.filter)
+		met, want := pfQuiet(before, after), "no counter moving"
+		if frame.rule != "" {
+			met, want = pfCounts(before, after, frame.rule), frame.rule+" alone moving"
+		}
+		t.Logf("%s from %s to %s: the dual-stack socket read it %v, want %v; the anchor's counters %v to %v, want %s", frame.name, frame.source, frame.destination, read, frame.read, before, after, want)
+		if read != frame.read || !met {
+			t.Errorf("%s from %s to %s: the dual-stack socket read it %v, want %v, the anchor's counters moving from %v to %v, want %s", frame.name, frame.source, frame.destination, read, frame.read, before, after, want)
+		}
+		if frame.source.Is4() && read {
+			t.Logf("%s: the socket read the peer %s, want %s", frame.name, peer, mapped)
+			if peer != mapped {
+				t.Errorf("the dual-stack socket read %s under the peer %s, want %s", frame.name, peer, mapped)
+			}
+		}
+		if frame.source.Is4In6() {
+			t.Logf("%s: netstat's ip6 table reads %q before and %q after, which XNU's drop counts in its scope line", frame.name, scope, xnuScopeLine(t))
+		}
+	}
+}
+
+// pfDualStack is a UDP socket of both families bound to port pfPort of every
+// address, which reads an IPv4 datagram under the mapped form of its source,
+// closed when the test ends
+func pfDualStack(t *testing.T) int {
+	t.Helper()
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_V6ONLY, 0); err != nil {
+		t.Fatalf("clear IPV6_V6ONLY: %v", err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrInet6{Port: pfPort}); err != nil {
+		t.Fatalf("bind [::] port %d: %v", pfPort, err)
+	}
+	if err := unix.SetNonblock(fd, true); err != nil {
+		t.Fatal(err)
+	}
+	return fd
+}
+
+// pfDualRead is the peer of a datagram carrying payload that fd reads within
+// pfArrival, and whether it read one
+func pfDualRead(fd int, payload []byte) (netip.Addr, bool) {
+	buf := make([]byte, 2048)
+	for deadline := time.Now().Add(pfArrival); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		n, from, err := unix.Recvfrom(fd, buf, 0)
+		if err != nil || string(buf[:n]) != string(payload) {
+			continue
+		}
+		if peer, ok := from.(*unix.SockaddrInet6); ok {
+			return netip.AddrFrom16(peer.Addr), true
+		}
+		return netip.Addr{}, true
+	}
+	return netip.Addr{}, false
+}
+
+// fragmented is an IPv6 datagram as two fragments of RFC 8200 section 4.5,
+// the first carrying the first 16 bytes behind its header
+func fragmented(datagram []byte, id uint32) [][]byte {
+	header, rest := datagram[:40], datagram[40:]
+	piece := func(offset int, chunk []byte, more bool) []byte {
+		out := slices.Clone(header)
+		out[6] = unix.IPPROTO_FRAGMENT
+		binary.BigEndian.PutUint16(out[4:], uint16(8+len(chunk)))
+		fragment := make([]byte, 8)
+		fragment[0] = header[6]
+		field := uint16(offset/8) << 3
+		if more {
+			field |= 1
+		}
+		binary.BigEndian.PutUint16(fragment[2:], field)
+		binary.BigEndian.PutUint32(fragment[4:], id)
+		return slices.Concat(out, fragment, chunk)
+	}
+	return [][]byte{piece(0, rest[:16], true), piece(16, rest[16:], false)}
+}
+
+// xnuScopeLine is the line of netstat's ip6 table naming scope, where XNU's
+// IPv6 input counts a source or destination it refuses for its scope, an
+// IPv4-mapped one among them, and empty where netstat prints none or fails
+func xnuScopeLine(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command(netstatBin, "-s", "-p", "ip6").Output()
+	if err != nil {
+		t.Logf("netstat -s -p ip6: %v", err)
+		return ""
+	}
+	table := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, " ") {
+			table = line
+			continue
+		}
+		if table == "ip6:" && strings.Contains(line, "scope") {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
 // a carve-out on the real pf through the daemon's sets: an outside utun
 // reaching the far end 192.0.2.129 and holding 3fff:10:2::1/64, which
 // darwin's watch reports, an IPv4 address and its far end on a utun as hosts,

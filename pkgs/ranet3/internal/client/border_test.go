@@ -89,7 +89,7 @@ func (b *borderRecord) Stats() egress.BorderStats {
 			Dropped: egress.BorderDrops{3, 1, 4, 5, 0, 0}, Kinds: egress.BorderDropKinds[:4], PF: b.pf}
 	}
 	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7,
-		Dropped: egress.BorderDrops{3, 1, 4, 5, 6, 8}, Kinds: egress.BorderDropKinds[:],
+		Dropped: egress.BorderDrops{3, 1, 4, 5, 6, 8, 2}, Kinds: egress.BorderDropKinds[:],
 		CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}}
 }
 
@@ -761,7 +761,7 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	status := c.Status().Border
 	want := control.BorderDrops{
 		"overlay_source_ipv4": 3, "overlay_source_ipv6": 1, "carved_source_ipv4": 4, "carved_source_ipv6": 5,
-		"mesh_entry_ipv4": 6, "mesh_entry_ipv6": 8,
+		"mesh_entry_ipv4": 6, "mesh_entry_ipv6": 8, "mapped_source_ipv6": 2,
 	}
 	carved := []control.BorderCarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}
 	if status == nil || !status.Ready || status.Installed != 7 || !maps.Equal(status.Dropped, want) || len(status.Overlay) != 2 || len(status.Inside) != 2 || !slices.Equal(status.Carved, carved) || status.UnenforcedOn != "" || status.PF != nil {
@@ -805,6 +805,7 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 		`ranet3_antispoof_dropped_packets_total{reason="carved_source",family="ipv6"} 5`,
 		`ranet3_antispoof_dropped_packets_total{reason="mesh_entry",family="ipv4"} 6`,
 		`ranet3_antispoof_dropped_packets_total{reason="mesh_entry",family="ipv6"} 8`,
+		`ranet3_antispoof_dropped_packets_total{reason="mapped_source",family="ipv6"} 2`,
 	} {
 		if !strings.Contains(out.String(), want+"\n") {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
@@ -812,7 +813,8 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 	}
 
 	// darwin's filter writes the series of chain antispoof's drops as Linux's
-	// does, and none of the entry chain's, which its rules do not write
+	// does, and none of the entry chain's or the mapped drop's, which its rules
+	// do not write
 	written := *c.config()
 	written.Overlay = overlayOf("3fff::/20")
 	c.cfg.Store(&written)
@@ -830,8 +832,8 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 			t.Errorf("the scrape over pf does not carry %q:\n%s", want, pf.String())
 		}
 	}
-	if strings.Contains(pf.String(), `reason="mesh_entry"`) {
-		t.Errorf("the scrape over pf carries the entry chain's series, which its rules do not write:\n%s", pf.String())
+	if strings.Contains(pf.String(), `reason="mesh_entry"`) || strings.Contains(pf.String(), `reason="mapped_source"`) {
+		t.Errorf("the scrape over pf carries the entry chain's series or the mapped drop's, which its rules do not write:\n%s", pf.String())
 	}
 }
 

@@ -724,7 +724,8 @@ type BorderStatus struct {
 	// PF is pf's state for the filter beside its anchor, where the filter runs
 	// on pf
 	PF *BorderPF `json:"pf,omitempty"`
-	// Inside is the devices whose traffic the antispoof chain accepts whatever it carries
+	// Inside is the devices whose traffic the antispoof chain accepts, after
+	// its drop of an IPv4-mapped source where it holds one
 	Inside  []string       `json:"inside"`
 	Overlay []netip.Prefix `json:"overlay"`
 	// Carved is each carve-out the antispoof chain accepts from its own link
@@ -766,7 +767,8 @@ type BorderCarveOut struct {
 // pass read them, by the drop's reason and family joined with an underscore:
 // overlay_source and carved_source from outside the mesh, and mesh_entry for
 // a packet into the tun that none of the entry chain's lines BorderStatus
-// lists passes, each in ipv4 and ipv6. A drop is present where a rule of the
+// lists passes, each in ipv4 and ipv6, and mapped_source_ipv6 for an
+// IPv4-mapped source from any device. A drop is present where a rule of the
 // last pass writes it, and absent otherwise. A rewrite of the filter's rules
 // starts them from zero.
 type BorderDrops map[string]uint64

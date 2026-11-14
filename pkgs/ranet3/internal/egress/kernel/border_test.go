@@ -247,6 +247,9 @@ func borderRuntime(bus *events.Bus) egress.BorderRuntime {
 // entryRules is the entry chain's rules, which follow the antispoof chain's
 const entryRules = 10
 
+// mappedDrop is the antispoof chain's first rule
+const mappedDrop = "drop ipv6 source ::ffff:0.0.0.0/96"
+
 // readyMoves is each move of the filter's readiness bus recorded, in order
 func readyMoves(bus *events.Bus) []string {
 	var out []string
@@ -303,10 +306,12 @@ func waitForPass(t *testing.T, bus *events.Bus, trigger string) {
 	}
 }
 
-// The chain takes everything arriving on a device inside the mesh before it
-// drops anything, then drops by source, the list in one order whatever order
-// it was written in, with no carved drop while no carve-out exists
-func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
+// The chain drops an IPv4-mapped source from every device first, an IPv4-only
+// overlay too, then takes everything else arriving on a device inside the
+// mesh before it drops anything, then drops by source, the list in one order
+// whatever order it was written in, with no carved drop while no carve-out
+// exists
+func TestBorderChainDropsAMappedSourceAheadOfTheInsideAccepts(t *testing.T) {
 	be := &fakeBorder{}
 	rt := borderRuntime(nil)
 	rt.Inside = []string{"ranet0", "lo", "dummy0"}
@@ -315,6 +320,7 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
+		mappedDrop,
 		"accept via ranet0",
 		"accept via lo",
 		"accept via dummy0",
@@ -327,6 +333,23 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 	}
 	if !f.Stats().Ready || f.Stats().Installed != len(want)+entryRules {
 		t.Errorf("the pass reports %+v, want ready with %d rules", f.Stats(), len(want)+entryRules)
+	}
+	be = &fakeBorder{}
+	f, err = startBorderFilter(overlay(t, "198.18.0.0/15"), rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := be.specs(); len(got) == 0 || got[0] != mappedDrop {
+		t.Errorf("an IPv4-only overlay installed %q, want %s first", got, mappedDrop)
+	}
+	// its drops are the IPv4 overlay's, the entry chain's and the mapped one,
+	// with no overlay drop of IPv6
+	kinds := []egress.BorderDrop{
+		{Reason: "overlay_source", Family: "ipv4"}, {Reason: "mesh_entry", Family: "ipv4"}, {Reason: "mesh_entry", Family: "ipv6"},
+		{Reason: "mapped_source", Family: "ipv6"},
+	}
+	if got := f.Stats().Kinds; !slices.Equal(got, kinds) {
+		t.Errorf("an IPv4-only overlay writes the drops %v, want %v", got, kinds)
 	}
 }
 
@@ -474,6 +497,7 @@ func TestBorderCarveOutIsAcceptedFromItsLinkAndReportedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
+		mappedDrop,
 		"accept via ranet0",
 		"accept via lo",
 		"drop ipv4 source @carved4",
@@ -640,12 +664,12 @@ func TestBorderExemptionConflictUnderTwoInterfacesIsTwoReports(t *testing.T) {
 	}
 }
 
-// The chain accepts the inside, drops the carved sets' sources of each family
-// with a carve-out or an exemption, accepts the carve-outs and then the
-// exemptions, the shared ones first and then each interface's by name, each
-// list in one order whatever order it was written in, and drops the overlay
-// last. A family exempted with no carve-out holds its carved drop, and one
-// neither carved nor exempted holds none.
+// The chain drops a mapped source, accepts the inside, drops the carved sets'
+// sources of each family with a carve-out or an exemption, accepts the
+// carve-outs and then the exemptions, the shared ones first and then each
+// interface's by name, each list in one order whatever order it was written
+// in, and drops the overlay last. A family exempted with no carve-out holds
+// its carved drop, and one neither carved nor exempted holds none.
 func TestBorderAcceptsExemptionsBehindTheCarvedDropAndTheCarveOuts(t *testing.T) {
 	cfg := overlay(t, "198.18.0.0/15", "3fff::/20")
 	cfg.Antispoof = egress.Antispoof{
@@ -664,6 +688,7 @@ func TestBorderAcceptsExemptionsBehindTheCarvedDropAndTheCarveOuts(t *testing.T)
 		t.Fatal(err)
 	}
 	want := []string{
+		mappedDrop,
 		"accept via ranet0",
 		"accept via lo",
 		"drop ipv4 source @carved4",
@@ -695,6 +720,7 @@ func TestBorderAcceptsExemptionsBehindTheCarvedDropAndTheCarveOuts(t *testing.T)
 		t.Fatal(err)
 	}
 	want = []string{
+		mappedDrop,
 		"accept via ranet0",
 		"accept via lo",
 		"drop ipv6 source @carved6",
@@ -914,8 +940,8 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 		}
 		got = append(got, []string{event.Attrs["installed"], event.Attrs["err"]})
 	}
-	// the two inside accepts and the overlay's two drops, with no carve-out and so no carved drop
-	if want := [][]string{{fmt.Sprint(4 + entryRules), ""}, {"0", "its chains read back other than they were written, and the write failed: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
+	// the mapped drop, the two inside accepts and the overlay's two drops, with no carve-out and so no carved drop
+	if want := [][]string{{fmt.Sprint(5 + entryRules), ""}, {"0", "its chains read back other than they were written, and the write failed: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the antispoof filter recorded %q, want %q", got, want)
 	}
 }
@@ -964,6 +990,7 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	be.setCount("drop ipv6 source 3fff::/20", 2)
 	be.setCount("drop ipv4 source @carved4", 1)
 	be.setCount("drop ipv6 entering the mesh", 4)
+	be.setCount(mappedDrop, 6)
 	// another writer flushed the chain, so this pass lists, rewrites and reads back
 	be.mu.Lock()
 	be.held = nil
@@ -981,7 +1008,7 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 		}
 		got = append(got, strings.Join(counts, " "))
 	}
-	if want := []string{"3 0 0 - 0 0", "2 2 1 - 0 4"}; !slices.Equal(got, want) {
+	if want := []string{"3 0 0 - 0 0 0", "2 2 1 - 0 4 6"}; !slices.Equal(got, want) {
 		t.Errorf("recorded antispoof.dropped %q, want %q", got, want)
 	}
 	if kinds, want := f.Stats().Kinds, slices.Delete(slices.Clone(egress.BorderDropKinds[:]), 3, 4); !slices.Equal(kinds, want) {
@@ -991,7 +1018,7 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	if strings.Contains(lines.String(), "dropped packets") {
 		t.Errorf("a pass logged the drops:\n%s", lines.String())
 	}
-	if want := (egress.BorderDrops{5, 2, 1, 0, 0, 4}); f.Stats().Dropped != want {
+	if want := (egress.BorderDrops{5, 2, 1, 0, 0, 4, 6}); f.Stats().Dropped != want {
 		t.Errorf("the last pass reports %+v dropped, want %+v", f.Stats().Dropped, want)
 	}
 }
@@ -1117,7 +1144,7 @@ func TestBorderReloadRewritesTheChainInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForPass(t, bus, "reload")
-	want := []string{"accept via ranet0", "accept via lo", "drop ipv4 source 192.0.2.0/24"}
+	want := []string{mappedDrop, "accept via ranet0", "accept via lo", "drop ipv4 source 192.0.2.0/24"}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("after the reload the chain holds %q, want %q", got, want)
 	}
@@ -1310,6 +1337,7 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	}
 	want := []string{
 		"chain antispoof prerouting -300",
+		mappedDrop + "|drop|mapped_source|ipv6|true|0",
 		"accept via ranet0|accept|inside||true|0",
 		"accept via lo|accept|inside||false|0",
 		"drop ipv4 source 198.18.0.0/15|drop|overlay_source|ipv4|true|12",
@@ -1510,9 +1538,9 @@ func TestPfBorderRejectsDamagedRuleOrder(t *testing.T) {
 }
 
 // A backend that writes the antispoof chain alone, the tun's inside rule
-// folded into its drops, holds those rules, which status and debug list
-// alone, reports the carve-outs and each exemption's conflict, and heads the
-// debug read's chain as it says
+// folded into its drops and the mapped drop left to the stack, holds those
+// rules, which status and debug list alone, reports the carve-outs and each
+// exemption's conflict, and heads the debug read's chain as it says
 func TestBorderListsOnlyTheRulesItsBackendWrites(t *testing.T) {
 	bus := events.New()
 	p := netip.MustParsePrefix
@@ -1522,7 +1550,9 @@ func TestBorderListsOnlyTheRulesItsBackendWrites(t *testing.T) {
 	rt.Sets = func(*egress.Border) egress.BorderSets {
 		return egress.BorderSets{CarveOuts: []egress.CarveOut{lease}, Conflicts: []egress.ExemptConflict{conflict}}
 	}
-	be := &fakeBorder{only: func(rule BorderRule) bool { return rule.Chain() == BorderChain && rule.Device != rt.Tun }}
+	be := &fakeBorder{only: func(rule BorderRule) bool {
+		return rule.Chain() == BorderChain && rule.Class != BorderMapped && rule.Device != rt.Tun
+	}}
 	f, err := startBorderFilter(overlay(t), rt, be)
 	if err != nil {
 		t.Fatal(err)
@@ -1651,7 +1681,7 @@ func TestExemptionNamingADeviceInsideWritesNoRule(t *testing.T) {
 	var lines strings.Builder
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 	said := func() int {
-		return strings.Count(lines.String(), "antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing")
+		return strings.Count(lines.String(), "antispoof leaves out an exemption naming a device inside the mesh, where no overlay or carved drop applies")
 	}
 	cfg := gateway(t)
 	cfg.Antispoof.Interface["utun7"] = egress.AntispoofInterface{Exempt: prefixes(t, "192.0.2.96/28")}

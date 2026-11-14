@@ -564,9 +564,10 @@ type borderFilter interface {
 // addresses, and the status reads
 func (c *Client) SetBorder(f borderFilter) { c.border.Store(&f) }
 
-// BorderInside is the devices the antispoof filter accepts whatever they carry:
-// the mesh tun and the loopback link, through which a packet this host sends to its own
-// address meets prerouting. A reload moves neither of them.
+// BorderInside is the devices the antispoof filter accepts after its drop of
+// an IPv4-mapped source where it holds one: the mesh tun and the loopback
+// link, through which a packet this host sends to its own address meets
+// prerouting. A reload moves neither of them.
 func (c *Client) BorderInside() []string {
 	return []string{c.Mesh.Name, kernel.Loopback}
 }

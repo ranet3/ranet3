@@ -362,6 +362,9 @@ func borderLine(b BorderStatus) string {
 	if entering, written := b.Dropped.Reason("mesh_entry"); written {
 		line += fmt.Sprintf(", dropped %d entering the mesh", entering)
 	}
+	if mapped, written := b.Dropped.Reason("mapped_source"); written {
+		line += fmt.Sprintf(", dropped %d mapped sources", mapped)
+	}
 	return line
 }
 
