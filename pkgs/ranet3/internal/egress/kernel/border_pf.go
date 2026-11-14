@@ -58,6 +58,9 @@ type borderPF struct {
 	events *events.Bus
 	// every is the sweep, zero for the default
 	every time.Duration
+	// foreign is the fault of what the filter never writes the last readback
+	// logged, which only the filter's passes read and write, one at a time
+	foreign string
 }
 
 func (b *borderPF) Changed() <-chan struct{} { return nil }
@@ -119,8 +122,11 @@ func (b *borderPF) readings(sets borderSets) []egress.BorderSetReading {
 // Rules reads what pf holds for the filter beside the anchor, taking this
 // daemon's reference again where pf no longer lists it, then reads the anchor
 // back against rules and sets. The renewal comes first, so a pass that fails
-// on the anchor still turns pf back on. An anchor holding what the parsers
-// cannot read is a fault, which the pass rewrites whole like any other.
+// on the anchor still turns pf back on. An anchor holding what the filter
+// never writes, a line the parsers cannot read or a translation rule, is a
+// fault, which the pass rewrites whole like any other, cut past pfFaultMax
+// bytes, and logged where that text differs from the last one found or a
+// readback read the whole anchor since.
 func (b *borderPF) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	state, unready, err := b.hold()
 	if err != nil {
@@ -133,10 +139,19 @@ func (b *borderPF) Rules(rules []BorderRule, sets borderSets) (chainReadback, er
 	var out chainReadback
 	switch read, err := b.ctl.Read(b.anchor); {
 	case errors.Is(err, pf.ErrUnreadable):
-		out = chainReadback{held: true, fault: "its anchor holds what the filter does not write: " + err.Error()}
+		out = chainReadback{held: true, fault: err.Error()}
+		if len(out.fault) > pfFaultMax {
+			kept := strings.ToValidUTF8(out.fault[:pfFaultMax], "")
+			out.fault = fmt.Sprintf("%s, and %d bytes more", kept, len(out.fault)-len(kept))
+		}
+		if out.fault != b.foreign {
+			slog.Warn("antispoof filter found its pf anchor holding what it never writes, which the pass replaces", "fault", out.fault, "where", b.where(nil))
+		}
+		b.foreign = out.fault
 	case err != nil:
 		return chainReadback{}, err
 	default:
+		b.foreign = ""
 		out = pfReadback(read, rules)
 		out.fault = anchorFault(read.Ruleset(), want)
 	}
@@ -180,18 +195,20 @@ func (b *borderPF) Fill(rules []BorderRule, was, sets borderSets) error {
 }
 
 // Withdraw empties the anchor, then gives the reference back, which stops pf
-// where no other holder keeps it. An anchor holding what the parsers cannot
-// read holds something, which the flush removes as any other.
+// where no other holder keeps it. An anchor holding what the filter never
+// writes, a translation rule included, holds something, which the flush
+// removes as any other. A readback that fails leaves the flush to run all the
+// same, and its error joins the flush's and the release's.
 func (b *borderPF) Withdraw() (bool, error) {
-	read, err := b.ctl.Read(b.anchor)
-	unreadable := errors.Is(err, pf.ErrUnreadable)
-	if err != nil && !unreadable {
-		return false, err
+	read, readErr := b.ctl.Read(b.anchor)
+	unreadable := errors.Is(readErr, pf.ErrUnreadable)
+	if unreadable {
+		readErr = nil
 	}
 	if err := b.ctl.Withdraw(b.anchor); err != nil {
-		return false, err
+		return false, errors.Join(readErr, err)
 	}
-	return unreadable || len(read.Rules) != 0 || len(read.Tables) != 0, b.ref.Release()
+	return unreadable || len(read.Rules) != 0 || len(read.Tables) != 0, errors.Join(readErr, b.ref.Release())
 }
 
 // hold reads what pf holds for the filter beside the anchor, in order:

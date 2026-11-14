@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -68,10 +69,17 @@ func checkAnchor(anchor string) error {
 	return nil
 }
 
-// Load replaces everything anchor holds with rs in one transaction, which
-// leaves the anchor as it was when pfctl refuses the text. Each rule's label is
-// unique within the anchor, and pf.conf(5) names a label an optimization
-// barrier, so the optimizer pfctl runs by default leaves the rules as rendered.
+// Load replaces anchor's rulesets and tables with rs, which leaves the anchor
+// as it was when pfctl refuses the text. Under -a pfctl loads every ruleset of the
+// anchor in one transaction, as measured on macOS, so the translation and
+// dummynet rulesets, which rs never fills, end empty. That transaction
+// commits only the tables it defines (pfr_ina_commit, bsd/net/pf_table.c), so
+// Load then removes by name each table of the anchor rs does not define, which
+// no rule of the anchor names once rs is loaded, under the whole name pf
+// holds, which ParseTables reads, a tab or a newline in it included. Each
+// rule's label is unique within the anchor, and pf.conf(5) names a label an
+// optimization barrier, so the optimizer pfctl runs by default leaves the
+// rules as rendered.
 func (c Ctl) Load(anchor string, rs Ruleset) error {
 	if err := checkAnchor(anchor); err != nil {
 		return err
@@ -80,8 +88,25 @@ func (c Ctl) Load(anchor string, rs Ruleset) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.run(text, "-a", anchor, "-f", "-")
-	return err
+	if _, err := c.run(text, "-a", anchor, "-f", "-"); err != nil {
+		return err
+	}
+	out, err := c.run("", "-a", anchor, "-s", "Tables", "-vv")
+	if err != nil {
+		return err
+	}
+	held, err := ParseTables(out, anchor)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrUnreadable, err)
+	}
+	var errs []error
+	for _, t := range held {
+		if !slices.ContainsFunc(rs.Tables, func(w Table) bool { return w.Name == t.Name }) {
+			_, err := c.run("", "-a", anchor, "-t", t.Name, "-T", "kill")
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // LoadTables replaces the contents of anchor's tables that tables names in one
@@ -107,14 +132,23 @@ func (c Ctl) LoadTables(anchor string, tables []Table) error {
 	return err
 }
 
-// Withdraw flushes anchor's rules and then its tables, and nothing outside it
+// unwritten names, in the words pfctl -s takes, the rulesets of an anchor
+// that pfctl -sr leaves out and the filter never writes: nat the nat, binat
+// and rdr rulesets, and dummynet the one macOS adds (pf_get_ruleset_number,
+// bsd/net/pf_ruleset.c)
+var unwritten = []string{"nat", "dummynet"}
+
+// Withdraw flushes each of anchor's rulesets and its tables, and nothing
+// outside it
 func (c Ctl) Withdraw(anchor string) error {
 	if err := checkAnchor(anchor); err != nil {
 		return err
 	}
 	_, rules := c.run("", "-a", anchor, "-F", "rules")
+	_, nat := c.run("", "-a", anchor, "-F", "nat")
+	_, dummynet := c.run("", "-a", anchor, "-F", "dummynet")
 	_, tables := c.run("", "-a", anchor, "-F", "Tables")
-	return errors.Join(rules, tables)
+	return errors.Join(rules, nat, dummynet, tables)
 }
 
 // Release gives back the reference token names, which stops pf only when it
@@ -124,14 +158,14 @@ func (c Ctl) Release(token uint64) error {
 	return err
 }
 
-// ErrUnreadable marks a readback that pfctl printed and the parsers cannot
-// read, a rule or table entry of a form this tree never writes, which another
-// program loaded into the anchor
-var ErrUnreadable = errors.New("pf: a readback the parsers cannot read")
+// ErrUnreadable marks an anchor holding a rule or table entry of a form the
+// filter never writes, which another program loaded into it: a line the
+// parsers cannot read, or any rule of a ruleset the filter leaves empty
+var ErrUnreadable = errors.New("pf: anchor holds what the filter never writes")
 
 // Read reads anchor's rules with their counters and its tables with their
-// prefixes. A readback the parsers cannot read is ErrUnreadable, apart from a
-// pfctl run that failed.
+// prefixes. An anchor holding what the filter never writes is ErrUnreadable,
+// apart from a pfctl run that failed.
 func (c Ctl) Read(anchor string) (Readback, error) {
 	if err := checkAnchor(anchor); err != nil {
 		return Readback{}, err
@@ -144,10 +178,18 @@ func (c Ctl) Read(anchor string) (Readback, error) {
 	if err != nil {
 		return Readback{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
+	for _, what := range unwritten {
+		if out, err = c.run("", "-a", anchor, "-s", what); err != nil {
+			return Readback{}, err
+		}
+		if printed := strings.TrimSpace(out); printed != "" {
+			return Readback{}, fmt.Errorf("%w: pfctl -s %s printed %q", ErrUnreadable, what, printed)
+		}
+	}
 	if out, err = c.run("", "-a", anchor, "-s", "Tables", "-vv"); err != nil {
 		return Readback{}, err
 	}
-	tables, err := ParseTables(out)
+	tables, err := ParseTables(out, anchor)
 	if err != nil {
 		return Readback{}, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}

@@ -154,15 +154,18 @@ func TestClosedReferenceStaysHeldAndRecorded(t *testing.T) {
 // one under this process and records it alone, one after another process came
 // to hold the ended token's value leaves that process's reference, and one
 // that pf hands the ended value back to, as P14 (a) saw it do, gives back
-// nothing it just took
+// nothing it just took. Each runs pfctl once, to list the references before
+// it gives the ended token back, but the one handed the ended value, which
+// runs none.
 func TestRenewalTakesAndRecordsANewReference(t *testing.T) {
 	for name, test := range map[string]struct {
 		other []Enabler
 		again bool
+		runs  []string
 	}{
-		"the value gone":                       {},
-		"the value another process's now":      {other: []Enabler{{PID: 99999, Name: "othervpn"}}},
-		"the value given back to this process": {again: true},
+		"the value gone":                       {runs: []string{"DIOCSTARTREF", "-s References"}},
+		"the value another process's now":      {other: []Enabler{{PID: 99999, Name: "othervpn"}}, runs: []string{"DIOCSTARTREF", "-s References"}},
+		"the value given back to this process": {again: true, runs: []string{"DIOCSTARTREF"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "pf.json")
@@ -181,8 +184,12 @@ func TestRenewalTakesAndRecordsANewReference(t *testing.T) {
 			if test.again {
 				f.again = ended
 			}
+			f.calls = nil
 			if err := r.Renew(); err != nil {
 				t.Fatal(err)
+			}
+			if !slices.Equal(f.calls, test.runs) {
+				t.Errorf("the renewal ran %q, want %q", f.calls, test.runs)
 			}
 			if !slices.Contains(f.held, Enabler{PID: os.Getpid(), Name: "ranet3", Token: r.Token()}) || !slices.Equal(recorded(t, path), []held{ours(r)}) || slices.Contains(f.calls, fmt.Sprintf("-X %d", ended)) {
 				t.Errorf("the renewal holds token %d, ended %d, with %+v recorded, pf holding %+v, after %q", r.Token(), ended, recorded(t, path), f.held, f.calls)
@@ -428,5 +435,33 @@ func TestSecondTakeOfOneRecordIsRefused(t *testing.T) {
 	}
 	if got := recorded(t, path); !slices.Equal(got, []held{ours(first)}) {
 		t.Errorf("the record holds %+v, want the first's %d", got, first.Token())
+	}
+}
+
+// where every pfctl run hangs until its timeout fails it, a stop's commands
+// start 6 runs: the readback ends at its first, the withdrawal tries each of
+// its 4 flushes, and the release ends at its listing of the references
+func TestStopOverAHungPfctlStartsSixRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pf.json")
+	f := &fakeReferences{}
+	r, err := take(f.ctl(), path, f.start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		r.ctl = f.ctl()
+		_ = r.Release()
+	})
+	var runs []string
+	hung := Ctl{run: func(_ string, args ...string) (string, error) {
+		runs = append(runs, strings.Join(args, " "))
+		return "", fmt.Errorf("pf: pfctl %s: signal: killed: ", strings.Join(args, " "))
+	}}
+	r.ctl = hung
+	_, readErr := hung.Read("com.apple/ranet3")
+	withdrawErr := hung.Withdraw("com.apple/ranet3")
+	releaseErr := r.Release()
+	if len(runs) != 6 || readErr == nil || withdrawErr == nil || releaseErr == nil {
+		t.Errorf("the stop over a hung pfctl ran %q, its readback returning %v, its withdrawal %v and its release %v", runs, readErr, withdrawErr, releaseErr)
 	}
 }

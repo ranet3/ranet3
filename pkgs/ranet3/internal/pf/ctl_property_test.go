@@ -22,20 +22,28 @@ var child = regexp.MustCompile(`^com\.apple/[A-Za-z0-9._-]{1,63}$`)
 
 // every pfctl command the package issues, over any run of loads, table loads,
 // withdrawals, releases and reads of anchors good and bad, the main ruleset's
-// call and an interface's skip among the reads: each -f and -F
-// carries -a with one child of com.apple, -F flushes only rules or tables, no
-// command stops or starts pf, and a write to any other anchor is refused
-// before it reaches pfctl
+// call and an interface's skip among the reads, over an anchor listing tables
+// a load defines and tables it does not, names holding a tab or a newline
+// among them: each -f, -F and table command but
+// show carries -a with one child of com.apple, -F flushes only an anchor's
+// filter, translation or dummynet rules or its tables, never all, no command
+// stops or starts pf, and a write to any other anchor is refused before it
+// reaches pfctl
 func TestEveryWriteStaysInsideOneChildOfComApple(t *testing.T) {
 	anchors := []string{
 		"com.apple/ranet3", "com.apple/ranet3-exit", "com.apple/a.b_c", "com.apple/" + strings.Repeat("r", 63),
 		"com.apple/" + strings.Repeat("r", 64), "com.apple", "com.apple/", "com.apple/*", "com.apple/ranet3/inner",
 		"ranet3", "", "/", "other/ranet3", "com.apple/ranet3 -F all",
 	}
+	listings := [][]Table{nil, {{Name: "ranet3_overlay", Const: true}}, {{Name: "stray"}, {Name: "x\ty"}, {Name: "x\ny"}, {Name: "ranet3_carved", Const: true}}}
 	pbt.Check(t, func(ht *hegel.T) {
 		var calls [][]string
+		held := hegel.Draw(ht, hegel.SampledFrom(listings))
 		c := Ctl{run: func(stdin string, args ...string) (string, error) {
 			calls = append(calls, args)
+			if slices.Contains(args, "Tables") && slices.Contains(args, "-s") {
+				return tableListing(args[1], held...), nil
+			}
 			return "", nil
 		}}
 		for range hegel.Draw(ht, pbt.Spanning(1, 8)) {
@@ -71,12 +79,13 @@ func TestEveryWriteStaysInsideOneChildOfComApple(t *testing.T) {
 				case "-d", "-e", "-E":
 					ht.Fatalf("%v stops or starts pf", args)
 				case "-F":
-					if i+1 == len(args) || (args[i+1] != "rules" && args[i+1] != "Tables") {
+					if i+1 == len(args) || !slices.Contains([]string{"rules", "nat", "dummynet", "Tables"}, args[i+1]) {
 						ht.Fatalf("%v flushes more than an anchor's rules or tables", args)
 					}
 				}
 			}
-			if !slices.Contains(args, "-f") && !slices.Contains(args, "-F") {
+			table := slices.Index(args, "-T")
+			if !slices.Contains(args, "-f") && !slices.Contains(args, "-F") && (table < 0 || table+1 < len(args) && args[table+1] == "show") {
 				continue
 			}
 			at := slices.Index(args, "-a")

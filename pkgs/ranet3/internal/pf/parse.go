@@ -225,23 +225,54 @@ func parsePrefix(word string) (netip.Prefix, error) {
 	return netip.PrefixFrom(a, a.BitLen()), nil
 }
 
-// ParseTables reads pfctl -s Tables -vv: each table on a line of flags, its
-// name and its anchor, separated by tabs, the first flag c when the table is
-// const, then counters on lines opening with a tab. The prefixes are left
-// empty, since pfctl -T show gives them.
-func ParseTables(out string) ([]Table, error) {
+// ParseTables reads pfctl -s Tables -vv run under -a anchor. pfctl prints
+// each table as 6 flags, the first c when the table is const, a tab, the name
+// as pf holds it, a tab and the anchor, then its counters on lines opening
+// with a tab, Addresses and then Cleared first (pfctl_table and print_table
+// in pfctl, and the goldens under testdata). pf holds a name of 1 to 31 bytes
+// of any value but NUL (pfr_validate_table, bsd/net/pf_table.c), a tab or a
+// newline among them, so the name is cut where the anchor, the Addresses line
+// and the opening of the Cleared line follow it, which tableNameEnd finds.
+// The prefixes are left empty, since pfctl -T show gives them.
+func ParseTables(out, anchor string) ([]Table, error) {
 	var tables []Table
-	for line := range strings.SplitSeq(out, "\n") {
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "\t") {
-			continue
+	for rest := out; strings.TrimSpace(rest) != ""; {
+		flags, named, ok := strings.Cut(rest, "\t")
+		end := tableNameEnd(named, anchor)
+		if !ok || len(flags) != 6 || end < 0 {
+			line, _, _ := strings.Cut(rest, "\n")
+			return nil, fmt.Errorf("pf: a line pfctl -s Tables -vv printed that opens no table: %q", line)
 		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 2 || fields[0] == "" || fields[1] == "" {
-			return nil, fmt.Errorf("pf: a line pfctl -s Tables -vv printed that is no table: %q", line)
+		tables = append(tables, Table{Name: named[:end], Const: flags[0] == 'c'})
+		// past the line the name ends, every counter line opens with a tab and
+		// the next table's flags never do
+		rest = named[end:]
+		for {
+			if _, rest, _ = strings.Cut(rest, "\n"); !strings.HasPrefix(rest, "\t") {
+				break
+			}
 		}
-		tables = append(tables, Table{Name: fields[1], Const: fields[0][0] == 'c'})
 	}
 	return tables, nil
+}
+
+// tableNameEnd is where the table name that opens s ends: the first place 1
+// to 31 bytes in that a tab, anchor, the Addresses line and the opening of the
+// Cleared line follow, or -1 where none does. Those are 38 bytes at least
+// under the shortest anchor checkAnchor takes, more than a name holds, and a
+// run of them that began inside the name would close on the table's own
+// Cleared line, before which only the table's own anchor and Addresses line
+// come, so the place is where the name ends.
+func tableNameEnd(s, anchor string) int {
+	// PF_TABLE_NAME_SIZE less its terminator, bsd/net/pfvar.h
+	for i := 1; i <= 31 && i < len(s); i++ {
+		counted, ok := strings.CutPrefix(s[i:], "\t"+anchor+"\n\tAddresses:   ")
+		digits := len(counted) - len(strings.TrimLeft(counted, "0123456789"))
+		if ok && digits > 0 && strings.HasPrefix(counted[digits:], "\n\tCleared:") {
+			return i
+		}
+	}
+	return -1
 }
 
 // ParseTableShow reads pfctl -T show, one prefix to a line

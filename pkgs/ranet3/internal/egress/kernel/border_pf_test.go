@@ -4,6 +4,7 @@
 package kernel
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,15 +40,23 @@ type fakePF struct {
 	// failRead makes an anchor pfctl cannot read
 	failRead bool
 	// unreadable makes an anchor holding a rule the parsers cannot read, as
-	// pf.Ctl's Read returns one, until the next load or withdrawal
+	// pf.Ctl's Read returns one, until the next load or withdrawal, and printed
+	// holds pfctl's print of it, a stateful pass when empty
 	unreadable bool
+	printed    string
+	// failWithdraw makes every flush fail, as a pfctl that hangs until its
+	// timeout does
+	failWithdraw bool
 	// log records each load and withdrawal
 	log []string
+	// calls records each method of pf.Ctl the backend calls, by name
+	calls []string
 }
 
 func (f *fakePF) Load(anchor string, rs pf.Ruleset) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Load")
 	if _, err := rs.Render(); err != nil {
 		return err
 	}
@@ -65,6 +74,7 @@ func (f *fakePF) Load(anchor string, rs pf.Ruleset) error {
 func (f *fakePF) LoadTables(anchor string, tables []pf.Table) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "LoadTables")
 	var names []string
 	for _, table := range tables {
 		for _, prefix := range table.Prefixes {
@@ -89,6 +99,10 @@ func (f *fakePF) LoadTables(anchor string, tables []pf.Table) error {
 func (f *fakePF) Withdraw(anchor string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Withdraw")
+	if f.failWithdraw {
+		return errors.New("pf: pfctl -a " + anchor + " -F rules: signal: killed")
+	}
 	f.log = append(f.log, "withdraw "+anchor)
 	f.rules, f.tables, f.unreadable = nil, nil, false
 	return nil
@@ -97,11 +111,12 @@ func (f *fakePF) Withdraw(anchor string) error {
 func (f *fakePF) Read(string) (pf.Readback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Read")
 	switch {
 	case f.failRead:
 		return pf.Readback{}, errors.New("pf: pfctl -sr -vv: exit status 1")
 	case f.unreadable:
-		return pf.Readback{}, fmt.Errorf("%w: pf: a pass that keeps state in %q", pf.ErrUnreadable, "pass in quick on en0 all flags S/SA keep state")
+		return pf.Readback{}, fmt.Errorf("%w: pf: a pass that keeps state in %q", pf.ErrUnreadable, cmp.Or(f.printed, "pass in quick on en0 all flags S/SA keep state"))
 	}
 	return pf.Readback{Rules: slices.Clone(f.rules), Tables: slices.Clone(f.tables)}, nil
 }
@@ -109,24 +124,28 @@ func (f *fakePF) Read(string) (pf.Readback, error) {
 func (f *fakePF) Calls() (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Calls")
 	return !f.uncalled, nil
 }
 
 func (f *fakePF) Skipped() ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Skipped")
 	return slices.Clone(f.skipped), nil
 }
 
 func (f *fakePF) References() ([]pf.Enabler, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "References")
 	return slices.Clone(f.enablers), nil
 }
 
 func (f *fakePF) Running() (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Running")
 	f.reads++
 	if f.failRunning {
 		return false, errors.New("pf: pfctl -s info: exit status 1")
@@ -173,6 +192,8 @@ type fakeReference struct {
 	inherited bool
 	released  bool
 	closed    bool
+	// releases counts the releases tried
+	releases int
 }
 
 func newFakeReference(p *fakePF) *fakeReference {
@@ -202,6 +223,7 @@ func (r *fakeReference) Renew() error {
 
 func (r *fakeReference) Release() error {
 	r.released = true
+	r.releases++
 	r.pf.mu.Lock()
 	r.pf.enablers = slices.DeleteFunc(r.pf.enablers, func(e pf.Enabler) bool { return e.Token == r.token })
 	r.pf.mu.Unlock()
@@ -615,6 +637,190 @@ func TestPfBorderStopEmptiesAnAnchorItCannotRead(t *testing.T) {
 	read, err := p.Read("")
 	if err != nil || len(read.Rules) != 0 || len(read.Tables) != 0 || !ref.released || !strings.Contains(lines.String(), "antispoof filter withdrawn") {
 		t.Errorf("after the stop the anchor holds %+v (%v), the reference released %v, and the log reads:\n%s", read, err, ref.released, lines.String())
+	}
+}
+
+// a stop whose readback of the anchor fails with pfctl's own error, not a
+// fault, still empties the anchor and gives the reference back, and returns
+// the read's error
+func TestPfBorderStopEmptiesTheAnchorWhereItsReadFails(t *testing.T) {
+	f, p, ref := pfFilter(t, nil, nil, nil)
+	p.mu.Lock()
+	p.failRead = true
+	p.mu.Unlock()
+	err := f.finish()
+	p.mu.Lock()
+	withdrawn, left := slices.Contains(p.log, "withdraw com.apple/ranet3"), len(p.rules)+len(p.tables)
+	p.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "pfctl -sr -vv") || !withdrawn || left != 0 || !ref.released {
+		t.Errorf("the stop over an anchor pfctl cannot read returned %v, withdrew it %v leaving %d rules and tables, released the reference %v", err, withdrawn, left, ref.released)
+	}
+}
+
+// what the filter never writes in the anchor is logged at warning once, with
+// its fault, however many readbacks find it, and again where it comes back
+// after a readback that did not find it
+func TestPfBorderLogsWhatItNeverWritesOnceAFault(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	f, p, _ := pfFilter(t, nil, nil, nil)
+	rules, sets, _ := f.desired()
+	for _, unreadable := range []bool{true, true, false, true} {
+		p.mu.Lock()
+		p.unreadable = unreadable
+		p.mu.Unlock()
+		if _, err := f.be.Rules(rules, sets); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logged := lines.String()
+	if n := strings.Count(logged, "antispoof filter found its pf anchor holding what it never writes"); n != 2 || !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, "keep state") {
+		t.Errorf("4 readbacks, 3 finding what the filter never writes, logged it %d times:\n%s", n, logged)
+	}
+}
+
+// a steady pass, which finds the anchor as written and pf's reference listed,
+// reads the references, the main ruleset's call, the skipped interfaces and
+// the anchor once each, and writes nothing
+func TestPfBorderSteadyPassReadsFourThings(t *testing.T) {
+	f, p, _ := pfFilter(t, nil, nil, nil)
+	f.trigger = "sweep"
+	p.mu.Lock()
+	p.calls = nil
+	p.mu.Unlock()
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	calls := slices.Clone(p.calls)
+	p.mu.Unlock()
+	if want := []string{"References", "Calls", "Skipped", "Read"}; !slices.Equal(calls, want) {
+		t.Errorf("a steady pass called %q, want %q", calls, want)
+	}
+}
+
+// beside a steady pass's 4 reads, a pass that finds the reference gone reads
+// whether pf runs and renews the reference once, one that moves the carved
+// sets loads the tables and reads all 4 again, one that finds a fault loads
+// the anchor and reads all 4 again, and one the mesh's table or the network
+// watch wakes, asking for what the last good pass read, calls nothing
+func TestPfBorderPassOfEachKindCallsWhatItNeeds(t *testing.T) {
+	carved := ranges("192.0.2.160/28", "3fff:10:1:2::/64")
+	f, p, ref := pfFilter(t, nil, gateway(t), func() egress.BorderSets {
+		sets := gatewaySets()
+		sets.Carved = carved
+		return sets
+	})
+	steady := []string{"References", "Calls", "Skipped", "Read"}
+	for _, kind := range []struct {
+		name, trigger string
+		do            func()
+		want          []string
+		renewals      int
+	}{
+		{"finds the reference gone", "sweep", ref.drop, []string{"References", "Running", "Calls", "Skipped", "Read"}, 1},
+		{"moves the carved sets", "sweep", func() { carved = ranges("192.0.2.176/28") }, slices.Concat(steady, []string{"LoadTables"}, steady), 0},
+		{"finds a fault", "sweep", func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			p.unreadable = true
+		}, slices.Concat(steady, []string{"Load"}, steady), 0},
+		{"is woken by the mesh's table", "routes", func() {}, nil, 0},
+		{"is woken by the network watch", "network", func() {}, nil, 0},
+	} {
+		renewals := ref.renewals
+		kind.do()
+		f.trigger = kind.trigger
+		p.mu.Lock()
+		p.calls = nil
+		p.mu.Unlock()
+		if err := f.reconcile(); err != nil {
+			t.Fatalf("a pass that %s: %v", kind.name, err)
+		}
+		p.mu.Lock()
+		calls := slices.Clone(p.calls)
+		p.mu.Unlock()
+		if !slices.Equal(calls, kind.want) || ref.renewals-renewals != kind.renewals || !f.Stats().Ready {
+			t.Errorf("a pass that %s called %q and renewed %d times, ready %v, want %q and %d", kind.name, calls, ref.renewals-renewals, f.Stats().Ready, kind.want, kind.renewals)
+		}
+	}
+}
+
+// a stop over a pfctl that hangs, each run failing at its timeout, reads the
+// anchor once and withdraws it once, and the backend's close then tries the
+// release once, since the failed withdrawal returned before it
+func TestPfBorderStopOverAHungPfctlTriesEachStepOnce(t *testing.T) {
+	f, p, ref := pfFilter(t, nil, nil, nil)
+	p.mu.Lock()
+	p.failRead, p.failWithdraw, p.calls = true, true, nil
+	p.mu.Unlock()
+	err := f.finish()
+	p.mu.Lock()
+	calls := slices.Clone(p.calls)
+	p.mu.Unlock()
+	if err == nil || !slices.Equal(calls, []string{"Read", "Withdraw"}) || ref.releases != 1 {
+		t.Errorf("the stop over a hung pfctl returned %v after calling %q and %d releases, want an error after Read, Withdraw and 1 release", err, calls, ref.releases)
+	}
+}
+
+// a fault quoting more of what another program loaded than pfFaultMax bytes
+// is cut there, saying how much more there was, in the warning and in the
+// not ready reason alike
+func TestPfBorderCutsAFaultPastItsBound(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	f, p, _ := pfFilter(t, nil, nil, nil)
+	p.mu.Lock()
+	p.unreadable, p.printed = true, strings.Repeat("rdr pass on utun250 inet from 192.0.2.0/24 to any -> 192.0.2.1\n", 1000)
+	p.mu.Unlock()
+	rules, sets, _ := f.desired()
+	read, err := f.be.Rules(rules, sets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read.fault) > pfFaultMax+len(", and 99999 bytes more") || !strings.HasSuffix(read.fault, " bytes more") || !strings.Contains(read.fault, "rdr pass on utun250") {
+		t.Errorf("a fault quoting %d bytes reads %d bytes: %.80q...", len(p.printed), len(read.fault), read.fault)
+	}
+	if logged := lines.String(); len(logged) > 3*pfFaultMax || !strings.Contains(logged, "bytes more") {
+		t.Errorf("its warning takes %d bytes:\n%.200s", len(logged), logged)
+	}
+}
+
+// the count a cut fault carries is every byte it leaves out, a character the
+// cut splits included
+func TestPfBorderCountsEveryByteItCutsFromAFault(t *testing.T) {
+	logtest.SetDefault(t, slog.New(slog.DiscardHandler))
+	f, p, _ := pfFilter(t, nil, nil, nil)
+	rules, sets, _ := f.desired()
+	split := 0
+	for _, char := range []string{"\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x98\x80"} {
+		for pad := range pfFaultMax {
+			p.mu.Lock()
+			p.unreadable, p.printed = true, strings.Repeat("a", pad)+char+strings.Repeat("b", 2000)
+			p.mu.Unlock()
+			_, err := p.Read("")
+			whole := err.Error()
+			if at := strings.Index(whole, char); at >= pfFaultMax || at+len(char) <= pfFaultMax {
+				continue
+			}
+			split++
+			read, err := f.be.Rules(rules, sets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cut := strings.LastIndex(read.fault, ", and ")
+			if cut < 0 {
+				t.Fatalf("a fault of %d bytes reads uncut: %.80q", len(whole), read.fault)
+			}
+			var more int
+			if _, err := fmt.Sscanf(read.fault[cut:], ", and %d bytes more", &more); err != nil || cut+more != len(whole) {
+				t.Errorf("a fault of %d bytes split at %q keeps %d bytes and counts %d more (%v)", len(whole), char, cut, more, err)
+			}
+		}
+	}
+	// a character of n bytes is split by the cut at n-1 of its offsets
+	if split != 1+2+3 {
+		t.Errorf("the cut split a character %d times, want 6", split)
 	}
 }
 

@@ -28,4 +28,8 @@ const (
 	// since pf cannot negate two interfaces in one rule, and the carved sets
 	pfOverlayTable = "ranet3_overlay"
 	pfCarvedTable  = "ranet3_carved"
+	// pfFaultMax is the most bytes of a fault naming what the filter never
+	// writes in its pf anchor that the warning and the not ready reason carry,
+	// since the fault quotes what another program loaded there
+	pfFaultMax = 1024
 )

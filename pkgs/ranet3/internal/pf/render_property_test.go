@@ -145,7 +145,7 @@ func printedBack(t *hegel.T, text string, counters func(i int) uint64) (rules, t
 			show.WriteString("   " + e + "\n")
 		}
 		shows[name], counts[name] = show.String(), len(entries)
-		fmt.Fprintf(&tb, "%s\t%s\tcom.apple/ranet3\n\tAddresses:   %d\n", flags, name, len(entries))
+		fmt.Fprintf(&tb, "%s\t%s\tcom.apple/ranet3\n\tAddresses:   %d\n\tCleared:     Wed Oct 28 15:51:10 2026\n", flags, name, len(entries))
 	}
 	i := 0
 	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
@@ -184,7 +184,7 @@ func TestRenderingReadsBackAsTheModel(t *testing.T) {
 		if err != nil {
 			ht.Fatalf("%v\n%s", err, rulesOut)
 		}
-		tables, err := ParseTables(tablesOut)
+		tables, err := ParseTables(tablesOut, "com.apple/ranet3")
 		if err != nil {
 			ht.Fatal(err)
 		}

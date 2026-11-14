@@ -76,7 +76,7 @@ func TestRenderingIsWhatPfctlPrintsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tables, err := ParseTables(golden(t, "tables-vv.txt"))
+	tables, err := ParseTables(golden(t, "tables-vv.txt"), "com.apple/ranet3-probe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,12 +125,12 @@ func TestPfctlsReadbackParsesAsTheSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listed, err := ParseTables(golden(t, "tables-vv.txt"))
+	held, err := ParseTables(golden(t, "tables-vv.txt"), "com.apple/ranet3-probe")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var tables []Table
-	for _, table := range listed {
+	for _, table := range held {
 		if !sampled(table.Name) {
 			continue
 		}
@@ -150,7 +150,7 @@ func TestPfctlsReadbackParsesAsTheSample(t *testing.T) {
 		}
 	}
 
-	empty, err := ParseTables(golden(t, "tables-vv-empty.txt"))
+	empty, err := ParseTables(golden(t, "tables-vv-empty.txt"), "com.apple/ranet3-probe")
 	if want := []Table{{Name: "ranet3_none", Const: true}}; err != nil || !slices.EqualFunc(empty, want, func(a, b Table) bool { return a.Name == b.Name && a.Const == b.Const }) {
 		t.Errorf("an empty const table parses as %+v (%v), want %+v", empty, err, want)
 	}
@@ -185,7 +185,7 @@ func TestIPv4CompatibleAddressReadsBackAsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tables, err := ParseTables("c-a-r-\tranet3_overlay\tcom.apple/ranet3\n\tAddresses:   2\n")
+	tables, err := ParseTables(tableListing("com.apple/ranet3", Table{Name: "ranet3_overlay", Const: true}), "com.apple/ranet3")
 	if err != nil || len(tables) != 1 {
 		t.Fatalf("the table listing parses as %+v (%v)", tables, err)
 	}
