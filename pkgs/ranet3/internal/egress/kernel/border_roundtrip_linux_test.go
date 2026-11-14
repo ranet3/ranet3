@@ -8,6 +8,7 @@ package kernel
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,6 +25,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
@@ -587,6 +589,79 @@ func TestBorderRoundTripLeavesAnotherWritersChainInTheTable(t *testing.T) {
 			t.Errorf("%s: another writer's chain did not outlive the filter's withdrawal whole:\n%s", c.name, listing)
 		}
 		run("delete", "chain", "inet", nftables.Table, "border")
+	}
+}
+
+// liveOwner ends the readback's fault for table inet ranet3 where a socket
+// still open owns it
+const liveOwner = "another program's open socket owns it, so nft delete table inet " + nftables.Table + " works only once that program closes the socket or stops"
+
+// A start over table inet ranet3 another socket flagged keeps the read's
+// diagnosis beside the rewrite's refusal in the error its pass returns and in
+// its readiness, and deletes nothing of the table: one that outlived its owner
+// under the persist flag refuses the rewrite with EOPNOTSUPP and names the
+// delete that clears it, and one a socket still open owns refuses it with
+// EPERM and says the delete waits for that socket
+func TestBorderRoundTripKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	const owner, persist = 0x2, 0x4
+	for _, c := range []struct {
+		name      string
+		flags     uint32
+		live      bool
+		errno     error
+		diagnosis string
+	}{
+		{"an orphaned persistent table", owner | persist, false, unix.EOPNOTSUPP, orphanedFix},
+		{"a table a live socket owns", owner, true, unix.EPERM, liveOwner},
+		{"a persistent table a live socket owns", owner | persist, true, unix.EPERM, liveOwner},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			netnstest.EnterEmpty(t)
+			setter, err := nftables.Dial()
+			if err != nil {
+				t.Fatal(err)
+			}
+			made := nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
+				Body: nftables.PutAttrBE32(netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, nftables.Table), unix.NFTA_TABLE_FLAGS, c.flags)}
+			if err := setter.Batch([]nftables.Request{made}); err != nil {
+				_ = setter.Close()
+				t.Fatalf("make the table with flags %#x: %v", c.flags, err)
+			}
+			if c.live {
+				t.Cleanup(func() { _ = setter.Close() })
+			} else if err := setter.Close(); err != nil {
+				t.Fatal(err)
+			}
+			be, err := newBorderBackend(nil, egress.BorderRuntime{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := newBorderFilter(overlay(t), entryRuntime(nil), be)
+			t.Cleanup(func() { _ = f.Close() })
+			err = f.reconcile()
+			if !errors.Is(err, c.errno) || !strings.Contains(err.Error(), c.diagnosis) {
+				t.Errorf("the pass returned %v, want %v beside %q", err, c.errno, c.diagnosis)
+			}
+			if stats := f.Stats(); f.ready || !strings.Contains(stats.Unready, c.diagnosis) || !strings.Contains(stats.Unready, c.errno.Error()) {
+				t.Errorf("the filter reads ready %v with %q, want not ready with %q beside %q", f.ready, stats.Unready, c.diagnosis, c.errno.Error())
+			}
+			// the owner flag goes with its socket where the persist flag keeps the table
+			want := c.flags
+			if !c.live {
+				want &^= owner
+			}
+			reader, err := nftables.Dial()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reader.Close() })
+			if tables, err := nftables.Tables(reader, nftables.Table); err != nil || len(tables) != 1 || tables[unix.NFPROTO_INET] != want {
+				t.Errorf("after the pass the table is held with %v (%v), want it kept with the flags %#x", tables, err, want)
+			}
+		})
 	}
 }
 

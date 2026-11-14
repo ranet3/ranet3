@@ -634,7 +634,7 @@ func (f *BorderFilter) reconcile() error {
 		// a rewrite makes what the filter writes again whole, and touches nothing beside it
 		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
 			f.held = nil
-			err = fmt.Errorf("install rules: %w", applyErr)
+			err = fmt.Errorf("%s, and the write failed: %w", read.fault, applyErr)
 		} else {
 			wrote, f.held = "table", sets
 			slog.Info("antispoof filter installed", "rules", len(rules), "replaced", len(read.rules), "where", f.Where())

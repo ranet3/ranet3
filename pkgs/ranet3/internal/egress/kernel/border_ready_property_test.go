@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"cmp"
 	"slices"
 	"strconv"
 	"testing"
@@ -73,9 +74,10 @@ func borderSteps(desired []BorderRule) hegel.Generator[borderStep] {
 // applies it makes in order, the chain the host holds after it, the rules the
 // pass counts and its readiness with the reason it is not ready. The pass
 // rewrites the chain when the readback carries a fault or its spellings are
-// not the desired ones in order, the table made again whatever the fault, and
-// reads ready when the readback after it carries
-// no fault and every desired spelling in order with nothing else.
+// not the desired ones in order, the table made again whatever the fault, a
+// rewrite that fails naming the fault beside its error, and reads ready when
+// the readback after it carries no fault and every desired spelling in order
+// with nothing else.
 func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string, installed int, ready bool, unready string) {
 	want := make([]string, 0, len(desired))
 	for _, rule := range desired {
@@ -93,7 +95,7 @@ func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string,
 	}
 	log = append(log, "apply")
 	if now.failApply {
-		return log, chain, len(chain), false, "a pass failed: install rules: no"
+		return log, chain, len(chain), false, "a pass failed: " + cmp.Or(now.fault, "its chains read back other than they were written") + ", and the write failed: no"
 	}
 	log = append(log, "rules")
 	chain = slices.Clone(want)

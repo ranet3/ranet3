@@ -130,12 +130,15 @@ func (f *fakeBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	return nil
 }
 
+// errApplyRefused is a host's refusal of the chain under failApply
+var errApplyRefused = errors.New("no")
+
 func (f *fakeBorder) Apply(rules []BorderRule, sets borderSets) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "apply")
 	if f.failApply {
-		return errors.New("no")
+		return errApplyRefused
 	}
 	f.applied++
 	if !f.stuck {
@@ -814,9 +817,9 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 		named     bool
 		gone      bool
 	}{
-		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: install rules: no", 1, false, false},
+		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: its chains read back other than they were written, and the write failed: no", 1, false, false},
 		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written", 1, false, true},
-		{"found chains the host will not let be rewritten", &fakeBorder{failApply: true, fault: "its chain antispoof is missing"}, "install rules: no", 0, true, false},
+		{"found chains the host will not let be rewritten", &fakeBorder{failApply: true, fault: "its chain antispoof is missing"}, "its chain antispoof is missing, and the write failed: no", 0, true, false},
 		{"a table the first read cannot list", &fakeBorder{failRules: true}, "list rules: no", 0, false, false},
 	} {
 		t.Run(one.name, func(t *testing.T) {
@@ -912,8 +915,29 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 		got = append(got, []string{event.Attrs["installed"], event.Attrs["err"]})
 	}
 	// the two inside accepts and the overlay's two drops, with no carve-out and so no carved drop
-	if want := [][]string{{fmt.Sprint(4 + entryRules), ""}, {"0", "install rules: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
+	if want := [][]string{{fmt.Sprint(4 + entryRules), ""}, {"0", "its chains read back other than they were written, and the write failed: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the antispoof filter recorded %q, want %q", got, want)
+	}
+}
+
+// orphanedFix ends the fault the readback of table inet ranet3 notes where it
+// outlived its owner under the persist flag
+const orphanedFix = "only nft delete table inet ranet3 clears another"
+
+// A rewrite the host refuses over a fault the readback found names both in
+// the pass's error, which errors.Is still reads as the refusal, in Stats and
+// in the readiness reason
+func TestBorderFailedRewriteKeepsTheReadbacksFault(t *testing.T) {
+	const fault = "its table carries flags 0x4, where none are written and 0x1 is dormant, and " + orphanedFix
+	be := &fakeBorder{failApply: true, fault: fault, stuck: true}
+	f := newBorderFilter(overlay(t), borderRuntime(nil), be)
+	err := f.reconcile()
+	want := fault + ", and the write failed: no"
+	if !errors.Is(err, errApplyRefused) || err.Error() != want {
+		t.Errorf("the pass returned %v, want %q wrapping the refusal", err, want)
+	}
+	if stats := f.Stats(); stats.Ready || stats.Unready != "a pass failed: "+want || stats.Err != want {
+		t.Errorf("the pass reports ready %v with %q and the error %q, want not ready with the pass's error", stats.Ready, stats.Unready, stats.Err)
 	}
 }
 
