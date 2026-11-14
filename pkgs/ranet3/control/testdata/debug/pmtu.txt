@@ -38,10 +38,3 @@ Probe     none out, the last of 1280 B lost 40 seconds ago
 Probes    6 sent, 2 acked, 4 lost
 Refusals  1
 Changed   from 1400 to 1280 B by floor, 1 minute ago
-
-Session   example/echo:5@alpha
-Peer      example/echo
-Endpoint  192.0.2.5:4500, sent without DF
-State     not searched
-Budget    8918 B, clamping the MSS to 8878 over IPv4 and 8858 over IPv6
-Changed   no change recorded

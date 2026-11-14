@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// pmtuFixture is a steering node at link.mtu 8918 with a session settled under a path that carries 1450 bytes
-// one searching up with a probe out, one under the floor and one whose bind has no path MTU methods
 func pmtuFixture() PMTUInfo {
 	return PMTUInfo{
 		LinkMTU: 8918, Steering: 56, DeviceMTU: 8862, TooBigSent: 4, MSSClamped: 1,
@@ -39,10 +37,6 @@ func pmtuFixture() PMTUInfo {
 				Sent: 6, Acked: 2, Lost: 4, Refusals: 1,
 				Last:    &PMTUOutcome{Size: 1280, Ago: Duration(40 * time.Second)},
 				Changed: &PMTUChange{From: 1400, To: 1280, Reason: "floor", Ago: Duration(time.Minute)},
-			},
-			{
-				Path: "example/echo:5@alpha", Peer: "example/echo", Endpoint: "192.0.2.5:4500", State: PMTUNotSearched,
-				Budget: 8918, MSSv4: 8878, MSSv6: 8858,
 			},
 		},
 	}

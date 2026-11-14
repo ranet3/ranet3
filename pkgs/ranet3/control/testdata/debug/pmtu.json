@@ -87,20 +87,6 @@
         "reason": "floor",
         "ago": "1m0s"
       }
-    },
-    {
-      "path": "example/echo:5@alpha",
-      "peer": "example/echo",
-      "endpoint": "192.0.2.5:4500",
-      "state": "not searched",
-      "dont_fragment": false,
-      "budget": 8918,
-      "mss_ipv4": 8878,
-      "mss_ipv6": 8858,
-      "sent": 0,
-      "acked": 0,
-      "lost": 0,
-      "refusals": 0
     }
   ]
 }

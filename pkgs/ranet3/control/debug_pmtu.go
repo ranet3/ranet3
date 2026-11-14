@@ -55,8 +55,6 @@ const (
 	PMTUSearchingDown = "searching down"
 	PMTUConfirmed     = "confirmed"
 	PMTUUnderFloor    = "under the floor"
-	// PMTUNotSearched is a session whose bind has no path MTU methods, which carries link.mtu
-	PMTUNotSearched = "not searched"
 )
 
 // PMTUSession is one session's search of the path to its endpoint
@@ -191,9 +189,6 @@ func sessionPairs(s PMTUSession) [][]string {
 		{"Endpoint", s.Endpoint + ", sent " + sends},
 		{"State", s.State},
 		{"Budget", fmt.Sprintf("%d B, clamping the MSS to %d over IPv4 and %d over IPv6", s.Budget, s.MSSv4, s.MSSv6)},
-	}
-	if s.State == PMTUNotSearched {
-		return append(rows, []string{"Changed", changedLine(s.Changed)})
 	}
 	route := "unknown, the last read failed"
 	if s.Route != 0 {
