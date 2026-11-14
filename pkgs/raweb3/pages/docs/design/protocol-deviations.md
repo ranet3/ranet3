@@ -231,14 +231,11 @@ selection or raw ESP.
 
 A node sends no NAT keepalive, which
 [RFC 3948 section 4](https://www.rfc-editor.org/rfc/rfc3948.html#section-4) asks
-of a peer behind a NAT. Babel Hellos and IKE liveness checks keep the mapping
-open instead. An end that has received nothing authenticated from its peer for
-10 seconds sends a liveness check, and the peer answers it. Neither end of a
-live session stays silent for the 2 minutes after which a NAT may drop an idle
-mapping
-([RFC 4787 REQ-5](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.3)),
-whatever `cap.babel.hello` holds. A NAT keepalive that arrives is counted and
-ignored.
+of a peer behind a NAT. The node relies on IKE exchanges rather than a separate
+keepalive, with liveness checks following the
+[timing and retransmission schedule](limits.md#ike). For NAT mapping timers, see
+[RFC 4787 REQ-5](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.3). A NAT
+keepalive that arrives is counted and ignored.
 
 ## Endpoint updates
 
@@ -264,10 +261,10 @@ not compare the `NAT_DETECTION_DESTINATION_IP` it receives with its own address.
 Behind a NAT, someone who captures a request or an answer and resends it from
 another address before the original arrives can move a session's sends to that
 address, and the original then moves nothing. The peer's next fresh request
-moves them back. The peer sends one once it has heard nothing from this node for
-its liveness interval, 10 seconds on a ranet3 peer. In exchange a session
-follows a peer that moved, whichever end dialed, as soon as the peer either asks
-or answers.
+moves them back. When that request goes depends on the peer's own liveness
+interval, with [the IKE limits](limits.md#ike) giving a ranet3 peer's times. In
+exchange a session follows a peer that moved, whichever end dialed, as soon as
+the peer either asks or answers.
 
 ## Answer addresses
 
@@ -703,9 +700,8 @@ takes the notice to destroy without a Delete every IKE SA it holds with the same
 2 IDs in that address family, unless its `unique` is `never`, a session it
 dialed across the notice's among them
 ([`check_uniqueness`](https://github.com/strongswan/strongswan/blob/6.1.0/src/libcharon/sa/ike_sa_manager.c)),
-so where the rule keeps that session here, this node holds it alone for the 72
-seconds its liveness check takes to fail, 10 of silence and 62 of
-retransmissions as [limits](limits.md#ike) gives.
+so where the rule keeps that session here, this node holds it alone until its
+liveness check fails on the [schedule in limits](limits.md#ike).
 
 Identities are compared by the endpoint they name rather than by their bytes. A
 node writes `O` and `CN` as `UTF8String`, while strongSwan picks the string type

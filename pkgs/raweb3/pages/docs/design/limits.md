@@ -942,7 +942,7 @@ can configure are in
 | Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails                |
 | Sends of a request not cut again               | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                 |
 | Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives              |
-| Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above                    |
+| Silence before a liveness check                | No exchange or held check: 10 seconds after authenticated IKE, 10 to 20 after ESP       | The session sends a check, declaring a silent peer dead after 72 to 82 seconds of silence            |
 | Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                                 |
 | Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                                   |
 | Wait after a dial the host has no route for    | 10 seconds, doubling after each such dial in a row up to 1 minute                       | A dialer waits this long before it dials again, unless [woken](../platforms.md#moving-hosts)         |
@@ -1114,16 +1114,26 @@ whose threshold is already the floor takes no step. That covers an IPv6 path of
 a request, where it is too large to go whole, is cut for the floor at its first
 send, and keeps its 5 sends over 62 seconds. Each cut again for a path MTU that
 fell starts its waits over, up to 20 sends, which bound the sends of every
-request this end counts however it is cut. A request is sent up to 20 times
-while the peer's authenticated traffic has arrived within the last 10 seconds.
-The exchange holds the only outstanding request this end allows. Rekeys, Deletes
-and liveness checks wait until it ends. A liveness check and a Delete of an IKE
-SA never take the longer schedule, and neither does an exchange still
-outstanding when its IKE SA reaches its lifetime. A request on the session's
-current IKE SA waits behind the Delete of a replaced or redundant IKE SA for at
-most 6 seconds. Behind a liveness check left on an IKE SA the peer rekeyed, it
-waits for that check's 5 sends, up to 62 seconds, unless the peer's Delete of
-that IKE SA ends the check first.
+request this end counts however it is cut. After the fifth send of a cut, an
+unanswered request can continue toward the 20-send limit only if authenticated
+traffic keeps the peer alive at the retransmission deadline. A fresh
+authenticated IKE message counts at receipt, and ESP counts when the session
+takes it in on its next pass, at most one liveness interval later while a
+request is outstanding and sooner if another event wakes the loop. At the
+deadline, the latest such receipt or intake must be less than the liveness
+interval of 10 seconds old. For ESP alone, a packet less than 10 seconds old
+therefore always qualifies, one at least 20 seconds old never does, and between
+those ages it qualifies only if its intake is less than 10 seconds old at the
+deadline. A steady flow with gaps shorter than one interval cannot end the
+request on the silent peer's budget, but the 20-send limit and the IKE SA's
+lifetime still end it. The exchange holds the only outstanding request this end
+allows. Rekeys, Deletes and liveness checks wait until it ends. A liveness check
+and a Delete of an IKE SA never take the longer schedule, and neither does an
+exchange still outstanding when its IKE SA reaches its lifetime. A request on
+the session's current IKE SA waits behind the Delete of a replaced or redundant
+IKE SA for at most 6 seconds. Behind a liveness check left on an IKE SA the peer
+rekeyed, it waits for that check's 5 sends, up to 62 seconds, unless the peer's
+Delete of that IKE SA ends the check first.
 
 Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
 the SA and ignores a resend, as
@@ -1330,11 +1340,9 @@ every setting. These 2 bounds have consequences the ranges do not show:
 
 | Setting           | Bound                                  | Consequence                                                                                     |
 | ----------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `cap.babel.hello` | up to 655.35 seconds                   | Above 10 seconds, IKE liveness checks fill the gaps between Hellos, so a NAT mapping stays open |
+| `cap.babel.hello` | up to 655.35 seconds                   | IKE liveness checks follow their [own schedule](#ike)                                           |
 | `link.port`       | not checked against the trust document | Peers dial the port the trust document lists, so a mismatch leaves the node unreachable by them |
 
-On a session without data traffic, Babel Hellos and IKE liveness checks keep a
-NAT mapping open, as
-[protocol deviations](protocol-deviations.md#nat-traversal-and-ports) describes.
-An end sends a liveness check only after 10 seconds with nothing authenticated
-from its peer. [The trust document](../trust.md) lists each node's port.
+For NAT traversal, see
+[protocol deviations](protocol-deviations.md#nat-traversal-and-ports).
+[The trust document](../trust.md) lists each node's port.
