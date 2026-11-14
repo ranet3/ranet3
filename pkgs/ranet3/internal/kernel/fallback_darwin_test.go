@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -213,6 +214,13 @@ func TestDarwinSwitchWritesReadsAndDeletesTheRejects(t *testing.T) {
 	if held, err := plat.holdsFallback(); err != nil || held {
 		t.Errorf("a listing of no reject answers %v, %v", held, err)
 	}
+}
+
+// A delete of the rejects the routing socket refuses with EINVAL, which says
+// nothing of whether they remain, is tried again by the next pass that does
+// not ask for the switch and by the withdrawal
+func TestDarwinRejectsDeleteRefusedWithEINVALIsTriedAgain(t *testing.T) {
+	deleteRefusedOnce(t, rejectsForm, fmt.Errorf("delete the reject at 0.0.0.0/1: %w", unix.EINVAL), false)
 }
 
 // The start with no reconciler deletes the rejects at the switch's keys and

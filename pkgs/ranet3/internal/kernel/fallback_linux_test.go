@@ -835,6 +835,15 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 	}
 }
 
+// linux's switch is chains of a table, so a delete refused with EINVAL or
+// EPROTONOSUPPORT reads as a kernel without nf_tables, which neither the next
+// pass nor the withdrawal asks again
+func TestFallbackTableDeleteRefusedForNoNFTablesIsNotTriedAgain(t *testing.T) {
+	for _, errno := range []error{unix.EINVAL, unix.EPROTONOSUPPORT} {
+		deleteRefusedOnce(t, tableForm, fmt.Errorf("netlink receive: %w", errno), true)
+	}
+}
+
 // sendFrom sends a datagram of one byte to port at to, from a socket bound to device where it is not empty
 func sendFrom(t *testing.T, to netip.Addr, port int, device string) error {
 	t.Helper()

@@ -255,10 +255,11 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 		if r.fallbackClear {
 			return nil, nil
 		}
-		// a kernel without nf_tables holds no table, so that refusal is not
-		// tried again until a pass asks for the switch, and any other is
+		// a kernel without nf_tables holds no table, so for a switch of chains,
+		// whose form has no keys, that refusal is not tried again until a pass
+		// asks for the switch, and any other is
 		err := sw.deleteFallback()
-		r.fallbackClear = err == nil || withoutNFTables(err)
+		r.fallbackClear = err == nil || form.keys == nil && withoutNFTables(err)
 		if r.fallbackClear {
 			r.fallbackDropped, r.fallbackBytes = 0, 0
 		}

@@ -177,6 +177,56 @@ func TestFallbackTableWhoseDeleteFailedGoesAtTheWithdrawal(t *testing.T) {
 	}
 }
 
+// A left switch of reject routes whose delete the kernel refuses with EINVAL,
+// wrapped or joined, is deleted by the next pass that does not ask for it and
+// by the withdrawal, since a routing socket's EINVAL says nothing of the
+// rejects, where for a switch in a table EINVAL and EPROTONOSUPPORT read as a
+// kernel without nf_tables, which neither asks again, and any other refusal is
+// tried again
+func TestFallbackDeleteRefusedWithEINVALIsTriedAgainOutsideATable(t *testing.T) {
+	rejects := fallbackForm{where: "rejects on lo0", keys: rejectKeys, uncounted: true}
+	for name, c := range map[string]struct {
+		form fallbackForm
+		err  error
+		left bool
+	}{
+		"rejects, EINVAL wrapped": {rejects, fmt.Errorf("delete the reject at 0.0.0.0/1: %w", syscall.EINVAL), false},
+		"rejects, EINVAL joined":  {rejects, errors.Join(syscall.EBUSY, fmt.Errorf("delete the reject at ::/1: %w", syscall.EINVAL)), false},
+		"table, EINVAL":           {fakeTableForm, fmt.Errorf("netlink receive: %w", syscall.EINVAL), true},
+		"table, EPROTONOSUPPORT":  {fakeTableForm, fmt.Errorf("netlink dial: %w", syscall.EPROTONOSUPPORT), true},
+		"table, ENOBUFS":          {fakeTableForm, fmt.Errorf("netlink receive: %w", syscall.ENOBUFS), false},
+	} {
+		t.Run(name, func(t *testing.T) { deleteRefusedOnce(t, c.form, c.err, c.left) })
+	}
+}
+
+// deleteRefusedOnce plants a switch of form that a pass not asking for it
+// fails to delete with err, and checks that the next pass, and apart from it
+// the withdrawal, leave the switch where left says
+func deleteRefusedOnce(t *testing.T, form fallbackForm, err error, left bool) {
+	t.Helper()
+	for _, then := range []string{"a pass", "the withdrawal"} {
+		reconciler, fake := fallbackHarness(t, &ExitMode{})
+		fake.switchForm = form
+		fake.fallback = &fallbackSets{tun: "ranet3"}
+		fake.failFallback = err
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+		fake.failFallback = nil
+		next := reconciler.reconcile
+		if then == "the withdrawal" {
+			next = func() error { return reconciler.withdraw(nil) }
+		}
+		if err := next(); err != nil {
+			t.Fatal(err)
+		}
+		if got := fake.fallback != nil; got != left {
+			t.Errorf("after a delete of %s refused with %v %s left %+v after %d deletes, want a switch left %v", form.where, err, then, fake.fallback, fake.fallbackDeletes, left)
+		}
+	}
+}
+
 // runThroughFirstPass waits out the first pass, so the stop it returns meets
 // what a pass left
 func runThroughFirstPass(t *testing.T, reconciler *Reconciler) func(cause error) {
