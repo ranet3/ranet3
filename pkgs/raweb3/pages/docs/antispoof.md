@@ -64,8 +64,14 @@ unless that node owns it, and, for a source inside the overlay, by `antispoof`
 unless an exemption of that node passes it. A source an `allow` entry outside
 the overlay admits, which [egress segments](segment-routing.md#egress-segments)
 describe, meets `mesh_entry` alone. The filter on the exit itself keeps a forged
-mesh source off the host's services. Another node's SID that delivers to the
-mesh is protected by that node, as [below](#what-it-drops) describes.
+mesh source arriving from outside the mesh off the host's services, but what its
+[carve-outs](#carve-outs) and [exemptions](#exemptions) pass. It accepts a
+peer's packet through the tun from any source but an IPv4-mapped one, which
+[what it drops](#what-it-drops) covers, since nothing ties a source to the
+session's peer, as
+[ingress filtering](design/protocol-deviations.md#ingress-filtering) says.
+Another node's SID that delivers to the mesh is protected by that node, as
+[below](#what-it-drops) describes.
 
 The filter guards the mesh's edge on the interfaces outside it. A packet this
 host's own kernel routes into the tun enters the mesh by the other side of that
@@ -82,11 +88,12 @@ among the filter's drops.
 
 ## What it drops
 
-Each packet arriving on an interface outside the mesh meets chain `antispoof`'s
-rules in this order, and the first that matches decides:
+Each packet meets chain `antispoof`'s rules in this order, and the first that
+matches decides:
 
 | Rule                                          | Does                                                                                                | Family |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------ |
+| 1 for IPv4-mapped sources                     | drops a source in `::ffff:0:0/96` on any interface, inside or not, counted as `mapped_source`       | ipv6   |
 | 1 per interface inside                        | accepts what arrives on it                                                                          | both   |
 | 1 per family with a carve-out or an exemption | drops a source in `carved4` or `carved6`, which the carve-outs and the exemptions carve             | its    |
 | 1 per carve-out                               | accepts a source inside the carve-out arriving on its own interface                                 | its    |
@@ -96,11 +103,21 @@ rules in this order, and the first that matches decides:
 A packet matching none passes. A drop sends no ICMP error, as
 [the deviations](design/protocol-deviations.md#drops-with-no-answer) explain.
 
+A dual-stack socket reads a native IPv6 packet from `::ffff:203.0.113.5` under
+the peer of an IPv4 packet from `203.0.113.5`, and Linux's IPv6 input does not
+refuse such a source
+([ip6_input.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/ip6_input.c#L255-L300)),
+so the first rule drops every
+[IPv4-mapped address](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2)
+as an IPv6 source. It comes ahead of the inside accepts, since a peer's packet
+reaches the tun from any source.
+
 The overlay is the address space every node of the mesh is numbered from, the
 same on every node. An exit's `allow` entry admits an outer source only where
-the overlay covers it, since a source outside the overlay passes every filter.
-The loader refuses an egress segment whose `allow` list the overlay cannot
-admit, as [egress segments](segment-routing.md#egress-segments) gives.
+the overlay covers it, since a source outside the overlay passes every filter,
+an IPv4-mapped one aside. The loader refuses an egress segment whose `allow`
+list the overlay cannot admit, as
+[egress segments](segment-routing.md#egress-segments) gives.
 
 The overlay holds only addresses the mesh carries inside its tunnels. Every
 address a peer's ESP comes from lies outside it, since that ESP arrives on an
@@ -121,11 +138,15 @@ local segment needs `overlay`, with an IPv6 prefix in it.
 ### On macOS
 
 On macOS the chain is the rules of [the anchor](#the-pf-anchor-on-macos) in the
-same order. pf matches an interface by its exact name and negates at most 1 in a
-rule, so the mesh tun's accept folds into each drop as `on ! <tun>`, and the
-loopback link's accept passes overlay sources alone. With the mesh tun `utun7`,
-the overlay `192.0.2.0/24` and `3fff:10::/32`, a carve-out of `192.0.2.128/25`
-on `en0` holding another node's `192.0.2.200`, the shared exemption
+same order, and the anchor holds no drop of an IPv4-mapped source, since XNU's
+IPv6 input drops one before pf sees the packet, as the source of xnu-12377.121.6
+reads
+([ip6_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_input.c#L1039-L1045)).
+pf matches an interface by its exact name and negates at most 1 in a rule, so
+the mesh tun's accept folds into each drop as `on ! <tun>`, and the loopback
+link's accept passes overlay sources alone. With the mesh tun `utun7`, the
+overlay `192.0.2.0/24` and `3fff:10::/32`, a carve-out of `192.0.2.128/25` on
+`en0` holding another node's `192.0.2.200`, the shared exemption
 `192.0.2.32/27`, `en*`'s `3fff:10:1::/48` over the links `en0` and `en1`, and
 `en1`'s `192.0.2.64/26`, the anchor holds:
 
@@ -236,10 +257,10 @@ away than its lease, or the site behind a gateway that
   in `*`, every interface whose name starts with what comes before it, so `wl*`
   matches `wlan0` and `wlp3s0`. An interface takes the shared list and the list
   of every name that matches it.
-- No exemption reaches an interface inside the mesh, where the filter drops
-  nothing. An exemption under the exact name of the mesh tun or the loopback
-  link writes no rule, and the filter logs
-  `antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing`
+- No exemption reaches an interface inside the mesh, where no overlay or carved
+  drop applies. An exemption under the exact name of the mesh tun or the
+  loopback link writes no rule, and the filter logs
+  `antispoof leaves out an exemption naming a device inside the mesh, where no overlay or carved drop applies`
   at warning, with `interface` and `prefix`, once, at the start or the reload
   that brings it in.
 - Each prefix lies inside `overlay`, each of its addresses in some entry. One
@@ -403,7 +424,8 @@ turns it on.
 ## Which interfaces are inside
 
 Chain `antispoof` accepts whatever arrives on an interface inside the mesh,
-before any drop. The list is derived and has no setting:
+before any drop but the first of [what it drops](#what-it-drops). The list is
+derived and has no setting:
 
 1. the mesh tun, through which an egress segment's inner packets arrive as well
    on Linux
@@ -798,7 +820,7 @@ anchor, its spelling past 63 bytes.
 | `antispoof no longer drops part of an exemption for another node's prefix`                                                                                                                                                                                                    | info  | that prefix went, with `exemption`, `interface` and `prefix`                                                                                                                                              |
 | `antispoof admits this node's range though another router announces it too`                                                                                                                                                                                                   | warn  | another router came to announce an own range an exemption overlaps, with `exemption`, `interface`, `prefix` and `router_id`                                                                               |
 | `antispoof no longer sees another router announce this node's range`                                                                                                                                                                                                          | info  | that conflict went, with `exemption`, `interface` and `prefix`                                                                                                                                            |
-| `antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing`                                                                                                                                                                                   | warn  | the start or a reload brought in an exemption under the exact name of the mesh tun or the loopback link, which writes no rule, with `interface` and `prefix`                                              |
+| `antispoof leaves out an exemption naming a device inside the mesh, where no overlay or carved drop applies`                                                                                                                                                                  | warn  | the start or a reload brought in an exemption under the exact name of the mesh tun or the loopback link, which writes no rule, with `interface` and `prefix`                                              |
 | `antispoof filter withdrawn`                                                                                                                                                                                                                                                  | info  | its chains and sets are removed at shutdown, or by a start that ended in its build after making them                                                                                                      |
 | `antispoof filter is leaving its chains after the mesh failed`                                                                                                                                                                                                                | warn  | the stop a failed tun causes left its chains, with `where`                                                                                                                                                |
 | `antispoof filter is leaving the chains it found`                                                                                                                                                                                                                             | info  | a start that ended before its build completed left the chains its first pass's read found, with `where`. A read that failed logs only the start's refusal                                                 |
@@ -831,11 +853,13 @@ read.
 | `ranet3_antispoof_ready`                                | whether its chains read back, 1 or 0         |
 | `ranet3_antispoof_dropped_packets_total{reason,family}` | packets dropped by kind, as of the last pass |
 
-The reasons are `overlay_source`, `carved_source` and `mesh_entry`, each in the
-families a rule of the last pass drops it in, and a drop no rule writes has no
-series: `carved_source` in a family no carve-out and no exemption is of, as
-[what it drops](#what-it-drops) gives, and `mesh_entry` on macOS, since the
-anchor holds no entry chain. `mesh_entry` counts what the entry chain kept out
-of the mesh. A rewrite of its chains starts the counters from 0, which a scrape
-reads as a counter reset. On macOS a load of the tables alone keeps the
-counters.
+The reasons are `overlay_source`, `carved_source`, `mesh_entry` and
+`mapped_source`, each in the families a rule of the last pass drops it in, and a
+drop no rule writes has no series: `carved_source` in a family no carve-out and
+no exemption is of, as [what it drops](#what-it-drops) gives, and `mesh_entry`
+and `mapped_source` on macOS, since the anchor holds no entry chain and no
+mapped drop. `mesh_entry` counts what the entry chain kept out of the mesh, and
+`mapped_source`, in `ipv6` alone, the IPv4-mapped sources the first rule drops
+from any interface, the tun included. A rewrite of its chains starts the
+counters from 0, which a scrape reads as a counter reset. On macOS a load of the
+tables alone keeps the counters.

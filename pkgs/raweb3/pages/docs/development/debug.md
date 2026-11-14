@@ -418,9 +418,14 @@ These commands take flags of their own:
   filter selects, as the node decides it, until `--for` has passed, and then
   exits 0. A record is described below. A packet the forwarding decision never
   sees, such as Babel's own or IKE and ESP on the underlay, never appears, and
-  neither does one the antispoof filter drops, since chain `antispoof` drops it
-  before the host routes it and `mesh_entry` before the tun reads it. With
-  `--json` each line is an object holding a `packet` or a `note`.
+  neither does one the antispoof filter drops from outside the mesh or one
+  `mesh_entry` keeps out of the tun, since chain `antispoof` drops the first
+  before the host routes it and `mesh_entry` the second before the tun reads it.
+  A peer's packet from an IPv4-mapped source that the decision delivers to this
+  host appears as `deliver`, and on a Linux node where `overlay` is written
+  chain `antispoof` then drops it as it arrives on the tun, as
+  [where it runs](../antispoof.md#where-it-runs) gives. With `--json` each line
+  is an object holding a `packet` or a `note`.
 
 ## Route rows
 
@@ -722,7 +727,7 @@ Each kind carries these attributes:
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains), or from the userspace exit `source`, `reason` (such as `share`, `total` or `descriptors`) and `refused` (the flows refused since the last record) |
 | `antispoof.pass`                              | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                                                                                           |
 | `antispoof.ready`                             | `ready`                                                                                                                                                                                                                                                            |
-| `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before, present where a rule of the pass writes the drop, which leaves out the last 2 on macOS     |
+| `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, `mapped_source_ipv6`, each the packets since the pass before, present where a rule of the pass writes it, not the last 3 on macOS  |
 | `antispoof.carve`                             | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                                                                                    |
 | `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `own` (true for an own range), `carved` and `routed_via` where it is false, `router_id` (of the selected route, or of the offer where `own` is true)                                                                           |
 | `antispoof.pf`                                | `token`, `pid`, of the reference the pass took, `pf_off` (true where pf was off, which the new reference turned back on, and false where another holder kept pf running, absent where `pfctl -s info` failed)                                                      |
