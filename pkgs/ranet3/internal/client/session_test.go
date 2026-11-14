@@ -32,8 +32,7 @@ func (s *sessionSet) adoptAt(tb testing.TB, path string, sess *ike.Session, loca
 	return s.adopt(path, sess, local, remote, key, dialed, testDriver(tb, path), nil)
 }
 
-// testDriver is a driver for a session at path with no mux, never opened and so never searching, its peer a sink closed when tb ends
-// a reload's sweep sets the peer's MTU, and an Ack, a move or a confirmation is queued for a search that never reads it
+// testDriver supplies a sink peer at path through a driver that is never opened or served
 func testDriver(tb testing.TB, path string) *pathDriver {
 	d := newPathDriver(nil, nil, nil, &probeTotals{}, defaultProbeTimeout, confirmInterval)
 	d.peer = sinkPeer(tb, path)

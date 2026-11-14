@@ -52,19 +52,13 @@ func (c *Client) DebugPMTU(peer string) control.PMTUInfo {
 	return info
 }
 
-// view is the session's search as it stands, with the budget its peer carries
 func (d *pathDriver) view(now time.Time) control.PMTUSession {
 	budget := d.peer.MTU()
 	ipv4, ipv6 := netstack.MSSLimits(budget)
-	view := control.PMTUSession{Path: d.peer.ID, State: control.PMTUNotSearched, Budget: budget, MSSv4: ipv4, MSSv6: ipv6}
+	view := control.PMTUSession{Path: d.peer.ID, Budget: budget, MSSv4: ipv4, MSSv6: ipv6}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	view.DontFragment = d.mux.DontFragment()
-	// only a search takes a move, so a session not searched names the endpoint its mux sends to
-	if !d.searching {
-		view.Endpoint = d.mux.Endpoint().String()
-		return view
-	}
 	view.Endpoint = d.endpoint.String()
 	s := &d.search
 	view.State, view.Target = phaseNames[s.phase], s.target()

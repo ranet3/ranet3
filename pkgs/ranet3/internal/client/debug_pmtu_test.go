@@ -154,22 +154,25 @@ func TestProbeDroppedByARefusalIsNotCountedLost(t *testing.T) {
 	}
 }
 
-// a session that sends without DF is not searched and carries link.mtu, which the view says without reading a search
-// it names the endpoint the session sends to after IKE moved it
-func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
+// a started driver that nobody serves leaves its first probe unsent and its queued updates unapplied
+func TestPMTUViewOfStartedUnservedDriver(t *testing.T) {
 	hub := loopbackHub(t)
 	mux, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4500)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mux.Close() })
-	d := newPathDriver(mux, nil, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
+	var probes atomic.Uint64
+	d := newPathDriver(mux, func(*netstack.Peer, int, uint16) error {
+		probes.Add(1)
+		return nil
+	}, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
 	d.peer, d.endpoint = sinkPeer(t, "example/peer:0@0"), mux.Endpoint()
 	d.start(1400, nil, math.MaxInt)
 	c := pmtuClient(t, d, 1400)
 	s := c.DebugPMTU("").Sessions[0]
-	if s.State != control.PMTUNotSearched || s.Budget != 1400 || s.Sent != 0 || s.Probe != nil || s.Target != 0 {
-		t.Errorf("the view reads %+v for a session it does not search", s)
+	if s.State != control.PMTUConfirming || s.Budget != netstack.DefaultMTU || s.Sent != 0 || s.Probe == nil || s.Probe.Size != netstack.DefaultMTU || s.Target != 1400 {
+		t.Errorf("the view reads %+v before the driver runs", s)
 	}
 	other, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4501)
 	if err != nil {
@@ -178,8 +181,11 @@ func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
 	t.Cleanup(func() { _ = other.Close() })
 	mux.AdoptEndpoint(other.Endpoint())
 	d.move()
-	if got, want := c.DebugPMTU("").Sessions[0].Endpoint, mux.Endpoint().String(); got != want {
-		t.Errorf("a session sending to %s reads as sending to %s", want, got)
+	d.relink(1500, nil)
+	d.confirmNow()
+	d.ack(d.search.nonce)
+	if got := c.DebugPMTU("").Sessions[0]; got.Endpoint != s.Endpoint || got.Target != s.Target || got.Budget != s.Budget || got.Sent != 0 || probes.Load() != 0 {
+		t.Errorf("the unserved driver processed an update: %+v, probes %d", got, probes.Load())
 	}
 }
 
@@ -193,6 +199,7 @@ func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
 	session := func(path string) *pathDriver {
 		d := newPathDriver(mux, nil, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
 		d.peer = sinkPeer(t, path)
+		d.start(1400, nil, d.open())
 		return d
 	}
 	c := pmtuClient(t, session("example/bravo:2@1"), 1400)

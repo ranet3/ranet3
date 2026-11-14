@@ -633,13 +633,11 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 		old.Overlay = overlayOf("3fff::/20")
 	})
 	segmentsOf(t, c)
-	// a live session whose budget is link.mtu, which a reload hands the new link.mtu at once
 	search := newPathDriver(nil, nil, c.events, &c.probes, defaultProbeTimeout, confirmInterval)
 	search.peer = sinkPeer(t, "example/bravo:2@1")
-	search.peer.SetMTU(c.config().Link.SessionMTU())
 	c.sessions.live[search.peer.ID] = &liveSession{pmtu: search}
 	reconciler.refusal = errors.New("kernel: a refusal")
-	segments, steered, budget := c.Mesh.Segments(), c.Mesh.Steering(), search.peer.MTU()
+	segments, steered := c.Mesh.Segments(), c.Mesh.Steering()
 	old := c.config()
 	next := *old
 	next.Link.MTU = 9000
@@ -660,8 +658,8 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 	if c.Mesh.Segments() != segments || c.Mesh.Steering() != steered {
 		t.Error("the refused reload moved the tun or installed segment tables")
 	}
-	if got := search.peer.MTU(); got != budget {
-		t.Errorf("the refused reload moved a live session's link from %d to %d", budget, got)
+	if got := search.link.Load(); got != nil {
+		t.Errorf("the refused reload queued a live session's link: %+v", got)
 	}
 	if got := recorded(bus, "babel.config.applied"); len(got) != 0 {
 		t.Errorf("the refused reload reached the speaker: %v", got)

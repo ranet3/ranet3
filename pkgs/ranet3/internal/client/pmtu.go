@@ -377,8 +377,6 @@ type pathDriver struct {
 	// steering is the steering table in force at the session's start or the one a reload last handed it, whose longest segment list a steered 1280-byte packet carries
 	// the start sets it before serve runs, and serve replaces it under mu
 	steering *srv6.SteerTable
-	// searching is false where the mux's bind has no path MTU methods, and the budget is then link.mtu
-	searching bool
 	// mu guards search, endpoint, refusals and changed, which the session's goroutine writes and the debug view reads
 	mu     sync.Mutex
 	search pathSearch
@@ -457,32 +455,20 @@ func (d *pathDriver) inner(mtu int, err error) int {
 
 func (d *pathDriver) reread() int { return d.inner(d.mux.PathMTU()) }
 
-// open reads the endpoint the search measures and the largest inner packet its route lets through
-// it runs before the session is adopted, which keeps the syscall out of the set's lock
+// open runs before adoption, keeping the syscall out of the set's lock
 func (d *pathDriver) open() int {
 	d.endpoint = d.mux.Endpoint()
-	mtu, err := d.mux.PathMTU()
-	d.searching = !errors.Is(err, errors.ErrUnsupported)
-	return d.inner(mtu, err)
+	return d.reread()
 }
 
-// start sets the session's first budget from link and the route open read, and steering, the table the budget is checked against
-// it runs under the set's lock, so a reload's sweep either finds the session or stored the link.mtu and the steering table it reads
+// the set's lock orders start against a reload's link.mtu and steering update
 func (d *pathDriver) start(link int, steering *srv6.SteerTable, route int) {
 	d.steering = steering
-	if !d.searching {
-		d.peer.SetMTU(link)
-		return
-	}
 	d.search = newPathSearch(link, route, d.timeout, d.interval, time.Now())
 	d.peer.SetMTU(d.search.budget)
 }
 
-// serve runs the search until one of the session's two halves ends, and returns how it ended
 func (d *pathDriver) serve(results <-chan sessionResult) sessionResult {
-	if !d.searching {
-		return <-results
-	}
 	now := time.Now()
 	d.mu.Lock()
 	timer := time.NewTimer(d.search.deadline().Sub(now))
@@ -591,13 +577,8 @@ func (d *pathDriver) ack(nonce uint16) {
 	}
 }
 
-// relink hands the session the link.mtu a reload stored and the steering table in force after it, under the set's lock
-// the nudge carries both, so the search takes them together whenever it runs
+// link.mtu and steering must reach the search in one nudge
 func (d *pathDriver) relink(link int, steering *srv6.SteerTable) {
-	if !d.searching {
-		d.peer.SetMTU(link)
-		return
-	}
 	d.link.Store(&sessionLink{mtu: link, steering: steering})
 	d.nudge()
 }
