@@ -510,7 +510,15 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	// while this end's rekey may run an additional key exchange, or waits for the peer's, the requests on the IKE SA are the rekey's alone
 	// and a closing IKE SA keeps its window for its Delete
 	livenessHeld := func() bool { return expired() || deleted || s.quiet.Load() || s.closing.Load() }
+	// NoteTraffic only sets an edge and never wakes the loop, so lastAuthenticated is stale until a reader folds it
+	foldTraffic := func() {
+		if s.trafficSeen.Swap(false) {
+			lastAuthenticated = time.Now()
+			s.noteActive()
+		}
+	}
 	livenessDue := func() time.Time {
+		foldTraffic()
 		if livenessHeld() {
 			return time.Now().Add(s.dpdEvery)
 		}
@@ -518,6 +526,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}
 	// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up
 	peerAlive := func(request *pendingRequest) bool {
+		foldTraffic()
 		return time.Since(lastAuthenticated) < s.dpdEvery && !s.ikeExpired(request.context)
 	}
 	closeSignal := s.closingSignal()
@@ -599,10 +608,6 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			}
 		}
 		startDueRekey()
-		if s.trafficSeen.Swap(false) {
-			lastAuthenticated = time.Now()
-			s.noteActive()
-		}
 		// a session ending once a caller's Delete of the IKE SA has gone out sends no Delete of its own, and the replacement's ends the session through replaced
 		// it follows every check that can start the ending in the same pass, a lifetime among them, so an ending started there sends none either
 		if ending != nil && deleted && pending == nil && !replacing {
@@ -677,8 +682,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			deadline = fragmentsExpire
 		}
 
-		// everything this loop reacts to is selectable, so it sleeps until one of them happens rather than polling
-		timer.Reset(max(time.Until(deadline), 0))
+		// ESP does not wake the select, so no wait outlasts one interval and the readers take its edge in within one
+		timer.Reset(min(max(time.Until(deadline), 0), s.dpdEvery))
 		// a nil channel takes no local request while an exchange is outstanding, the window of one above
 		var requests <-chan *localRequest
 		if pending == nil {
@@ -812,12 +817,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			s.sendPending(pending)
 			continue
 		}
-		// ESP arrives without waking this select, so the traffic edge is read again before a probe
 		// RFC 7296 section 2.4 asks for a check only "if no cryptographically protected messages have been received"
-		if s.trafficSeen.Swap(false) {
-			lastAuthenticated = time.Now()
-			s.noteActive()
-		}
 		if pending == nil && !time.Now().Before(livenessDue()) {
 			started, err := s.startLiveness()
 			if err != nil {

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
@@ -51,15 +52,8 @@ func TestDialedSessionChecksASilentPeerOnTheIntervalsItRuns(t *testing.T) {
 }
 
 func testDialedSessionChecksASilentPeerOnTheIntervalsItRuns(t *testing.T) {
-	h := newResponderHarness(t, nil)
-	initiator, responder := dialPaused(t, h, h.peerConfig())
-	t.Cleanup(func() {
-		initiator.Mux().Close()
-		responder.Mux().Close()
-	})
-	// nothing runs the responder's loop, so nothing answers the check
+	_, responder, _ := silentPeerSession(t, nil)
 	started := time.Now()
-	runSession(t, initiator)
 	var sends []time.Duration
 	for range 2 {
 		if _, err := recvIKEUntil(responder.Mux(), started.Add(defaultDPDInterval+requestTimeout+quietPeriod)); err != nil {
@@ -184,17 +178,201 @@ func TestRetainedIKESAOutlastsAnUnansweredExchange(t *testing.T) {
 	}
 }
 
-func TestPostHandshakeRetransmitsRequireLivePeerToContinue(t *testing.T) {
-	ordinary := &pendingRequest{attempts: maxRetransmits}
-	if pendingRetransmitsExhausted(ordinary, true) {
-		t.Fatal("ordinary request exhausted retransmissions while receiving authenticated traffic")
+func silentPeerSession(t *testing.T, setup func(*Session)) (*Session, *Session, <-chan error) {
+	t.Helper()
+	h := newResponderHarness(t, nil)
+	s, peer := dialPaused(t, h, h.peerConfig())
+	t.Cleanup(func() {
+		s.Mux().Close()
+		peer.Mux().Close()
+	})
+	if setup != nil {
+		setup(s)
 	}
-	if !pendingRetransmitsExhausted(ordinary, false) {
-		t.Fatal("unanswered rekey kept a silent peer alive indefinitely")
+	run := runSession(t, s)
+	synctest.Wait()
+	return s, peer, run
+}
+
+func countUnansweredChildRekey(t *testing.T, s, peer *Session, run <-chan error, tick <-chan time.Time, onTick func(), onSend func(int)) int {
+	t.Helper()
+	const timeout = 10 * time.Minute
+	rekey := make(chan error, 1)
+	go func() { rekey <- s.RekeyChild() }()
+	t.Cleanup(func() {
+		s.Mux().Close()
+		<-rekey
+	})
+	deadline := time.After(timeout)
+	sends := 0
+	for {
+		select {
+		case <-tick:
+			onTick()
+		case <-peer.Mux().IKE():
+			sends++
+			if onSend != nil {
+				onSend(sends)
+			}
+		case <-run:
+			return sends
+		case <-deadline:
+			t.Fatal("unanswered request did not end the session")
+		}
 	}
-	dpd := &pendingRequest{attempts: maxRetransmits, dpd: true}
-	if !pendingRetransmitsExhausted(dpd, true) {
-		t.Fatal("DPD request did not exhaust retransmissions")
+}
+
+func TestRunCountsTrafficBeforeRequestBudget(t *testing.T) {
+	const trafficInterval = time.Second
+	// the limits page allows at most 10 seconds before the loop notices ESP
+	const noticeWithin = 10 * time.Second
+	for _, test := range []struct {
+		name    string
+		traffic bool
+		sends   int
+		elapsed time.Duration
+	}{
+		// the limits page gives an unanswered request 20 sends over 542 seconds with traffic, or 5 over 62 without
+		{"busy", true, 20, 542 * time.Second},
+		{"silent", false, 5, 62 * time.Second},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			passes := 0
+			// allow the initial idle pass and local-request wake besides sends and interval wakes
+			passLimit := 2 + test.sends + int(test.elapsed/noticeWithin)
+			s, peer, run := silentPeerSession(t, func(s *Session) {
+				s.clock = func() time.Time {
+					passes++
+					if passes > passLimit {
+						s.Mux().Close()
+					}
+					return time.Now()
+				}
+			})
+			started := time.Now()
+			ticker := time.NewTicker(trafficInterval)
+			defer ticker.Stop()
+			sends := countUnansweredChildRekey(t, s, peer, run, ticker.C, func() {
+				if test.traffic {
+					s.NoteTraffic()
+					synctest.Wait()
+					if !s.Active() {
+						t.Errorf("session inactive at %s while ESP flowed", time.Since(started))
+					}
+					if age := time.Since(s.started) - time.Duration(s.lastActive.Load()-1); age > noticeWithin {
+						t.Errorf("traffic sampled %s ago, beyond %s", age, noticeWithin)
+					}
+				}
+			}, nil)
+			if sends != test.sends {
+				t.Errorf("sent %d requests, want %d", sends, test.sends)
+			}
+			if elapsed := time.Since(started); elapsed != test.elapsed {
+				t.Errorf("failed after %s, want %s", elapsed, test.elapsed)
+			}
+		}))
+	}
+}
+
+func TestRunChecksAndEndsASilentPeerWithinTheDocumentedTimes(t *testing.T) {
+	const slack = time.Second
+	for _, at := range []time.Duration{0, time.Nanosecond, 10*time.Second - time.Nanosecond} {
+		t.Run(at.String(), bubble.Run(func(t *testing.T) {
+			s, peer, run := silentPeerSession(t, nil)
+			started := time.Now()
+			// the limits page gives a check after 10 seconds without authenticated IKE,
+			// failure after 72 and a live window of 20
+			wantFirst, wantEnd, wantLive := 10*time.Second, 72*time.Second, 20*time.Second
+			if at > 0 {
+				time.Sleep(at)
+				s.NoteTraffic()
+				// ESP between wakes puts those bounds at 20, 82 and 30 seconds from the preceding wake,
+				// giving the page's 10 to 20, 72 to 82 and 20 to 30 seconds after the packet
+				wantFirst, wantEnd, wantLive = 20*time.Second, 82*time.Second, 30*time.Second
+			}
+			if _, err := recvIKEUntil(peer.Mux(), started.Add(wantFirst+slack)); err != nil {
+				t.Fatal(err)
+			}
+			first := time.Now()
+			if elapsed := first.Sub(started.Add(at)); elapsed != wantFirst-at {
+				t.Errorf("first check after %s of silence, want %s", elapsed, wantFirst-at)
+			}
+			time.Sleep(time.Until(started.Add(wantLive - time.Nanosecond)))
+			if !s.Active() {
+				t.Error("session became inactive before its live window ended")
+			}
+			time.Sleep(time.Nanosecond)
+			if s.Active() {
+				t.Error("session stayed active past its live window")
+			}
+			for range maxRetransmits - 1 {
+				if _, err := recvIKEUntil(peer.Mux(), started.Add(wantEnd+slack)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-run:
+				if elapsed := time.Since(started.Add(at)); elapsed != wantEnd-at {
+					t.Errorf("session ended after %s of silence, want %s", elapsed, wantEnd-at)
+				}
+			case <-time.After(time.Until(started.Add(wantEnd + slack))):
+				t.Fatal("silent peer did not exhaust its liveness check")
+			}
+		}))
+	}
+}
+
+func TestRunKeepsRequestAliveOnlyWithRecentlyTakenTraffic(t *testing.T) {
+	// a wake between the interval ticks shifts the next pass off their grid
+	const wakeAfter = 12 * time.Second
+	// the limits page says ESP younger than 10 seconds always keeps the longer schedule
+	const recent = 10 * time.Second
+	// ESP at least 20 seconds old never keeps that schedule
+	const stale = 20 * time.Second
+	for _, test := range []struct {
+		name  string
+		wake  time.Duration
+		age   time.Duration
+		sends int
+	}{
+		{"recent", wakeAfter, recent - time.Nanosecond, 20},
+		{"past-recent", wakeAfter, recent + time.Nanosecond, 5},
+		{"taken-within-interval", wakeAfter + time.Nanosecond, stale - 2*time.Nanosecond, 20},
+		{"taken-too-early", wakeAfter + time.Nanosecond, stale, 5},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			s, peer, run := silentPeerSession(t, nil)
+			var lastTraffic time.Time
+			sends := countUnansweredChildRekey(t, s, peer, run, nil, nil, func(sends int) {
+				if sends < maxRetransmits {
+					return
+				}
+				sent := time.Now()
+				wake := sent.Add(test.wake)
+				traffic := sent.Add(retransmitDelay(requestTimeout, maxRetransmits) - test.age)
+				note := func() {
+					time.Sleep(time.Until(traffic))
+					s.NoteTraffic()
+					lastTraffic = time.Now()
+				}
+				if traffic.Before(wake) {
+					note()
+				}
+				time.Sleep(time.Until(wake))
+				// checking unchanged suites shifts the next pass without authenticating traffic
+				s.SuitesChanged()
+				synctest.Wait()
+				if !traffic.Before(wake) {
+					note()
+				}
+			})
+			if age := time.Since(lastTraffic); age != test.age {
+				t.Errorf("last ESP was %s before the decision, want %s", age, test.age)
+			}
+			if sends != test.sends {
+				t.Errorf("sent %d requests with ESP %s before the decision, want %d", sends, test.age, test.sends)
+			}
+		}))
 	}
 }
 

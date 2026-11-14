@@ -32,7 +32,7 @@ const (
 	canceledAuthWait = requestTimeout
 
 	defaultDPDInterval = 10 * time.Second
-	// one interval of silence draws a probe, and the second leaves the probe time to be answered
+	// activeDPDIntervals leaves one interval for the check to become due and one for its answer, as timed in the limits page's IKE section
 	activeDPDIntervals = 2
 
 	// the peer's packets sent before it switched still arrive under the replaced Child SA
