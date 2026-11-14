@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,6 +34,9 @@ const daemonSettle = 10 * time.Second
 
 // waitHeld is how long a test keeps a file from a start that waits for it, two of the wait's looks
 const waitHeld = 2 * authPoll
+
+// controlBound is the node's bound on the control socket's connections open at once, which the wait holds to as well
+const controlBound = 32
 
 // pendingTries is how many connections a test leaves at the handover as a turn ends, since a select that may take one picks
 // it at even odds, and pendingHeld how long it leaves each before the turn ends
@@ -506,6 +510,135 @@ func TestHandoverTurnTakesNothingPastItsEnd(t *testing.T) {
 	}
 	if took != 0 {
 		t.Errorf("a turn whose close had returned took the connection waiting at the handover %d of %d times", took, pendingTries)
+	}
+}
+
+// askSocket dials the control socket at path and asks it for what, and returns the connection with the status line of its
+// answer, or with no line and the error of a connection closed before any answer
+func askSocket(t *testing.T, path, what string) (net.Conn, string, error) {
+	t.Helper()
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("a dial of the control socket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	line, err := request(conn, what)
+	return conn, line, err
+}
+
+// request asks conn for what and returns the status line of its answer, or no line and the error of a connection closed
+// before any answer
+func request(conn net.Conn, what string) (string, error) {
+	_ = conn.SetDeadline(time.Now().Add(daemonSettle))
+	if _, err := conn.Write([]byte("GET " + what + " HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		return "", err
+	}
+	return bufio.NewReader(conn).ReadString('\n')
+}
+
+// holdPlaces opens n connections to the control socket at path and holds each once its read was answered
+func holdPlaces(t *testing.T, path string, n int) []net.Conn {
+	t.Helper()
+	held := make([]net.Conn, 0, n)
+	for len(held) < n {
+		conn, line, err := askSocket(t, path, control.PathStatus)
+		if !strings.HasPrefix(line, "HTTP/1.1 ") {
+			t.Fatalf("connection %d of %d was answered %q and %v, want an answer", len(held)+1, n, line, err)
+		}
+		held = append(held, conn)
+	}
+	return held
+}
+
+// waitServing counts the goroutines the wait's server serves a connection on, each of which gives its place back before it
+// ends
+func waitServing() int {
+	stacks := goroutines()
+	var servers []string
+	for _, g := range stacks {
+		if strings.Contains(g, "created by "+stackName(serveWait)+" ") {
+			id, _, _ := strings.Cut(strings.TrimPrefix(g, "goroutine "), " ")
+			servers = append(servers, "created by net/http.(*Server).Serve in goroutine "+id+"\n")
+		}
+	}
+	serving := 0
+	for _, g := range stacks {
+		if slices.ContainsFunc(servers, func(created string) bool { return strings.Contains(g, created) }) {
+			serving++
+		}
+	}
+	return serving
+}
+
+// waiting is a wait for a key that is missing, as its server answers
+func waiting() *wait {
+	return &wait{path: "config.yaml", load: config.Load, files: map[configured]bool{{"auth.key", "key.pem"}: true}}
+}
+
+// While the start waits, a connection past the node's bound is closed as it is accepted rather than queued, and a held
+// connection that closes gives its place to the next
+func TestWaitRefusesAConnectionPastTheBoundRatherThanQueuingIt(t *testing.T) {
+	path := filepath.Join(shortDir(t), "control.sock")
+	socket, err := control.Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandover(socket)
+	defer h.Close()
+	stop := serveWait(h, waiting())
+	defer stop()
+	held := holdPlaces(t, path, controlBound)
+	if _, line, err := askSocket(t, path, control.PathStatus); line != "" || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("a connection past the %d held during the wait was answered %q and %v, want it closed as it was accepted", controlBound, line, err)
+	}
+	_ = held[0].Close()
+	waitTill(t, "the end of the wait's service of the connection closed", func() bool { return waitServing() < controlBound })
+	if _, line, err := askSocket(t, path, control.PathStatus); !strings.HasPrefix(line, "HTTP/1.1 503 ") {
+		t.Errorf("a connection once one of the %d held had closed was answered %q and %v, want the wait's refusal", controlBound, line, err)
+	}
+}
+
+// The wait ends while the bound is full with the socket still bound, and the node's server takes the connection made between
+// the two and answers it
+func TestControlSocketGoesToTheNodeFromAWaitWithTheBoundFull(t *testing.T) {
+	path := filepath.Join(shortDir(t), "control.sock")
+	socket, err := control.Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandover(socket)
+	defer h.Close()
+	stop := serveWait(h, waiting())
+	holdPlaces(t, path, controlBound)
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(daemonSettle):
+		t.Fatalf("the wait's server did not stop within %s with %d connections held", daemonSettle, controlBound)
+	}
+
+	between, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("a dial once the wait's server stopped with %d connections held: %v", controlBound, err)
+	}
+	defer between.Close()
+	served := make(chan error, 1)
+	go func() { served <- control.Serve(h, runtimeSource{}) }()
+	if line, err := request(between, control.PathDebugRuntime); !strings.HasPrefix(line, "HTTP/1.1 200 ") {
+		t.Errorf("the node's server answered the connection made between the two servers %q and %v, want its answer", line, err)
+	}
+	_ = h.Close()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("the node's server ended with %v at the socket's close", err)
+		}
+	case <-time.After(daemonSettle):
+		t.Fatalf("the node's server did not end within %s of the socket's close", daemonSettle)
 	}
 }
 
