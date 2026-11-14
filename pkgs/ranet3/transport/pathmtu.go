@@ -3,10 +3,7 @@
 
 package transport
 
-import (
-	"errors"
-	"fmt"
-)
+import "fmt"
 
 // PathMTUError reports a send of which the host refused a datagram as larger than the path to Endpoint carries
 // Endpoint is the endpoint the send was handed, which a mux that moved since no longer sends to
@@ -32,25 +29,9 @@ func (e *PathMTUError) Largest() int {
 	return e.MTU - 40 - 8
 }
 
-// pathBind is a bind whose sends carry DF, which lets a probe it sends measure the path
-type pathBind interface {
-	// readPathMTU reads the MTU the host holds for the path to ep, the largest IP packet a send to ep may carry
-	readPathMTU(ep Endpoint) (int, error)
-	// fragment lets the host fragment sends to ep past that MTU while on, for a path under the IPv6 minimum MTU
-	// calls with on and without it pair up, and sends fragment while any pair is open
-	fragment(ep Endpoint, on bool) error
-	// dontFragment reports whether sends to ep leave with DF now
-	dontFragment(ep Endpoint) bool
-}
-
 // PathMTU reads the MTU the host holds for the path to the mux's endpoint, the largest IP packet a send may carry
-// it answers errors.ErrUnsupported on a bind without the path MTU methods, where a probe measures nothing
 func (m *Mux) PathMTU() (int, error) {
-	bind, ok := m.hub.bind.(pathBind)
-	if !ok {
-		return 0, errors.ErrUnsupported
-	}
-	return bind.readPathMTU(m.Endpoint())
+	return m.hub.bind.readPathMTU(m.Endpoint())
 }
 
 // Fragment lets the host fragment sends to the mux's endpoint past the path MTU, or stops that
@@ -59,10 +40,7 @@ func (m *Mux) PathMTU() (int, error) {
 // darwin fragments IPv6 sends to that endpoint alone
 // it stays with the endpoint it was set for, and a call after the mux moved hands it to the new one
 func (m *Mux) Fragment(on bool) error {
-	bind, ok := m.hub.bind.(pathBind)
-	if !ok {
-		return errors.ErrUnsupported
-	}
+	bind := m.hub.bind
 	m.fragmentMu.Lock()
 	defer m.fragmentMu.Unlock()
 	moved := false
@@ -91,6 +69,5 @@ func (m *Mux) Fragment(on bool) error {
 
 // DontFragment reports whether sends to the mux's endpoint leave with DF now, which a probe needs to measure the path
 func (m *Mux) DontFragment() bool {
-	bind, ok := m.hub.bind.(pathBind)
-	return ok && bind.dontFragment(m.Endpoint())
+	return m.hub.bind.dontFragment(m.Endpoint())
 }

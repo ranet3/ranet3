@@ -52,8 +52,6 @@ func routeMTU(ep *udpEndpoint, prepare underlay.Prepare) (int, error) {
 	return mtu, readErr
 }
 
-var _ pathBind = (*udpBind)(nil)
-
 func (b *udpBind) readPathMTU(ep Endpoint) (int, error) { return b.pathMTU(ep.(*udpEndpoint)) }
 
 // fragment takes the socket of ep's family off DO as the first mux asks

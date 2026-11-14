@@ -620,8 +620,6 @@ func (b *darwinBind) sendWithin(socket *darwinSocket, packets [][]byte, ep *darw
 	return report
 }
 
-var _ pathBind = (*darwinBind)(nil)
-
 // readPathMTU reads the MTU of the interface sends to ep name, the interface of the pin they carry, or on a hub with no selection the one the host routes them by
 // darwin refuses a datagram with DF only past that MTU, and the probes find a narrower path beyond the interface
 func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {

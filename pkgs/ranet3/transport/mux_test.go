@@ -1040,6 +1040,9 @@ type closedBind struct{}
 func (closedBind) ParseEndpoint(string) (Endpoint, error) { return nil, errors.New("no bind") }
 func (closedBind) Send([][]byte, Endpoint) error          { return errors.New("no bind") }
 func (closedBind) Close() error                           { return nil }
+func (closedBind) readPathMTU(Endpoint) (int, error)      { return 0, errors.New("no bind") }
+func (closedBind) fragment(Endpoint, bool) error          { return nil }
+func (closedBind) dontFragment(Endpoint) bool             { return true }
 
 // fixedEndpoint is one peer address and nothing else, for a bind that sends nowhere
 type fixedEndpoint struct{ addr netip.AddrPort }
@@ -1053,12 +1056,10 @@ func (e *fixedEndpoint) withoutSource() Endpoint             { return e }
 
 // answeringBind answers each send in turn with the next of its answers and records how many datagrams each carried
 type answeringBind struct {
+	closedBind
 	answers []error
 	sends   []int
 }
-
-func (*answeringBind) ParseEndpoint(string) (Endpoint, error) { return nil, errors.New("no bind") }
-func (*answeringBind) Close() error                           { return nil }
 
 func (b *answeringBind) Send(packets [][]byte, _ Endpoint) error {
 	answer := b.answers[len(b.sends)]
@@ -1067,10 +1068,10 @@ func (b *answeringBind) Send(packets [][]byte, _ Endpoint) error {
 }
 
 // closingBind closes its hub inside a send and answers the send as the closed socket does
-type closingBind struct{ hub *Hub }
-
-func (*closingBind) ParseEndpoint(string) (Endpoint, error) { return nil, errors.New("no bind") }
-func (*closingBind) Close() error                           { return nil }
+type closingBind struct {
+	closedBind
+	hub *Hub
+}
 
 func (b *closingBind) Send([][]byte, Endpoint) error {
 	b.hub.Close()

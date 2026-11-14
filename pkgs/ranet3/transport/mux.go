@@ -273,6 +273,10 @@ type packetBind interface {
 	ParseEndpoint(string) (Endpoint, error)
 	Send([][]byte, Endpoint) error
 	Close() error
+	readPathMTU(ep Endpoint) (int, error)
+	// calls with on and calls without it pair up
+	fragment(ep Endpoint, on bool) error
+	dontFragment(ep Endpoint) bool
 }
 
 // receiveFunc fills the vectors and reports how many datagrams it produced.
@@ -1056,7 +1060,7 @@ func (m *Mux) Close() error {
 	m.leavePair()
 	m.closeDone(ErrClosed)
 	// a family fragmenting for this mux alone sends with DF again
-	if err := m.Fragment(false); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+	if err := m.Fragment(false); err != nil {
 		slog.Warn("transport could not stop fragmenting sends for a closed mux", "endpoint", m.Endpoint().String(), "err", err)
 	}
 	if m.ownHub {
