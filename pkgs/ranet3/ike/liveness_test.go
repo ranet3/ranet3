@@ -1002,6 +1002,7 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 		}
 		return notify
 	}
+	shortSelectors := undersizedUnknownSelectorBodies()
 	for name, test := range map[string]struct {
 		inner []RawPayload
 		want  NotifyType
@@ -1022,6 +1023,12 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 		"Child SA rekey whose SA payload carries no proposal":           {replaced(rekey, RawPayload{Type: PayloadSA}), N_INVALID_SYNTAX},
 		"Child SA rekey whose TSi payload does not decode":              {replaced(rekey, RawPayload{Type: PayloadTSi, Body: []byte{1, 0, 0, 0}}), N_INVALID_SYNTAX},
 		"Child SA rekey whose TSr payload carries no selector":          {replaced(rekey, RawPayload{Type: PayloadTSr, Body: EncodeTS(nil)}), N_INVALID_SYNTAX},
+		"Child SA rekey whose TSi carries only an unknown selector":     {replaced(rekey, RawPayload{Type: PayloadTSi, Body: []byte{1, 0, 0, 0, 10, 0, 0, 5, 0xa5}}), N_TS_UNACCEPTABLE},
+		"Child SA rekey whose TSr carries only unknown selectors":       {replaced(rekey, RawPayload{Type: PayloadTSr, Body: []byte{2, 0, 0, 0, 10, 0, 0, 4, 9, 0, 0, 4}}), N_TS_UNACCEPTABLE},
+		"Child SA rekey whose unknown selector length is zero":          {replaced(rekey, RawPayload{Type: PayloadTSi, Body: shortSelectors[0]}), N_INVALID_SYNTAX},
+		"Child SA rekey whose unknown selector length is one":           {replaced(rekey, RawPayload{Type: PayloadTSi, Body: shortSelectors[1]}), N_INVALID_SYNTAX},
+		"Child SA rekey whose unknown selector length is two":           {replaced(rekey, RawPayload{Type: PayloadTSi, Body: shortSelectors[2]}), N_INVALID_SYNTAX},
+		"Child SA rekey whose unknown selector length is three":         {replaced(rekey, RawPayload{Type: PayloadTSi, Body: shortSelectors[3]}), N_INVALID_SYNTAX},
 		"Child SA rekey whose KE payload does not decode":               {with(pfs, RawPayload{Type: PayloadKE, Body: []byte{0, 31}}), N_INVALID_SYNTAX},
 		"Child SA rekey with a KE payload in group 0":                   {with(pfs, ke(0, dh.PublicBytes())), N_INVALID_SYNTAX},
 		"Child SA rekey with a KE payload in group 14 carrying nothing": {with(pfs, ke(14, nil)), N_INVALID_SYNTAX},

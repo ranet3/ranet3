@@ -21,6 +21,7 @@ import (
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -239,30 +240,153 @@ func drawSelector(tc hegel.TestCase) TrafficSelector {
 	}
 }
 
-// A TS payload reads back as the selectors it was built from, each address in
-// the width its type names, which is the width isFullRangeSelectors compares.
+// net.IP.Equal folds mapped addresses onto IPv4, hiding a wrong wire width
+func sameTrafficSelector(x, y TrafficSelector) bool {
+	return x.Type == y.Type && x.Protocol == y.Protocol &&
+		x.StartPort == y.StartPort && x.EndPort == y.EndPort &&
+		slices.Equal(x.StartAddr, y.StartAddr) && slices.Equal(x.EndAddr, y.EndAddr)
+}
+
+// RFC 7296 section 2.9: "If the type of Traffic Selector proposed is unknown, the responder ignores that Traffic Selector"
+// known ranges survive field for field, unknown entries retain only their type, and an empty payload stays empty
 func TestTrafficSelectorsRoundTrip(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
-		count := hegel.Draw(ht, withEdges(hegel.Integers(0, 4), 0, 4))
-		want := make([]TrafficSelector, count)
-		for i := range want {
-			want[i] = drawSelector(ht)
-		}
-		got, err := DecodeTS(EncodeTS(want))
-		if err != nil {
-			ht.Fatalf("DecodeTS refused %+v: %v", want, err)
-		}
-		// slices.Equal rather than net.IP.Equal, which would fold a 4-in-6
-		// address onto its IPv4 form and so pass a selector of the wrong width
-		same := slices.EqualFunc(got, want, func(x, y TrafficSelector) bool {
-			return x.Type == y.Type && x.Protocol == y.Protocol &&
-				x.StartPort == y.StartPort && x.EndPort == y.EndPort &&
-				slices.Equal(x.StartAddr, y.StartAddr) && slices.Equal(x.EndAddr, y.EndAddr)
+	for size := range 17 {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			pbt.Check(t, func(ht *hegel.T) {
+				count := hegel.Draw(ht, withEdges(hegel.Integers(0, 4), 0, 4))
+				var want []TrafficSelector
+				body := []byte{byte(count), 0, 0, 0}
+				for range count {
+					if hegel.Draw(ht, hegel.Booleans()) {
+						known := drawSelector(ht)
+						body = append(body, known.encode()...)
+						want = append(want, known)
+					} else {
+						kind := hegel.Draw(ht, hegel.Filter(hegel.Integers[uint8](0, 255), func(kind uint8) bool {
+							return kind != TS_IPV4_ADDR_RANGE && kind != TS_IPV6_ADDR_RANGE
+						}))
+						body = append(body, kind, drawOctet[uint8](ht), 0, byte(4+size))
+						body = append(body, hegel.Draw(ht, hegel.Binary(size, size))...)
+						want = append(want, TrafficSelector{Type: kind})
+					}
+				}
+				got, err := DecodeTS(body)
+				if err != nil {
+					ht.Fatalf("DecodeTS refused %+v: %v", want, err)
+				}
+				if !slices.EqualFunc(got, want, sameTrafficSelector) {
+					ht.Fatalf("DecodeTS read %+v back as %+v", want, got)
+				}
+			})
 		})
-		if !same {
-			ht.Fatalf("DecodeTS read %+v back as %+v", want, got)
+	}
+}
+
+func TestKnownTrafficSelectorsRoundTrip(t *testing.T) {
+	for count := range 5 {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			pbt.Check(t, func(ht *hegel.T) {
+				var want []TrafficSelector
+				for range count {
+					want = append(want, drawSelector(ht))
+				}
+				got, err := DecodeTS(EncodeTS(want))
+				if err != nil || !slices.EqualFunc(got, want, sameTrafficSelector) {
+					ht.Fatalf("selector round trip = %+v, %v, want %+v", got, err, want)
+				}
+			})
+		})
+	}
+}
+
+// RFC 7296 section 2.9: "If the type of Traffic Selector proposed is unknown, the responder ignores that Traffic Selector"
+func TestAdjacentUnknownTrafficSelectorsRoundTrip(t *testing.T) {
+	for _, size := range []int{0, 17, 256} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			pbt.Check(t, func(ht *hegel.T) {
+				want := make([]TrafficSelector, 2)
+				body := []byte{2, 0, 0, 0}
+				for i := range want {
+					kind := hegel.Draw(ht, hegel.Filter(hegel.Integers[uint8](0, 255), func(kind uint8) bool {
+						return kind != TS_IPV4_ADDR_RANGE && kind != TS_IPV6_ADDR_RANGE && (i == 0 || kind != want[0].Type)
+					}))
+					body = append(body, kind, drawOctet[uint8](ht))
+					body = binary.BigEndian.AppendUint16(body, uint16(4+size))
+					body = append(body, hegel.Draw(ht, hegel.Binary(size, size))...)
+					want[i] = TrafficSelector{Type: kind}
+				}
+				got, err := DecodeTS(body)
+				if err != nil || !slices.EqualFunc(got, want, sameTrafficSelector) {
+					ht.Fatalf("adjacent unknown selectors = %+v, %v, want %+v", got, err, want)
+				}
+			})
+		})
+	}
+}
+
+// RFC 7296 section 2.9: "the unknown type is not returned in the narrowed set"
+func TestResponderIgnoresUnknownTrafficSelectors(t *testing.T) {
+	v4, v6 := FullRangeV4().encode(), FullRangeV6().encode()
+	unknown := []byte{10, 0xff, 0, 5, 0xa5}
+	for name, selectors := range map[string][][]byte{
+		"first":   {unknown, v4, v6},
+		"between": {v4, unknown, v6},
+		"last":    {v4, v6, unknown},
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			body := []byte{byte(len(selectors)), 0, 0, 0}
+			for _, selector := range selectors {
+				body = append(body, selector...)
+			}
+			h, answered := answerSelectorOffer(t, body, body)
+			if findType(answered, PayloadSA) == nil {
+				t.Fatalf("IKE_AUTH did not establish a Child SA: %v", answered)
+			}
+			for _, kind := range []PayloadType{PayloadTSi, PayloadTSr} {
+				if ts := findType(answered, kind); ts == nil || !bytes.Equal(ts.Body, fullRangeSelectors()) {
+					t.Errorf("answer's selector payload %d = %v, want both full ranges", kind, ts)
+				}
+			}
+			carriedForward(t, h)
+		}))
+	}
+}
+
+// RFC 7296 section 2.9: "If the responder's policy does not allow it to accept any part of the proposed Traffic Selectors, it responds with a TS_UNACCEPTABLE Notify message."
+func TestResponderRefusesUnknownOnlyTrafficSelectors(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		_, answered := answerSelectorOffer(t, []byte{1, 0, 0, 0, 10, 0, 0, 5, 0xa5}, []byte{2, 0, 0, 0, 10, 0, 0, 4, 9, 0, 0, 6, 0xa5, 0xa5})
+		if findType(answered, PayloadIDr) == nil || findType(answered, PayloadAUTH) == nil || findType(answered, PayloadSA) != nil || notifyIn(t, answered) != N_TS_UNACCEPTABLE {
+			t.Fatalf("IKE_AUTH answered unknown-only selectors with %v, want IDr, AUTH and TS_UNACCEPTABLE without a Child SA", answered)
 		}
-	})
+	})(t)
+}
+
+func answerSelectorOffer(t *testing.T, tsi, tsr []byte) (*responderHarness, []RawPayload) {
+	t.Helper()
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.IPv4(127, 0, 0, 1), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	held, message1, nr := initHalfOpen(t, mux, nil)
+	payloads := ikeAuthPayloads(h.private, held, message1, nr, espProposal([]byte{0, 0, 0, 9}), "testorg/client:2", "testorg/server:1")
+	findType(payloads, PayloadTSi).Body = tsi
+	findType(payloads, PayloadTSr).Body = tsr
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	answer, answered, _ := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || !answer.IsResponse() {
+		t.Fatalf("selector offer drew header %+v, payloads %v", answer, answered)
+	}
+	return h, answered
 }
 
 // A notify reads back with its protocol, SPI, type and data as written. A

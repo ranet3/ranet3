@@ -7,6 +7,7 @@ package ike
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"testing"
 )
@@ -69,9 +70,76 @@ func TestEmptyChildSADeleteKeepsItsProtocolsSPISize(t *testing.T) {
 }
 
 func TestDecodeTSRejectsUndersizedSelector(t *testing.T) {
-	body := []byte{1, 0, 0, 0, 7, 0, 0, 7, 0, 0, 0}
-	if _, err := DecodeTS(body); err == nil {
-		t.Fatal("DecodeTS accepted a selector shorter than its fixed header")
+	for _, kind := range []byte{TS_IPV4_ADDR_RANGE, TS_IPV6_ADDR_RANGE} {
+		for length := 4; length < 8; length++ {
+			t.Run(fmt.Sprintf("%d/%d", kind, length), func(t *testing.T) {
+				// no spare capacity follows the final selector
+				body := make([]byte, 4+length)
+				body[0], body[4] = 1, kind
+				binary.BigEndian.PutUint16(body[6:8], uint16(length))
+				if _, err := DecodeTS(body); err == nil {
+					t.Fatalf("DecodeTS accepted a range shorter than its fixed header: %x", body)
+				}
+			})
+		}
+	}
+}
+
+func TestUnknownTrafficSelectorExtent(t *testing.T) {
+	for _, length := range []uint16{5, 0xffff} {
+		body := []byte{1, 0, 0, 0, 10, 0, 0, 0}
+		binary.BigEndian.PutUint16(body[6:8], length)
+		if _, err := DecodeTS(body); err == nil {
+			t.Errorf("accepted selector length %d in a four-octet buffer", length)
+		}
+	}
+	for length, body := range undersizedUnknownSelectorBodies() {
+		t.Run(fmt.Sprint(length), func(t *testing.T) {
+			if got, err := DecodeTS(body); err == nil {
+				t.Fatalf("DecodeTS accepted selector length %d in %x: %+v", length, body, got)
+			}
+		})
+	}
+}
+
+// positive short extents overlap the next header and exhaust the bytes if the floor is ignored
+// zero cannot advance to the next header
+func undersizedUnknownSelectorBodies() [4][]byte {
+	// a length of one becomes the high octet of the next selector's length
+	one := make([]byte, 4+1+256)
+	copy(one, []byte{2, 0, 0, 0, 10, 0, 0, 1})
+	return [4][]byte{
+		{2, 0, 0, 0, 10, 0, 0, 0, 9, 0, 0, 4},
+		one,
+		{2, 0, 0, 0, 10, 0, 0, 2, 0, 6, 0, 0},
+		{2, 0, 0, 0, 10, 0, 0, 3, 0, 0, 4},
+	}
+}
+
+func TestDecodeTSRejectsWrongSelectorCount(t *testing.T) {
+	for _, body := range [][]byte{
+		{2, 0, 0, 0, 10, 0, 0, 4},
+		{1, 0, 0, 0, 10, 0, 0, 4, 9, 0, 0, 4},
+	} {
+		if got, err := DecodeTS(body); err == nil {
+			t.Errorf("DecodeTS accepted a mismatched selector count in %x: %+v", body, got)
+		}
+	}
+}
+
+func TestUnknownTrafficSelectorRetainsItsType(t *testing.T) {
+	body := []byte{1, 0, 0, 0, 10, 0, 0, 4}
+	got, err := DecodeTS(body)
+	if err != nil || len(got) != 1 || got[0].Type != 10 {
+		t.Fatalf("unknown-only payload = %+v, %v, want one type 10 selector", got, err)
+	}
+}
+
+func TestUnknownTrafficSelectorIsIgnoredInRequestsButRefusedInAnswers(t *testing.T) {
+	body := []byte{3, 0, 0, 0, 10, 0, 0, 4}
+	body = append(body, fullRangeSelectors()[4:]...)
+	if !holdsFullRanges(body) || isFullRangeSelectors(body) {
+		t.Fatal("extra unknown selector must be accepted in requests but refused in answers")
 	}
 }
 

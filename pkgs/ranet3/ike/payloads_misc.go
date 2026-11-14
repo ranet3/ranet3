@@ -207,6 +207,7 @@ func EncodeTS(selectors []TrafficSelector) []byte {
 	return b
 }
 
+// DecodeTS retains an unknown selector as an entry with Type set and no protocol, ports or addresses.
 func DecodeTS(body []byte) ([]TrafficSelector, error) {
 	if len(body) < 4 {
 		return nil, fmt.Errorf("ike: short TS payload")
@@ -215,11 +216,19 @@ func DecodeTS(body []byte) ([]TrafficSelector, error) {
 	rest := body[4:]
 	var out []TrafficSelector
 	for range count {
-		if len(rest) < 8 {
+		if len(rest) < 4 {
 			return nil, fmt.Errorf("ike: truncated traffic selector")
 		}
 		tlen := binary.BigEndian.Uint16(rest[2:4])
-		if tlen < 8 || int(tlen) > len(rest) || (tlen-8)%2 != 0 {
+		if tlen < 4 || int(tlen) > len(rest) {
+			return nil, fmt.Errorf("ike: invalid TS length")
+		}
+		if rest[0] != TS_IPV4_ADDR_RANGE && rest[0] != TS_IPV6_ADDR_RANGE {
+			out = append(out, TrafficSelector{Type: rest[0]})
+			rest = rest[tlen:]
+			continue
+		}
+		if tlen < 8 || (tlen-8)%2 != 0 {
 			return nil, fmt.Errorf("ike: invalid TS length")
 		}
 		ts := TrafficSelector{
