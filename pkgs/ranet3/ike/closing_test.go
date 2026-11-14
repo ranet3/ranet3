@@ -79,6 +79,38 @@ func testInitiatorAnswersTheResponderDeleteCrossingItsOwn(t *testing.T) {
 	awaitHandshakeEnd(t, h, refused, held.spiI)
 }
 
+// a request taken while the initiator's own Delete is out is answered at its source port, without moving the endpoint or answering the dialed peer
+func TestInitiatorClosingAfterAuthAnswersMovedSource(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthAnswersMovedSource)(t)
+}
+
+func testInitiatorClosingAfterAuthAnswersMovedSource(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	origin := initiator.mux.Endpoint()
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	peer.read(t)
+	dialed := *peer
+	conn, err := testNetwork(t).ListenUDP(net.ParseIP("198.51.100.20"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	peer.conn = conn
+	if err := conn.SetDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, deleteIKEPayloads())
+	if answer := peer.answer(t); answer.Header.MessageID != 0 || len(answer.inner) != 0 {
+		t.Fatalf("the crossing Delete drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
+	}
+	settled(t, done, nil)
+	dialed.unanswered(t)
+	if got := initiator.mux.Endpoint(); got != origin {
+		t.Errorf("the answer moved the session endpoint from %v to %v", origin, got)
+	}
+}
+
 // a request that does not close the IKE SA is answered and leaves the initiator waiting for its own answer, a rekey of the IKE SA being answered with TEMPORARY_FAILURE
 func TestInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
 	bubble.Run(testInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn)(t)

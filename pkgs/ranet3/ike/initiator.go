@@ -942,7 +942,8 @@ func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte, source transport.
 	if err != nil {
 		return false
 	}
-	_ = s.send(sent.datagrams)
+	// RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
+	_ = s.sendTo(sent.datagrams, source)
 	return ends
 }
 
