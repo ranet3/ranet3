@@ -694,8 +694,9 @@ func (s *Speaker) wakeForPacketLocked() {
 }
 
 // pendingWorkLocked reports whether untried update work or queued requests
-// need a run-loop pass. Refreshes queued outside Run count even when their
-// refresh time is already past.
+// need a run-loop pass. A refresh is queued only once its time has passed, and
+// the deadline Run sleeps to folds only a refresh time still ahead, so no timer
+// wakes Run for a refresh queued outside it.
 func (s *Speaker) pendingWorkLocked() bool {
 	return s.updatePending || len(s.routes.dirty) != 0 || len(s.routes.starved) != 0 || len(s.routes.refresh) != 0
 }

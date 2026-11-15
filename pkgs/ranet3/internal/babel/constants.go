@@ -128,10 +128,12 @@ const (
 // this node repeats a seqno request, since RFC 8966 section 3.8.2.1 says a node
 // "SHOULD repeat such a request a small number of times if no route becomes
 // feasible within a short time". Later unfeasible updates can request a new
-// seqno too. A feasible finite route can end starvation before
-// the source table collects the distance. BIRD repeats four times, doubling
-// the delay. The first delay exceeds seqnoRequestSuppress so our suppression
-// table does not drop the retry as redundant.
+// seqno too. Where every retry or its reply is lost, the prefix stays starved
+// until a feasible finite route is selected. Once the source table collects
+// the distance, as sweepSources says, the unfeasible route can be selected
+// again at the prefix's next selection. BIRD repeats four times, doubling the
+// delay. The first delay exceeds seqnoRequestSuppress so our suppression table
+// does not drop the retry as redundant.
 const (
 	seqnoRequestRetries = 4
 	seqnoRetryInitial   = 3 * time.Second
