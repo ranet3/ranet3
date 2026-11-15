@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-19
+updated: 2026-11-20
 order: 45
 ---
 
@@ -1115,8 +1115,9 @@ the tun holds an overlay address of, a route holding its family's zero address
 goes in as the members of the zero-free cover it contains, as
 [the zero-free cover](#the-zero-free-cover-on-macos) describes.
 
-A session is live for 20 seconds after the last authenticated IKE message from
-its peer, and for 20 to 30 seconds after the last authenticated ESP packet, as
+A session is live for 20 seconds after the last fresh authenticated IKE message
+from its peer on any IKE SA but a replaced one kept past this end's Delete, and
+for 20 to 30 seconds after the last authenticated ESP packet, as
 [the design's limits](design/limits.md#ike) list. A pass that installs such a
 route where the last held none logs
 `kernel is installing the routes that carry this machine's own traffic over the mesh`,
@@ -1386,11 +1387,11 @@ and the kernel's lookup scoped to that interface gives where it ends
 A socket connected to 1 peer for a session whose sends leave the source to the
 kernel is bound to the selection's interface with `IP_BOUND_IF` or
 `IPV6_BOUND_IF`, and a change of interface opens a new one. One for a session
-the peer opened binds the address the peer's latest fresh request or answer
-reached, and an IPv6 link-local one its arrival interface. Where the selection
-holds no route for a peer, the datagram is refused with `ENETUNREACH` and
-nothing is written, as a marked lookup ending in an empty `main` refuses on
-Linux.
+the peer opened binds the address the peer's latest fresh request or answer on
+any IKE SA but a replaced one kept past this end's Delete reached, and an IPv6
+link-local one its arrival interface. Where the selection holds no route for a
+peer, the datagram is refused with `ENETUNREACH` and nothing is written, as a
+marked lookup ending in an empty `main` refuses on Linux.
 
 The kernel keeps the route the shared socket cached for a destination whatever
 interface a later send to it names

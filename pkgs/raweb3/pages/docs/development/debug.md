@@ -1067,16 +1067,18 @@ message, as
 that comes from another peer address or port, or, in a session the peer opened,
 reaches this node at an address other than the one the session's sends name. Its
 `packet` is `request` or `response`. In a session that names an interface, as it
-does on Linux and for an IPv6 link-local address on macOS, a fresh message
-arriving on another interface records it too. Its `endpoint` names the peer's
-address and port, which in these two cases can be the same as before. A session
-whose sends fell back from an address that is gone names no address, and its
-next fresh message records an `ike.endpoint.moved` wherever it arrives. A
-session that fell back after the kernel refused its address with `EHOSTUNREACH`
-moves back to it, recording an `ike.endpoint.moved`, only at the first fresh
-message 1 minute or more after the fallback, and one that fell back after any
-other refusal at its next fresh message that reaches the address, as
-[moving hosts](../platforms.md#moving-hosts) describes.
+does on Linux and for an IPv6 link-local address on macOS, a fresh message on
+any IKE SA but a replaced one kept past this end's Delete arriving on another
+interface records it too. Its `endpoint` names the peer's address and port,
+which in these two cases can be the same as before. A session whose sends fell
+back from an address that is gone names no address, and its next fresh message
+on any IKE SA but a replaced one kept past this end's Delete records an
+`ike.endpoint.moved` wherever it arrives. A session that fell back after the
+kernel refused its address with `EHOSTUNREACH` moves back to it, recording an
+`ike.endpoint.moved`, only at the first fresh message on any IKE SA but a
+replaced one kept past this end's Delete 1 minute or more after the fallback,
+and one that fell back after any other refusal at its next such message that
+reaches the address, as [moving hosts](../platforms.md#moving-hosts) describes.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` event is recorded once for an

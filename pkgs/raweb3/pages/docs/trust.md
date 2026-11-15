@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-11-15
+updated: 2026-11-20
 order: 38
 ---
 
@@ -159,7 +159,9 @@ verifies the signature with that node's key (RFC 7427 with Ed25519, RFC 8420).
 The ID only selects the endpoint, and the key always comes from the document. An
 initiator that refuses the responder's ID or signature says so with
 `AUTHENTICATION_FAILED` in the exchange that follows, and a ranet3 responder
-then ends the session it had opened.
+then ends the session it had opened, or that IKE SA alone where the responder's
+own rekey replaced it and kept it past its Delete, as
+[Rekeying](design/protocol-deviations.md#rekeying) gives.
 
 An ID names an endpoint when it is:
 

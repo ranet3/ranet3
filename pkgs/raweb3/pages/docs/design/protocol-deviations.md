@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-19
+updated: 2026-11-20
 order: 20
 ---
 
@@ -17,7 +17,7 @@ sections below give the details.
 | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | RFC 7296 section 2.23, RFC 9242 section 3.2                                               | IKE starts on UDP port 500 and moves to 4500 behind a NAT, in the first `IKE_INTERMEDIATE` where one runs                                                                                                                 | IKE and ESP share `link.port` from the first message                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 1 port per node, with no transition to track                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | RFC 7296 section 2.23                                                                     | NAT detection hashes the real source address and port                                                                                                                                                                     | The source hash covers a random address, so it never matches                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | The peer always encapsulates ESP in UDP                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| RFC 7296 section 2.23                                                                     | Follow any validated packet when not behind a NAT, and none behind one                                                                                                                                                    | A session in `Run` follows a fresh authenticated request and the authenticated answer to its own request, behind a NAT too, and no ESP packet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | A running session follows a peer that moved, and a node never learns whether it is behind a NAT. The initiator's handshake answers come before the IKE SA exists, and a dial sends to the endpoint it dials. ESP following a validated packet too is scheduled, see Endpoint updates                                                                                                                                                                                                                                                                                                                           |
+| RFC 7296 section 2.23                                                                     | Follow any validated packet when not behind a NAT, and none behind one                                                                                                                                                    | A session in `Run` follows a fresh authenticated request on any IKE SA but a replaced one kept past this end's Delete, and the authenticated answer to its own request, behind a NAT too, and no ESP packet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | A running session follows a peer that moved, and a node never learns whether it is behind a NAT. The initiator's handshake answers come before the IKE SA exists, and a dial sends to the endpoint it dials. ESP following a validated packet too is scheduled, see Endpoint updates                                                                                                                                                                                                                                                                                                                           |
 | RFC 7296 section 2.23                                                                     | A host not behind a NAT "SHOULD send all packets (including retransmission packets) to the IP address and port in the validated packet" and "SHOULD store this as the new address and port combination for the SA"        | In the initiator's wait after `IKE_AUTH`, answers go to each request's source, but its own request, whether a Delete or an error notification, and its retransmissions keep the dialed endpoint                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Every path out of the wait ends in the mux's close. If the old NAT mapping is gone, a request that leaves the wait open is answered but this end's request is lost, so the peer keeps its IKE SA until its own liveness check ends it. A captured request delivered first from another address takes the answer there and, if it ends the wait, leaves the true peer's copy unanswered. After `IKE_AUTH` is refused, its unauthenticated key holder can aim one answer per fresh request at a spoofed source for the wait's two sends, about 6 seconds, with at most 8 extra octets of IKE message per request |
 | RFC 7296 section 2.11                                                                     | Answer from the address and port the request reached                                                                                                                                                                      | The kernel's choice once that address is gone or has no route                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | No answer otherwise, see Answer addresses                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | RFC 7296 section 2.25.1                                                                   | Complete both colliding Child SA rekeys and keep 1                                                                                                                                                                        | The peer's rekey is answered `TEMPORARY_FAILURE`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 1 Child SA per session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -25,6 +25,7 @@ sections below give the details.
 | RFC 7296 section 2.18                                                                     | An IKE SA rekey may choose a new PRF                                                                                                                                                                                      | The PRF stays, and a reload that drops it replaces the IKE SA                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | strongSwan expands keys with the old PRF                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | RFC 7296 section 4                                                                        | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one                                                                                                                                                         | Without a crossing peer rekey held, the old SA stays and the rekey is retried                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Deleting the old SA first leaves the session with no SA for the round trip a new one takes, while the old one carries traffic until a retry, the peer's rekey or the end of its lifetime replaces it, see Rekeying                                                                                                                                                                                                                                                                                                                                                                                             |
 | RFC 7296 section 2.25.2                                                                   | Answer as usual a rekey of an IKE SA this end is rekeying too                                                                                                                                                             | Past the IKE SA's lifetime it is answered `TEMPORARY_FAILURE`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Section 2.8: an SA past its lifetime is not used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| RFC 7296 section 2.1                                                                      | An initiator discards the state of an IKE SA it deems failed                                                                                                                                                              | An IKE SA this end's rekey replaced stays past its Delete when that Delete goes unanswered within its lifetime, answering the peer's requests for at most as long as limits gives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | A peer whose crossing rekey this end refused may still run on it, see Rekeying                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | RFC 7296 section 2.8                                                                      | An SA past its lifetime is not used                                                                                                                                                                                       | It finishes its exchange, answers the peer and sends its Delete                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Sections 2.1 and 2.3 keep 1 request until it ends                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | RFC 7296 section 2.8                                                                      | A rekeyed Child SA keeps the algorithms of the old one                                                                                                                                                                    | A Child SA rekey may move to another listed cipher                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Either end's lists left the old cipher out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | RFC 7296 section 2.8                                                                      | A rekeyed Child SA keeps the algorithms of the old one                                                                                                                                                                    | This end's own Child SA rekey drops the key exchanges a peer's rekey ran                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | No Child SA key exchange of its own, see Rekeying                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -258,32 +259,35 @@ keepalive that arrives is counted and ignored.
 ## Endpoint updates
 
 A session in `Run` moves the stored peer endpoint to the address and port of an
-IKE message whose integrity protection validates and that is new: a request at
-the Message ID the session expects next, or the answer to the one request this
-node has outstanding, which the answer then settles. A fragmented message moves
-it once whole, to where the fragment that completed it came from. A replayed
-request, an answer that matches no outstanding request and a message that does
-not validate move nothing. In the handshake, the responder moves to where the
-`IKE_AUTH` request came from once it validates. The answers the initiator reads
-move nothing, since the IKE SA they set up does not exist yet, and a dial sends
-each of its requests to the endpoint it dials.
+IKE message whose integrity protection validates, that is new, and that comes on
+any IKE SA but a replaced one kept past this end's Delete, as
+[Rekeying](#rekeying) gives. A new message is a request at the Message ID the
+session expects next, or the answer to the one request this node has
+outstanding, which the answer then settles. A fragmented message moves it once
+whole, to where the fragment that completed it came from. A replayed request, an
+answer that matches no outstanding request and a message that does not validate
+move nothing. In the handshake, the responder moves to where the `IKE_AUTH`
+request came from once it validates. The answers the initiator reads move
+nothing, since the IKE SA they set up does not exist yet, and a dial sends each
+of its requests to the endpoint it dials.
 [RFC 7296 section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23)
 asks a host that is not behind a NAT to follow "a packet whose integrity
 protection validates", which takes in ESP packets as well, and asks a host
 behind a NAT not to follow at all. A node departs from both. An ESP packet from
 a new address moves nothing, and ESP following a validated packet too is
-scheduled. In `Run`, a fresh request or answer moves the endpoint whether or not
-the node is behind a NAT. A node never learns whether it is behind one, because
-it does not compare the `NAT_DETECTION_DESTINATION_IP` it receives with its own
-address.
+scheduled. In `Run`, the IKE messages the first paragraph names move the
+endpoint whether or not the node is behind a NAT. A node never learns whether it
+is behind one, because it does not compare the `NAT_DETECTION_DESTINATION_IP` it
+receives with its own address.
 
 Behind a NAT, someone who captures a request or an answer and resends it from
 another address before the original arrives can move a session's sends to that
-address, and the original then moves nothing. The peer's next fresh request
-moves them back. When that request goes is the peer's own choice, with
-[the IKE limits](limits.md#ike) giving a ranet3 peer's times. In `Run`, either
-end can follow a moved peer when it takes a fresh authenticated request or the
-authenticated answer to its outstanding request.
+address, and the original then moves nothing. The peer's next fresh request on
+any IKE SA but a replaced one kept past this end's Delete moves them back. When
+that request goes is the peer's own choice, with [the IKE limits](limits.md#ike)
+giving a ranet3 peer's times. In `Run`, either end can follow a moved peer when
+it takes a fresh authenticated request or the authenticated answer to its
+outstanding request.
 
 ## Answer addresses
 
@@ -303,7 +307,8 @@ kernel's choice until a fresh request or answer moves them back, as
 [moving hosts](../platforms.md#moving-hosts) gives, which a peer sends once that
 traffic is lost. Where the session's ESP from the other address still reaches
 the peer, the peer has no cause to probe, and the session stays there until a
-fresh request or answer reaches the address.
+fresh request or answer on any IKE SA but a replaced one kept past this end's
+Delete reaches the address.
 
 ## Rekeying
 
@@ -435,15 +440,49 @@ usual. Past the IKE SA's lifetime, ranet3 answers every rekey on it with
 [Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8) says that
 once its lifetime expires, an SA "MUST NOT be used", and a rekey answered on it
 would use its keys for the exchange and for the new SA's keys. Before the
-lifetime, such a rekey is answered as usual, except while this end's own rekey
-of the IKE SA has had its `CREATE_CHILD_SA` answered and runs its
-`IKE_FOLLOWUP_KE` exchange. This end then answers the peer's rekey with
-`TEMPORARY_FAILURE`, as
+lifetime, a peer's rekey is answered with an SA, and the 4 nonces settle the
+crossing, until this end's own rekey has taken its decision. The decision
+follows the answer to this end's `CREATE_CHILD_SA` and its key exchange, and,
+for a rekey without an additional key exchange, the derivation of the new SA's
+keys. A rekey with one derives them after its `IKE_FOLLOWUP_KE`, past the
+decision. A peer's rekey answered before this end reads the answer to its own
+gets an SA, since that answer is read after the reply goes out. A peer's rekey
+placed after this end's rekey won its decision is answered `TEMPORARY_FAILURE`,
+even where the check before it found nothing taken, for as long as this end
+keeps the old IKE SA, as [limits](limits.md#ike) gives, after which a rekey on
+that SA draws nothing. One placed after this end's rekey lost its decision draws
+no refusal for it.
+[Section 2.8.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8.2) asks
+that answer for an IKE SA an end "has already successfully rekeyed", and
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
-requires for a rekey that arrives while "the CREATE_CHILD_SA exchange initiated
-by this peer has already been completed, and the series of IKE_FOLLOWUP_KE
-exchanges is in progress": "a TEMPORARY_FAILURE notification MUST be sent in
-response to such a request."
+requires it while "the series of IKE_FOLLOWUP_KE exchanges is in progress": "a
+TEMPORARY_FAILURE notification MUST be sent in response to such a request."
+
+[Section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1) has an
+initiator retransmit a request "until it either receives a corresponding
+response or deems the IKE SA to have failed", and then discard "all state
+associated with the IKE SA". This end's Delete of the IKE SA its own rekey
+replaced gets the sends of every Delete of an IKE SA, and when they go
+unanswered within that SA's lifetime, the Delete ends and the SA stays,
+answering the peer's requests, for at most as long as [limits](limits.md#ike)
+gives. A request on it that would end the session without a Delete if it came on
+the current IKE SA ends that SA alone, and the session runs on over its current
+IKE SA. Each answer on it goes to the address and port its request came from. A
+message on it that leaves the session running moves neither the endpoint the
+session sends to nor the time the session last heard the peer, which its
+liveness checks, the sends of its requests and its live state read, since
+section 2.8 says "the new IKE SA is used for all control messages needed to
+maintain those Child SAs". A Delete of an ESP SA on it is answered and closes
+Child SAs exactly as one on the current IKE SA does.
+[Section 2.25.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.2)
+asks that of a request to delete a Child SA "when it is currently rekeying the
+IKE SA": "it SHOULD reply as usual, with a Delete payload." A peer whose
+crossing rekey this end refused may still run on that SA, since neither the
+refusal nor the Delete may have reached it, and each of its resends draws the
+refusal again. A ranet3 peer moves off the SA on either, and limits gives what a
+loss on the path then costs. This end sends the Delete no more times, since
+further sends would hold the session's one request, and section 2.1 has a
+responder that has forgotten its response ignore them.
 
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
 has a responder delete the state of a rekey whose `IKE_FOLLOWUP_KE` request it
@@ -479,12 +518,12 @@ and one whose path already sits at the floor included, 7 over 68 seconds at the
 most for a request too large for the floor that the step to it from a larger
 threshold cuts again, and more where the path MTU falls, at most 20 counted
 sends, with a probe that cuts nothing adding sends it does not count. A Delete
-of an IKE SA gets 2. The IKE SA is then deemed failed. The peer's rekeys are
-answered `TEMPORARY_FAILURE`, and nothing else starts. A replaced IKE SA this
-end deletes carries that Delete, which section 2.8 makes the last request on the
-old SA, and takes its answer past the lifetime. When both of its sends go
-unanswered, the replaced IKE SA alone is deemed failed, since the new one holds
-its Child SAs.
+of an IKE SA gets the sends limits gives it. The IKE SA is then deemed failed.
+The peer's rekeys are answered `TEMPORARY_FAILURE`, and nothing else starts. A
+replaced IKE SA this end deletes carries that Delete, which section 2.8 makes
+the last request on the old SA, and takes its answer past the lifetime. When its
+sends go unanswered, the replaced IKE SA alone is deemed failed, since the new
+one holds its Child SAs.
 
 An ESP batch that took a Child SA's keys before its lifetime finishes on them.
 The keys leave the dataplane at the lifetime, and the batch holds the set of SAs
@@ -542,10 +581,13 @@ answer, except in 5 cases where it closes without one:
   new handshakes to end.
 
 One close comes near these. An answer to this end's own request that does not
-decode after its integrity check closes the IKE SA as
+decode after its integrity check closes the IKE SA of that request without a
+Delete, as
 [section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
-closes one after a malformed request, without a Delete, since the 2 ends'
-encodings disagree and a Delete's answer would come from the same encoder.
+does for a malformed request, since the 2 ends' encodings disagree and a
+Delete's answer would come from the same encoder. An IKE SA kept only for its
+Delete, after a rekey replaced it or a crossing rekey left it over, ends alone,
+and the IKE SA in use keeps the Child SAs.
 
 [Section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
 says "After the IKE SA is authenticated, all requests having errors MUST result
@@ -553,7 +595,7 @@ in a response notifying the other end of the error." A node answers a request
 that does not parse with `INVALID_SYNTAX`, and an `INVALID_SYNTAX` sent or
 received ends the IKE SA it came on without a Delete, since that section makes
 the error fatal to both ends. A `CREATE_CHILD_SA` on an IKE SA that is busy, as
-a replaced IKE SA still kept for its Delete always is, is answered
+a replaced IKE SA this end still holds always is, is answered
 `TEMPORARY_FAILURE` before it is parsed, malformed or not, and the IKE SA stays.
 A replaced IKE SA past its lifetime answers no request, malformed or not.
 [Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8) says

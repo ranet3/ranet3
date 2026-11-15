@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-19
+updated: 2026-11-20
 order: 10
 ---
 
@@ -666,14 +666,15 @@ each pass reads the routing table, so a shorter grace would only make passes
 more frequent. While a capturing route is in play and a session is live, the
 reconciler runs a pass at least once a grace.
 
-A session counts as live for 20 seconds after it last received authenticated IKE
-from its peer, and for 20 to 30 seconds after its last authenticated ESP, which
-the session notices up to 10 seconds late. Without the hold a laptop whose mesh
-has gone loses every network it has rather than only the mesh. With literal
-endpoints its sessions still redial over the uplink, since the underlay keeps
-off the mesh's routes. An endpoint name resolves only where its query keeps off
-them too, as [the underlay socket](#the-underlay-socket) gives for Linux and the
-next paragraph for macOS.
+A session counts as live for 20 seconds after it last received a fresh
+authenticated IKE message from its peer on any IKE SA but a replaced one kept
+past this end's Delete, and for 20 to 30 seconds after its last authenticated
+ESP, which the session notices up to 10 seconds late. Without the hold a laptop
+whose mesh has gone loses every network it has rather than only the mesh. With
+literal endpoints its sessions still redial over the uplink, since the underlay
+keeps off the mesh's routes. An endpoint name resolves only where its query
+keeps off them too, as [the underlay socket](#the-underlay-socket) gives for
+Linux and the next paragraph for macOS.
 
 On macOS ranet3 resolves an endpoint name with Go's own resolver, as on Linux,
 and its query to a nameserver outside `overlay` names the interface
@@ -1001,6 +1002,7 @@ can configure are in
 | Peer rekeys                                    | 1 per second for each kind of SA                                                                                                     | A faster rekey is answered `TEMPORARY_FAILURE`                                                       |
 | Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                                                                           | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile            |
 | Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                                                                     | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                      |
+| Replaced IKE SA past this end's lost Delete    | the earlier of its lifetime and 2 minutes after the rekey, answering requests                                                        | It is dropped, and a later rekey of the current IKE SA, the peer's or this end's, drops it sooner    |
 | Messages in reassembly                         | 1 for each direction of an IKE SA, beside the repeats below                                                                          | A fragment of another message drops the fragments held                                               |
 | Fragments of 1 message in reassembly           | 16 KiB of charged datagrams, descriptor capacity and map storage                                                                     | The IKE SA ends, and a dial fails                                                                    |
 | Wait for the rest of a message's fragments     | 62 seconds from the first fragment of its cut                                                                                        | The fragments held are dropped                                                                       |
@@ -1188,7 +1190,25 @@ lists.
 An IKE SA deemed failed ends the session when it is the session's current IKE
 SA, and the node that dialed it dials again. A replaced or redundant IKE SA
 still kept for a Delete holds no Child SA once the rekey has moved them to its
-successor. It alone ends, and the session goes on.
+successor. It alone ends, and the session goes on. The IKE SA this end's own
+rekey replaced is the exception when its Delete goes unanswered within its
+lifetime: the Delete is not sent again, and the IKE SA stays as the table's row
+for it gives, for the peer [Rekeying](protocol-deviations.md#rekeying) names.
+
+A rekey can leave the 2 ends on different IKE SAs, whether the 2 ends' rekeys
+crossed or not. The end that moved to the new IKE SA keeps the old one for the
+time the table's rows for a replaced IKE SA give, while the other end may still
+resend a request on the old one: an initiator that lost every answer to its
+rekey, or a peer that lost every refusal of its crossing rekey. A ranet3 end
+then ends its session when that request fails, after the sends the next
+paragraph gives a request: 62 seconds after its first send, or 68 where the step
+to its family's floor cuts it again, where the path MTU does not fall during it
+and no authenticated traffic keeps the peer alive at the deadline after the
+fifth send of its last cut, as the next paragraph gives. A fall of the path MTU
+or such traffic can carry it later, up to 20 sends. So a party on the path that
+drops what the moved end sends on the old IKE SA until that end drops it, or
+until the other end's request fails where that comes first, ends the session at
+that failure.
 
 The 5 sends of a request are those of 1 cut. A request that steps to its
 family's floor from a threshold above it, and is too large to go whole there, is
@@ -1203,27 +1223,28 @@ fell starts its waits over, up to 20 sends, which bound the sends of every
 request this end counts however it is cut. After the fifth send of a cut, an
 unanswered request can continue toward the 20-send limit only if authenticated
 traffic keeps the peer alive at the retransmission deadline. A fresh
-authenticated IKE message counts at receipt, and ESP counts when the session
-takes it in on its next pass, at most one liveness interval later while a
-request is outstanding and sooner if another event wakes the loop. At the
-deadline, the latest such receipt or intake must be less than the liveness
-interval of 10 seconds old. For ESP alone, a packet less than 10 seconds old
-therefore always qualifies, one at least 20 seconds old never does, and between
-those ages it qualifies only if its intake is less than 10 seconds old at the
-deadline. A steady flow with gaps shorter than one interval cannot end a request
-that can take the longer schedule on the silent peer's budget, but the 20-send
-limit and the IKE SA's lifetime still end it. The exchange holds the only
-outstanding request this end allows. Rekeys, Deletes and liveness checks wait
-until it ends. A liveness check, an `INVALID_SPI` notify and a Delete of an IKE
-SA never take the longer schedule, and neither does an exchange still
-outstanding when its IKE SA reaches its lifetime. A request on the session's
-current IKE SA waits behind the Delete of a replaced or redundant IKE SA for at
-most 6 seconds. Behind a liveness check left on an IKE SA the peer rekeyed, it
-waits for that check's 5 sends, up to 62 seconds, unless the peer's Delete of
-that IKE SA ends the check first.
+authenticated IKE message counts at receipt, unless it came on a replaced IKE SA
+kept past this end's Delete, as [Rekeying](protocol-deviations.md#rekeying)
+gives, and ESP counts when the session takes it in on its next pass, at most one
+liveness interval later while a request is outstanding and sooner if another
+event wakes the loop. At the deadline, the latest such receipt or intake must be
+less than the liveness interval of 10 seconds old. For ESP alone, a packet less
+than 10 seconds old therefore always qualifies, one at least 20 seconds old
+never does, and between those ages it qualifies only if its intake is less than
+10 seconds old at the deadline. A steady flow with gaps shorter than one
+interval cannot end a request that can take the longer schedule on the silent
+peer's budget, but the 20-send limit and the IKE SA's lifetime still end it. The
+exchange holds the only outstanding request this end allows. Rekeys, Deletes and
+liveness checks wait until it ends. A liveness check, an `INVALID_SPI` notify
+and a Delete of an IKE SA never take the longer schedule, and neither does an
+exchange still outstanding when its IKE SA reaches its lifetime. A request on
+the session's current IKE SA waits behind the Delete of a replaced or redundant
+IKE SA for no more than the sends the table gives that Delete. Behind a liveness
+check left on an IKE SA the peer rekeyed, it waits for that check's 5 sends, up
+to 62 seconds, unless the peer's Delete of that IKE SA ends the check first.
 
-Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
-the SA and ignores a resend, as
+Every Delete of an IKE SA has the sends of the table's row for it, since a peer
+that took it has deleted the SA and ignores a resend, as
 [RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
 asks of a responder that has forgotten its response. They are the sends of a
 session that ends its IKE SA itself once it runs, at a lifetime, after 5 minutes
@@ -1262,7 +1283,8 @@ what happens at an SA's lifetime, and
 [Lifetimes](protocol-deviations.md#lifetimes) what an IKE SA still carries past
 it. A replaced Child SA's keys leave the dataplane at its lifetime where its
 drain would end later. A replaced IKE SA the peer owes a Delete is dropped at
-its lifetime, and one this end deletes is kept for that Delete.
+its lifetime. One this end deletes is kept past its lifetime for that Delete
+alone, and dropped when the Delete ends there.
 
 The limit on peer rekeys counts a rekey once the offer is settled, before its
 key exchange. A rekey answered with `INVALID_KE_PAYLOAD` does not count, so the

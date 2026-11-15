@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-18
+updated: 2026-11-20
 order: 100
 ---
 
@@ -303,25 +303,28 @@ Every session follows its peer as
 answers a request from the address it arrived on. Beyond those answers, a
 session this node dialed leaves the source address to the kernel. Its sends
 leave from whatever address the host holds at the time. A session a peer opened
-sends from the address the peer's latest fresh request or answer arrived on, on
-Linux and macOS alike, and one that reaches another of this host's addresses
-moves it there. Once that address has gone and the kernel refuses a send from
-it, the session sends from the kernel's choice until a later fresh request or
-answer moves it to the address that one arrived on.
+sends from the address the peer's latest fresh request or answer on any IKE SA
+but a replaced one kept past this end's Delete arrived on, on Linux and macOS
+alike, and such a request or answer that reaches another of this host's
+addresses moves it there. Once that address has gone and the kernel refuses a
+send from it, the session sends from the kernel's choice until a later fresh
+request or answer moves it to the address that one arrived on.
 
 The session falls back to the kernel's choice whenever the kernel refuses a send
 from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV`,
 `EADDRNOTAVAIL` or `ENXIO`. Once a send from the kernel's choice has gone after
 `EHOSTUNREACH`, a fresh request or answer to the address within 1 minute changes
 nothing, and the session keeps sending from the kernel's choice. The first one
-after that minute moves the session back to the address, and a send refused with
-`EHOSTUNREACH` again falls back again, at most once every minute. After any of
-the other refusals, the next fresh request or answer that reaches the address
-moves the session back at once. Where the session's traffic from the other
-address still reaches the peer, the session works, and it stays there until a
-fresh request or answer reaches the address. Each answer to a request that
-reaches the address is sent from the address itself first, so answers leave from
-it as soon as it routes again.
+after that minute on any IKE SA but a replaced one kept past this end's Delete
+moves the session back to the address, and a send refused with `EHOSTUNREACH`
+again falls back again, at most once every minute. After any of the other
+refusals, the next fresh request or answer on any IKE SA but a replaced one kept
+past this end's Delete that reaches the address moves the session back at once.
+Where the session's traffic from the other address still reaches the peer, the
+session works, and it stays there until a fresh request or answer on any IKE SA
+but a replaced one kept past this end's Delete reaches the address. Each answer
+to a request that reaches the address is sent from the address itself first, so
+answers leave from it as soon as it routes again.
 
 A session that cannot send at all, because the host has no route to the peer,
 holds while its liveness check retransmits on the usual schedule, and ends once
@@ -384,31 +387,33 @@ chooses it.
 The transport counts the bytes each address pair carries, sent and received
 together. A pair is this host's address and the peer's address and port. On
 Linux and macOS the address of a session a peer opened is the one the peer's
-latest fresh request or answer arrived on, and a session this node dialed, or
-one whose sends fell back from that address, leaves it to the route. A pair that
-carries 1 MiB within 1 sweep of 30 seconds gets a socket on `link.port`, the
-listener's port, bound to its address or to the one the route picks then, and
-connected to the peer. The peer sees the same address and port as before. The
-pair's sends leave on that socket. The kernel hands the socket the peer's
-datagrams to that address ahead of the listener, and a reader of its own takes
-them to the same sessions. Before Linux 5.4, once 2 such sockets share 1
-address, the kernel hands each datagram to that address from a peer with a
-socket of its own to 1 of them by a hash, so a peer's datagrams can arrive on
-another peer's socket. Every reader takes them to the same sessions, so none is
-lost. A node holds at most 256 such sockets. A pair past the cap stays on the
-shared socket.
+latest fresh request or answer on any IKE SA but a replaced one kept past this
+end's Delete arrived on, and a session this node dialed, or one whose sends fell
+back from that address, leaves it to the route. A pair that carries 1 MiB within
+1 sweep of 30 seconds gets a socket on `link.port`, the listener's port, bound
+to its address or to the one the route picks then, and connected to the peer.
+The peer sees the same address and port as before. The pair's sends leave on
+that socket. The kernel hands the socket the peer's datagrams to that address
+ahead of the listener, and a reader of its own takes them to the same sessions.
+Before Linux 5.4, once 2 such sockets share 1 address, the kernel hands each
+datagram to that address from a peer with a socket of its own to 1 of them by a
+hash, so a peer's datagrams can arrive on another peer's socket. Every reader
+takes them to the same sessions, so none is lost. A node holds at most 256 such
+sockets. A pair past the cap stays on the shared socket.
 
 On Linux the socket of a session a peer opened also leaves by the interface the
-peer's latest fresh request or answer arrived on, as the shared socket's replies
-do. An IPv4 socket binds to that interface with `SO_BINDTOIFINDEX`, which Linux
-has from 5.1 and allows a process without `CAP_NET_RAW` from 5.7. Where the
-kernel refuses the bind, such a session stays on the shared socket. An IPv6
-socket names the interface with `IPV6_UNICAST_IF`, which like the reply's own
-choice prefers that interface only among the routes of the lowest metric. A
-link-local address binds on that interface alone. On macOS the socket of a
-session the peer opened binds the address the peer's latest fresh request or
-answer reached, and an IPv6 link-local one also its arrival interface. Only a
-socket whose sends leave the source to the kernel binds on the interface
+peer's latest fresh request or answer on any IKE SA but a replaced one kept past
+this end's Delete arrived on, as the shared socket's replies do. An IPv4 socket
+binds to that interface with `SO_BINDTOIFINDEX`, which Linux has from 5.1 and
+allows a process without `CAP_NET_RAW` from 5.7. Where the kernel refuses the
+bind, such a session stays on the shared socket. An IPv6 socket names the
+interface with `IPV6_UNICAST_IF`, which like the reply's own choice prefers that
+interface only among the routes of the lowest metric. A link-local address binds
+on that interface alone. On macOS the socket of a session the peer opened binds
+the address the peer's latest fresh request or answer on any IKE SA but a
+replaced one kept past this end's Delete reached, and an IPv6 link-local one
+also its arrival interface. Only a socket whose sends leave the source to the
+kernel binds on the interface
 [the selection](routing.md#the-underlays-interface-on-macos) names for the peer,
 from the source the route scoped to that interface picks, and moves with it.
 
@@ -502,10 +507,11 @@ those the host fragments for a session under the floor, as below. A send refused
 for its size reads the MTU of the interface it sends through, and the session's
 search takes that as its route's MTU. A session the peer opened sends through
 the interface holding the address it sends from, the one the peer's latest fresh
-request or answer reached until a send from it falls back, as
-[moving hosts](#moving-hosts) describes, and an IPv6 link-local one through the
-interface that request or answer arrived on. Any other session, one whose send
-fell back included, sends through the interface
+request or answer on any IKE SA but a replaced one kept past this end's Delete
+reached until a send from it falls back, as [moving hosts](#moving-hosts)
+describes, and an IPv6 link-local one through the interface that request or
+answer arrived on. Any other session, one whose send fell back included, sends
+through the interface
 [the selection](routing.md#the-underlays-interface-on-macos) names for its peer.
 The search reads the same MTU when it starts, and the probes alone find a
 narrower hop beyond it.
