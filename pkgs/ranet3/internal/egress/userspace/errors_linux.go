@@ -17,6 +17,9 @@ import (
 type errorQueue struct {
 	fd         int
 	held, ipv6 bool
+	// taken is nil but in a test, which ends the connection between close's
+	// take of an errno and its read of the state
+	taken func()
 }
 
 // queue is a dial's error queue, which the dial's socket keeps on Linux
@@ -54,16 +57,92 @@ func (q *errorQueue) read(error) (icmpError, bool) {
 // close turns the queue off and gives its descriptor back. A connection the
 // dial opened then takes an ICMP error about it as Linux's soft error, which
 // ends nothing (RFC 1122 4.2.3.9, RFC 5382 REQ-10), where a socket still
-// watching its errors would read one as the connection's errno.
-func (q *errorQueue) close() {
-	if q.held {
-		level, option := unix.IPPROTO_IP, unix.IP_RECVERR
-		if q.ipv6 {
-			level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
+// watching its errors reads one as the connection's errno.
+//
+// Linux's ICMP handlers read the option and write their errno under the
+// socket's lock. A reset, a timeout and an abort write their errno and then
+// close the connection under the same lock. So once close has turned the
+// option off and taken the lock, the socket holds any errno an ICMP error left
+// while the queue was on, and close takes it, so that a read after the
+// dial meets none. Where the host ended the connection before close took that
+// errno, or before close read the state after taking one, close returns the
+// errno the end wrote, since the socket no longer holds it, and otherwise nil.
+// tcp_disconnect, which closes before it writes, runs for no call the dial
+// makes.
+func (q *errorQueue) close() error {
+	if !q.held {
+		return nil
+	}
+	level, option := unix.IPPROTO_IP, unix.IP_RECVERR
+	if q.ipv6 {
+		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
+	}
+	_ = unix.SetsockoptInt(q.fd, level, option, 0)
+	awaitLock(q.fd)
+	ended := q.settle()
+	_ = unix.Close(q.fd)
+	q.held = false
+	return ended
+}
+
+// settle takes the errno of the queue's socket and returns the errno of its
+// connection's end, nil where the connection was open at that take or, after
+// the take of an errno, at the read of its state. An end writes an errno, which
+// a take reads before any soft errno, so the first take is the end's where the
+// end came before it. Where the end came after it, connectionFailed finds the
+// end's errno on the socket, and settle takes that one.
+func (q *errorQueue) settle() error {
+	first := takeErrno(q.fd)
+	if first == 0 {
+		return nil
+	}
+	if q.taken != nil {
+		q.taken()
+	}
+	if !closed(q.fd) {
+		return nil
+	}
+	if connectionFailed(uintptr(q.fd)) {
+		return unix.Errno(takeErrno(q.fd))
+	}
+	return unix.Errno(first)
+}
+
+// takeErrno takes the errno fd's socket holds, its soft errno where it holds
+// none, 0 where it holds neither
+func takeErrno(fd int) int {
+	errno, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ERROR)
+	if err != nil {
+		return 0
+	}
+	return errno
+}
+
+// awaitLock takes the lock of fd's socket and gives it back, as TCP_INFO does
+// after it read the state, so whatever held the lock before is done
+func awaitLock(fd int) {
+	_, _ = unix.GetsockoptTCPInfo(fd, unix.IPPROTO_TCP, unix.TCP_INFO)
+}
+
+// closed is whether the connection of fd is closed, its state read once
+// awaitLock returns
+func closed(fd int) bool {
+	awaitLock(fd)
+	info, err := unix.GetsockoptTCPInfo(fd, unix.IPPROTO_TCP, unix.TCP_INFO)
+	return err == nil && info.State == unix.BPF_TCP_CLOSE
+}
+
+// connectionFailed is whether the host ended the connection of fd, a dialed
+// socket whose queue is closed, for an error: a reset, or the host giving the
+// connection up. Linux raises POLLERR for such an error alone, since an ICMP
+// error stays soft once the queue is off, and the queue's close took the
+// errno one left before.
+func connectionFailed(fd uintptr) bool {
+	fds := []unix.PollFd{{Fd: int32(fd)}}
+	for {
+		if _, err := unix.Poll(fds, 0); err != unix.EINTR {
+			return fds[0].Revents&unix.POLLERR != 0
 		}
-		_ = unix.SetsockoptInt(q.fd, level, option, 0)
-		_ = unix.Close(q.fd)
-		q.held = false
 	}
 }
 

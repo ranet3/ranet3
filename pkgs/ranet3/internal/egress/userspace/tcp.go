@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -62,6 +63,9 @@ type tcpRelay struct {
 	// holds keeps the slots of the connections whose host sockets may pin
 	// their ports, nil on a platform that bounds no host ports
 	holds *hostHolds
+	// connected is nil but in a test, which ends a dial's connection between
+	// its connect's return and the read of its error queue
+	connected func(*net.TCPConn)
 }
 
 func newTCPRelay(x *Exit) *tcpRelay {
@@ -243,8 +247,16 @@ func (r *tcpRelay) closeFlow(id stack.TransportEndpointID, source netip.Addr, f 
 // leaf's mapping on that address, and no connection leaves under another
 // route's source. A dial for the leaf's mapping that fails with an error
 // portTaken reads is made once more from a port the host gives on that address,
-// for that connection alone. The protocol deviations page lists its cases under
-// The userspace exit.
+// for that connection alone. A connection the host ended before Go's connect
+// read the socket's errno and its peer fails that connect on every platform,
+// the connect taking the end's errno, and the dial meets it as any connect's
+// error. On Linux one the host ended after that and before the close of the
+// dial's error queue read the connection's state fails the dial with the errno
+// its end wrote, which the close took, and is not dialed again from another
+// port, whatever that errno. Elsewhere the close returns nil, and such a
+// connection is handed over for the relay to meet its end. The protocol
+// deviations page gives the second try's cases and the answer to the leaf of an
+// ended connection under The userspace exit.
 func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.TCPConn, *tcpMapping, dialFailure) {
 	network := "tcp4"
 	if server.Addr().Is6() {
@@ -270,14 +282,22 @@ func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.
 		queue := r.x.icmp.queue()
 		dialer := net.Dialer{Control: r.control(server, bind, &queue)}
 		conn, err := dialer.DialContext(ctx, network, server.String())
+		if err == nil && r.connected != nil {
+			r.connected(conn.(*net.TCPConn))
+		}
 		cause, caused := queue.read(err)
-		queue.close()
-		if err == nil {
+		ended := queue.close()
+		if err == nil && ended == nil {
 			return conn.(*net.TCPConn), mapping, dialFailure{}
+		}
+		again := err != nil && portTaken(err)
+		if err == nil {
+			_ = conn.Close()
+			err, cause, caused = ended, icmpError{}, false
 		}
 		r.mappings.release(mapping)
 		failure = dialFailure{err: err, cause: cause, caused: caused}
-		if !portTaken(err) {
+		if !again {
 			break
 		}
 	}
@@ -593,20 +613,88 @@ func (f *tcpFlow) drain() {
 }
 
 // relay copies both ways until both ends have closed. A half close is passed
-// on as one, and a reset as a reset.
+// on as one, and a reset as a reset, from an end that has half closed too.
 func (f *tcpFlow) relay() {
+	var copying atomic.Int32
+	copying.Store(2)
+	copied := make(chan struct{})
+	over := func() {
+		if copying.Add(-1) == 0 {
+			// both copies are over, which ends the watch of either end: the
+			// leaf's by copied closing, the server's by its read deadline
+			close(copied)
+			_ = f.conn.SetReadDeadline(time.Unix(1, 0))
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		f.toServer()
+		finished := f.toServer()
+		over()
+		if finished {
+			f.watchLeaf(copied)
+		}
 	}()
-	f.toLeaf()
+	finished := f.toLeaf()
+	over()
+	if finished {
+		f.watchServer()
+	}
 	<-done
 }
 
+// watchLeaf resets both ends where the leaf's endpoint fails after the leaf's
+// FIN, and leaves the flow to its close otherwise, until both copies are
+// over, which closes copied. A read past the FIN returns only the FIN, so the
+// wait reads the endpoint's state.
+func (f *tcpFlow) watchLeaf(copied <-chan struct{}) {
+	entry, changed := waiter.NewChannelEntry(waiter.EventHUp | waiter.EventErr)
+	f.queue.EventRegister(&entry)
+	defer f.queue.EventUnregister(&entry)
+	for !leafFailed(f.ep) {
+		select {
+		case <-changed:
+		case <-copied:
+			return
+		}
+	}
+	f.reset()
+}
+
+// leafFailed is whether ep ended for a reset or an error: in the error state,
+// or closed with ErrAborted, as a reset in CLOSE-WAIT leaves it and a clean
+// close does not. An ICMP error about the open connection leaves the state as
+// it was.
+func leafFailed(ep tcpip.Endpoint) bool {
+	switch tcp.EndpointState(ep.State()) {
+	case tcp.StateError:
+		return true
+	case tcp.StateClose:
+		_, aborted := ep.LastError().(*tcpip.ErrAborted)
+		return aborted
+	}
+	return false
+}
+
+// watchServer resets both ends where the host ends its connection for an
+// error after the server's FIN, and leaves the flow to its close otherwise. A
+// read past the FIN returns only the FIN, so the wait asks connectionFailed at
+// each event on the socket. Once both copies are over they set a read
+// deadline past, which wakes the wait and ends it without a reset.
+func (f *tcpFlow) watchServer() {
+	raw, err := f.conn.SyscallConn()
+	if err == nil {
+		err = raw.Read(connectionFailed)
+	}
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		f.reset()
+	}
+}
+
 // toServer copies what the leaf sends to the server, holding a copy buffer
-// only while a read has bytes for it
-func (f *tcpFlow) toServer() {
+// only while a read has bytes for it, and reports whether it ended on the
+// leaf's FIN, which it passed on
+func (f *tcpFlow) toServer() bool {
 	entry, readable := waiter.NewChannelEntry(waiter.ReadableEvents | waiter.EventHUp | waiter.EventErr)
 	f.queue.EventRegister(&entry)
 	defer f.queue.EventUnregister(&entry)
@@ -619,7 +707,7 @@ func (f *tcpFlow) toServer() {
 			f.copies.put(buf)
 			if werr != nil {
 				f.reset()
-				return
+				return false
 			}
 			continue
 		}
@@ -629,21 +717,22 @@ func (f *tcpFlow) toServer() {
 			<-readable
 		case *tcpip.ErrClosedForReceive:
 			_ = f.conn.CloseWrite()
-			return
+			return true
 		default:
 			f.reset()
-			return
+			return false
 		}
 	}
 }
 
 // toLeaf copies what the server sends to the leaf, holding a copy buffer only
-// once the host's socket has bytes for it
-func (f *tcpFlow) toLeaf() {
+// once the host's socket has bytes for it, and reports whether it ended on
+// the server's FIN, which it passed on
+func (f *tcpFlow) toLeaf() bool {
 	raw, err := f.conn.SyscallConn()
 	if err != nil {
 		f.reset()
-		return
+		return false
 	}
 	entry, writable := waiter.NewChannelEntry(waiter.WritableEvents | waiter.EventHUp | waiter.EventErr)
 	f.queue.EventRegister(&entry)
@@ -655,7 +744,7 @@ func (f *tcpFlow) toLeaf() {
 			return !errors.Is(peeked, syscall.EAGAIN)
 		}); err != nil || peeked != nil {
 			f.ep.Abort()
-			return
+			return false
 		}
 		buf := f.copies.get()
 		n, err := f.conn.Read(*buf)
@@ -664,13 +753,13 @@ func (f *tcpFlow) toLeaf() {
 		switch {
 		case werr != nil:
 			f.reset()
-			return
+			return false
 		case errors.Is(err, io.EOF):
 			f.ep.Shutdown(tcpip.ShutdownWrite)
-			return
+			return true
 		case err != nil:
 			f.ep.Abort()
-			return
+			return false
 		}
 	}
 }
@@ -681,7 +770,8 @@ func (f *tcpFlow) toLeaf() {
 // once the server stops sending into a full window. An error the socket held,
 // a server's reset among them, is taken by the peek, so the read after it
 // would see only the end, and peek returns it. Each such error ends the
-// connection, since the dial's error queue is off once the dial is done.
+// connection, since once the dial is done an ICMP error leaves nothing a read
+// returns (errorQueue.close).
 func peek(fd uintptr) error {
 	var probe [1]byte
 	_, _, err := syscall.Recvfrom(int(fd), probe[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)

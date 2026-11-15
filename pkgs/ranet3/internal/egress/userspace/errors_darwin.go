@@ -69,13 +69,25 @@ func (q *errorQueue) read(failure error) (icmpError, bool) {
 }
 
 // close stops the errors about the dial, which a connection it opened takes
-// as nothing (RFC 5382 REQ-10), and gives its descriptor back
-func (q *errorQueue) close() {
+// as nothing (RFC 5382 REQ-10), and gives its descriptor back. It returns
+// nil, since XNU keeps an ICMP error about an open connection apart from the
+// socket's error (connectionFailed).
+func (q *errorQueue) close() error {
 	if q.held {
 		q.sockets.dials.remove(q)
 		_ = unix.Close(q.fd)
 		q.held = false
 	}
+	return nil
+}
+
+// connectionFailed is whether the host ended the connection of fd, a dialed
+// socket, for an error: a reset, or the host giving the connection up. XNU
+// keeps an ICMP error about an open connection as the connection's soft
+// error, apart from the socket's error that SO_ERROR reads.
+func connectionFailed(fd uintptr) bool {
+	errno, err := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_ERROR)
+	return err == nil && errno != 0
 }
 
 // drain takes every message the family's socket bound to no address holds,

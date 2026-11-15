@@ -9,19 +9,26 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // A leaf's connection is ended in the stack and dialed again toward the
@@ -430,6 +437,625 @@ func TestConnectionWhoseMappingsPortAHostListenerTookLeavesFromAnotherPort(t *te
 	defer r.mappings.mu.Unlock()
 	if r.mappings.byInside[m.inside] != m || m.sockets != 1 {
 		t.Errorf("the mapping is no longer the table's or holds %d sockets, want its live connection's 1", m.sockets)
+	}
+}
+
+// A server's response and FIN reach the leaf whole and the connection closes
+// cleanly, though ICMP host unreachables about the exit's socket toward the
+// server came while the exit still held bytes for the leaf, before the relay
+// read the server's FIN and once it watches the socket past it: Linux keeps
+// the error as the connection's soft error, which ends nothing. For each of
+// five connections the test reads the first error back through SO_ERROR,
+// which shows Linux took it and clears it, then sends it again before the
+// relay reads the FIN, and once more after. The leaf's endpoint holds bytes
+// its closed window keeps from the leaf while the watch starts, so a watch
+// that took the error for the connection's end would reset the leaf before
+// them. It runs as root of a network namespace made for the process alone
+// (claim), since it sends ICMP errors of its own.
+func TestServersCloseReachesTheLeafPastASoftError(t *testing.T) {
+	claim(t)
+	const size = 112 << 10
+	loopback := netip.MustParseAddr("127.0.0.1")
+	h := newRelayHarness(t, nil)
+	allowLoopback(t, h.x.stack)
+	for i := range 5 {
+		sniff, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_TCP)
+		if err != nil {
+			t.Skipf("no raw socket for this process: %v", err)
+		}
+		server := tcpServer(t, loopback, func(conn *net.TCPConn) {
+			_, _ = conn.Write(make([]byte, size))
+			_ = conn.CloseWrite()
+			_ = conn.SetReadDeadline(time.Now().Add(exitWait))
+			_, _ = io.Copy(io.Discard, conn)
+			_ = conn.Close()
+		})
+		c := h.open(t, netip.AddrPortFrom(leaf4, uint16(43050+i)), server)
+		f := listedFlow(t, h)
+		local := f.conn.LocalAddr().(*net.TCPAddr).AddrPort()
+		seq := sentSequence(t, sniff, local, server)
+		_ = unix.Close(sniff)
+		// the leaf acknowledges nothing yet, so the relay holds bytes for it
+		// while the host's socket takes the server's FIN
+		deadline := time.Now().Add(exitWait)
+		for {
+			info, unread, _, err := socketInfo(f.conn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.State == linuxCloseWait && unread > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("connection %d: the host's socket is in state %d with %d bytes unread, want CLOSE-WAIT with bytes the relay has not read", i, info.State, unread)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		icmpErrorAbout(t, 3, 1, local, server, seq)
+		if errno := syscall.Errno(socketErrno(t, f.conn)); errno != syscall.EHOSTUNREACH {
+			t.Fatalf("connection %d: the host's socket holds error %v after the host unreachable, want it soft as EHOSTUNREACH", i, errno)
+		}
+		icmpErrorAbout(t, 3, 1, local, server, seq)
+		// the leaf takes the response through a narrow window until the relay
+		// has read to the server's FIN and shut the leaf's endpoint, then
+		// closes its window, so the endpoint holds the rest of the response
+		start := c.ack
+		for tcp.EndpointState(f.ep.State()) == tcp.StateEstablished {
+			raw := h.waitLaid(t, "the response toward the leaf", func(raw []byte) bool {
+				p, ok := parse(raw)
+				return ok && p.protocol == protoTCP && netip.AddrPortFrom(p.dst, p.dstPort) == c.leaf && (p.payload > 0 || p.flags&tcpRST != 0)
+			})
+			p, _ := parse(raw)
+			if p.flags&tcpRST != 0 {
+				t.Fatalf("connection %d: the response reset after %d of %d bytes", i, c.ack-start, size)
+			}
+			if p.seq == c.ack {
+				c.ack += uint32(p.payload)
+			}
+			h.x.link.deliver(leafSegment(c.leaf, c.server, c.seq, c.ack, tcpACK, 8<<10, nil))
+		}
+		h.x.link.deliver(leafSegment(c.leaf, c.server, c.seq, c.ack, tcpACK, 0, nil))
+		// the relay watches the host's socket once it shut the leaf's endpoint
+		time.Sleep(10 * time.Millisecond)
+		icmpErrorAbout(t, 3, 1, local, server, seq)
+		closingResponse(t, h, c, make([]byte, size-int(c.ack-start)))
+		h.x.link.deliver(tcpSegment(c.leaf, c.server, c.seq, c.ack, tcpACK|tcpFIN, nil))
+		h.waitConnections(t, 0)
+		f.ending.Lock()
+		wasReset := f.wasReset
+		f.ending.Unlock()
+		if wasReset {
+			t.Fatalf("connection %d: the exit reset its connection toward the server", i)
+		}
+	}
+}
+
+// An ICMP error about a dial's connection that comes after its connect and
+// before the dial closes its error queue, which the socket takes as its errno,
+// ends nothing once the queue is closed: the close returns no error, and
+// neither connectionFailed nor peek takes the connection for ended, while the
+// server sends nothing yet nor once its bytes and FIN have come, which a read
+// then takes whole. It runs as root of a network namespace made for the
+// process alone (claim), since it sends ICMP errors of its own.
+func TestErrorBeforeTheDialsQueueClosesEndsNothing(t *testing.T) {
+	claim(t)
+	loopback4 := netip.MustParseAddr("127.0.0.1")
+	for _, c := range []struct {
+		name       string
+		kind, code byte
+		loopback   netip.Addr
+	}{
+		{"IPv4 host unreachable", 3, 1, loopback4},
+		{"IPv4 time exceeded", 11, 0, loopback4},
+		{"IPv6 address unreachable", 1, 3, netip.IPv6Loopback()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			const size = 1000
+			send := make(chan struct{})
+			sent := sync.OnceFunc(func() { close(send) })
+			t.Cleanup(sent)
+			server := tcpServer(t, c.loopback, func(conn *net.TCPConn) {
+				select {
+				case <-send:
+				case <-time.After(exitWait):
+				}
+				_, _ = conn.Write(make([]byte, size))
+				_ = conn.CloseWrite()
+				_ = conn.SetReadDeadline(time.Now().Add(exitWait))
+				_, _ = io.Copy(io.Discard, conn)
+				_ = conn.Close()
+			})
+			fd, local, seq, queue := queuedConnection(t, server)
+			icmpErrorAbout(t, c.kind, c.code, local, server, seq)
+			waitErrno(t, fd)
+			if err := queue.close(); err != nil {
+				t.Fatalf("the queue's close returned %v for a connection the host keeps open", err)
+			}
+			if connectionFailed(uintptr(fd)) {
+				t.Error("connectionFailed takes the open connection for ended before the server sends")
+			}
+			if err := peek(uintptr(fd)); !errors.Is(err, unix.EAGAIN) {
+				t.Errorf("peek on the open connection holding nothing returned %v, want EAGAIN", err)
+			}
+			sent()
+			waitFor(t, "CLOSE-WAIT past the server's FIN", func() bool { return tcpState(t, fd) == linuxCloseWait })
+			if connectionFailed(uintptr(fd)) {
+				t.Error("connectionFailed takes the connection for ended past the server's FIN")
+			}
+			if err := peek(uintptr(fd)); err != nil {
+				t.Errorf("peek past the server's bytes and FIN returned %v, want them", err)
+			}
+			if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
+				t.Fatal(err)
+			}
+			got, buf := 0, make([]byte, size)
+			for {
+				n, err := unix.Read(fd, buf)
+				if err != nil {
+					t.Fatalf("read past %d of %d bytes: %v", got, size, err)
+				}
+				if n == 0 {
+					break
+				}
+				got += n
+			}
+			if got != size {
+				t.Errorf("read %d of %d bytes before the end", got, size)
+			}
+		})
+	}
+}
+
+// A server's reset that ends a dial's connection before the dial closes its
+// error queue, after an ICMP error about it the socket took as its errno, is
+// what the close returns, since the socket no longer holds it. It runs as
+// root of a network namespace made for the process alone (claim), since it
+// sends ICMP errors of its own.
+func TestResetBeforeTheDialsQueueClosesIsWhatTheCloseReturns(t *testing.T) {
+	claim(t)
+	resetNow := make(chan struct{})
+	resetServer := sync.OnceFunc(func() { close(resetNow) })
+	t.Cleanup(resetServer)
+	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), resetsOn(resetNow))
+	fd, local, seq, queue := queuedConnection(t, server)
+	icmpErrorAbout(t, 3, 1, local, server, seq)
+	waitErrno(t, fd)
+	resetServer()
+	waitClosed(t, fd)
+	if err := queue.close(); !errors.Is(err, unix.ECONNRESET) {
+		t.Errorf("the queue's close returned %v for a connection the server reset, want ECONNRESET", err)
+	}
+}
+
+// The close of a dial's error queue returns the errno of a server's reset that
+// ended the connection after an ICMP error the socket kept as its soft errno,
+// its option off, though a take of the errno hands the soft errno over where
+// the socket holds no other. It runs as root of a network namespace made for
+// the process alone (claim), since it sends ICMP errors of its own.
+func TestResetAfterASoftErrorIsWhatTheCloseReturns(t *testing.T) {
+	claim(t)
+	loopback4 := netip.MustParseAddr("127.0.0.1")
+	for _, c := range []struct {
+		name       string
+		kind, code byte
+		loopback   netip.Addr
+	}{
+		{"IPv4 host unreachable", 3, 1, loopback4},
+		{"IPv4 time exceeded", 11, 0, loopback4},
+		{"IPv6 administratively prohibited", 1, 1, netip.IPv6Loopback()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resetNow := make(chan struct{})
+			resetServer := sync.OnceFunc(func() { close(resetNow) })
+			t.Cleanup(resetServer)
+			server := tcpServer(t, c.loopback, resetsOn(resetNow))
+			fd, local, seq, queue := queuedConnection(t, server)
+			level, option := unix.IPPROTO_IP, unix.IP_RECVERR
+			if c.loopback.Is6() {
+				level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
+			}
+			if err := unix.SetsockoptInt(fd, level, option, 0); err != nil {
+				t.Fatal(err)
+			}
+			icmpErrorAbout(t, c.kind, c.code, local, server, seq)
+			// the handler leaves no sign of a soft errno to wait on
+			time.Sleep(50 * time.Millisecond)
+			if polled(fd)&unix.POLLERR != 0 {
+				t.Fatal("the ICMP error left the socket's errno with its option off")
+			}
+			resetServer()
+			waitClosed(t, fd)
+			if err := queue.close(); !errors.Is(err, unix.ECONNRESET) {
+				t.Errorf("the queue's close returned %v for a connection the server reset, want ECONNRESET", err)
+			}
+		})
+	}
+}
+
+// The close of a dial's error queue returns EPIPE, the errno of a server's
+// reset after its FIN, where the server's bytes, FIN and reset all reached the
+// dial's socket before the close
+func TestResetAfterBytesAndFINBeforeTheDialsQueueClosesIsWhatTheCloseReturns(t *testing.T) {
+	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), func(conn *net.TCPConn) {
+		_, _ = conn.Write(make([]byte, 1000))
+		_ = conn.CloseWrite()
+		_ = conn.SetLinger(0)
+		_ = conn.Close()
+	})
+	fd, _, _, queue := queuedConnection(t, server)
+	waitClosed(t, fd)
+	if err := queue.close(); !errors.Is(err, unix.EPIPE) {
+		t.Errorf("the queue's close returned %v for a connection whose server sent bytes, a FIN and a reset, want EPIPE", err)
+	}
+}
+
+// The close of a dial's error queue returns the errno of a server's reset that
+// came after the close took an errno an ICMPv6 administratively prohibited left
+// on the live connection, EACCES, and before the close read the state. The
+// test makes that order through the queue's taken. It runs as root of a
+// network namespace made for the process alone (claim), since it sends ICMP
+// errors of its own.
+func TestResetAfterTheCloseTookALiveErrnoIsWhatItReturns(t *testing.T) {
+	claim(t)
+	resetNow := make(chan struct{})
+	resetServer := sync.OnceFunc(func() { close(resetNow) })
+	t.Cleanup(resetServer)
+	server := tcpServer(t, netip.IPv6Loopback(), resetsOn(resetNow))
+	fd, local, seq, queue := queuedConnection(t, server)
+	icmpErrorAbout(t, 1, 1, local, server, seq)
+	waitErrno(t, fd)
+	queue.taken = func() {
+		resetServer()
+		waitClosed(t, fd)
+	}
+	if ended := queue.close(); !errors.Is(ended, unix.ECONNRESET) {
+		t.Errorf("the close returned %v after the server's reset, want ECONNRESET", ended)
+	}
+}
+
+// A connection the server reset after the dial's connect returned and before
+// the dial read its error queue fails the dial: the leaf's SYN is answered
+// with a reset, the server took that one connection alone, and the mapping
+// tables and the admission's charges hold nothing once the dial is answered.
+// The test makes that order through the relay's connected.
+func TestResetBeforeTheDialReadsItsQueueResetsTheLeafAtItsSYN(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	allowLoopback(t, h.x.stack)
+	resetNow := make(chan struct{})
+	resetServer := sync.OnceFunc(func() { close(resetNow) })
+	t.Cleanup(resetServer)
+	var accepted atomic.Int32
+	resets := resetsOn(resetNow)
+	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), func(conn *net.TCPConn) {
+		accepted.Add(1)
+		resets(conn)
+	})
+	state := make(chan uint8, 2)
+	h.x.tcp.connected = func(conn *net.TCPConn) {
+		resetServer()
+		state <- stateOnceClosed(conn, exitWait)
+	}
+	leaf := netip.AddrPortFrom(leaf4, 43050)
+	if reason := h.syn(t, leaf, server); reason != "" {
+		t.Fatalf("the SYN was refused past %s", reason)
+	}
+	select {
+	case s := <-state:
+		if s != unix.BPF_TCP_CLOSE {
+			t.Fatalf("the dial's connection is in state %d after the server's reset, want closed", s)
+		}
+	case <-time.After(exitWait):
+		t.Fatal("the dial reached no connection")
+	}
+	answer := h.waitLaid(t, "the answer toward the leaf", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoTCP && netip.AddrPortFrom(p.dst, p.dstPort) == leaf
+	})
+	if p, _ := parse(answer); p.flags&tcpRST == 0 {
+		t.Errorf("the leaf's SYN was answered with flags %#x, want a reset", p.flags)
+	}
+	h.waitConnections(t, 0)
+	if held := h.x.tcp.held(); held != [3]int{} {
+		t.Errorf("the relay holds dials, connections and flows %v once the dial failed, want none", held)
+	}
+	if n := accepted.Load(); n != 1 {
+		t.Errorf("the server took %d connections, want the dial's one", n)
+	}
+	mappings := &h.x.tcp.mappings
+	mappings.mu.Lock()
+	defer mappings.mu.Unlock()
+	if inside, outside := len(mappings.byInside), len(mappings.byOutside); inside != 0 || outside != 0 {
+		t.Errorf("the mapping tables hold %d entries by inside endpoint and %d by outside endpoint once the dial failed, want none", inside, outside)
+	}
+}
+
+// A connection that was established and then ended, whose error queue's close
+// returned an errno portTaken reads, fails the dial with that errno and is not
+// dialed again from another port: the leaf's SYN is answered with a reset, the
+// server took that one connection alone, and the mapping tables and the
+// admission's charges hold nothing once the dial is answered. The test makes
+// by hand, through the relay's connected, the state a timeout's end after a
+// soft errno or the error queue's dequeue over a reset's errno leaves. With the
+// option off, an ICMPv6 administratively prohibited about the connection stays
+// its soft errno, EACCES. The server then resets, and the test takes the
+// reset's errno, so the close's take reads EACCES of a closed connection. It
+// runs as root of a network namespace made for the process alone (claim),
+// since it sends ICMP errors of its own, toward a server on the rig's address
+// on loopback, since the stack carries no leaf's segment toward ::1.
+func TestEndedConnectionWhoseCloseReturnsAPortTakenErrnoIsNotDialedAgain(t *testing.T) {
+	claim(t)
+	serversOnce.Do(func() { serversErr = addServers() })
+	if serversErr != nil {
+		t.Fatalf("address the servers on loopback: %v", serversErr)
+	}
+	h := newRelayHarness(t, nil)
+	h.reach = rigServer6.Addr()
+	resetNow := make(chan struct{})
+	resetServer := sync.OnceFunc(func() { close(resetNow) })
+	t.Cleanup(resetServer)
+	var accepted atomic.Int32
+	resets := resetsOn(resetNow)
+	server := tcpServer(t, rigServer6.Addr(), func(conn *net.TCPConn) {
+		accepted.Add(1)
+		resets(conn)
+	})
+	sniff, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW, unix.IPPROTO_TCP)
+	if err != nil {
+		t.Skipf("no raw socket for this process: %v", err)
+	}
+	defer unix.Close(sniff)
+	connected := make(chan *net.TCPConn, 2)
+	resume := make(chan struct{})
+	resumeDial := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(resumeDial)
+	h.x.tcp.connected = func(conn *net.TCPConn) {
+		connected <- conn
+		<-resume
+	}
+	leaf := netip.AddrPortFrom(leaf6, 43060)
+	if reason := h.syn(t, leaf, server); reason != "" {
+		t.Fatalf("the SYN was refused past %s", reason)
+	}
+	var conn *net.TCPConn
+	select {
+	case conn = <-connected:
+	case <-time.After(exitWait):
+		t.Fatal("the dial reached no connection")
+	}
+	fd := descriptorOf(t, conn)
+	local := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+	seq := sentSequence(t, sniff, local, server)
+	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_RECVERR, 0); err != nil {
+		t.Fatal(err)
+	}
+	icmpErrorAbout(t, 1, 1, local, server, seq)
+	// the handler leaves no sign of a soft errno to wait on
+	time.Sleep(50 * time.Millisecond)
+	resetServer()
+	waitClosed(t, fd)
+	if errno := socketErrno(t, conn); unix.Errno(errno) != unix.ECONNRESET {
+		t.Fatalf("the server's reset left %v on the socket, want ECONNRESET", unix.Errno(errno))
+	}
+	resumeDial()
+	answer := h.waitLaid(t, "the answer toward the leaf", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoTCP && netip.AddrPortFrom(p.dst, p.dstPort) == leaf
+	})
+	if p, _ := parse(answer); p.flags&tcpRST == 0 {
+		t.Errorf("the leaf's SYN was answered with flags %#x, want a reset", p.flags)
+	}
+	// a second try reaches connected before the dial returns, so before the answer
+	if again := len(connected); again != 0 {
+		t.Errorf("the dial connected again after its first connection ended, %d more, want none", again)
+	}
+	h.waitConnections(t, 0)
+	if held := h.x.tcp.held(); held != [3]int{} {
+		t.Errorf("the relay holds dials, connections and flows %v once the dial failed, want none", held)
+	}
+	if n := accepted.Load(); n != 1 {
+		t.Errorf("the server took %d connections, want the dial's one", n)
+	}
+	mappings := &h.x.tcp.mappings
+	mappings.mu.Lock()
+	defer mappings.mu.Unlock()
+	if inside, outside := len(mappings.byInside), len(mappings.byOutside); inside != 0 || outside != 0 {
+		t.Errorf("the mapping tables hold %d entries by inside endpoint and %d by outside endpoint once the dial failed, want none", inside, outside)
+	}
+}
+
+// descriptorOf is conn's descriptor, which stays conn's while conn is open
+func descriptorOf(t *testing.T, conn *net.TCPConn) int {
+	t.Helper()
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := -1
+	if err := raw.Control(func(d uintptr) { fd = int(d) }); err != nil {
+		t.Fatal(err)
+	}
+	return fd
+}
+
+// stateOnceClosed is the state TCP_INFO reports of conn's connection once it
+// is closed, or as it stands once within passes. A goroutine other than the
+// test's waits through it, since no wait there may end the test.
+func stateOnceClosed(conn *net.TCPConn, within time.Duration) uint8 {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0
+	}
+	var state uint8
+	deadline := time.Now().Add(within)
+	_ = raw.Control(func(fd uintptr) {
+		for {
+			if info, err := unix.GetsockoptTCPInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_INFO); err == nil {
+				state = info.State
+			}
+			if state == unix.BPF_TCP_CLOSE || time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+	return state
+}
+
+// A leaf that answers nothing after its FIN, so that its endpoint gives the
+// connection up for a timeout, which leaves it in the error state, reaches
+// the server as a reset. Its keepalive probes, one unanswered, end it.
+func TestLeafsTimeoutAfterItsFINReachesTheServer(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	allowLoopback(t, h.x.stack)
+	server, readFIN := readsToTheFIN(t)
+	c := h.open(t, netip.AddrPortFrom(leaf4, 43012), server)
+	f := listedFlow(t, h)
+	h.x.link.deliver(tcpSegment(c.leaf, c.server, c.seq, c.ack, tcpACK|tcpFIN, nil))
+	conn := readFIN()
+	idle, interval := tcpip.KeepaliveIdleOption(10*time.Millisecond), tcpip.KeepaliveIntervalOption(10*time.Millisecond)
+	if err := f.ep.SetSockOptInt(tcpip.KeepaliveCountOption, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ep.SetSockOpt(&interval); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ep.SetSockOpt(&idle); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "error on the server's socket after the leaf's endpoint timed out", func() bool { return socketErrno(t, conn) != 0 })
+	h.waitConnections(t, 0)
+}
+
+// TestMain readies the loopback the package's servers listen on before any
+// test runs, so that no test depends on another having brought it up: where the
+// process is root and the loopback is down, as unshare -rn leaves it, it claims
+// the namespace as claim does, and it leaves an up loopback as it is
+func TestMain(m *testing.M) {
+	if lo, err := net.InterfaceByName("lo"); os.Getuid() == 0 && err == nil && lo.Flags&net.FlagUp == 0 {
+		claimOnce.Do(func() { claimSkip, claimErr = netnstest.ClaimProcess() })
+	}
+	m.Run()
+}
+
+// queuedConnection is a socket connected to server with its error queue on,
+// as a dial's is between its connect and the queue's close, with its local
+// endpoint and the sequence number its next segment takes
+func queuedConnection(t *testing.T, server netip.AddrPort) (fd int, local netip.AddrPort, seq uint32, queue *errorQueue) {
+	t.Helper()
+	family := unix.AF_INET
+	if server.Addr().Is6() {
+		family = unix.AF_INET6
+	}
+	sniff, err := unix.Socket(family, unix.SOCK_RAW, unix.IPPROTO_TCP)
+	if err != nil {
+		t.Skipf("no raw socket for this process: %v", err)
+	}
+	defer unix.Close(sniff)
+	fd, err = unix.Socket(family, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	queue = &errorQueue{}
+	if err := queue.open(fd, server); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = queue.close() })
+	if err := unix.Connect(fd, sockaddrOf(server)); err != nil {
+		t.Fatal(err)
+	}
+	sa, err := unix.Getsockname(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local = sockaddrPort(sa)
+	return fd, local, sentSequence(t, sniff, local, server), queue
+}
+
+// polled is the events a poll of fd returns at once
+func polled(fd int) int16 {
+	fds := []unix.PollFd{{Fd: int32(fd)}}
+	_, _ = unix.Poll(fds, 0)
+	return fds[0].Revents
+}
+
+// waitErrno waits for an ICMP error to leave its errno on fd's socket
+func waitErrno(t *testing.T, fd int) {
+	t.Helper()
+	waitFor(t, "errno the ICMP error left on the socket", func() bool { return polled(fd)&unix.POLLERR != 0 })
+}
+
+// waitClosed waits for the server's reset to close fd's connection
+func waitClosed(t *testing.T, fd int) {
+	t.Helper()
+	waitFor(t, "the connection's close on the server's reset", func() bool { return tcpState(t, fd) == unix.BPF_TCP_CLOSE })
+}
+
+// tcpState is the state TCP_INFO reports of fd's connection
+func tcpState(t *testing.T, fd int) uint8 {
+	t.Helper()
+	info, err := unix.GetsockoptTCPInfo(fd, unix.IPPROTO_TCP, unix.TCP_INFO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.State
+}
+
+// linuxCloseWait is Linux's TCP_CLOSE_WAIT, a state TCP_INFO reports
+const linuxCloseWait = 8
+
+// sentSequence is the sequence number of the first segment from local's port
+// toward server's that sniff, a raw TCP socket of their family, holds, past
+// the SYN where it is one. A raw IPv6 socket hands a segment without its
+// header.
+func sentSequence(t *testing.T, sniff int, local, server netip.AddrPort) uint32 {
+	t.Helper()
+	if err := unix.SetsockoptTimeval(sniff, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1<<16)
+	for {
+		n, _, err := unix.Recvfrom(sniff, buf, 0)
+		if err != nil {
+			t.Fatalf("no segment from %s toward %s: %v", local, server, err)
+		}
+		segment := buf[:n]
+		if local.Addr().Is4() && n > 0 {
+			segment = buf[min(n, int(buf[0]&0x0f)*4):n]
+		}
+		if len(segment) < 20 || binary.BigEndian.Uint16(segment[0:2]) != local.Port() || binary.BigEndian.Uint16(segment[2:4]) != server.Port() {
+			continue
+		}
+		seq := binary.BigEndian.Uint32(segment[4:8])
+		if segment[13]&tcpSYN != 0 {
+			return seq + 1
+		}
+		return seq
+	}
+}
+
+// icmpErrorAbout sends local's host an ICMP error of kind and code quoting a
+// segment from local toward server at seq, as a router on a failing path does
+func icmpErrorAbout(t *testing.T, kind, code byte, local, server netip.AddrPort, seq uint32) {
+	t.Helper()
+	quote := tcpSegment(local, server, seq, 0, tcpACK, nil)
+	message := []byte{kind, code, 0, 0, 0, 0, 0, 0}
+	family, protocol := unix.AF_INET, unix.IPPROTO_ICMP
+	if local.Addr().Is6() {
+		// Linux sums the ICMPv6 message a raw socket sends
+		family, protocol = unix.AF_INET6, unix.IPPROTO_ICMPV6
+		message = append(message, quote...)
+	} else {
+		message = append(message, quote[:28]...)
+		binary.BigEndian.PutUint16(message[2:4], fold(sum(0, message)))
+	}
+	fd, err := unix.Socket(family, unix.SOCK_RAW, protocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Sendto(fd, message, 0, sockaddrOf(netip.AddrPortFrom(local.Addr(), 0))); err != nil {
+		t.Fatal(err)
 	}
 }
 

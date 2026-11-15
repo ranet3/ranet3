@@ -15,7 +15,12 @@ func (*icmpSockets) queue() errorQueue { return errorQueue{} }
 
 func (*errorQueue) open(int, netip.AddrPort) error { return nil }
 func (*errorQueue) read(error) (icmpError, bool)   { return icmpError{}, false }
-func (*errorQueue) close()                         {}
+func (*errorQueue) close() error                   { return nil }
+
+// connectionFailed is false: the watch after a half close takes nothing for
+// the connection's end here, so a server's reset after its FIN reaches the
+// leaf only with the next write toward the server, which fails
+func connectionFailed(uintptr) bool { return false }
 
 // watchErrors queues nothing where the kernel keeps no error queue
 func watchErrors(int, bool) error { return nil }

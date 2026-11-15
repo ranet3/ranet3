@@ -224,6 +224,26 @@ func peerSaw(server *net.TCPConn, wait time.Duration) error {
 	return err
 }
 
+// socketErrno takes the errno conn's socket holds, 0 where it holds none,
+// which tells a reset that came after the peer's FIN, where Linux's read
+// returns only the FIN
+func socketErrno(t *testing.T, conn *net.TCPConn) int {
+	t.Helper()
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errno int
+	var read error
+	if err := raw.Control(func(fd uintptr) { errno, read = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_ERROR) }); err != nil {
+		t.Fatal(err)
+	}
+	if read != nil {
+		t.Fatal(read)
+	}
+	return errno
+}
+
 // reset is whether err is a reset's
 func reset(err error) bool { return errors.Is(err, syscall.ECONNRESET) }
 
