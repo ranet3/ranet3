@@ -518,6 +518,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if cfg.Hub == nil {
+		return nil, fmt.Errorf("ike: initiator needs a hub")
+	}
 	if err := cfg.RekeyTiming.validate(); err != nil {
 		return nil, err
 	}
@@ -673,9 +676,13 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		return nil, fmt.Errorf("ike: incomplete IKE_SA_INIT response")
 	}
 	props, err := DecodeSA(saPl.Body)
-	if err != nil || len(props) != 1 {
+	if err != nil {
 		mux.Close()
-		return nil, fmt.Errorf("ike: bad SA in IKE_SA_INIT response: %v", err)
+		return nil, fmt.Errorf("ike: bad SA in IKE_SA_INIT response: %w", err)
+	}
+	if len(props) != 1 {
+		mux.Close()
+		return nil, fmt.Errorf("ike: IKE_SA_INIT response has %d proposals, want 1", len(props))
 	}
 	// RFC 9242 section 3.2: "If both peers indicated their support for the Intermediate Exchange, the initiator may use one or more these exchanges to transfer additional data."
 	intermediate := lists.asksIntermediate() && carriesNotify(resp, N_INTERMEDIATE_EXCHANGE_SUPPORTED)
@@ -685,7 +692,11 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		return nil, err
 	}
 	peerGroup, peerPub, err := DecodeKE(kePl.Body)
-	if err != nil || peerGroup != group || peerGroup != suite.DHGroup {
+	if err != nil {
+		mux.Close()
+		return nil, fmt.Errorf("ike: decode KE in IKE_SA_INIT response: %w", err)
+	}
+	if peerGroup != group || peerGroup != suite.DHGroup {
 		mux.Close()
 		return nil, fmt.Errorf("ike: KE group mismatch (got %d, used %d)", peerGroup, group)
 	}

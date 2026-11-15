@@ -1781,32 +1781,13 @@ func testInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	sa, ke := request.find(PayloadSA), request.find(PayloadKE)
-	if sa == nil || ke == nil {
-		t.Fatalf("the IKE_SA_INIT request carries %v", request.Payloads)
-	}
-	group, _, err := DecodeKE(ke.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dh, err := GenerateDH(suite.DHGroup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	answer, _, _ := initialAnswer(t, request)
+	payloads := answer.Payloads
 	// each answer under its own responder SPI, so the IKE_AUTH request names the one it follows
 	for i, notify := range []RawPayload{unrecognizedError, {Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})}, {Type: PayloadN, Body: []byte{0}}, unrecognizedStatus} {
-		answer := (&Message{Header: Header{SPIInitiator: request.Header.SPIInitiator, SPIResponder: uint64(i + 1), ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, Payloads: []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
-			{Type: PayloadKE, Body: EncodeKE(suite.DHGroup, dh.PublicBytes())},
-			{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
-			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
-			notify,
-		}}).Encode()
-		if _, err := peer.WriteToUDP(withNonESPMarker(answer), from); err != nil {
+		answer.Header.SPIResponder = uint64(i + 1)
+		answer.Payloads = append(payloads, notify)
+		if _, err := peer.WriteToUDP(withNonESPMarker(answer.Encode()), from); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1892,31 +1873,19 @@ func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payload
 	if sa == nil || ke == nil || nonce == nil {
 		t.Fatalf("the IKE_SA_INIT request carries %v", saInit.Payloads)
 	}
-	group, public, err := DecodeKE(ke.Body)
+	_, public, err := DecodeKE(ke.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dh, err := GenerateDH(suite.DHGroup)
-	if err != nil {
-		t.Fatal(err)
-	}
+	answerInit, suite, dh := initialAnswer(t, saInit)
 	shared, err := dh.SharedSecret(public)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ni, nr := DecodeNonce(nonce.Body), make([]byte, 32)
-	rand.Read(nr)
-	spiI, spiR := saInit.Header.SPIInitiator, randUint64Nonzero()
-	message2 := (&Message{Header: Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, Payloads: shape(IKE_SA_INIT, []RawPayload{
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
-		{Type: PayloadKE, Body: EncodeKE(suite.DHGroup, dh.PublicBytes())},
-		{Type: PayloadNonce, Body: EncodeNonce(nr)},
-		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
-	})}).Encode()
+	ni, nr := DecodeNonce(nonce.Body), answerInit.find(PayloadNonce).Body
+	spiI, spiR := answerInit.Header.SPIInitiator, answerInit.Header.SPIResponder
+	answerInit.Payloads = shape(IKE_SA_INIT, answerInit.Payloads)
+	message2 := answerInit.Encode()
 	if _, err := peer.WriteToUDP(withNonESPMarker(message2), from); err != nil {
 		t.Fatal(err)
 	}
@@ -1955,11 +1924,60 @@ func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t 
 }
 
 func testInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	err := dialInitialAnswer(t, func(payloads []RawPayload) []RawPayload {
+		return append(payloads, unsupportedCritical)
+	})
+	if err == nil || !strings.Contains(err.Error(), "marks unsupported payload type 250 critical") {
+		t.Errorf("the dial ended with %v, want the answer refused for payload type 250", err)
+	}
+}
+
+// initialAnswer selects from the initiator's offer and returns the DH key needed to authenticate a later answer
+func initialAnswer(t *testing.T, request *Message) (*Message, SASuite, *DHKeyPair) {
+	t.Helper()
+	sa, ke := request.find(PayloadSA), request.find(PayloadKE)
+	if sa == nil || ke == nil {
+		t.Fatalf("the IKE_SA_INIT request carries %v", request.Payloads)
+	}
+	group, _, err := DecodeKE(ke.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dh, err := GenerateDH(suite.DHGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, nonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	answer := &Message{
+		Header: Header{SPIInitiator: request.Header.SPIInitiator, SPIResponder: randUint64Nonzero(), ExchangeType: IKE_SA_INIT, Flags: FlagResponse},
+		Payloads: []RawPayload{
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+			{Type: PayloadKE, Body: EncodeKE(suite.DHGroup, dh.PublicBytes())},
+			{Type: PayloadNonce, Body: EncodeNonce(nonce)},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
+		},
+	}
+	return answer, suite, dh
+}
+
+// dialInitialAnswer returns the initiator's refusal of the IKE_SA_INIT answer shaped by the caller
+func dialInitialAnswer(t *testing.T, shape func([]RawPayload) []RawPayload) error {
+	t.Helper()
 	peer := listenPeer(t)
-	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	addr := peer.LocalAddr().(*net.UDPAddr)
 	peerLoop(t, peer, func() {
 		buf := make([]byte, 4096)
-		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Error(err)
+			return
+		}
 		n, from, err := peer.ReadFromUDP(buf)
 		if err != nil || n <= 4 {
 			t.Errorf("the initiator sent no IKE_SA_INIT: %d bytes, %v", n, err)
@@ -1970,46 +1988,19 @@ func testInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t 
 			t.Error(err)
 			return
 		}
-		sa, ke := request.find(PayloadSA), request.find(PayloadKE)
-		if sa == nil || ke == nil {
-			t.Errorf("the IKE_SA_INIT request carries %v", request.Payloads)
-			return
-		}
-		group, _, err := DecodeKE(ke.Body)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		dh, err := GenerateDH(suite.DHGroup)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		answer := encodeTestMessage(t, Header{SPIInitiator: request.Header.SPIInitiator, SPIResponder: randUint64Nonzero(), ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
-			{Type: PayloadKE, Body: EncodeKE(suite.DHGroup, dh.PublicBytes())},
-			{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
-			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
-			unsupportedCritical,
-		})
-		if _, err := peer.WriteToUDP(withNonESPMarker(answer), from); err != nil {
+		answer, _, _ := initialAnswer(t, request)
+		answer.Payloads = shape(answer.Payloads)
+		if _, err := peer.WriteToUDP(withNonESPMarker(answer.Encode()), from); err != nil {
 			t.Error(err)
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+	ctx, cancel := context.WithTimeout(t.Context(), answerBudget)
 	defer cancel()
-	session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: listenHub(t)})
-	if err == nil {
-		session.Mux().Close()
+	session, err := InitiateContext(ctx, PeerConfig{Hub: listenHub(t), RemoteAddr: addr.IP, RemotePort: addr.Port})
+	if session != nil {
+		session.mux.Close()
 	}
-	if err == nil || !strings.Contains(err.Error(), "marks unsupported payload type 250 critical") {
-		t.Errorf("the dial ended with %v, want the answer refused for payload type 250", err)
-	}
+	return err
 }
 
 // TestSendRecvIgnoresUnauthenticatedErrorNotify verifies the RFC 7815 section 2.1
@@ -2745,4 +2736,51 @@ func offeredIKESA(spi, prfs, groups []byte) []byte {
 		sa = append(sa, proposal...)
 	}
 	return sa
+}
+
+// a missing hub is a configuration error, not a panic in the transport
+func TestInitiatorNeedsHub(t *testing.T) {
+	_, err := InitiateContext(context.Background(), PeerConfig{})
+	if err == nil || !strings.Contains(err.Error(), "initiator needs a hub") {
+		t.Fatalf("the initiator returned %v for a missing hub", err)
+	}
+}
+
+// an IKE_SA_INIT refusal identifies the invalid proposal count or the KE decoding failure
+func TestInitiatorInitDiagnostics(t *testing.T) {
+	for _, variant := range []string{"two proposals", "short KE"} {
+		t.Run(variant, bubble.Run(func(t *testing.T) {
+			err := dialInitialAnswer(t, func(payloads []RawPayload) []RawPayload {
+				for i := range payloads {
+					switch payloads[i].Type {
+					case PayloadSA:
+						if variant == "two proposals" {
+							proposals, err := DecodeSA(payloads[i].Body)
+							if err != nil {
+								t.Fatal(err)
+							}
+							second := proposals[0]
+							second.Number++
+							payloads[i].Body = EncodeSA(append(proposals, second))
+						}
+					case PayloadKE:
+						if variant == "short KE" {
+							payloads[i].Body = []byte{0, 31, 0}
+						}
+					}
+				}
+				return payloads
+			})
+			want := "IKE_SA_INIT response has 2 proposals"
+			if variant == "short KE" {
+				want = "decode KE in IKE_SA_INIT response"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("the initiator returned %v, want %q", err, want)
+			}
+			if variant == "short KE" && !strings.Contains(err.Error(), "short KE payload") {
+				t.Errorf("the initiator dropped the KE decoder's error: %v", err)
+			}
+		}))
+	}
 }
