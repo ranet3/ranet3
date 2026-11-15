@@ -183,11 +183,11 @@ func TestVerbBodyRefusesRepeatedOrUnknownMembersAndInvalidUTF8(t *testing.T) {
 	}
 }
 
-// A body of maxRequest bytes is taken whole, and a longer one is refused before any of it runs, though its first
-// maxRequest bytes are a whole request
+// A body of MaxRequest bytes is taken whole, and a longer one is refused before any of it runs, though its first
+// MaxRequest bytes are a whole request
 func TestVerbBodyPastTheLimitIsRefusedWhole(t *testing.T) {
 	object := `{"peer":"example/gateway"}`
-	padded := object + strings.Repeat(" ", maxRequest-len(object))
+	padded := object + strings.Repeat(" ", MaxRequest-len(object))
 	for name, test := range map[string]struct {
 		body string
 		verb string

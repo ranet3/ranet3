@@ -89,7 +89,7 @@ func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 func TestDebugTracePcapWritesItsFileOrStdout(t *testing.T) {
 	socket, _ := serveTrace(t, false)
 	path := filepath.Join(t.TempDir(), "trace.pcapng")
-	stdout, stderr, err := executeApart(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", path)
+	stdout, stderr, err := executeApart(t, nil, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", path)
 	if err != nil || stdout != "" || !strings.Contains(stderr, "stream.live") || strings.Contains(stderr, "forward") {
 		t.Fatalf("debug trace --pcap printed %q and %q to stderr, and ended with %v", stdout, stderr, err)
 	}
@@ -103,14 +103,14 @@ func TestDebugTracePcapWritesItsFileOrStdout(t *testing.T) {
 	if !bytes.HasPrefix(file, []byte{0x0a, 0x0d, 0x0d, 0x0a}) || !bytes.Contains(file, []byte("forward udp 192.0.2.1 > 192.0.2.3 arrival=session")) || !bytes.Contains(file, []byte{0x45, 0, 0, 0x30}) {
 		t.Errorf("--pcap wrote %x, want a section holding the record and its payload", file)
 	}
-	stdout, _, err = executeApart(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", "-")
+	stdout, _, err = executeApart(t, nil, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", "-")
 	if err != nil || stdout != string(file) {
 		t.Errorf("debug trace --pcap - printed %x and ended with %v, want the file's %x", stdout, err, file)
 	}
 	if err := os.WriteFile(path, bytes.Repeat([]byte{0xff}, 2*len(file)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := executeApart(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", path); err != nil {
+	if _, _, err := executeApart(t, nil, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--payload", "64", "--pcap", path); err != nil {
 		t.Fatalf("debug trace --pcap of a file of the caller's of mode 0600 ended with %v", err)
 	}
 	if again, err := os.ReadFile(path); err != nil || !bytes.Equal(again, file) {
@@ -153,7 +153,7 @@ func TestDebugTracePcapRefusesWhatIsNotARegularFile(t *testing.T) {
 		{"a FIFO of the caller's of mode 0600 with a reader", fifo, fs.ModeNamedPipe},
 		{"an empty directory of the caller's", sub, fs.ModeDir},
 	} {
-		_, _, err := executeApart(t, "debug", "trace", "--control", gone, "--payload", "64", "--pcap", c.path)
+		_, _, err := executeApart(t, nil, "debug", "trace", "--control", gone, "--payload", "64", "--pcap", c.path)
 		if err == nil || !strings.Contains(err.Error(), c.path) || !strings.Contains(err.Error(), "not a regular file") || strings.Contains(err.Error(), "daemon") {
 			t.Errorf("debug trace --pcap of %s ended with %v, want a refusal naming it as not a regular file", c.name, err)
 		}

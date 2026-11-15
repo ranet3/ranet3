@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -54,9 +55,10 @@ func (r *reader) socketCommand() *cobra.Command {
 		Use:   "socket [METHOD] PATH [BODY|-]",
 		Short: "Send a raw control socket request",
 		Long: `The method is GET, or POST when a body follows the path, and a body of -
-is read from standard input. The answer prints as it arrives and its
-status line goes to standard error. The command exits 1 when the status
-is not 2xx.`,
+is read from standard input to its end before the request is sent. The
+timeout bounds the exchange with the daemon and not that read. The answer
+prints as it arrives and its status line goes to standard error. The
+command exits 1 when the status is not 2xx.`,
 		Args:              cobra.RangeArgs(1, 3),
 		ValidArgsFunction: completeRaw,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -123,10 +125,18 @@ func rawRequest(args []string, stdin io.Reader) (method, path string, body io.Re
 	switch {
 	case len(args) > 2:
 		return "", "", nil, errors.New("debug socket takes a method, a path and a body, and nothing after them")
-	case len(args) == 2 && args[1] == "-":
-		body = stdin
 	case len(args) == 2:
-		body = strings.NewReader(args[1])
+		data := []byte(args[1])
+		// read whole before the dial, since the daemon's request timeout does not wait on standard input
+		if args[1] == "-" {
+			if data, err = io.ReadAll(io.LimitReader(stdin, control.MaxRequest+1)); err != nil {
+				return "", "", nil, fmt.Errorf("debug socket: reading the body from standard input: %w", err)
+			}
+		}
+		if len(data) > control.MaxRequest {
+			return "", "", nil, fmt.Errorf("debug socket takes a body of at most %d bytes, the most the daemon takes", control.MaxRequest)
+		}
+		body = bytes.NewReader(data)
 	}
 	switch {
 	case method != "":

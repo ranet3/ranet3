@@ -320,7 +320,7 @@ func writing(w http.ResponseWriter, r *http.Request) bool {
 
 // readRequest decodes the body of a write, and answers the caller itself where it cannot
 func readRequest(w http.ResponseWriter, r *http.Request) (Request, bool) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequest))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequest))
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		http.Error(w, "the body did not come whole within the request timeout", http.StatusBadRequest)
 		return Request{}, false

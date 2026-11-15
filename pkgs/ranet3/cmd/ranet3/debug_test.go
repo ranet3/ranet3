@@ -6,20 +6,29 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
 )
 
-// executeApart drives the command tree with stdout and stderr kept apart
-func executeApart(t *testing.T, args ...string) (stdout, stderr string, err error) {
+// executeApart drives the command tree with stdout and stderr kept apart, and stdin as its standard input where it is not nil
+func executeApart(t *testing.T, stdin io.Reader, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errOut strings.Builder
 	root := newRoot()
+	if stdin != nil {
+		root.SetIn(stdin)
+	}
 	root.SetOut(&out)
 	root.SetErr(&errOut)
 	root.SetArgs(append([]string{}, args...))
@@ -65,7 +74,7 @@ func TestDebugSocketPrintsTheDaemonsBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, stderr, err := executeApart(t, "debug", "socket", "GET", control.PathStatus, "--control", socket)
+	stdout, stderr, err := executeApart(t, nil, "debug", "socket", "GET", control.PathStatus, "--control", socket)
 	if err != nil {
 		t.Fatalf("debug socket failed: %v", err)
 	}
@@ -80,7 +89,7 @@ func TestDebugSocketPrintsTheDaemonsBytes(t *testing.T) {
 // a path the daemon does not serve exits 1, with its sentence on stdout
 func TestDebugSocketExitsOneOnARefusal(t *testing.T) {
 	socket := serveStub(t)
-	stdout, stderr, err := executeApart(t, "debug", "socket", control.PathDebug+"nothing-here", "--control", socket)
+	stdout, stderr, err := executeApart(t, nil, "debug", "socket", control.PathDebug+"nothing-here", "--control", socket)
 	if code, ok := errors.AsType[exitCode](err); !ok || code != 1 {
 		t.Fatalf("a refused path ended with %v, want exit status 1", err)
 	}
@@ -125,6 +134,104 @@ func TestDebugSocketReadsItsArguments(t *testing.T) {
 				t.Errorf("%q read as %s with %q, want %s with %q", test.args, method, got, test.method, test.body)
 			}
 		})
+	}
+}
+
+// stdinHold is the longest a test's standard input holds the second part of its body for a dial that comes before its end
+const stdinHold = 400 * time.Millisecond
+
+// heldStdin yields its parts in order, and before the second waits for a dial or for stdinHold, whichever comes first
+type heldStdin struct {
+	parts  []string
+	dialed <-chan struct{}
+	given  int
+	ended  atomic.Bool
+}
+
+func (s *heldStdin) Read(b []byte) (int, error) {
+	if s.given == len(s.parts) {
+		s.ended.Store(true)
+		return 0, io.EOF
+	}
+	if s.given > 0 {
+		select {
+		case <-s.dialed:
+		case <-time.After(stdinHold):
+		}
+	}
+	n := copy(b, s.parts[s.given])
+	s.given++
+	return n, nil
+}
+
+// dialWatch is the daemon's socket, which notes a connection that came before the standard input had ended
+type dialWatch struct {
+	net.Listener
+	stdin  *heldStdin
+	once   sync.Once
+	dialed chan struct{}
+	early  atomic.Bool
+}
+
+func (l *dialWatch) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		if !l.stdin.ended.Load() {
+			l.early.Store(true)
+		}
+		l.once.Do(func() { close(l.dialed) })
+	}
+	return conn, err
+}
+
+// the command reads a body on standard input to its end before it dials, and sends it whole and with its length
+// so slow standard input is no wait of the daemon's, whose request timeout does not wait on it
+func TestDebugSocketReadsStandardInputBeforeItDials(t *testing.T) {
+	socket := filepath.Join(shortDir(t), "control.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialed := make(chan struct{})
+	stdin := &heldStdin{parts: []string{`{"peer":`, `"example/gateway"}`}, dialed: dialed}
+	watch := &dialWatch{Listener: listener, stdin: stdin, dialed: dialed}
+	want := `{"peer":"example/gateway"}`
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength != int64(len(want)) {
+			http.Error(w, fmt.Sprintf("a body of length %d, want %d", r.ContentLength, len(want)), http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Write(body)
+	})}
+	go server.Serve(watch)
+	t.Cleanup(func() { server.Close() })
+	// the exchange may take the time left to the test binary, so go test's own -timeout ends a run and load does not, and a
+	// day where go test sets none
+	timeout := 24 * time.Hour
+	if deadline, ok := t.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	out, _, err := executeApart(t, stdin, "debug", "socket", "POST", control.PathRedial, "-", "--control", socket, "--timeout", timeout.String())
+	if err != nil || out != want || watch.early.Load() {
+		t.Errorf("a body on standard input ended with %v and %q, dialed before its end %v, want %q sent after its end", err, out, watch.early.Load(), want)
+	}
+}
+
+// a body past the daemon's limit is refused by the command before it dials, by the limit, and one at the limit is taken
+func TestDebugSocketRefusesABodyPastTheLimitBeforeItDials(t *testing.T) {
+	if _, _, body, err := rawRequest([]string{control.PathRedial, "-"}, strings.NewReader(strings.Repeat(" ", control.MaxRequest))); err != nil || body == nil {
+		t.Errorf("a body of %d bytes on standard input was refused: %v", control.MaxRequest, err)
+	}
+	// nothing listens here, so a command that dialed would fail by naming the missing socket
+	socket := filepath.Join(shortDir(t), "control.sock")
+	_, _, err := executeApart(t, strings.NewReader(strings.Repeat(" ", control.MaxRequest+1)), "debug", "socket", "POST", control.PathRedial, "-", "--control", socket)
+	if err == nil || !strings.Contains(err.Error(), strconv.Itoa(control.MaxRequest)) {
+		t.Errorf("a body of %d bytes on standard input ended with %v, want a refusal that names the limit", control.MaxRequest+1, err)
 	}
 }
 

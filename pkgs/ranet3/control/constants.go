@@ -20,9 +20,10 @@ const (
 	// bindPathExtra is how much longer than its path the socket's first path is at most
 	// a slash and the pattern, whose star os.MkdirTemp replaces with at most the 10 digits of a uint32
 	bindPathExtra = len("/"+bindPattern) - len("*") + 10
-	// maxRequest is the largest write body the daemon takes, in bytes
+	// MaxRequest is the largest write body the daemon takes, in bytes
+	// Client.Raw sends a longer body for the daemon to refuse, and a caller that refuses one first holds its body to this
 	// a request is a few short fields, so a client near this has lost track of what it sends
-	maxRequest = 64 << 10
+	MaxRequest = 64 << 10
 	// maxAnswer is the largest answer the client reads, in bytes, so a daemon cannot make it allocate without bound
 	maxAnswer = 64 << 20
 	// maxConnections is how many connections the daemon holds open at once
