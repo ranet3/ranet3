@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-13
+updated: 2026-11-15
 order: 10
 ---
 
@@ -1018,44 +1018,66 @@ fragments. Fragments from a peer that did not send
 
 A peer's repeat of a request this end has answered draws the kept answer again
 under 1 rule wherever it comes: in a half-open SA's wait for `IKE_AUTH`, whose
-initiator holds the keys before it has authenticated, and past `IKE_AUTH`, where
-anyone who captured a fragment of the request can replay it from any address.
-The origin is the peer's own address and port: in a half-open SA the one the
-`IKE_SA_INIT` came from, and past `IKE_AUTH` the session's endpoint, where the
-peer's last fresh request or answer came from. From the origin a repeat draws
-the answer on the request whole as it came or on its fragment 1, at most 20
-times in each exchange, the bound on the sends of 1 request that ranet3 counts.
-Every counted repeat of a peer that resends as ranet3 does is answered, the 7
-sends of a request that the step cuts for its family's floor among them. A probe
-that cuts nothing resends a request without counting it, which lets a peer asked
-to probe its path many times in 1 exchange send more, and its repeats past the
-20 draw nothing. From any other address and port, only the request whole as it
-came, or the whole set of its fragments from there reassembled to the request's
-content, draws the answer, which goes there. It draws it only within the bytes
-that address sent repeating the request in the exchange, each datagram counted
-with its IP header, UDP header and Non-ESP Marker. Each answer there spends its
-datagrams as that send cuts them. An answer the credit does not cover draws
-nothing, a later repeat adds to the credit, and the answer spends that address's
-credit alone and nothing of the origin's 20. The exchange keeps such a credit,
-with that address's repeat in fragments, for at most 4 addresses. A newcomer
-past them takes the place of the one whose last datagram came least recently,
-and the exchange forgets them all at the next one. A repeat never touches the
+`IKE_SA_INIT` request goes in the clear and whose initiator holds the keys
+before it has authenticated, and past `IKE_AUTH`, where anyone who captured the
+request or a fragment of it can replay it from any address. The origin is the
+peer's own address and port: in a half-open SA the one the `IKE_SA_INIT` came
+from, which proved it receives only where this end asked it for a cookie, and
+past `IKE_AUTH` the session's endpoint, where the peer's last fresh request or
+answer came from. From the origin a repeat draws the answer on the request whole
+as it came or on its fragment 1, at most 20 times in each exchange, the bound on
+the sends of 1 request that ranet3 counts. Every counted repeat of a peer that
+resends as ranet3 does is answered, the 7 sends of a request that the step cuts
+for its family's floor among them. A probe that cuts nothing resends a request
+without counting it, which lets a peer asked to probe its path many times in 1
+exchange send more, and its repeats past the 20 draw nothing. From any other
+address and port, only the request whole as it came, or the whole set of its
+fragments from there reassembled to the request's content, draws the answer,
+which goes there. It draws it only within the bytes that address sent repeating
+the request in the exchange, each datagram counted with its IP header, UDP
+header and Non-ESP Marker. Each answer there spends its datagrams as that send
+cuts them. An answer the credit does not cover draws nothing, a later repeat
+adds to the credit, and the answer spends that address's credit alone and
+nothing of the origin's 20. The exchange keeps such a credit, with that
+address's repeat in fragments, for at most 4 addresses. A newcomer past them
+takes the place of the one whose last datagram came least recently, and the
+exchange forgets them all at the next one. A repeat of an exchange's request
+draws nothing once the next exchange's request is answered, the `IKE_SA_INIT`
+request's once the first `IKE_INTERMEDIATE` is.
+[RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
+keeps an answer until a request numbered its own plus the window or larger
+comes, and
+[section 2.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.3) holds the
+window at 1 until the initial exchanges complete. A repeat never touches the
 queue the next request is gathered in.
 
-So an address that never proved it receives draws no more bytes than were sent
-in its name, a moved initiator is answered 1 retransmission later, and a
-datagram replayed from a third address takes nothing from it or from the origin.
-To hold a moved initiator, an observer has to send from more than 3 fresh
-addresses between every 2 of its datagrams, and one that keeps up that rate can
-hold it until its exchange times out. A datagram replayed in the origin's own
-address and port spends the origin's count, so a captured fragment 1 can aim at
-most 20 answers an exchange at the origin: 38,960 bytes on the wire for an
-ML-KEM-1024 answer at the IPv4 floor. When the path MTU falls before every
-answer, the 20 come to up to 78,020 bytes over IPv4 and up to 83,500 over IPv6.
-An ML-KEM-1024 answer is kept in at most 4 datagrams at or above the IPv4 floor
-and in at most 2 at or above the IPv6 floor, and each fall cuts it into 2 more.
-Its 20 answers then run from 6 to 44 datagrams over IPv4 and from 4 to 42 over
-IPv6, where each datagram's IP header takes 40 bytes against IPv4's 20.
+So in answers to repeats an address other than the origin draws no more bytes
+than were sent in its name repeating the request, and the origin draws at most
+20 answers an exchange, counted by answers and not by bytes. Below the cookie
+thresholds the origin of a half-open SA is the source of the first `IKE_SA_INIT`
+request, which proved nothing, so a request forged in another address and
+repeated from there draws its answer and 20 repeats of it in each half-open SA.
+Each answer exceeds the request that drew it by at most 72 bytes, a nonce of 32
+octets against the request's floor of 16 and the 2 `NAT_DETECTION` notifies of
+28 each, so the factor is largest at the smallest request the responder answers.
+Where the lists hold ChaCha20-Poly1305, HMAC-SHA2-256 and the kex entry X25519
+alone, as the defaults do, that request is 166 bytes on the IPv4 wire and draws
+238, 1.43 times as many. One address holds at most 2 such half-open SAs and the
+node 32, the cookie row of the table above, each for as long as the responder's
+handshake lasts, and a request past them without a valid cookie draws a
+`COOKIE`. A moved initiator is answered 1 retransmission later, and a datagram
+replayed from a third address takes nothing from it or from the origin. To hold
+a moved initiator, an observer has to send from more than 3 fresh addresses
+between every 2 of its datagrams, and one that keeps up that rate can hold it
+until its exchange times out. A datagram replayed in the origin's own address
+and port spends the origin's count, so a captured fragment 1 can aim at most 20
+answers an exchange at the origin: 38,960 bytes on the wire for an ML-KEM-1024
+answer at the IPv4 floor. When the path MTU falls before every answer, the 20
+come to up to 78,020 bytes over IPv4 and up to 83,500 over IPv6. An ML-KEM-1024
+answer is kept in at most 4 datagrams at or above the IPv4 floor and in at most
+2 at or above the IPv6 floor, and each fall cuts it into 2 more. Its 20 answers
+then run from 6 to 44 datagrams over IPv4 and from 4 to 42 over IPv6, where each
+datagram's IP header takes 40 bytes against IPv4's 20.
 
 The wait for a peer's `IKE_FOLLOWUP_KE` is the time this end resends 1 cut of a
 request to a silent peer, 62 seconds, from this end's answer to the rekey's

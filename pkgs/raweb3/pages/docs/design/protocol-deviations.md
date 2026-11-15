@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-13
+updated: 2026-11-15
 order: 20
 ---
 
@@ -31,7 +31,7 @@ sections below give the details.
 | RFC 7296 section 2.4                                                                      | Send a Delete for an IKE SA closed while the peer still answers                                                                                                                                                           | None when a Message ID space is spent, a message cannot be built, the peer's fragments of 1 message pass the reassembly limit, or a newer IKE SA of the path carries the peer's `INITIAL_CONTACT`                                                                                                                                                                                                                                                                                                                                                                                    | A Delete needs a Message ID and the same encoding, RFC 7383 section 5 drops the connection, and section 2.4 lets the recipient of the notice delete the other IKE SAs to the same identity, see Closing SAs                                                                                                                                                                |
 | RFC 7296 section 2.1                                                                      | A retransmission is bitwise identical to the original request                                                                                                                                                             | A request cut again for a smaller threshold is not                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | RFC 7383 section 2.5.2 has it refragmented, see IKE fragmentation                                                                                                                                                                                                                                                                                                          |
 | RFC 7296 section 2.4                                                                      | Retransmission times increase exponentially                                                                                                                                                                               | Each new cut of a request starts them over, and once the IKE SA starts to close, the request outstanding takes its next counted send at once                                                                                                                                                                                                                                                                                                                                                                                                                                         | RFC 7383 section 2.5.2 has the timers start over, and the close's send frees the window of 1 within a round trip, so the Delete leaves before the node stops waiting for it, for 1 datagram a close and no send past the request's budget, see IKE fragmentation                                                                                                           |
-| RFC 7296 section 2.11                                                                     | Answer a request at the address and port it came from                                                                                                                                                                     | A repeat from another address draws the answer only within the bytes it sent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | A replayed fragment would aim answers at any address                                                                                                                                                                                                                                                                                                                       |
+| RFC 7296 sections 2.11 and 2.23                                                           | Answer a request at the address and port it came from                                                                                                                                                                     | A repeat from another address draws the answer only within the bytes it sent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | A replayed request or fragment would aim answers at any address                                                                                                                                                                                                                                                                                                            |
 | RFC 7383 section 2.5.1                                                                    | Use the path MTU the sender knows for the fragments                                                                                                                                                                       | Never less than 1280 bytes over IPv6 or 576 over IPv4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | The values the section gives where the path MTU is unknown                                                                                                                                                                                                                                                                                                                 |
 | RFC 7383 section 5                                                                        | Bound the decrypted content of the fragments held                                                                                                                                                                         | The fragments are bounded as the IKE messages they came in                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | They hold more than their content                                                                                                                                                                                                                                                                                                                                          |
 | RFC 7296 section 2.21.3                                                                   | Answer each erroneous request on an authenticated IKE SA with an error                                                                                                                                                    | A replaced IKE SA past its lifetime answers no request                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Section 2.8: an SA past its lifetime is not used                                                                                                                                                                                                                                                                                                                           |
@@ -615,31 +615,43 @@ octets at most.
 
 [RFC 7296 section 2.11](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.11)
 says an implementation "MUST respond to the address and port from which the
-request was received", and section 2.1 has a retransmitted request draw the
-answer again. A node answers a repeat of a request it has answered under 1 rule,
-in a half-open SA, an established session and the wait after `IKE_AUTH` alike,
-as [limits](limits.md#ike) gives it in full. From the origin, the peer's own
-address and port, it answers at most 20 repeats of each exchange, every counted
-send of a peer that resends as ranet3 does. A peer asked to probe its path many
-times in 1 exchange can send more, since a probe that cuts nothing resends a
-request uncounted, and its repeats past the 20 draw nothing. A repeat from any
-other address and port is answered only once the whole request has come from
-there, and only within the bytes on the wire that address sent repeating it in
-the exchange, which spends nothing of the origin's 20. The exchange keeps that
-credit for at most 4 addresses, the one heard from least recently giving way to
-a newcomer. Without the rule, a fragment 1 of tens of octets, which an initiator
-in a half-open SA holds the keys for and anyone who captured one can replay past
-`IKE_AUTH`, would aim an answer of up to 1820 octets in 4 datagrams at any
-address. It leaves 2 residues. An observer sending from more than 3 fresh
-addresses between every 2 of a moved initiator's datagrams can hold it until its
-exchange times out. A replay in the origin's own address and port spends the
-origin's count: up to 20 answers an exchange to a replayed fragment 1, 38,960
-bytes on the wire for an ML-KEM-1024 answer at the IPv4 floor. When the path MTU
-falls before every answer the 20 come to up to 78,020 bytes over IPv4 and up to
-83,500 over IPv6. Such an answer is kept in at most 4 datagrams at or above the
-IPv4 floor and in at most 2 at or above the IPv6 floor, and each fall cuts it
-into 2 more. Over IPv6 the answers take fewer datagrams, 4 to 42 against 6 to
-44, but each carries an IP header of 40 bytes against 20.
+request was received",
+[section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23) that
+"responses MUST be sent to the port from whence they came", and section 2.1 has
+a retransmitted request draw the answer again. A node answers a repeat of a
+request it has answered under 1 rule, in a half-open SA, an established session
+and the wait after `IKE_AUTH` alike, as [limits](limits.md#ike) gives it in
+full. From the origin, the peer's own address and port, it answers at most 20
+repeats of each exchange, every counted send of a peer that resends as ranet3
+does. A peer asked to probe its path many times in 1 exchange can send more,
+since a probe that cuts nothing resends a request uncounted, and its repeats
+past the 20 draw nothing. A repeat from any other address and port is answered
+only once the whole request has come from there, and only within the bytes on
+the wire that address sent repeating it in the exchange, which spends nothing of
+the origin's 20. The exchange keeps that credit for at most 4 addresses, the one
+heard from least recently giving way to a newcomer. Without the rule, a replayed
+request or fragment would aim answers at any address: an `IKE_SA_INIT` request,
+which goes in the clear, an answer up to 72 octets larger than itself, and a
+fragment 1 of tens of octets, which an initiator in a half-open SA holds the
+keys for and anyone who captured one can replay past `IKE_AUTH`, an answer of up
+to 1820 octets in 4 datagrams. It leaves 3 residues. Below the cookie thresholds
+the origin of a half-open SA is the source of its first `IKE_SA_INIT`, which
+proved nothing, so a request forged in another address draws its answer and 20
+repeats there in each half-open SA, within the figures [limits](limits.md#ike)
+gives. An observer sending from more than 3 fresh addresses between every 2 of a
+moved initiator's datagrams can hold it until its exchange times out. A replay
+in the origin's own address and port spends the origin's count: up to 20 answers
+an exchange to a replayed fragment 1, 38,960 bytes on the wire for an
+ML-KEM-1024 answer at the IPv4 floor. When the path MTU falls before every
+answer the 20 come to up to 78,020 bytes over IPv4 and up to 83,500 over IPv6.
+Such an answer is kept in at most 4 datagrams at or above the IPv4 floor and in
+at most 2 at or above the IPv6 floor, and each fall cuts it into 2 more. Over
+IPv6 the answers take fewer datagrams, 4 to 42 against 6 to 44, but each carries
+an IP header of 40 bytes against 20. A new `IKE_SA_INIT` that carries the
+initiator SPI of a live half-open SA, as another initiator behind the same NAT
+may choose it, reaches that SA, since the node routes IKE by the initiator SPI,
+and draws nothing unless it repeats the SA's request octet for octet, where
+section 2.1 gives it a new IKE SA.
 
 Fragments from a peer that sent no `IKEV2_FRAGMENTATION_SUPPORTED` are dropped
 before anything of them is held.
