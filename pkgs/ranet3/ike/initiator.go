@@ -84,6 +84,8 @@ type ikeContext struct {
 	established time.Time
 	// ownDelete marks a replaced IKE SA whose Delete this end sends, and stateMu guards it
 	ownDelete bool
+	// kept marks a replaced IKE SA keepReplaced kept once this end's Delete of it went unanswered, and stateMu guards it
+	kept bool
 	// answeredAuth marks the SA whose IKE_AUTH this end answered, where the peer's request at authMID+1 is the INFORMATIONAL exchange immediately following it
 	answeredAuth bool
 	// authMID is the Message ID of the IKE_AUTH that made the SA, one past its IKE_INTERMEDIATE exchange where it ran one, and zero for an SA a rekey made
@@ -294,7 +296,7 @@ func (s *Session) retainOldLocked(ctx *ikeContext) {
 }
 
 // RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
-// a retained IKE SA waits for the peer's Delete no longer than its lifetime, and one this end deletes is kept for that Delete
+// a retained IKE SA waits for the peer's Delete no longer than its lifetime, and one this end deletes is kept for that Delete, which keepReplaced bounds again once it is over
 func (s *Session) retainedUntil(ctx *ikeContext, now time.Time) time.Time {
 	by := now.Add(retainedContextDeadline)
 	if ends := ctx.established.Add(s.timing.IKERekeyInterval); s.timing.IKERekeyInterval > 0 && !ctx.ownDelete && ends.Before(by) {
@@ -328,7 +330,11 @@ func (s *Session) releaseDisplacedLocked(displaced *ikeContext) {
 	if displaced == nil || s.routedLocked(displaced.spiI) {
 		return
 	}
-	slog.Warn("ike dropping an IKE SA a second rekey displaced", "spi", displaced.spiI)
+	if displaced.kept {
+		slog.Info("ike dropping a replaced IKE SA kept after this end's unanswered Delete, which a later rekey replaced", "spi", displaced.spiI)
+	} else {
+		slog.Warn("ike dropping an IKE SA a second rekey displaced", "spi", displaced.spiI)
+	}
 	s.releaseSPILocked(displaced.spiI)
 }
 
@@ -346,13 +352,22 @@ func (s *Session) routedLocked(spi uint64) bool {
 	return false
 }
 
+// keptToRetention is the label of a kept IKE SA dropped at the retention's bound rather than at its lifetime
+var keptToRetention = retainedContextDeadline.String() + " after the rekey"
+
 // expireRetainedContexts drops a retained IKE SA whose Delete never arrived,
 // and a replaced IKE SA whose Delete the peer owes once that SA's lifetime
 // ends. Its SPI leaves the mux with it, so a later datagram naming it is
 // answered the way any other unknown SA is.
 func (s *Session) expireRetainedContexts(now time.Time) {
+	// keptTo names the deadline keepReplaced kept ctx to, which is the one that drops it, and is empty for an SA it did not keep
+	// it is read with the slots, so the lines below, written once stateMu is released, read nothing stateMu guards
+	type drop struct {
+		ctx    *ikeContext
+		keptTo string
+	}
 	s.stateMu.Lock()
-	var dropped []*ikeContext
+	var dropped []drop
 	// An undated context is dated here rather than dropped: the zero time
 	// means the deadline has not been set yet, not that it has passed.
 	for _, held := range []struct {
@@ -365,14 +380,26 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 		case held.by.IsZero():
 			*held.by = s.retainedUntil(held.ctx, now)
 		case !now.Before(*held.by):
-			dropped, *held.out = append(dropped, held.ctx), nil
+			keptTo := ""
+			if held.ctx.kept {
+				keptTo = keptToRetention
+				if ends := held.ctx.established.Add(s.timing.IKERekeyInterval); s.timing.IKERekeyInterval > 0 && !ends.After(*held.by) {
+					keptTo = "its lifetime"
+				}
+			}
+			dropped, *held.out = append(dropped, drop{held.ctx, keptTo}), nil
 		}
 	}
-	for _, ctx := range dropped {
-		s.releaseSPILocked(ctx.spiI)
+	for _, d := range dropped {
+		s.releaseSPILocked(d.ctx.spiI)
 	}
 	s.stateMu.Unlock()
-	for _, ctx := range dropped {
+	for _, d := range dropped {
+		ctx := d.ctx
+		if d.keptTo != "" {
+			slog.Info("ike dropping a replaced IKE SA kept after this end's unanswered Delete", "spi", ctx.spiI, "at", d.keptTo)
+			continue
+		}
 		if s.ikeExpired(ctx) {
 			slog.Warn("ike dropping a replaced IKE SA at its lifetime", "spi", ctx.spiI, "lifetime", s.timing.IKERekeyInterval)
 			continue

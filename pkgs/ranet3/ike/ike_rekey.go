@@ -220,6 +220,9 @@ func (s *Session) RekeyIKE() (err error) {
 	// the replacement is current from here, so the rekey has taken effect whatever this exchange does, a peer's own Delete of the old SA arriving first and a refusal among them
 	if err := s.sendOwnDeleteLocked(old); err != nil {
 		slog.Info("ike replaced IKE SA was not deleted by this end", "spi", old.spiI, "err", err)
+		if errors.Is(err, errReplacedKept) {
+			return nil
+		}
 	}
 	s.stateMu.Lock()
 	if s.old == old {
@@ -278,6 +281,26 @@ func (s *Session) sendOwnDeleteLocked(ctx *ikeContext) error {
 		err = refusal("INFORMATIONAL", answer)
 	}
 	return err
+}
+
+// errReplacedKept ends this end's Delete of the IKE SA its rekey replaced where keepReplaced keeps that SA
+var errReplacedKept = fmt.Errorf("ike: the Delete of the replaced IKE SA went unanswered, and the SA is kept for the peer's requests until its lifetime or %s after the rekey", retainedContextDeadline)
+
+// keepReplaced decides, as Run deems a Delete of ctx from this end failed, whether the session keeps ctx, and reports whether it does
+// RFC 7296 section 2.8.2: "when the peer that did not notice the simultaneous rekey gets the request to rekey the IKE SA that it has already successfully rekeyed, it SHOULD return TEMPORARY_FAILURE"
+// a peer whose crossing rekey this end refused runs on the SA this end's rekey replaced until the refusal or the Delete reaches it, so that SA stays while it answers requests, to the earlier of its lifetime and retainedContextDeadline after the rekey, and each resend draws the refusal again
+// past its lifetime it answers none, so it goes with its Delete then, and a peer's rekey of the current SA or this end's next rekey replaces it as it would an SA nothing kept
+func (s *Session) keepReplaced(ctx *ikeContext) bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if ctx != s.old || !ctx.ownDelete || s.ikeExpired(ctx) {
+		return false
+	}
+	ctx.kept = true
+	if ends := ctx.established.Add(s.timing.IKERekeyInterval); s.timing.IKERekeyInterval > 0 && ends.Before(s.oldBy) {
+		s.oldBy = ends
+	}
+	return true
 }
 
 // rekeyedContext is the IKE SA a rekey of old makes in suite between spiI and spiR, keyed by the shared secret of its CREATE_CHILD_SA and added, that of its additional key exchange or nil, the responder's where responder holds
@@ -459,7 +482,8 @@ func selectsAddition(body []byte) bool {
 // ctx stays until the peer deletes it
 func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) (*outbound, error) {
 	s.stateMu.RLock()
-	accept := !s.rekeyTakenLocked(ctx) && (s.old == nil || s.localRekey != nil) && s.collision == nil
+	// an SA kept after this end's Delete of it serves only a peer still on it, so it gives way to a peer's rekey of the current SA
+	accept := !s.rekeyTakenLocked(ctx) && (s.old == nil || s.old.kept || s.localRekey != nil) && s.collision == nil
 	childChain := s.chainKindLocked() == "child"
 	s.stateMu.RUnlock()
 	// RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."

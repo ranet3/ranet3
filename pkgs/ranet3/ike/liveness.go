@@ -799,6 +799,11 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			if pendingRetransmitsExhausted(pending, peerAlive(pending)) {
 				// section 2.1 goes on: "In the latter case, the initiator discards all state associated with the IKE SA and any Child SAs that were negotiated using that IKE SA."
 				// section 2.8: "An IKE SA so created inherits all of the original IKE SA's Child SAs", so a retained IKE SA holds none and is deemed failed alone
+				if deletesIKE(pending.inner) && s.keepReplaced(pending.context) {
+					pending.result <- requestResult{err: errReplacedKept}
+					pending = nil
+					continue
+				}
 				if s.removeRetainedContext(pending.context) {
 					pending.result <- requestResult{err: fmt.Errorf("ike: IKE SA %d deemed failed after %d unanswered attempts", pending.context.spiI, pending.sent)}
 					pending = nil
@@ -1010,8 +1015,9 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 	return first << min(attempt-1, maxRetransmits-1)
 }
 
-// dispatch reports whether raw is a fresh authenticated message, which Run takes as the peer alive
-// an authenticated repeat may draw the kept response but neither refreshes dead peer detection nor moves the endpoint
+// dispatch reports whether raw is a fresh authenticated message on an IKE SA other than one keepReplaced kept, which Run takes as the peer alive
+// an authenticated repeat may draw the kept response but neither refreshes dead peer detection nor moves the endpoint, and neither does any message on a kept IKE SA, which the session no longer runs on
+// a request on a kept IKE SA that dispatch fails ends that SA alone and never the session, while a Child SA a Delete on it names that the dataplane refuses to close fails the session as one named on the current IKE SA does
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
 	hdr, err := decodeHeader(raw)
 	if err != nil || higherVersion(s.mux.SendIKETo, hdr, source) {
@@ -1024,6 +1030,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if ctx == nil {
 		return false
 	}
+	kept := s.keptContext(ctx)
 	var matching *pendingRequest
 	if hdr.IsResponse() {
 		matching = *pending
@@ -1052,7 +1059,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			// a replay can come from any address, so this send says nothing about the path to the peer
 			if err := s.answerRepeat(ctx, raw, outer, source); err != nil {
 				s.fragmentLimit(ctx, hdr.MessageID, err)
-				return true
+				return !kept
 			}
 			return false
 		}
@@ -1061,7 +1068,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	message, err := s.open(ctx, queue, raw, outer)
 	if err != nil {
 		s.fragmentLimit(ctx, hdr.MessageID, err)
-		return true
+		return !kept
 	}
 	if message == nil {
 		return false
@@ -1070,6 +1077,10 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
 	// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
 	if matching == nil && nextPeerMID == maxMessageID {
+		if kept {
+			s.endKept(ctx, errMessageIDExhausted)
+			return false
+		}
 		s.closeFor(errMessageIDExhausted)
 		return true
 	}
@@ -1081,7 +1092,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if matching != nil {
 		packet = "response"
 	}
-	if s.mux.AdoptEndpoint(source) {
+	if !kept && s.mux.AdoptEndpoint(source) {
 		s.emit("ike.endpoint.moved", slog.String("endpoint", source.String()), slog.String("packet", packet))
 	}
 	inner, err := decodeMessagePlaintext(innerFirst, plaintext)
@@ -1096,7 +1107,11 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			s.answer(response, message.form, source)
 		}
 		if retained {
-			return true
+			return !kept
+		}
+		// a kept IKE SA this end's next rekey displaced since dispatch read it ends all the same
+		if kept {
+			return false
 		}
 		// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 		// section 2.21.3 on a response with errors: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
@@ -1135,26 +1150,47 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			s.answer(response, message.form, source)
 		}
 		if _, refused := errors.AsType[invalidSyntaxSent](err); refused && s.removeRetainedContext(ctx) {
-			return true
+			return !kept
+		}
+		if kept {
+			s.endKept(ctx, err)
+			return false
 		}
 		s.closeFor(err)
 		return true
 	}
 	sent, err := s.keepAnswer(ctx, hdr.MessageID, response, message)
 	if err != nil {
-		s.closeFor(fmt.Errorf("ike: keep the answer at Message ID %d: %w", hdr.MessageID, err))
+		err = fmt.Errorf("ike: keep the answer at Message ID %d: %w", hdr.MessageID, err)
+		if kept {
+			s.endKept(ctx, err)
+			return false
+		}
+		s.closeFor(err)
 		return true
 	}
 	// a failed reply keeps the session, since the peer retransmits and is answered from the reply kept above
-	s.noteSend(s.sendTo(sent.datagrams, source))
-	return true
+	// a kept IKE SA's reply goes to the request's source, which need not be the endpoint the record of sends is about, so it neither ends an outage of sends there nor starts one
+	err = s.sendTo(sent.datagrams, source)
+	if !kept {
+		s.noteSend(err)
+	}
+	return !kept
 }
 
-// fragmentLimit ends ctx's IKE SA, alone where it is a retained one, once the peer's fragments of one message at mid passed reassemblyLimit
+// endKept warns that the kept IKE SA ctx ends for err, a request on it that failed, and removes ctx through removeRetainedContext where the session still holds it, ending nothing else, so the session runs on over its current IKE SA
+// dispatch calls it in place of closing the session for a request on a kept IKE SA at the last Message ID, one whose handling fails other than by an INVALID_SYNTAX refusal on an SA the session still holds, and one whose answer it cannot keep
+func (s *Session) endKept(ctx *ikeContext, err error) {
+	slog.Warn("ike dropping a replaced IKE SA kept after this end's unanswered Delete, since a request on it failed", "spi", ctx.spiI, "err", err)
+	s.removeRetainedContext(ctx)
+}
+
+// fragmentLimit ends ctx's IKE SA, alone where it is a retained one or one keepReplaced kept, once the peer's fragments of one message at mid passed reassemblyLimit
 // RFC 7383 section 5: "If the peer sends so many fragments that the above condition is not met, the receiver can consider this situation to be either an attack or a broken sender implementation. In either case, the receiver SHOULD drop the connection and discard all the received fragments."
+// a kept IKE SA this end's next rekey displaced since dispatch read it is still marked kept, since nothing clears the mark, so it ends alone all the same
 func (s *Session) fragmentLimit(ctx *ikeContext, mid uint32, err error) {
 	slog.Warn("ike the peer's fragments of one message passed the reassembly limit, which ends the IKE SA", "message_id", mid, "limit", reassemblyLimit)
-	if s.removeRetainedContext(ctx) {
+	if s.removeRetainedContext(ctx) || s.keptContext(ctx) {
 		return
 	}
 	s.tellClosed("fragment limit", err)
@@ -1198,6 +1234,13 @@ func (s *Session) contextForHeader(hdr *Header) *ikeContext {
 		}
 	}
 	return nil
+}
+
+// keptContext reports whether ctx is a replaced IKE SA keepReplaced kept
+func (s *Session) keptContext(ctx *ikeContext) bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return ctx.kept
 }
 
 func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) (*outbound, error) {

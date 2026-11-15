@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -87,7 +88,7 @@ func (c *ikeCrossing) settle() {
 	}
 }
 
-// answer is to's answer to the request from's rekey waits on, nil where to holds no SA for it
+// answer is to's answer to the request from's rekey waits on, nil where to holds no SA for it and empty where the answer carries nothing, as one to a Delete does
 func (c *ikeCrossing) answer(t *testing.T, from, to *ikeCrossingEnd) []RawPayload {
 	t.Helper()
 	request := from.pending
@@ -100,11 +101,14 @@ func (c *ikeCrossing) answer(t *testing.T, from, to *ikeCrossingEnd) []RawPayloa
 	if err != nil {
 		t.Fatalf("a request of exchange %d ended the session that took it: %v", request.exchange, err)
 	}
-	return sealedAnswer(t, ctx, answer.whole)
+	if inner := sealedAnswer(t, ctx, answer.whole); inner != nil {
+		return inner
+	}
+	return []RawPayload{}
 }
 
 // takes hands e's rekey the answer to its request as e's Run hands it on, nil where none came
-// it mirrors Run's pass after its select (liveness.go:786-801) and dispatch's hand-over of an answer (:1126): an exchange whose SA e no longer holds ends, an unanswered one on a retained SA ends that SA alone, and one on the current SA ends the session
+// it mirrors Run's pass after its select, where an exchange whose context is retired ends and one whose sends are spent is deemed failed, and dispatch's hand-over of a matching answer: an exchange whose SA e no longer holds ends, an unanswered one Run's own keepReplaced keeps leaves its SA kept, another unanswered one on a retained SA ends that SA alone, and one on the current SA ends the session
 func (c *ikeCrossing) takes(t *testing.T, e *ikeCrossingEnd, answer []RawPayload) {
 	t.Helper()
 	request := e.pending
@@ -114,6 +118,8 @@ func (c *ikeCrossing) takes(t *testing.T, e *ikeCrossingEnd, answer []RawPayload
 		request.result <- requestResult{err: errors.New("ike: the IKE SA carrying this exchange was replaced")}
 	case answer != nil:
 		request.result <- requestResult{inner: answer}
+	case deletesIKE(request.inner) && e.s.keepReplaced(request.context):
+		request.result <- requestResult{err: errReplacedKept}
 	case e.s.removeRetainedContext(request.context):
 		request.result <- requestResult{err: errors.New("ike: the retained IKE SA was deemed failed")}
 	default:
@@ -215,6 +221,45 @@ func testTwoEndsCrossingIKESARekeysKeepOneSA(t *testing.T, chained bool, order, 
 	}
 	c.finish(t)
 	c.keepOne(t, survivor, ownSPI, peerSPI)
+}
+
+// this end decides first and wins with an additional key exchange, and refuses the peer's rekey placed after its decision, before its Delete of the old SA goes out
+// the path drops what this end sends on the old SA for the teardown's budget, the refusal and both sends of that Delete
+// the old SA is still held then, so the peer's resend of its rekey draws the refusal again and the peer takes this end's SA, and both ends drop the old SA at its deadline
+// TestReplacedIKESAOutlastsTheTeardownBudgetForACrossingPeer holds the classical rekey over Run
+func TestIKECrossingLossForTheTeardownBudgetKeepsOneSA(t *testing.T) {
+	bubble.Run(testIKECrossingLossForTheTeardownBudgetKeepsOneSA)(t)
+}
+
+func testIKECrossingLossForTheTeardownBudgetKeepsOneSA(t *testing.T) {
+	c := newIKECrossing(t, true, 0)
+	ownSPI := binary.BigEndian.Uint64(offerOf(t, c.a.pending.inner)[0].SPI)
+	peerSPI := binary.BigEndian.Uint64(offerOf(t, c.b.pending.inner)[0].SPI)
+	// the peer answers this end's rekey while its own waits, and this end takes that answer before the peer's request reaches it
+	c.takes(t, c.a, c.answer(t, c.a, c.b))
+	if refused := c.answer(t, c.b, c.a); !notified(refused, N_TEMPORARY_FAILURE, nil) {
+		t.Fatalf("this end answered the peer's rekey placed after its decision with %v", payloadTypes(refused))
+	}
+	if c.a.pending == nil || c.a.pending.exchange != IKE_FOLLOWUP_KE {
+		t.Fatal("this end's chained rekey runs no IKE_FOLLOWUP_KE")
+	}
+	c.carry(t, c.a, c.b)
+	if c.a.pending == nil || c.a.pending.exchange != INFORMATIONAL || !deletesIKE(c.a.pending.inner) {
+		t.Fatal("this end sent no Delete of the old SA")
+	}
+	c.takes(t, c.a, nil)
+	resent := c.answer(t, c.b, c.a)
+	if resent == nil {
+		t.Fatal("this end holds no SA for the peer's resend on the old SA, so the peer stays on it")
+	}
+	c.takes(t, c.b, resent)
+	c.finish(t)
+	// neither end hears the other delete the old SA, so each drops it at its deadline
+	time.Sleep(retainedContextDeadline)
+	for _, e := range []*ikeCrossingEnd{c.a, c.b} {
+		e.s.expireRetainedContexts(time.Now())
+	}
+	c.keepOne(t, ownSPI, ownSPI, peerSPI)
 }
 
 // keepOne fails t unless both ends are current on the SA survivor names, from either side, and hold no other SA or SPI among their old SA's, own and peer's
