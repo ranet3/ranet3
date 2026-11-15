@@ -1251,15 +1251,14 @@ func (r *Responder) admit(request *Message, ni []byte, spiI uint64, endpoint tra
 	return true, nil
 }
 
-// cookieValue is the version octet followed by a keyed hash over everything
-// that identifies this attempt, so the cookie is bound to the nonce, the SPI
-// and the address it was sent to and cannot be replayed for another.
+// cookieValue binds the nonce, SPI and source endpoint with unambiguous field boundaries
 func cookieValue(secret [cookieSecretLen]byte, version uint8, ni []byte, spiI uint64, endpoint transport.Endpoint) []byte {
 	mac := hmac.New(sha256.New, secret[:])
+	var fields [10]byte
+	binary.BigEndian.PutUint16(fields[:2], uint16(len(ni)))
+	binary.BigEndian.PutUint64(fields[2:], spiI)
+	mac.Write(fields[:])
 	mac.Write(ni)
-	var spi [8]byte
-	binary.BigEndian.PutUint64(spi[:], spiI)
-	mac.Write(spi[:])
 	mac.Write([]byte(endpoint.String()))
 	return append([]byte{version}, mac.Sum(nil)...)
 }
