@@ -619,6 +619,8 @@ connections to the reads.
 | `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                                                                       |
 | `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                                                                 |
 | `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption                                                       |
+| `antispoof.held`                      | the route source held a learned route back, a hold in its place, as two passes in a row ended, or released it                      |
+| `antispoof.kept`                      | the sets left out the addresses of a route no learned entry asks for as two passes ended, or no longer left them out for it        |
 | `antispoof.pf`                        | on macOS, a pass took a new reference on pf where pf no longer listed the daemon's, turning pf back on where it was off            |
 | `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two                                               |
 | `network.read`                        | the network watch's reads of the host began failing, or succeeded again                                                            |
@@ -728,6 +730,8 @@ Each kind carries these attributes:
 | `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, `mapped_source_ipv6`, each the packets since the pass before, present where a rule of the pass writes it, not the last 3 on macOS                                          |
 | `antispoof.carve`                             | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                                                                                                                            |
 | `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `own` (true for an own range), `carved` and `routed_via` where it is false, `router_id` (of the selected route, or of the offer where `own` is true)                                                                                                                   |
+| `antispoof.held`                              | `route` (the destination, then `from` and the source where it has one), `held` (true where held back, false at its release)                                                                                                                                                                                |
+| `antispoof.kept`                              | `route` (the route as the reconciler writes it), `kept` (true where its addresses are left out, false where the route keeps none out any more, in each case [the entry chain](../antispoof.md#the-entry-chain) gives)                                                                                      |
 | `antispoof.pf`                                | `token`, `pid`, of the reference the pass took, `pf_off` (true where pf was off, which the new reference turned back on, and false where another holder kept pf running, absent where `pfctl -s info` failed)                                                                                              |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                                                                                                                                 |
 | `network.read`                                | `failing`, `failures` (the reads failed in a row, 0 once one succeeds), `err` (the last error, empty once one succeeds)                                                                                                                                                                                    |
@@ -763,10 +767,10 @@ could not read one, whoever's tables they were about, and `retry`, `disable`,
 `changed` and `missed` come from the kernel exit alone, since the userspace exit
 has no retry timer or nf_tables monitor and runs no pass while it is disabled.
 The `trigger` of an `antispoof.pass` is `start`, `sweep`, `retry`, `reload`,
-`routes` when the mesh's table changed, `network` when the host's links did,
-`changed` when another writer deleted the table, set a flag on it, or added,
-changed or deleted part of its chains and sets, or `missed` as for an
-`egress.pass`.
+`routes` when the mesh's table changed, `kernel` when the reconciler's routes
+moved what the sets leave out, `network` when the host's links did, `changed`
+when another writer deleted the table, set a flag on it, or added, changed or
+deleted part of its chains and sets, or `missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an

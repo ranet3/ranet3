@@ -407,13 +407,85 @@ matches decides:
 - An untracked packet, one a `notrack` rule exempts, matches no reply line, as
   [the limits](design/limits.md#the-antispoof-filter) say.
 
-The sets follow the mesh's table on every change of it. A LAN another node
-starts advertising inside a `none` class leaves `none4` or `none6` on the pass
-that change wakes, before the reconciler's route into the tun lands one settle
-later, so no stranger's packet reaches the LAN in between, which the root lab
-checks on every learn. A LAN no node advertises any more comes back into the set
-on the pass its withdrawal wakes, while its route stays up to a settle more, and
-the chain then passes what the `none` class takes.
+The sets follow the mesh's table on every change of it. Where the daemon writes
+the routes, under `cap.table`, the route reconciler reads the mesh's table
+through the filter's route source. The source hands the reconciler a hold in
+place of each learned route whose own destination has an address outside the
+overlay that `none4` or `none6` may hold, and the reconciler installs the hold
+as an `unreachable` route at the LAN's key in the mesh's table. After each of
+its passes, and after each withdrawal that listed its routes, the reconciler
+tells the filter which of its routes the kernel may hold: after a pass, each
+route of its record of what it installed and each add the kernel answered with
+an error since its last listing, and after a withdrawal, each route whose delete
+failed. A pass whose listing fails writes nothing and tells the record again. A
+withdrawal leaves the record as it was, so such a pass after one tells the
+routes the withdrawal deleted, and the sets leave their addresses out, dropping
+a stranger's packet toward them, until a listing reads the kernel. The filter
+leaves out of the sets the addresses outside the overlay of each learned route
+into the tun that the kernel may hold: each the reconciler names, and each the
+source handed it since the reconciler's last report. A hold, a throw, a member
+of a cover and a route that counts as a default leave no address out. Two orders
+follow, whether a pass fails, a write lands late or the kernel refuses a route:
+
+- The route to a LAN another node starts advertising inside a `none` class
+  enters the kernel only once a pass has written the sets without the LAN. From
+  the first reconciler pass after the learn that installs the hold, a lookup in
+  the mesh's table toward the LAN that the hold matches, the host's own among
+  them, ends refused at the hold, ahead of any shorter route there, the default
+  among them, and of every rule after that lookup. The hold carries the LAN's
+  source where it has one, so for an IPv6 LAN routed for one source it matches a
+  lookup from that source alone. A lookup from another source passes it, as it
+  would pass the LAN's route, and meets what else the table holds for it, the
+  default among them. A lookup that ends before the mesh's table, as one a route
+  of main longer than `/0` answers at rule 5410, never meets the hold, as
+  [where a lookup ends on Linux](routing.md#where-a-lookup-ends-on-linux) gives.
+  No hold lands for an IPv4 LAN routed for one source, since the reconciler
+  installs no IPv4 route with a source, nor from a reconciler pass whose listing
+  fails, which writes nothing. The hold and the LAN's route lie at two keys, so
+  the pass that replaces the hold deletes it before it adds the route, and a
+  lookup toward the LAN between the two goes as it went before the learn.
+- An address of a LAN the mesh no longer carries comes back into the sets only
+  once the reconciler has deleted each of its routes into the tun that covers
+  the address and counts as no default, and the kernel has answered. While babel
+  holds the prefix unreachable, while the delete waits for the reconciler's pass
+  and while the kernel refuses it, the address stays out of the sets, so a LAN
+  that comes back in between meets no address the sets let in through a route of
+  its own. A wider learned route into the tun still in the kernel keeps out the
+  addresses of a narrower LAN inside it in the same way. The mesh's default
+  keeps none out, so on a node in `cap.exit`'s mode it takes a packet into the
+  tun toward an address back in the sets.
+
+A reload that takes addresses out of the overlay wakes the reconciler, and the
+source then hands a hold in place of each route it holds back. The sets keep an
+address the reload takes out of the overlay as the old overlay had it until the
+reload's first pass that writes them and reads them back. While the filter's
+passes fail, the routes to the LANs learned inside a `none` class since its last
+good pass wait, and the filter reads not ready. Every other route, every removal
+and every route of a node with no `none` class reach the kernel as before. A
+route the kernel makes itself lies outside both orders: the connected route of
+an address `cap.table` assigns under a shorter length than its own takes a
+packet into the tun that no set orders. At an exit in `cap.exit`'s mode, a
+forwarded link's packet meets the mesh's default from a LAN's learn until the
+hold lands or the filter's pass writes the sets without the LAN, as
+[the limits](design/limits.md#the-antispoof-filter) say.
+
+Two kinds of route are reported, each by an event and a line: a route the source
+holds back, `held`, and a route whose addresses the sets leave out while no
+learned entry asks for them, `kept`. A route there as two passes in a row end
+records its event true, and then false at the first pass end without it. `kept`
+false means the route keeps no address out any more: neither the reconciler's
+report nor the source's promise names it, or none of its addresses outside the
+overlay lies in the sets as derived, as when a learned entry asks for them
+again, a reload brings them inside the overlay or no `none` class covers them. A
+warning names the routes an event named true that a pass still ends with, once
+its spacing has passed since the last warning, and an info line names likewise
+the routes an event named false that have not come back, so no warning names a
+route that came and went within the spacing. Each line names the first routes in
+order and counts them all. A peer that advertises and withdraws many LANs while
+the filter's passes fail records an event for each, which can push the filter's
+other events, `antispoof.ready` among them, out of the subsystem's history, as
+[the events](development/debug.md#events) give. `ranet3 routes` lists the mesh's
+table as babel holds it, and no view lists the routes the source holds back.
 
 The chain's `ct` expression turns conntrack on in the network namespace, for
 every Linux node, as `nft_ct_get_init` in
@@ -866,8 +938,10 @@ counter move records `antispoof.dropped` with the packets since the pass before
 of each drop a rule of the pass writes, at most once per pass. A carve-out
 coming or going records `antispoof.carve`, and another node's prefix coming to
 hold part of an exemption, or another router's offer for a range of this node's
-own that an exemption overlaps, records `antispoof.conflict`. On macOS a pass
-that took a new reference on pf records `antispoof.pf` with `token`, `pid` and
+own that an exemption overlaps, records `antispoof.conflict`. The routes
+[the entry chain](#the-entry-chain) reports record `antispoof.held` with `route`
+and `held`, and `antispoof.kept` with `route` and `kept`. On macOS a pass that
+took a new reference on pf records `antispoof.pf` with `token`, `pid` and
 `pf_off`, whether pf was off, which it leaves out where pf's state could not be
 read.
 

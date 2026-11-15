@@ -143,6 +143,25 @@ addresses, as an untracked one, and drops it otherwise as no reply. RFC 7045
 section 2.1 asks a forwarding node to discard a packet for its extension headers
 only by a policy it can configure, and this drop is fixed.
 
+**At an exit in `cap.exit`'s mode, a forwarded link meets a LAN's learn before
+the order does.** Rule 5440 sends a packet from a link `forward` expands to
+through the mesh's default into the tun, as
+[where a lookup ends on Linux](../routing.md#where-a-lookup-ends-on-linux)
+gives. A packet from a host on such a link toward a LAN another node starts
+advertising inside a `none` class, from a source this node does not own, enters
+the tun through the default while the none sets still let it in, and the mesh
+carries it on to the LAN. This opens at each learn of the LAN, one after babel
+flushed it among them, and ends at the first of two passes: the filter's pass
+that writes the none sets without the LAN, and the first reconciler pass after
+the learn that installs the hold the route source puts at the LAN's key, which
+ends a lookup in the mesh's table refused ahead of the default, as
+[the entry chain](../antispoof.md#the-entry-chain) gives. A reconciler pass
+whose listing fails writes nothing and installs no hold. An IPv4 LAN routed for
+one source gets no hold, since the reconciler installs no IPv4 route with a
+source, so only the filter's pass ends it there. While the filter's passes and
+the reconciler's both fail, it has no end. The order reaches the kernel's routes
+alone, and the tun read routes by the mesh's table as it is.
+
 **An address of a carve-out that no node announces belongs to the interface.**
 Inside a [carve-out](../antispoof.md#carve-outs) the mesh keeps only the
 prefixes its table holds. Every other address of the carve-out leaves by the
