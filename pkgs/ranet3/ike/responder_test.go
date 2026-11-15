@@ -4017,6 +4017,61 @@ func (h *levelRecorder) Handle(_ context.Context, r slog.Record) error {
 func (h *levelRecorder) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *levelRecorder) WithGroup(string) slog.Handler      { return h }
 
+func TestCookieAnswersCountOnlySuccessfulWrites(t *testing.T) {
+	hub := listenHub(t)
+	endpoint, peer := observedPeerFrom(t, hub, 1, net.IPv4(127, 0, 0, 1))
+	var answers atomic.Uint64
+	r := &Responder{cfg: ResponderConfig{Hub: hub, CookieAnswers: &answers}, halfOpen: cookieThreshold}
+	raw, _ := buildTestSAInit(t)
+	request, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readNotify := func(want NotifyType) {
+		t.Helper()
+		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Fatal(err)
+		}
+		var buf [2048]byte
+		n, _, err := peer.ReadFromUDP(buf[:])
+		if err != nil || n <= 4 {
+			t.Fatalf("answer has %d bytes: %v", n, err)
+		}
+		if got := firstTestNotify(t, buf[4:n]).Type; got != want {
+			t.Fatalf("notify %d, want %d", got, want)
+		}
+	}
+	for want := uint64(1); want <= 3; want++ {
+		_, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: raw, Endpoint: endpoint})
+		if !errors.Is(err, errCookieChallenge) {
+			t.Fatalf("cookie answer: %v", err)
+		}
+		readNotify(N_COOKIE)
+		if got := answers.Load(); got != want {
+			t.Fatalf("cookie answers = %d, want %d", got, want)
+		}
+	}
+	r.halfOpen = 0
+	request.Payloads = slices.DeleteFunc(request.Payloads, func(p RawPayload) bool { return p.Type == PayloadN })
+	if _, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: request.Encode(), Endpoint: endpoint}); err == nil {
+		t.Fatal("request without signature algorithms was accepted")
+	}
+	readNotify(N_NO_PROPOSAL_CHOSEN)
+	if got := answers.Load(); got != 3 {
+		t.Fatalf("non-cookie answer changed cookie count to %d", got)
+	}
+	if err := hub.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.halfOpen = cookieThreshold
+	if _, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: raw, Endpoint: endpoint}); !errors.Is(err, errCookieChallenge) {
+		t.Fatalf("failed cookie write: %v", err)
+	}
+	if got := answers.Load(); got != 3 {
+		t.Fatalf("failed write changed cookie count to %d", got)
+	}
+}
+
 func TestHandshakeReturnsExactlyItsOwnHalfOpenPlace(t *testing.T) {
 	bubble.Run(func(t *testing.T) {
 		h := newResponderHarness(t, nil)

@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
@@ -101,6 +102,10 @@ type ResponderConfig struct {
 	// Events records each answered session's state changes and the handshakes it refuses
 	// nil records nothing
 	Events Recorder
+
+	// CookieAnswers belongs to the caller so the total can outlive this responder
+	// nil leaves cookie answers uncounted
+	CookieAnswers *atomic.Uint64
 
 	// InitialContact decides whether the IKE_AUTH response carries INITIAL_CONTACT, asked once the Child SA of an authenticated request is selected, with the session and the endpoint IDi names
 	// nil sends none
@@ -1237,7 +1242,9 @@ func (r *Responder) admit(request *Message, ni []byte, spiI uint64, endpoint tra
 			}
 		}
 	}
-	_ = r.cfg.Hub.SendIKETo(statelessNotify(&request.Header, N_COOKIE, expected), endpoint)
+	if err := r.cfg.Hub.SendIKETo(statelessNotify(&request.Header, N_COOKIE, expected), endpoint); err == nil && r.cfg.CookieAnswers != nil {
+		r.cfg.CookieAnswers.Add(1)
+	}
 	return true, nil
 }
 

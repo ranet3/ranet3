@@ -78,6 +78,10 @@ func (c *Client) Metrics(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_sessions gauge\n")
 	fmt.Fprintf(w, "ranet3_sessions %d\n", len(sessions))
 
+	fmt.Fprint(w, "# HELP ranet3_ike_cookie_answers_total COOKIE answers sent by the responder. A rising count means a half-open threshold was reached by many peers at once or a flood.\n")
+	fmt.Fprint(w, "# TYPE ranet3_ike_cookie_answers_total counter\n")
+	fmt.Fprintf(w, "ranet3_ike_cookie_answers_total %d\n", c.cookieAnswers.Load())
+
 	// Authenticated and validated, which is not the same as delivered: the
 	// count includes babel control packets the speaker consumed, RFC 4303
 	// section 2.6 dummy packets that carry nothing, and packets a closing mesh

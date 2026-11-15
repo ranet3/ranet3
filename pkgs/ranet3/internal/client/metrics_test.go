@@ -4,11 +4,14 @@
 package client
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
@@ -413,6 +417,126 @@ func TestMetricsOfTheUserspaceExitBoundingHostPortsWriteTheConnectionsItHolds(t 
 		for _, want := range []string{"# TYPE ranet3_egress_host_held gauge", fmt.Sprintf("ranet3_egress_host_held %d\n", test.held)} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("under a bound of %d the scrape does not carry %q:\n%s", test.bound, want, out.String())
+			}
+		}
+	}
+}
+
+func TestCookieAnswerMetricSurvivesResponderReload(t *testing.T) {
+	cfg, privateKey, document := runtimeFixture(t)
+	// dial.all keeps listen-off valid, with no remote node to dial or resolve
+	document[0].Nodes = document[0].Nodes[:1]
+	cfg.Dial = config.Dial{All: true}
+	cfg.Link.Port = 13000
+	cfg.Link.Listen = true
+	cfg.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519"}}}
+	dir := t.TempDir()
+	cfg.Auth.Key = filepath.Join(dir, "key.pem")
+	cfg.Auth.Trust = filepath.Join(dir, "registry.json")
+	writeKey(t, cfg.Auth.Key, privateKey)
+	writeRegistry(t, cfg.Auth.Trust, document)
+	c := testClientOf(t, cfg, privateKey, document)
+	path := filepath.Join(dir, "config.yaml")
+	if err := c.hub.Close(); err != nil {
+		t.Fatal(err)
+	}
+	network := transport.NewMemoryNetwork()
+	hub, err := network.NewHub()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.hub = hub
+	peer, err := network.ListenUDP(net.IPv4(127, 0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	dh, err := ike.GenerateDH(ike.DH_CURVE25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloads := []ike.RawPayload{
+		{Type: ike.PayloadSA, Body: ike.EncodeSA([]ike.Proposal{{Number: 1, Protocol: ike.ProtoIKE, Transforms: []ike.Transform{
+			{Type: ike.TransEncr, ID: ike.ENCR_AES_GCM_16, KeyLengthBits: 256},
+			{Type: ike.TransPRF, ID: ike.PRF_HMAC_SHA2_256},
+			{Type: ike.TransDH, ID: ike.DH_CURVE25519},
+		}}})},
+		{Type: ike.PayloadKE, Body: ike.EncodeKE(ike.DH_CURVE25519, dh.PublicBytes())},
+		{Type: ike.PayloadNonce, Body: bytes.Repeat([]byte{7}, 32)},
+		{Type: ike.PayloadN, Body: ike.EncodeNotify(ike.Notify{Type: ike.N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, ike.HashIdentity)})},
+	}
+	destination := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: hub.LocalAddr().(*net.UDPAddr).Port}
+	reload := func(listen bool) {
+		t.Helper()
+		next := *c.config()
+		next.Link.Listen = listen
+		writeConfig(t, path, &next)
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var previous *responderRun
+	for cycle := range 2 {
+		hub.Listen()
+		if cycle == 0 {
+			c.syncResponder()
+		} else {
+			reload(true)
+		}
+		c.dialersMu.Lock()
+		running := c.responder
+		c.dialersMu.Unlock()
+		if running == nil || running == previous {
+			t.Fatal("reload did not start a new responder")
+		}
+		previous = running
+		for i := range 5 {
+			spi := uint64(cycle*5 + i + 1)
+			raw := (&ike.Message{Header: ike.Header{SPIInitiator: spi, ExchangeType: ike.IKE_SA_INIT, Flags: ike.FlagInitiator}, Payloads: payloads}).Encode()
+			if _, err := peer.WriteToUDP(append(make([]byte, 4), raw...), destination); err != nil {
+				t.Fatal(err)
+			}
+			if err := peer.SetReadDeadline(time.Now().Add(hubCountWait)); err != nil {
+				t.Fatal(err)
+			}
+			var buf [2048]byte
+			n, _, err := peer.ReadFromUDP(buf[:])
+			if err != nil || n <= 4 {
+				t.Fatalf("initial answer has %d bytes: %v", n, err)
+			}
+			answer, err := ike.DecodeMessage(buf[4:n])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if answer.Header.SPIInitiator != spi {
+				t.Fatalf("answer SPI %d, want %d", answer.Header.SPIInitiator, spi)
+			}
+			if i < 2 {
+				if len(answer.Payloads) == 0 || answer.Payloads[0].Type != ike.PayloadSA {
+					t.Fatalf("request below threshold drew %v", answer.Payloads)
+				}
+			} else {
+				if len(answer.Payloads) != 1 || answer.Payloads[0].Type != ike.PayloadN {
+					t.Fatalf("request above threshold drew %v", answer.Payloads)
+				}
+				notify, err := ike.DecodeNotify(answer.Payloads[0].Body)
+				if err != nil || notify.Type != ike.N_COOKIE {
+					t.Fatalf("cookie answer = %+v, %v", notify, err)
+				}
+			}
+		}
+		// stopping waits for every write and its count before the scrape
+		reload(false)
+		var out strings.Builder
+		c.Metrics(&out)
+		want := fmt.Sprintf("ranet3_ike_cookie_answers_total %d\n", (cycle+1)*3)
+		for _, line := range []string{
+			"# HELP ranet3_ike_cookie_answers_total COOKIE answers sent by the responder. A rising count means a half-open threshold was reached by many peers at once or a flood.\n",
+			"# TYPE ranet3_ike_cookie_answers_total counter\n",
+			want,
+		} {
+			if !strings.Contains(out.String(), line) {
+				t.Fatalf("scrape does not contain %q:\n%s", line, out.String())
 			}
 		}
 	}

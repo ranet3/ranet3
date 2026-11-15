@@ -173,6 +173,7 @@ type Client struct {
 	// nil on a platform without one
 	network networkSource
 
+	cookieAnswers  atomic.Uint64
 	inboundPackets atomic.Uint64
 	inboundDropped atomic.Uint64
 	// inboundCE counts the packets the decapsulation set to CE from an ECT inner field, inboundECNUnused those of an ECN combination no tunnel sends, the dropped ones among them
