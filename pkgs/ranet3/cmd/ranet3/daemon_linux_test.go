@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,8 +44,10 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/sadr"
 )
 
 // the tests in this file start the daemon as runDaemon does, its tun, its sockets, its nftables and its netlink opened from
@@ -407,6 +410,42 @@ func TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An exit's start hands its route reconciler the antispoof filter's route source over the mesh's table, which the
+// reconciler tells what each pass may have left in the kernel, and not the mesh's table itself
+func TestDaemonHandsItsReconcilerTheAntispoofFiltersRouteSource(t *testing.T) {
+	claimNamespace(t)
+	f := writeDaemon(t, exitCaps)
+	s := production
+	var node *client.Client
+	s.node = func(cfg *config.Config, bus *events.Bus) (*client.Client, error) {
+		c, err := production.node(cfg, bus)
+		node = c
+		return c, err
+	}
+	var handed kernel.RouteSource
+	lan := netip.MustParsePrefix("2001:db8:76:9::/64")
+	var followed bool
+	s.kernel = func(_ kernel.Table, _ kernel.Runtime, source kernel.RouteSource) (*kernel.Reconciler, error) {
+		handed = source
+		// an entry the mesh's table comes to hold reaches the reconciler through the source, itself or as a hold at its key
+		node.Mesh.Routes.Set(netip.Prefix{}, lan, &netstack.Peer{ID: "example/router"})
+		followed = slices.ContainsFunc(source.Snapshot(), func(entry sadr.Route[*netstack.Peer]) bool { return entry.Destination == lan })
+		node.Mesh.Routes.Remove(netip.Prefix{}, lan)
+		return nil, errors.New("refused at kernel for the test")
+	}
+	was := before(t)
+	if code := startDaemon(f.opts, s); code != 1 {
+		t.Errorf("a start refused at its reconciler exited %d", code)
+	}
+	if _, told := handed.(kernel.InstalledSink); !told {
+		t.Errorf("the reconciler was handed %T, want the antispoof filter's route source", handed)
+	}
+	if !followed {
+		t.Errorf("the source handed the reconciler did not hand %s once the mesh's table held it", lan)
+	}
+	leftNothing(t, f, was)
 }
 
 // SIGTERM or SIGINT while the start builds ends it there: it closes what it built as a refusal does and exits 0, with no

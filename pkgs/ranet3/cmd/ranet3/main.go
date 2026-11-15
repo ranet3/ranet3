@@ -362,7 +362,7 @@ func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 	// the file could not say is the node's own to answer, so the node answers
 	// it (see client.KernelRuntime).
 	if table := d.cfg.ReconcilerTable(); table != nil {
-		if d.routes, err = s.kernel(*table, d.node.KernelRuntime(), d.node.Mesh.Routes); err != nil {
+		if d.routes, err = s.kernel(*table, d.node.KernelRuntime(), d.border.Routes(d.node.Mesh.Routes)); err != nil {
 			return err
 		}
 	}
