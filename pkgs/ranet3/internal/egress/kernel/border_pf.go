@@ -267,17 +267,17 @@ func (b *borderPF) renewed(running bool, readErr error) {
 		state+", and removing overlay turns the antispoof filter off", attrs...)
 }
 
-// pfReadback is the anchor's rules as the filter reads them, each with its
-// counters, and whether the anchor holds anything. A rule carrying the label
-// rules give its place reads as that rule's String, which a shortened label
-// does not spell out, and any other as its label.
+// pfReadback expands desired labels without changing held order or counters.
 func pfReadback(read pf.Readback, rules []BorderRule) chainReadback {
-	labels := pfLabels(rules)
+	specs := make(map[string]string, len(rules))
+	for i, label := range pfLabels(rules) {
+		specs[label] = rules[i].String()
+	}
 	out := chainReadback{held: len(read.Rules) != 0 || len(read.Tables) != 0}
-	for i, rule := range read.Rules {
+	for _, rule := range read.Rules {
 		spec := rule.Rule.Label
-		if i < len(labels) && spec == labels[i] {
-			spec = rules[i].String()
+		if full, ok := specs[spec]; ok {
+			spec = full
 		}
 		out.rules = append(out.rules, Installed{Spec: spec, Counted: rule.Rule.Action == pf.Block, Packets: rule.Packets, Bytes: rule.Bytes})
 	}

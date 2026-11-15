@@ -799,9 +799,8 @@ func (f *BorderFilter) setReadyAt(ok bool, detail string, level slog.Level) {
 	f.rt.Events.Emit("antispoof.ready", "", slog.Bool("ready", ok))
 }
 
-// Debug reads the filter's rules now through a socket of its own, so an
-// operator injecting a packet reads counters of now rather than of the last
-// sweep, and lays them beside the rules the configuration asks for
+// Debug reads current rule counters rather than reusing the last pass's
+// readings.
 func (f *BorderFilter) Debug() egress.BorderDebug {
 	stats := f.Stats()
 	out := egress.BorderDebug{Where: f.Where(), PassAt: stats.At, Ready: stats.Ready, Unready: stats.Unready, Sets: stats.Sets}
@@ -817,26 +816,27 @@ func (f *BorderFilter) Debug() egress.BorderDebug {
 		}
 		out.PF = &state
 	}
-	held := read.rules
-	readings := make(map[string]Installed, len(held))
-	for _, reading := range held {
-		readings[reading.Spec] = reading
-	}
+	held := slices.Clone(read.rules)
 	for _, rule := range rules {
 		if len(out.Chains) == 0 || out.Chains[len(out.Chains)-1].Name != rule.Chain() {
 			out.Chains = append(out.Chains, f.be.chain(rule.Chain()))
 		}
-		reading, ok := readings[rule.String()]
-		delete(readings, rule.String())
+		spec := rule.String()
+		i := slices.IndexFunc(held, func(reading Installed) bool {
+			// pf reads one anchor and leaves its chain name empty
+			return reading.Spec == spec && (reading.Chain == "" || reading.Chain == rule.Chain())
+		})
+		var reading Installed
+		if i >= 0 {
+			reading = held[i]
+			held = slices.Delete(held, i, i+1)
+		}
 		chain := &out.Chains[len(out.Chains)-1]
-		chain.Rules = append(chain.Rules, egress.BorderReading{Spec: rule.String(), Verdict: rule.Verdict(), Reason: rule.Reason(), Family: rule.Family(),
-			Held: ok, Packets: reading.Packets, Bytes: reading.Bytes})
+		chain.Rules = append(chain.Rules, egress.BorderReading{Spec: spec, Verdict: rule.Verdict(), Reason: rule.Reason(), Family: rule.Family(),
+			Held: i >= 0, Packets: reading.Packets, Bytes: reading.Bytes})
 	}
 	var extra egress.BorderChainReading
 	for _, reading := range held {
-		if _, unasked := readings[reading.Spec]; !unasked {
-			continue
-		}
 		spec := reading.Spec
 		verdict, _, _ := strings.Cut(spec, " ")
 		if spec == "" {

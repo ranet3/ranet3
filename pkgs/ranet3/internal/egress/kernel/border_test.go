@@ -1311,6 +1311,180 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	}
 }
 
+type borderSnapshot struct {
+	*fakeBorder
+	snapshot []Installed
+}
+
+func (b *borderSnapshot) Read([]BorderRule) (chainReadback, error) {
+	return chainReadback{rules: b.snapshot}, nil
+}
+
+func TestBorderDebugPreservesRuleCopies(t *testing.T) {
+	for _, c := range []struct {
+		name, spec, verdict, reason, family string
+		first, second                       uint64
+	}{
+		{"accept before", "accept via lo", "accept", "inside", "", 91, 7},
+		{"accept after", "accept via lo", "accept", "inside", "", 7, 91},
+		{"drop before", "drop ipv6 source 3fff::/20", "drop", "overlay_source", "ipv6", 91, 7},
+		{"drop after", "drop ipv6 source 3fff::/20", "drop", "overlay_source", "ipv6", 7, 91},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			be := &borderSnapshot{fakeBorder: &fakeBorder{only: func(rule BorderRule) bool { return rule.String() == c.spec }}}
+			f, err := startBorderFilter(overlay(t), borderRuntime(nil), be)
+			if err != nil {
+				t.Fatal(err)
+			}
+			be.snapshot = []Installed{
+				{Spec: c.spec, Chain: BorderChain, Packets: c.first, Bytes: c.first * 100},
+				{Spec: "drop ipv4 source 192.0.2.0/24", Chain: BorderChain, Packets: 13, Bytes: 1300},
+				{Spec: "drop ipv4 source 192.0.2.0/24", Chain: BorderChain, Packets: 29, Bytes: 2900},
+				{Spec: c.spec, Chain: BorderChain, Packets: c.second, Bytes: c.second * 100},
+			}
+			want := []egress.BorderChainReading{
+				{Name: BorderChain, Hook: "prerouting", Priority: new(-300), Rules: []egress.BorderReading{
+					{Spec: c.spec, Verdict: c.verdict, Reason: c.reason, Family: c.family, Held: true, Packets: c.first, Bytes: c.first * 100},
+				}},
+				{Rules: []egress.BorderReading{
+					{Spec: "drop ipv4 source 192.0.2.0/24", Verdict: "drop", Held: true, Packets: 13, Bytes: 1300},
+					{Spec: "drop ipv4 source 192.0.2.0/24", Verdict: "drop", Held: true, Packets: 29, Bytes: 2900},
+					{Spec: c.spec, Verdict: c.verdict, Held: true, Packets: c.second, Bytes: c.second * 100},
+				}},
+			}
+			for range 2 {
+				if got := f.Debug().Chains; !reflect.DeepEqual(got, want) {
+					t.Errorf("debug rules = %+v, want %+v", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBorderDebugMatchesTheHeldChain(t *testing.T) {
+	be := &borderSnapshot{fakeBorder: &fakeBorder{only: func(rule BorderRule) bool { return rule.String() == "accept via lo" }}}
+	f, err := startBorderFilter(overlay(t), borderRuntime(nil), be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.snapshot = []Installed{{Spec: "accept via lo", Chain: "mesh_entry", Packets: 7, Bytes: 700}}
+	want := []egress.BorderChainReading{
+		{Name: BorderChain, Hook: "prerouting", Priority: new(-300), Rules: []egress.BorderReading{
+			{Spec: "accept via lo", Verdict: "accept", Reason: "inside"},
+		}},
+		{Rules: []egress.BorderReading{
+			{Spec: "accept via lo", Verdict: "accept", Held: true, Packets: 7, Bytes: 700},
+		}},
+	}
+	if got := f.Debug().Chains; !reflect.DeepEqual(got, want) {
+		t.Errorf("debug rules = %+v, want %+v", got, want)
+	}
+}
+
+func TestPfBorderDebugNamesShortenedLabels(t *testing.T) {
+	const prefix = "3fff:abc:ffff:ffff:ffff:ffff:ffff:ffff/128"
+	const spec = "accept via en0 source " + prefix
+	for _, c := range []struct {
+		name          string
+		before, loop  bool
+		first, second uint64
+		extra         string
+	}{
+		{"copy after", false, false, 7, 91, spec},
+		{"copy at head", true, false, 91, 7, spec},
+		{"loopback before", true, true, 7, 91, "accept via lo0"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, p, _ := pfFilter(t, nil, overlay(t), func() egress.BorderSets {
+				return egress.BorderSets{CarveOuts: []egress.CarveOut{{Link: "en0", Prefix: netip.MustParsePrefix(prefix)}}}
+			})
+			rules, _, _ := f.desired()
+			carved := slices.IndexFunc(rules, func(rule BorderRule) bool { return rule.Class == BorderCarveOut })
+			if carved < 0 || p.rules[carved].Rule.Label != "accept via en0 carve-out 1" {
+				t.Fatal("carve-out has no shortened label")
+			}
+			p.mu.Lock()
+			p.rules[carved].Packets, p.rules[carved].Bytes = 7, 700
+			from, at := carved, len(p.rules)
+			if c.before {
+				at = 0
+			}
+			if c.loop {
+				from, at = 0, carved
+			}
+			duplicate := p.rules[from]
+			duplicate.Packets, duplicate.Bytes = 91, 9100
+			p.rules = slices.Insert(p.rules, at, duplicate)
+			p.mu.Unlock()
+			got := f.Debug().Chains
+			if len(got) != 2 {
+				t.Fatalf("debug chains = %+v, want desired and extra rules", got)
+			}
+			for _, row := range got[0].Rules {
+				if !row.Held {
+					t.Errorf("held rule %q reads not held", row.Spec)
+				}
+			}
+			want := egress.BorderReading{Spec: spec, Verdict: "accept", Reason: "carve_out", Family: "ipv6",
+				Held: true, Packets: c.first, Bytes: c.first * 100}
+			if row := got[0].Rules[carved]; row != want {
+				t.Errorf("carve-out = %+v, want %+v", row, want)
+			}
+			extra := []egress.BorderReading{{Spec: c.extra, Verdict: "accept", Held: true, Packets: c.second, Bytes: c.second * 100}}
+			if !slices.Equal(got[1].Rules, extra) {
+				t.Errorf("extra rules = %+v, want %+v", got[1].Rules, extra)
+			}
+		})
+	}
+}
+
+func TestPfBorderRejectsDamagedRuleOrder(t *testing.T) {
+	for _, damage := range []string{"none", "duplicate", "missing", "swapped"} {
+		t.Run(damage, func(t *testing.T) {
+			f, p, _ := pfFilter(t, nil, overlay(t), func() egress.BorderSets {
+				return egress.BorderSets{CarveOuts: []egress.CarveOut{{
+					Link: "en0", Prefix: netip.MustParsePrefix("3fff:abc:ffff:ffff:ffff:ffff:ffff:ffff/128"),
+				}}}
+			})
+			rules, sets, _ := f.desired()
+			carved := slices.IndexFunc(rules, func(rule BorderRule) bool { return rule.Class == BorderCarveOut })
+			if carved < 0 {
+				t.Fatal("no desired carve-out")
+			}
+			p.mu.Lock()
+			switch damage {
+			case "duplicate":
+				p.rules = slices.Insert(p.rules, carved, p.rules[0])
+			case "missing":
+				p.rules = slices.Delete(p.rules, carved, carved+1)
+			case "swapped":
+				p.rules[0], p.rules[carved] = p.rules[carved], p.rules[0]
+			}
+			p.mu.Unlock()
+			read, err := f.be.Rules(rules, sets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			faulty := damage != "none"
+			if (read.fault != "") != faulty {
+				t.Fatalf("readback fault = %q, want faulty %v", read.fault, faulty)
+			}
+			t.Logf("readback fault: %q", read.fault)
+			loads := p.loads()
+			f.trigger = "sweep"
+			if err := f.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if faulty {
+				loads++
+			}
+			if got := p.loads(); got != loads || !f.Stats().Ready {
+				t.Errorf("pass left %d loads and ready %v, want %d and true", got, f.Stats().Ready, loads)
+			}
+		})
+	}
+}
+
 // A backend that writes the antispoof chain alone, the tun's inside rule
 // folded into its drops, holds those rules, which status and debug list
 // alone, reports the carve-outs and each exemption's conflict, and heads the
