@@ -83,6 +83,7 @@ testers.runNixOSTest {
   nodes.machine.boot.kernelModules = [
     "ip_gre"
     "wireguard"
+    "nf_flow_table_inet"
   ];
   # ip_gre would add its fallback devices gre0, gretap0 and erspan0 to every namespace, where the labs read each link
   nodes.machine.boot.kernel.sysctl."net.core.fb_tunnels_only_for_init_net" = 2;

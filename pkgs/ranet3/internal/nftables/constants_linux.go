@@ -71,6 +71,8 @@ const (
 	connlimitCount  = 1
 	connlimitFlags  = 2
 	connlimitInvert = 1
+	// NFTA_FLOWTABLE_TABLE is absent from x/sys
+	flowtableTable = 1
 	// CTStateNew is NF_CT_STATE_BIT(IP_CT_NEW) in ct state, CTStateInvalid and
 	// CTStateUntracked NF_CT_STATE_INVALID_BIT and NF_CT_STATE_UNTRACKED_BIT,
 	// what ct state reads for a packet with no entry, and CTStatusConfirmed

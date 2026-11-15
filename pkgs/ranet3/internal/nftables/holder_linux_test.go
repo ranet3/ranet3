@@ -183,3 +183,16 @@ func TestLastOfThreeHoldersDeletesTheTableInEachOrder(t *testing.T) {
 		}
 	}
 }
+
+// Beside a foreign flowtable, the last holder removes its own chain but
+// leaves the table that contains the flowtable
+func TestWithdrawalOverAListingWithAFlowtableKeepsTheTable(t *testing.T) {
+	s := Scope{Chains: []string{"owned"}}
+	requests := s.withdrawal(listing{chains: s.Chains, flowtables: true}, true)
+	if sentKind(requests, unix.NFT_MSG_DELCHAIN) < 0 {
+		t.Error("the withdrawal leaves the owner's chain")
+	}
+	if sentKind(requests, unix.NFT_MSG_DELTABLE) >= 0 {
+		t.Error("the withdrawal deletes the table")
+	}
+}

@@ -63,15 +63,13 @@ func requestName(r Request) string {
 	return ""
 }
 
-// A withdrawal over any listing of the table, by the table's last holder or
-// another, deletes the table exactly where the owner is the last holder,
-// every chain, named set and object in it is the owner's and no flag but
-// dormant is set, and then as its one last request, names no other owner's
-// or stranger's chain, set or object otherwise, flushes each of the owner's
-// chains before it deletes any chain, set or object, deletes each of the
-// owner's chains once but one a rule of a chain it does not flush goes to,
-// and each of its sets and objects once, and sends nothing where the table
-// holds nothing of the owner's
+// With owned content, a withdrawal deletes only the owner's chains, sets and
+// timeout objects, each once except chains targeted by unflushed rules, and
+// flushes its chains before any deletion
+// It deletes the table as its last request exactly when this is the last
+// holder, all listed content belongs to the owner, no flowtable is present
+// and no flag but dormant is set
+// Without owned content it sends nothing
 func TestWithdrawalTakesTheOwnersObjectsAlone(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		owner := hegel.Draw(ht, pbt.Spanning(0, len(owners)-1))
@@ -95,7 +93,7 @@ func TestWithdrawalTakesTheOwnersObjectsAlone(t *testing.T) {
 				l.chains = append(l.chains, name)
 			}
 		}
-		// a rule of a chain the withdrawal may or may not flush going to a chain of the prefix
+		// an unflushed source rule must keep its target chain
 		held := ""
 		if len(l.chains) > 1 && hegel.Draw(ht, hegel.Booleans()) {
 			from, to := l.chains[0], l.chains[len(l.chains)-1]
@@ -105,17 +103,18 @@ func TestWithdrawalTakesTheOwnersObjectsAlone(t *testing.T) {
 			}
 		}
 		s := ownerScope(owner)
-		// the last holder and any other are swept, since a withdrawal branches on it
+		// both holder states and flowtable states must occur in every generated case
 		for _, last := range []bool{false, true} {
-			withdrawsAlone(ht, owner, l, held, last, s.withdrawal(l, last))
+			for _, flowtables := range []bool{false, true} {
+				l.flowtables = flowtables
+				withdrawsAlone(ht, owner, l, held, last, s.withdrawal(l, last))
+			}
 		}
 	})
 }
 
-// withdrawsAlone fails ht where requests, the withdrawal of the owner at
-// index owner over l, by the table's last holder where last, is other than
-// TestWithdrawalTakesTheOwnersObjectsAlone says, held being the chain of the
-// owner's a rule of a chain it does not flush goes to
+// withdrawsAlone checks the independent ownership model against requests,
+// with held naming the owned chain an unflushed source rule still targets
 func withdrawsAlone(ht *hegel.T, owner int, l listing, held string, last bool, requests []Request) {
 	owned := 0
 	for _, name := range slices.Concat(l.chains, l.sets) {
@@ -129,6 +128,9 @@ func withdrawsAlone(ht *hegel.T, owner int, l listing, held string, last bool, r
 		}
 	}
 	total := len(l.chains) + len(l.sets) + len(l.objects)
+	if l.flowtables {
+		total++
+	}
 	if owned == 0 {
 		if len(requests) != 0 {
 			ht.Fatalf("over %+v holding nothing of the %s's the withdrawal sends %d requests", l, owners[owner].name, len(requests))
