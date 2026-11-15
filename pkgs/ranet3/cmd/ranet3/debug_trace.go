@@ -81,7 +81,7 @@ of the caller's, and the stream's notes go to stderr.`,
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), bound)
 			defer cancel()
-			w := cmd.OutOrStdout()
+			w := &outputWriter{writer: cmd.OutOrStdout()}
 			var capture *control.TracePcap
 			if pcap != "" {
 				file, done, openErr := openPcap(pcap, w)
@@ -116,6 +116,9 @@ of the caller's, and the stream's notes go to stderr.`,
 					continue
 				}
 				control.RenderTraceLine(w, line)
+				if w.err != nil {
+					return w.err
+				}
 			}
 			return nil
 		},

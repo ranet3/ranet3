@@ -41,13 +41,31 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/version"
 )
 
-// main runs the command tree and turns what it returns into a process status.
-// A daemon that refused to start has already said why through the handler an
-// operator's log level selects, so its status comes back as an exitCode and is
-// not written a second time.
 func main() {
-	if err := newRoot().Execute(); err != nil {
+	root := newRoot()
+	w := &outputWriter{writer: os.Stdout}
+	root.SetOut(w)
+	help, _, _ := root.Find([]string{"help"})
+	runHelp := help.Run
+	help.Run = func(cmd *cobra.Command, args []string) {
+		target, _, err := root.Find(args)
+		if target == nil || err != nil {
+			// a help refusal uses cobra's stderr fallback, not command output
+			root.SetOut(nil)
+			defer root.SetOut(w)
+		}
+		runHelp(cmd, args)
+	}
+	err := root.Execute()
+	if err == nil {
+		err = w.err
+	}
+	if err != nil {
+		// an exitCode with a stdout error has not written a diagnostic to stderr
 		if code, ok := errors.AsType[exitCode](err); ok {
+			if w.err != nil {
+				printError(os.Stderr, os.Getenv("JOURNAL_STREAM"), w.err)
+			}
 			os.Exit(int(code))
 		}
 		printError(os.Stderr, os.Getenv("JOURNAL_STREAM"), err)

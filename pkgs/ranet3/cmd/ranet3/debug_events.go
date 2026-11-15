@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -45,7 +44,7 @@ peer is named by its path, by org/name:serial, by org/name or by name.`,
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), bound)
 			defer cancel()
-			w := cmd.OutOrStdout()
+			w := &outputWriter{writer: cmd.OutOrStdout()}
 			for event, err := range control.Dial(r.socket).Events(ctx, query) {
 				// a follow ends at --for, which is the command doing what it was asked
 				// a daemon that never answered fails with an error of its own, which control.Stream keeps apart from this
@@ -81,12 +80,12 @@ func (r *reader) peerFlag(cmd *cobra.Command, peer *string, usage string) {
 }
 
 // printEvent writes one event as its line, or under --json as one line of the wire form
-func (r *reader) printEvent(w io.Writer, event control.Event) error {
+func (r *reader) printEvent(w *outputWriter, event control.Event) error {
 	if r.asJSON {
 		return json.NewEncoder(w).Encode(event)
 	}
 	control.RenderEvent(w, event)
-	return nil
+	return w.err
 }
 
 func (r *reader) waitCommand() *cobra.Command {
@@ -97,10 +96,9 @@ func (r *reader) waitCommand() *cobra.Command {
 		Use:   "wait <kind>",
 		Short: "Wait for a node event",
 		Long: `This prints the first event of the kind and how long after the wait
-began it happened, then exits 0. It exits 1 when none came within
---timeout and 2 when it could not watch for one. Repeat --attr to
-require several attributes. A peer is named by its path, by
-org/name:serial, by org/name or by name.`,
+began it happened. See https://ranet3.com/docs/cli/#exit-status for
+how the command ends. Repeat --attr to require several attributes.
+A peer is named by its path, by org/name:serial, by org/name or by name.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 				return unwatched(cmd, err)
