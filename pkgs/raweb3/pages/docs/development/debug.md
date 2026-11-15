@@ -169,16 +169,18 @@ These commands take flags of their own:
   its zero-free cover, or `not installed`. Then, on Linux, the
   [antispoof filter's](../antispoof.md) chains and sets: when its last pass read
   them and whether it is ready, then each chain, `antispoof` with `overlay` and
-  `mesh_entry`, with the hook and priority it is written at and each rule read
-  now with the packets and bytes each drop counted, any rule the chain does not
-  hold yet, any rule it holds that the filter did not write, by its comment or
-  as `a rule with no comment`, and each set with the elements the last pass
-  asked for. On macOS with `overlay` written it prints the pf anchor's instead,
-  chain `antispoof` by its direction, `in`, with no priority and each rule read
-  now, an exemption under a name ending in `*` as 1 rule per link and a rule pf
-  holds under a shortened label by its whole spelling, the carved table, then
-  the daemon's reference with whether pf lists it, the main ruleset's call into
-  `com.apple/*`, and every reference `pfctl -s References` lists now by pid and
+  `mesh_entry`, with their requested hooks and priorities, each desired rule or
+  `not held` where it is absent, and each drop row's packet and byte counters
+  read now. A desired row takes the first held rule matching its chain and
+  comment or label, and every remaining held rule is listed separately, with
+  unnamed rules shown as `a rule with no comment`. Each set shows the elements
+  the last pass asked for. On macOS with `overlay` written it prints the pf
+  anchor's instead, chain `antispoof` by its direction, `in`, with no priority
+  and each rule read now, wildcard exemptions expanded over matching interfaces
+  the filter does not treat as inside, and shortened labels matching desired
+  rules expanded to their full spellings, the carved table, then the daemon's
+  reference status and the main ruleset's call into `com.apple/*` as the last
+  pass read them, and every reference `pfctl -s References` lists now by pid and
   process name, as [the antispoof filter](../antispoof.md#watching-it) shows.
   Android and iOS with `overlay` written print
   `Antispoof filter, not enforced on android` there, naming the platform. Then,

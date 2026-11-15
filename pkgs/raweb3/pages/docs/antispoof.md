@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-12
+updated: 2026-11-15
 order: 55
 ---
 
@@ -755,10 +755,11 @@ On macOS the status's `border` object carries a `pf` block with the anchor, the
 daemon's `token` and `pid`, `listed`, whether pf lists the one under the other,
 and `called`, whether the main ruleset calls `com.apple/*`, as the last pass
 read them. `ranet3 debug rules` heads the anchor's rules by their direction,
-`in` for chain `antispoof`, with no priority and with their counters read now,
-each by its whole spelling where pf holds its label shortened, lists the carved
-table, and then the daemon's reference, the main ruleset's call and every
-reference `pfctl -s References` lists now, by pid and process name:
+`in` for chain `antispoof`, with no priority and packet and byte counters read
+now on drop rows. Labels matching desired rules are shown as those rules' full
+spellings. The view then lists the carved table, the daemon's reference and main
+ruleset call from the last pass, and every reference `pfctl -s References` lists
+now, by pid and process name:
 
 ```
 Antispoof filter, pf anchor com.apple/ranet3, read 2 seconds ago, ready
