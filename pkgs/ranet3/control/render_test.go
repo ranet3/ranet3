@@ -525,6 +525,19 @@ func TestKernelLineNamesTheCoveredFamilies(t *testing.T) {
 	}
 }
 
+// The kernel line counts the pieces the last pass put in place of the holds it
+// cut and the holds it left whole past the budget, which it gives, beside the
+// routes it installed and skipped, and says nothing of either where it has
+// none, as on Linux
+func TestKernelLineCountsTheCutHolds(t *testing.T) {
+	status := KernelStatus{Enabled: true, Where: "interface utun6", Installed: 40, Skipped: 1, HoldPieces: 31, HoldsWhole: 2, HoldPieceBudget: 4096}
+	golden(t, "kernel-holds.txt", []byte(kernelLine(status)+"\n"))
+	goldenJSON(t, "kernel-holds.json", status)
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155"}); strings.Contains(line, "hold") {
+		t.Errorf("the kernel line reads %q with no hold cut, want no clause of holds", line)
+	}
+}
+
 // The kernel line names exit mode with the links it forwards, each link a
 // forward entry matched and the mode leaves out with its reason, and each
 // family the tun carries no overlay address of, and says nothing of the mode

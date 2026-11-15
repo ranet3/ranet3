@@ -133,6 +133,12 @@ func kernelLine(k KernelStatus) string {
 	if k.Skipped > 0 {
 		fmt.Fprintf(&line, ", %d skipped", k.Skipped)
 	}
+	if k.HoldPieces > 0 {
+		line.WriteString(", " + countOf(k.HoldPieces, "piece") + " of cut holds")
+	}
+	if k.HoldsWhole > 0 {
+		fmt.Fprintf(&line, ", %s left whole past the budget of %d pieces", countOf(k.HoldsWhole, "hold"), k.HoldPieceBudget)
+	}
 	if len(k.Cover) > 0 {
 		line.WriteString(", zero-free cover for " + strings.Join(k.Cover, " and "))
 	}

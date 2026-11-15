@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "where": "interface utun6",
+  "installed": 40,
+  "skipped": 1,
+  "added": 0,
+  "removed": 0,
+  "hold_pieces": 31,
+  "holds_whole": 2,
+  "hold_piece_budget": 4096
+}

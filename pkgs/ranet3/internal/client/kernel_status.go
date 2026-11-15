@@ -84,19 +84,22 @@ func (c *Client) reconcilerNow() Reconciler {
 func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 	table, stats := routes.Table(), routes.Stats()
 	return control.KernelStatus{
-		Enabled:   true,
-		Where:     routes.Where(),
-		Table:     uint32(table.ID),
-		Protocol:  table.Proto,
-		PassAt:    stats.At,
-		Installed: stats.Installed,
-		Skipped:   stats.Skipped,
-		Added:     stats.Added,
-		Removed:   stats.Removed,
-		Cover:     familyNames(stats.Cover),
-		Exit:      kernelExit(stats.Exit),
-		ExitPath:  kernelExitPath(stats.Path),
-		Err:       stats.Err,
+		Enabled:         true,
+		Where:           routes.Where(),
+		Table:           uint32(table.ID),
+		Protocol:        table.Proto,
+		PassAt:          stats.At,
+		Installed:       stats.Installed,
+		Skipped:         stats.Skipped,
+		Added:           stats.Added,
+		Removed:         stats.Removed,
+		HoldPieces:      stats.HoldPieces,
+		HoldsWhole:      stats.HoldsWhole,
+		HoldPieceBudget: stats.HoldPieceBudget,
+		Cover:           familyNames(stats.Cover),
+		Exit:            kernelExit(stats.Exit),
+		ExitPath:        kernelExitPath(stats.Path),
+		Err:             stats.Err,
 	}
 }
 

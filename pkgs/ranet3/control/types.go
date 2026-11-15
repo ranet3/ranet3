@@ -439,6 +439,15 @@ type KernelStatus struct {
 	Skipped   int       `json:"skipped"`
 	Added     int       `json:"added"`
 	Removed   int       `json:"removed"`
+	// HoldPieces is the pieces the last pass's routes put in place of the
+	// holds it cut around the live routes inside them on macOS, a piece the
+	// platform refused among them
+	HoldPieces int `json:"hold_pieces,omitempty"`
+	// HoldsWhole is the holds the last pass left whole because their pieces
+	// would have passed what was left of HoldPieceBudget, the pieces a pass
+	// may put in place of its cut holds on macOS
+	HoldsWhole      int `json:"holds_whole,omitempty"`
+	HoldPieceBudget int `json:"hold_piece_budget,omitempty"`
 	// Cover names the families in which the last pass left a zero route
 	// installed as its zero-free cover, on macOS under cap.exit.
 	Cover []string `json:"cover,omitempty"`
