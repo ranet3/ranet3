@@ -14,10 +14,12 @@ import (
 	"net"
 	"os"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/bubble"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -827,4 +829,233 @@ func testDeleteOfAReplacedIKESAIsBestEffort(t *testing.T) {
 	if current, _ := s.contexts(); current == old {
 		t.Error("the replacement is not current, so the rekey did not take effect")
 	}
+}
+
+// the handler takes a peer's rekey, classical or with an additional key exchange, through its check, this end's own rekey takes its decision, and the handler then places the peer's rekey
+// this end's exchange holds the lowest of the four nonces, so the peer keeps its own SA if this end answers it with one
+func TestPeerIKERekeyAfterOwnDecisionDrawsTemporaryFailure(t *testing.T) {
+	lists := Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}}
+	for name, peerOffer := range map[string][]Transform{
+		"a peer's classical rekey":                       classicalOffer,
+		"a peer's rekey with an additional key exchange": hybridOffer,
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			s, _ := initiatingSession(t, classicalSuite, lists)
+			// a second mux on the session's hub alone tells an SPI the session holds from one it released
+			mux, other := lifecycleMuxes(t)
+			s.mux = mux
+			old := s.current
+			nonces := crossingNonces(t, 1)
+			var create, deletion *localRequest
+			var answering *peerRekey
+			var rekey <-chan error
+			drawn := 0
+			s.ikeRekeyNonce = func(n []byte) error {
+				drawn++
+				if drawn == 1 {
+					copy(n, nonces[0])
+					return nil
+				}
+				// the handler draws its Nr after its check and before it places the peer's SA, and this end's rekey takes its decision meanwhile
+				var answer []RawPayload
+				answer, answering = answerRekey(t, create.inner, 0, nil, nonces[1])
+				create.result <- requestResult{inner: answer}
+				deletion = requested(t, s, rekey, INFORMATIONAL)
+				copy(n, nonces[3])
+				return nil
+			}
+			rekey = rekeying(s)
+			create = requested(t, s, rekey, CREATE_CHILD_SA)
+			peer, request := newPeerRekey(t, peerOffer, nonces[2])
+			if refused := peer.rekey(t, s.handleIKERekey, old, request); !notified(refused, N_TEMPORARY_FAILURE, nil) {
+				t.Fatalf("the peer's rekey drew %v, want TEMPORARY_FAILURE", payloadTypes(refused))
+			}
+			s.stateMu.RLock()
+			collision := s.collision
+			s.stateMu.RUnlock()
+			if collision != nil || s.chainKind() != "" {
+				t.Error("the peer's refused rekey is held as the collision or opened a chain")
+			}
+			if err := other.RegisterIKE(peer.spiI); err != nil {
+				t.Errorf("the peer's refused rekey left its SPI registered: %v", err)
+			}
+			deletion.result <- requestResult{}
+			if err := ended(t, s, rekey); err != nil {
+				t.Fatal(err)
+			}
+			if current, _ := s.contexts(); current.spiI != answering.spiI || current.spiR != answering.spiR || !sameKeys(current, answering.keys(t, old, classicalSuite)) {
+				t.Error("the session is not current on the SA its own rekey made")
+			}
+		}))
+	}
+}
+
+// rekeyRecordStop is a slog handler that holds the goroutine logging message, the first time it does, until release is closed
+// RekeyIKE logs that a crossing chose this end's candidate between its decision and what follows it, so a test that installs it with logtest.SetDefault stops the rekey there
+type rekeyRecordStop struct {
+	message string
+	once    sync.Once
+	reached chan struct{}
+	release chan struct{}
+}
+
+func newRekeyRecordStop(t *testing.T, message string) *rekeyRecordStop {
+	h := &rekeyRecordStop{message: message, reached: make(chan struct{}), release: make(chan struct{})}
+	logtest.SetDefault(t, slog.New(h))
+	return h
+}
+
+func (h *rekeyRecordStop) Enabled(context.Context, slog.Level) bool { return true }
+func (h *rekeyRecordStop) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *rekeyRecordStop) WithGroup(string) slog.Handler            { return h }
+func (h *rekeyRecordStop) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != h.message {
+		return nil
+	}
+	first := false
+	h.once.Do(func() { first = true })
+	if first {
+		close(h.reached)
+		<-h.release
+	}
+	return nil
+}
+
+// wait returns once the rekey that done ends is held in the record
+func (h *rekeyRecordStop) wait(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case <-h.reached:
+	case err := <-done:
+		t.Fatalf("the rekey ended with %v before it logged its decision", err)
+	case <-time.After(answerBudget):
+		t.Fatal("the rekey never logged its decision")
+	}
+}
+
+// this end's classical rekey wins against the peer's chained rekey, and a further rekey of the peer's reaches the handler between the decision and anything else RekeyIKE does
+// it is refused and placed nowhere, since the decision replaced the SA in the section of the lock that took it
+func TestPeerIKERekeyRightAfterOwnDecisionDrawsTemporaryFailure(t *testing.T) {
+	bubble.Run(testPeerIKERekeyRightAfterOwnDecisionDrawsTemporaryFailure)(t)
+}
+
+func testPeerIKERekeyRightAfterOwnDecisionDrawsTemporaryFailure(t *testing.T) {
+	stop := newRekeyRecordStop(t, "ike simultaneous rekey selected local candidate")
+	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}})
+	mux, other := lifecycleMuxes(t)
+	s.mux = mux
+	old := s.current
+	// the lowest nonce is the peer's Ni, so this end's rekey wins
+	nonces := crossingNonces(t, 2)
+	drawsInTurn(s, nonces[0], nonces[3])
+	done := rekeying(s)
+	create := requested(t, s, done, CREATE_CHILD_SA)
+	chained, request := newPeerRekey(t, hybridOffer, nonces[2])
+	if answer := chained.rekey(t, s.handleIKERekey, old, request); chained.link == nil {
+		t.Fatalf("the peer's chained rekey drew %v, want its chain opened", payloadTypes(answer))
+	}
+	answer, answering := answerRekey(t, create.inner, 0, nil, nonces[1])
+	create.result <- requestResult{inner: answer}
+	stop.wait(t, done)
+	// the peer gives up its chain and rekeys the old SA again, past the rate limit
+	s.lastPeerIKERekey.Store(0)
+	again, request := newPeerRekey(t, classicalOffer, drawnOctets(t, nonceLen))
+	refused := again.rekey(t, s.handleIKERekey, old, request)
+	close(stop.release)
+	if !notified(refused, N_TEMPORARY_FAILURE, nil) {
+		t.Errorf("the peer's rekey right after this end's decision drew %v, want TEMPORARY_FAILURE", payloadTypes(refused))
+	}
+	if err := other.RegisterIKE(again.spiI); err != nil {
+		t.Errorf("the refused rekey left its SPI registered: %v", err)
+	}
+	deletion := requested(t, s, done, INFORMATIONAL)
+	deletion.result <- requestResult{}
+	if err := ended(t, s, done); err != nil {
+		t.Fatal(err)
+	}
+	if current, _ := s.contexts(); current.spiI != answering.spiI || current.spiR != answering.spiR {
+		t.Error("the session is not current on the SA its own rekey made")
+	}
+}
+
+// this end's rekey with an additional key exchange wins against the peer's classical rekey held as the collision, and the peer's Delete of the old SA adopts the peer's SA between the decision and the IKE_FOLLOWUP_KE
+// the IKE_FOLLOWUP_KE names the old SA, so Run's handoff sends it once under that SA's keys, which a peer that deleted it holds no SA for, and Run then finds the SA retired and fails it, rather than send it on the peer's SA
+func TestIKEFollowupNamesTheSAItReplaces(t *testing.T) {
+	bubble.Run(testIKEFollowupNamesTheSAItReplaces)(t)
+}
+
+func testIKEFollowupNamesTheSAItReplaces(t *testing.T) {
+	stop := newRekeyRecordStop(t, "ike simultaneous rekey selected local candidate")
+	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}})
+	old := s.current
+	// the lowest nonce is the peer's Ni, so this end's rekey wins
+	nonces := crossingNonces(t, 2)
+	drawsInTurn(s, nonces[0], nonces[3])
+	done := rekeying(s)
+	create := requested(t, s, done, CREATE_CHILD_SA)
+	peer, request := newPeerRekey(t, classicalOffer, nonces[2])
+	if answer := peer.rekey(t, s.handleIKERekey, old, request); findType(answer, PayloadSA) == nil {
+		t.Fatalf("the peer's rekey drew %v, want an SA held as the collision", payloadTypes(answer))
+	}
+	hybrid := slices.IndexFunc(offerOf(t, create.inner), func(p Proposal) bool {
+		return slices.Contains(p.Transforms, Transform{Type: TransADDKE1, ID: ML_KEM_768})
+	})
+	if hybrid < 0 {
+		t.Fatal("this end's offer holds no ML-KEM-768 proposal")
+	}
+	answer, _ := answerRekey(t, create.inner, hybrid, []byte("link1"), nonces[1])
+	create.result <- requestResult{inner: answer}
+	stop.wait(t, done)
+	peerDeletes(t, s, old)
+	if current := s.currentContext(); current.spiI != peer.spiI || current.spiR != peer.spiR {
+		t.Fatal("the peer's Delete of the old SA did not adopt the peer's SA")
+	}
+	close(stop.release)
+	followup := requested(t, s, done, IKE_FOLLOWUP_KE)
+	if followup.context != old {
+		t.Errorf("the IKE_FOLLOWUP_KE names the IKE SA %016x, want %016x, the SA the rekey replaces", followup.context.spiI, old.spiI)
+	}
+	// Run's handoff seals the IKE_FOLLOWUP_KE under the SA the request names and sends it there once, and Run fails it at its next wake, since the session no longer holds that SA
+	pending, err := s.startRequest(followup)
+	if err != nil {
+		t.Fatalf("the handoff refused the IKE_FOLLOWUP_KE: %v", err)
+	}
+	if pending.context != old || pending.sent != 1 {
+		t.Errorf("the handoff sent the IKE_FOLLOWUP_KE %d times under the IKE SA %016x, want once under %016x", pending.sent, pending.context.spiI, old.spiI)
+	}
+	if !s.contextRetired(pending.context) {
+		t.Error("the IKE_FOLLOWUP_KE went out under an SA the session still holds, so Run goes on resending it there")
+	}
+	followup.result <- requestResult{err: errors.New("ike: the IKE SA carrying this exchange was replaced")}
+	_ = ended(t, s, done)
+}
+
+// the retry an INVALID_KE_PAYLOAD asks for names the SA the rekey replaces, so a peer's Delete that made the peer's crossing rekey current meanwhile fails the retry rather than send it on the peer's SA, whose SK_d the rekey's keys do not come from
+func TestIKESARekeyRetryNamesTheSAItReplaces(t *testing.T) {
+	bubble.Run(testIKESARekeyRetryNamesTheSAItReplaces)(t)
+}
+
+func testIKESARekeyRetryNamesTheSAItReplaces(t *testing.T) {
+	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, {group: DH_ECP_256}}})
+	old := s.current
+	done := rekeying(s)
+	create := requested(t, s, done, CREATE_CHILD_SA)
+	peer, request := newPeerRekey(t, classicalOffer, drawnOctets(t, 32))
+	peer.rekey(t, s.handleIKERekey, old, request)
+	peerDeletes(t, s, old)
+	adopted, _ := s.contexts()
+	if adopted.spiI != peer.spiI || adopted.spiR != peer.spiR {
+		t.Fatal("the peer's Delete of the old SA left the session on another SA than the peer's")
+	}
+	create.result <- requestResult{inner: invalidKEAnswer(DH_ECP_256)}
+	retry := requested(t, s, done, CREATE_CHILD_SA)
+	if retry.context != old {
+		t.Errorf("the retry names the IKE SA %016x, want %016x, the SA the rekey replaces", retry.context.spiI, old.spiI)
+	}
+	_, err := s.startRequest(retry)
+	if err == nil {
+		t.Error("the retry went out after the SA it rekeys was replaced")
+	}
+	retry.result <- requestResult{err: err}
+	_ = ended(t, s, done)
 }
