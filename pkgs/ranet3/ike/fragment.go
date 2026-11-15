@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"time"
+	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -401,7 +402,7 @@ type reassembly struct {
 	messageID uint32
 	total     uint16
 	started   time.Time
-	// held is the octets of the stored fragments' datagrams, which is more than their content holds, and largest those of the largest
+	// held includes datagrams, descriptor capacity and map storage, and largest is the largest datagram
 	held    int
 	largest int
 	chunks  map[uint16][]byte
@@ -448,7 +449,14 @@ func (q *reassembly) take(suite SASuite, key, raw []byte, m *Message, now time.T
 	}
 	// RFC 7383 section 5: "it is RECOMMENDED that the receiver limit the number of fragments it stores in the reassembling queue so that the sum of the sizes of Encrypted Fragment payload contents (after decryption) for fragments that are already placed into the reassembling queue is less than some value that is reasonable for the implementation."
 	// and: "In either case, the receiver SHOULD drop the connection and discard all the received fragments."
-	if q.held+len(raw) >= reassemblyLimit {
+	held := len(raw) + reassemblyEntrySize
+	if q.chunks == nil {
+		held += reassemblyMapSize
+	}
+	if number == 1 && len(m.Payloads) > 1 {
+		held += len(m.Payloads) * int(unsafe.Sizeof(RawPayload{}))
+	}
+	if q.held+held >= reassemblyLimit {
 		*q = reassembly{}
 		return nil, errFragmentLimit
 	}
@@ -456,16 +464,23 @@ func (q *reassembly) take(suite SASuite, key, raw []byte, m *Message, now time.T
 		*q = reassembly{messageID: m.Header.MessageID, total: total, started: now, chunks: make(map[uint16][]byte)}
 	}
 	q.chunks[number] = slices.Clone(content)
-	q.held, q.largest = q.held+len(raw), max(q.largest, len(raw))
+	q.held, q.largest = q.held+held, max(q.largest, len(raw))
 	if number == 1 {
 		// RFC 7383 section 2.5.3: "all unprotected payloads MUST be placed in the first fragment (with the Fragment Number field equal to 1), along with the Encrypted Fragment payload, which MUST be present in every IKE Fragment message and be the last payload in it."
-		q.head, q.next, q.flags = slices.Clone(raw[:m.skHeaderOffset]), raw[m.skHeaderOffset], raw[m.skHeaderOffset+1]
+		// the spare header lets merge keep the cleartext bodies in this same array
+		q.head = make([]byte, m.skHeaderOffset, m.skHeaderOffset+genericPayloadHeaderLen)
+		copy(q.head, raw[:m.skHeaderOffset])
+		q.next, q.flags = raw[m.skHeaderOffset], raw[m.skHeaderOffset+1]
 		// the IKE header's octet 16 names the first payload, and each payload's first octet the one after it
-		q.namer, q.cleartext = 16, nil
+		q.namer = 16
+		if len(m.Payloads) > 1 {
+			// merge appends SK without copying the cleartext descriptors
+			q.cleartext = make([]RawPayload, len(m.Payloads)-1, len(m.Payloads))
+		}
 		offset := HeaderLen
-		for _, payload := range m.Payloads[:len(m.Payloads)-1] {
+		for i, payload := range m.Payloads[:len(m.Payloads)-1] {
 			q.namer, offset = offset, offset+genericPayloadHeaderLen+len(payload.Body)
-			q.cleartext = append(q.cleartext, RawPayload{Type: payload.Type, Critical: payload.Critical, Body: slices.Clone(payload.Body)})
+			q.cleartext[i] = RawPayload{Type: payload.Type, Critical: payload.Critical, Body: q.head[q.namer+genericPayloadHeaderLen : offset]}
 		}
 	}
 	if len(q.chunks) < int(q.total) {
@@ -485,7 +500,7 @@ func (q *reassembly) merge() *opened {
 	for number := uint16(1); number <= q.total; number++ {
 		content = append(content, q.chunks[number]...)
 	}
-	raw := append(slices.Clone(q.head), q.next, q.flags, 0, 0)
+	raw := append(q.head, q.next, q.flags, 0, 0)
 	raw[q.namer] = byte(PayloadSK)
 	binary.BigEndian.PutUint32(raw[24:28], uint32(len(raw)+len(content)))
 	header, _ := decodeHeader(raw)

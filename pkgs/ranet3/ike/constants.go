@@ -63,8 +63,11 @@ const (
 	followupLinkLen = 8
 
 	// RFC 7383 section 5: "It is NOT RECOMMENDED for this value to exceed 64 KB because any IKE message before fragmentation would likely be shorter than that."
-	// it bounds the datagrams one message's fragments arrive in, which hold more than their content, and leaves the largest message a peer sends room at the IPv4 floor
+	// the charge includes datagrams, descriptors and map storage, leaving the largest peer message room at the IPv4 floor
 	reassemblyLimit = 16 << 10
+	// map storage allowances cover the heap measured by TestReassemblyCountsSmallFragmentStorage
+	reassemblyMapSize   = 256
+	reassemblyEntrySize = 128
 	// RFC 7383 section 2.6: "It is RECOMMENDED that the reassembling timeout for the responder be equal to the time interval that the implementation waits before completely giving up when acting as the initiator of an exchange."
 	// and: "Implementations can use a shorter timeout to conserve memory."
 	// it is the sends of one cut, each new cut starting the queue over at its larger Total Fragments, and a half-open SA takes its fragments with it at handshakeTimeout, which comes first

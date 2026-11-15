@@ -11,6 +11,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"unsafe"
 
 	"hegel.dev/go/hegel"
 
@@ -124,7 +125,8 @@ func TestFragmentsKeepTheHeaderAndCarryTheirEncryptedFragmentPayloadLast(t *test
 	})
 }
 
-// a message cut into fragments for any room whose fragments a receiver holds under reassemblyLimit, taken in any order past duplicates of the fragments already taken, is the message once its last fragment arrives and not before
+// a message whose fragments fit the charged reassembly bound is delivered in any order past duplicates, once its last fragment arrives and not before
+// a message crossing the bound is refused
 // a repeat of any fragment after that draws the response again for fragment 1 alone
 // RFC 7383 section 2.6: "When all IKE Fragment messages (as indicated in the Total Fragments field) are received, the decrypted content of all Encrypted Fragment payloads is merged together to form the content of the original Encrypted payload and, therefore, along with the IKE header and unprotected payloads (if any), the original message."
 // RFC 7383 section 2.6.1: "If the responder receives a retransmitted fragment of a request when it has already processed that request and has sent back a response, that event MUST only trigger a retransmission of the response message (fragmented or not) if the Fragment Number field in the received fragment is set to 1"
@@ -142,6 +144,7 @@ func TestSplitMessageReassemblesInAnyOrderPastDuplicates(t *testing.T) {
 			}
 		}
 		var q reassembly
+		var model queueModel
 		now := time.Now()
 		unsent := make([]int, len(datagrams))
 		for i := range unsent {
@@ -159,7 +162,19 @@ func TestSplitMessageReassemblesInAnyOrderPastDuplicates(t *testing.T) {
 				unsent = slices.Delete(unsent, at, at+1)
 				sent = append(sent, i)
 			}
+			f := modelFragment{messageID: o.header.MessageID, number: uint16(i + 1), total: uint16(len(datagrams)),
+				octets: len(datagrams[i]), authentic: true, negotiated: true}
+			if i == 0 && len(messages[i].Payloads) > 1 {
+				f.descriptors = len(messages[i].Payloads)
+			}
+			want, _ := model.take(f, now)
 			got, err := q.take(o.ctx.suite, key, datagrams[i], messages[i], now)
+			if want == refused {
+				if err != errFragmentLimit || got != nil || q.chunks != nil {
+					ht.Fatalf("fragment %d crossing the bound returned %v, %v with %d chunks retained", i+1, got, err, len(q.chunks))
+				}
+				return
+			}
 			if err != nil {
 				ht.Fatalf("fragment %d of %d was refused: %v", i+1, len(datagrams), err)
 			}
@@ -294,6 +309,7 @@ type modelFragment struct {
 	messageID     uint32
 	number, total uint16
 	octets        int
+	descriptors   int
 	authentic     bool
 	negotiated    bool
 	foreign       bool
@@ -336,7 +352,11 @@ func (m *queueModel) take(f modelFragment, now time.Time) (queueOutcome, queueMo
 		*m = queueModel{}
 	}
 	// RFC 7383 section 5: "In either case, the receiver SHOULD drop the connection and discard all the received fragments."
-	if m.octets+f.octets >= reassemblyLimit {
+	charge := f.octets + reassemblyEntrySize + f.descriptors*int(unsafe.Sizeof(RawPayload{}))
+	if !m.held {
+		charge += reassemblyMapSize
+	}
+	if m.octets+charge >= reassemblyLimit {
 		*m = queueModel{}
 		return refused, queueModel{}
 	}
@@ -344,7 +364,7 @@ func (m *queueModel) take(f modelFragment, now time.Time) (queueOutcome, queueMo
 		*m = queueModel{held: true, messageID: f.messageID, total: f.total, started: now, stored: map[uint16]bool{}}
 	}
 	m.stored[f.number] = true
-	m.octets, m.largest, m.foreign = m.octets+f.octets, max(m.largest, f.octets), m.foreign || f.foreign
+	m.octets, m.largest, m.foreign = m.octets+charge, max(m.largest, f.octets), m.foreign || f.foreign
 	if len(m.stored) == int(m.total) {
 		full := *m
 		*m = queueModel{}

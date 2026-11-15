@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/bubble"
@@ -3199,7 +3200,8 @@ func TestReassemblyLimitHoldsTheLargestMessageAtTheIPv4Floor(t *testing.T) {
 		t.Errorf("the reassembly limit is %d octets, past 64 KB", reassemblyLimit)
 	}
 	ctx := &ikeContext{suite: modelSuite}
-	message, err := ctx.seal(make([]byte, modelKeyLen), Header{ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: 1}, []RawPayload{{Type: PayloadKE, Body: EncodeKE(ML_KEM_1024, make([]byte, kemSizes[ML_KEM_1024][0]))}})
+	key := make([]byte, modelKeyLen)
+	message, err := ctx.seal(key, Header{ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: 1}, []RawPayload{{Type: PayloadKE, Body: EncodeKE(ML_KEM_1024, make([]byte, kemSizes[ML_KEM_1024][0]))}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3207,12 +3209,116 @@ func TestReassemblyLimitHoldsTheLargestMessageAtTheIPv4Floor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	held := 0
+	var q reassembly
+	var delivered *opened
 	for _, raw := range datagrams {
-		held += len(raw)
+		m, err := DecodeMessage(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delivered, err = q.take(modelSuite, key, raw, m, time.Now())
+		if err != nil {
+			t.Fatalf("the ML-KEM-1024 request in %d fragments at the IPv4 floor was refused: %v", len(datagrams), err)
+		}
 	}
-	if held >= reassemblyLimit {
-		t.Errorf("the ML-KEM-1024 request takes %d octets in %d fragments at the IPv4 floor, past the limit of %d", held, len(datagrams), reassemblyLimit)
+	if delivered == nil {
+		t.Fatal("the ML-KEM-1024 request did not reassemble")
+	}
+}
+
+func TestReassemblyCountsCleartextStorage(t *testing.T) {
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 256, PRFID: PRF_HMAC_SHA2_384}
+	keys, err := DeriveIKEKeys(suite, make([]byte, 32), make([]byte, 32), make([]byte, 32), 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := Header{SPIInitiator: 1, SPIResponder: 2, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	bare, err := sealedFragment(suite, keys.SKei, header, nil, PayloadN, 0, 1, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dense := make([]RawPayload, (reassemblyLimit/2-len(bare))/genericPayloadHeaderLen)
+	for i := range dense {
+		dense[i].Type = PayloadV
+	}
+	for name, cleartext := range map[string][]RawPayload{
+		"empty payloads to half the datagram bound": dense,
+		"one body half the queue's bound":           {{Type: PayloadV, Body: bytes.Repeat([]byte{1}, reassemblyLimit/2)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := sealedFragment(suite, keys.SKei, header, cleartext, PayloadN, 0, 1, 2, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := DecodeMessage(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var q reassembly
+			message, err := q.take(suite, keys.SKei, raw, m, time.Now())
+			if message != nil || err != nil && !errors.Is(err, errFragmentLimit) {
+				t.Fatalf("first of two fragments returned %v, %v", message, err)
+			}
+			retained := len(q.head) + genericPayloadHeaderLen + cap(q.cleartext)*int(unsafe.Sizeof(RawPayload{}))
+			if q.chunks == nil {
+				retained = 0
+			}
+			for _, chunk := range q.chunks {
+				retained += len(chunk)
+			}
+			head := uintptr(unsafe.Pointer(unsafe.SliceData(q.head)))
+			for _, payload := range q.cleartext {
+				body := uintptr(unsafe.Pointer(unsafe.SliceData(payload.Body)))
+				if body < head || body+uintptr(len(payload.Body)) > head+uintptr(len(q.head)) {
+					retained += len(payload.Body)
+				}
+			}
+			if retained > q.held || retained >= reassemblyLimit {
+				t.Fatalf("fragment of %d octets retains %d, charged %d of limit %d", len(raw), retained, q.held, reassemblyLimit)
+			}
+			if errors.Is(err, errFragmentLimit) {
+				if len(cleartext) == 1 {
+					t.Fatal("a body of half the queue's bound was refused")
+				}
+				if retained != 0 || len(q.chunks) != 0 {
+					t.Fatal("the queue kept data after its limit")
+				}
+				return
+			}
+			if len(q.chunks) != 1 {
+				t.Fatal("the first fragment was neither kept nor refused")
+			}
+			descriptors := unsafe.SliceData(q.cleartext)
+			headerStart := unsafe.SliceData(q.head)
+			content := encodePayloadChain([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})}})
+			last, err := sealedFragment(suite, keys.SKei, header, nil, PayloadNone, 0, 2, 2, content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err = DecodeMessage(last)
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, err = q.take(suite, keys.SKei, last, m, time.Now())
+			if err != nil || message == nil {
+				t.Fatalf("last fragment returned %v, %v", message, err)
+			}
+			if unsafe.SliceData(message.raw) != headerStart {
+				t.Fatal("merge copied the cleartext header")
+			}
+			if len(cleartext) != 0 && unsafe.SliceData(message.outer.Payloads) != descriptors {
+				t.Fatal("merge copied the cleartext descriptors")
+			}
+			if got := message.outer.Payloads[:len(message.outer.Payloads)-1]; !slices.EqualFunc(got, cleartext, func(a, b RawPayload) bool {
+				return a.Type == b.Type && a.Critical == b.Critical && bytes.Equal(a.Body, b.Body)
+			}) {
+				t.Fatal("reassembly changed the cleartext payloads")
+			}
+			plain, err := unpadded(message.plaintext)
+			if err != nil || !bytes.Equal(plain, content) {
+				t.Fatalf("reassembly changed protected content: %v", err)
+			}
+		})
 	}
 }
 
@@ -3248,9 +3354,10 @@ func TestHalfOpenSAsHoldABoundedReassemblyQueueEach(t *testing.T) {
 			}
 		}
 	}
-	const ceiling = 20 << 20
-	if bound := halfOpenLimit * (1 + movedCredits) * reassemblyLimit; bound != ceiling {
-		t.Errorf("%d half-open SAs hold up to %d octets of fragments in up to %d fragments per queue, want %d", halfOpenLimit, bound, reassemblyLimit/shortest, ceiling)
+	// design/limits.md states this bound for all half-open reassembly queues
+	const want = 20 << 20
+	if bound := halfOpenLimit * (1 + movedCredits) * reassemblyLimit; bound != want {
+		t.Errorf("%d half-open SAs hold up to %d octets of fragments in up to %d fragments per queue, want %d", halfOpenLimit, bound, reassemblyLimit/shortest, want)
 	}
 }
 
@@ -3280,5 +3387,72 @@ func testHalfOpenSAHoldingAFragmentEndsAtItsHandshakeTimeout(t *testing.T) {
 		if time.Since(sent) > halfOpenWait+answerBudget {
 			t.Fatalf("the half-open SA holding fragment 1 of %d outlived its handshake timeout of %s by %s, recording only %q", len(request), halfOpenWait, answerBudget, answered.recorded())
 		}
+	}
+}
+
+func TestReassemblyChargesDenseFirstFragments(t *testing.T) {
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 256, PRFID: PRF_HMAC_SHA2_384}
+	keys, err := DeriveIKEKeys(suite, make([]byte, 32), make([]byte, 32), make([]byte, 32), 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := Header{SPIInitiator: 1, SPIResponder: 2, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	makeFragment := func(cleartext []RawPayload, number uint16) ([]byte, *Message) {
+		t.Helper()
+		raw, err := sealedFragment(suite, keys.SKei, header, cleartext, PayloadN, 0, number, 3, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := DecodeMessage(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw, m
+	}
+	for count := 1; count <= 600; count++ {
+		cleartext := make([]RawPayload, count)
+		for i := range cleartext {
+			cleartext[i].Type = PayloadV
+		}
+		for _, number := range []uint16{1, 2} {
+			var q reassembly
+			if number == 2 {
+				raw, m := makeFragment(nil, 1)
+				if _, err := q.take(suite, keys.SKei, raw, m, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw, m := makeFragment(cleartext, number)
+			want := q.held + len(raw) + reassemblyEntrySize
+			if number == 1 {
+				want += reassemblyMapSize + len(m.Payloads)*int(unsafe.Sizeof(RawPayload{}))
+			}
+			got, err := q.take(suite, keys.SKei, raw, m, time.Now())
+			if got != nil || errors.Is(err, errFragmentLimit) != (want >= reassemblyLimit) || err != nil && !errors.Is(err, errFragmentLimit) {
+				t.Fatalf("%d descriptors in fragment %d: charge %d returned %v, %v", count, number, want, got, err)
+			}
+			retained := len(q.head) + genericPayloadHeaderLen + cap(q.cleartext)*int(unsafe.Sizeof(RawPayload{}))
+			if q.chunks == nil {
+				retained = 0
+			}
+			for _, chunk := range q.chunks {
+				retained += len(chunk)
+			}
+			if retained > q.held || retained >= reassemblyLimit {
+				t.Fatalf("%d descriptors in fragment %d retain %d, charged %d of %d", count, number, retained, q.held, reassemblyLimit)
+			}
+		}
+	}
+	cleartext := make([]RawPayload, 400)
+	for i := range cleartext {
+		cleartext[i].Type = PayloadV
+	}
+	raw, m := makeFragment(cleartext, 1)
+	charge := len(raw) + reassemblyMapSize + reassemblyEntrySize + len(m.Payloads)*int(unsafe.Sizeof(RawPayload{}))
+	cleartext[len(cleartext)-1].Body = make([]byte, reassemblyLimit-1-charge)
+	raw, m = makeFragment(cleartext, 1)
+	var q reassembly
+	if got, err := q.take(suite, keys.SKei, raw, m, time.Now()); err != nil || got != nil || q.held != reassemblyLimit-1 {
+		t.Fatalf("a first fragment one octet below the bound returned %v, %v, charged %d", got, err, q.held)
 	}
 }
