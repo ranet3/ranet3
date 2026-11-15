@@ -159,12 +159,13 @@ func (c judgeCase) String() string {
 		c.ipv4, c.ttl, c.protocol, c.destination, c.fragment, c.extensions, c.segmentsLeft, c.afterFragment, c.damage)
 }
 
-// for any packet a session hands the exit, of either family, whole or any
-// fragment, behind any chain of IPv6 extension headers, damaged or not, the
-// lane's judgment is the model's: so a protocol the exit does not carry never
-// reaches the stack on any fragment, nor a packet toward an address the host
-// holds but a UDP datagram, which the relay refuses there unless a mapping
-// holds its port: the exit's refusal of the host's own services
+// for any packet a session hands the exit whose upper layer holds no ICMP
+// error, of either family, whole or any fragment, behind any chain of IPv6
+// extension headers, damaged or not, the lane's judgment is the model's: so a
+// protocol the exit does not carry never reaches the stack on any fragment,
+// nor such a packet toward an address the host holds but a UDP datagram,
+// which the relay refuses there unless a mapping holds its port: the exit's
+// refusal of the host's own services
 func TestJudgmentIsTheModels(t *testing.T) {
 	check := func(tb testing.TB, c judgeCase) {
 		tb.Helper()
