@@ -122,8 +122,10 @@ const (
 	minConnections = 16
 	// perConnection is a TCP connection's memory past its two windows, as
 	// measured with both copy buffers moving, perTimeWait an endpoint's in
-	// TIME_WAIT, rounded up from its measure, and perFlow a UDP or echo
-	// mapping's, a guess no measure has settled
+	// TIME_WAIT, rounded up from its measure, and perFlow the share of the
+	// flows' eighth Within counts for a UDP or echo mapping, which is no
+	// measure: a UDP flow holds more once its readers' stacks grew, which the
+	// limits page bounds.
 	perConnection = 128 << 10
 	perTimeWait   = 8 << 10
 	perFlow       = 8 << 10

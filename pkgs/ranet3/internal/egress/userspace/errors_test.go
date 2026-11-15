@@ -172,6 +172,47 @@ func TestLeafErrorReachesItsServerFromTheMapping(t *testing.T) {
 	}
 }
 
+// An ICMP error whose source is not the leaf its quote names, as another
+// leaf of the session would send one about a datagram it never received, is
+// dropped and counted as about no mapping, and nothing reaches the server
+// (RFC 5508 REQ-4)
+func TestLeafErrorFromAnotherAddressThanItsQuotesLeafIsDropped(t *testing.T) {
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	raw := &fakeRaw{}
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Raw = raw })
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("request")), false)
+	outside := readDatagramFrom(t, server, []byte("request"))
+	reply := []byte("a reply another leaf refuses")
+	if _, err := server.WriteToUDPAddrPort(reply, outside); err != nil {
+		t.Fatal(err)
+	}
+	laid := h.waitLaid(t, "reply", func(pkt []byte) bool { return isDatagram(pkt, serverAt(server), leaf, reply) })
+	h.x.udp.leafError(leafRefusal(other4, serverAt(server).Addr(), 3, 3, laid))
+	if got, sent := h.count(false, reasonLeafErrorUnmapped), raw.sentSoFar(); got != 1 || len(sent) != 0 {
+		t.Errorf("dropped %d as unmapped and sent %d, want one dropped and none sent", got, len(sent))
+	}
+}
+
+// A hairpinned error's quoted UDP checksum that moves to zero is written as
+// 0xffff, since a zero checksum would say none was computed (RFC 768): for
+// every quoted checksum, the rebuilt one is never 0
+func TestRebuiltErrorChecksumIsNeverZero(t *testing.T) {
+	quoted := udpDatagram(netip.AddrPortFrom(other4, 4000), netip.AddrPortFrom(leaf4, 40000), []byte("quoted"))
+	message := append([]byte{3, 3, 0, 0, 0, 0, 0, 0}, quoted...)
+	zeros := 0
+	for checksum := 1; checksum < 1<<16; checksum++ {
+		binary.BigEndian.PutUint16(message[8+20+6:], uint16(checksum))
+		out := rebuiltError(message, 20, netip.AddrPortFrom(leaf4.Next(), 41000), netip.AddrPortFrom(server4, 5000), server4, leaf4.Next(), 0, 64, 1)
+		if binary.BigEndian.Uint16(out[20+8+20+6:]) == 0 {
+			zeros++
+		}
+	}
+	if zeros != 0 {
+		t.Errorf("%d rebuilt errors quoted the UDP checksum 0, want 0xffff in its place", zeros)
+	}
+}
+
 // A leaf's error about a server's datagram leaves from the mapping holding the
 // socket toward that server, by address and port, where the leaf's two
 // mappings each hold a socket toward the server's address, as two classes in

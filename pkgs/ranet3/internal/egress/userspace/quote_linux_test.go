@@ -6,6 +6,7 @@
 package userspace
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"net/netip"
@@ -102,9 +103,77 @@ func TestDestinationOpensWhereTheKernelLacksTheExtensionOption(t *testing.T) {
 	}
 }
 
-// An RFC 4884 extension the kernel found at an offset and flagged invalid,
-// as a router's nonzero octet where RFC 792 leaves one unused reads, is not
-// taken for an extension's start, and one it did not flag is
+// A router's time exceeded about a leaf's datagram of 200 octets, quoting 128
+// octets of it with a length attribute that says so and an RFC 4884 extension
+// after them, reaches the leaf with the 128 octets alone on a kernel with the
+// option that says where the extension starts, and on one without it, before
+// Linux 5.9, with the extension's octets after them as the datagram's payload
+// within its UDP length. The destination's socket stands for such a kernel's
+// with the option off, as that kernel leaves it. Root alone sends the error.
+func TestExtensionIsPayloadWhereTheKernelLacksTheOption(t *testing.T) {
+	extension := []byte{2 << 4, 0, 0, 0, 0, 12, 2, 1, 'R', 'O', 'U', 'T', 'E', 'R', '!', '!'}
+	for _, c := range []struct {
+		name   string
+		option bool
+		server netip.Prefix
+		leaf   netip.Addr
+	}{
+		{"ipv4 with the option", true, rigServer4, leaf4},
+		{"ipv4 without it", false, rigServer4, leaf4},
+		{"ipv6 with the option", true, rigServer6, leaf6},
+		{"ipv6 without it", false, rigServer6, leaf6},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			onLoopback(t, c.server)
+			h := newRelayHarness(t, nil)
+			h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+			server := rigLoopbackServer(t, c.server.Addr())
+			to := serverAt(server)
+			leaf := netip.AddrPortFrom(c.leaf, freeUDPPort(t, c.leaf))
+			payload := bytes.Repeat([]byte{'L'}, 200)
+			h.x.udp.take(udpDatagram(leaf, to, payload), false)
+			outside := readDatagramFrom(t, server, payload)
+			if !c.option {
+				level, _, extension := errorOptions(c.server.Addr().Is6())
+				if err := onSocket(h.mappingsOf(leaf)[0].destinations[to].conn, func(fd int) error { return unix.SetsockoptInt(fd, level, extension, 0) }); err != nil {
+					t.Fatalf("turn the extension option off as a kernel that lacks it leaves it: %v", err)
+				}
+			}
+			original := udpDatagram(outside, to, payload)[:128]
+			message := append([]byte{11, 0, 0, 0, 0, 128 / 4, 0, 0}, original...)
+			outer, headers := 20, 28
+			if c.server.Addr().Is6() {
+				message = append([]byte{3, 0, 0, 0, 128 / 8, 0, 0, 0}, original...)
+				outer, headers = 40, 48
+			}
+			h.drainLaid()
+			sendICMP(t, outside.Addr(), append(message, extension...))
+			want := payload[:128-headers]
+			if !c.option {
+				want = append(bytes.Clone(want), extension...)
+			}
+			var quoted []byte
+			h.waitLaid(t, "time exceeded", func(raw []byte) bool {
+				p, ok := parse(raw)
+				if !ok || p.protocol != protoICMP && p.protocol != protoICMPv6 || len(raw) < outer+8+headers {
+					return false
+				}
+				quoted = raw[outer+8+headers:]
+				return true
+			})
+			if !bytes.Equal(quoted, want) {
+				t.Errorf("the leaf was told of %d octets of payload %q, want %d %q", len(quoted), quoted, len(want), want)
+			}
+		})
+	}
+}
+
+// An offset where the kernel found an RFC 4884 extension and flagged it
+// invalid is not taken for an extension's start, and one it did not flag is.
+// Linux flags it only where the octets there read a version 2 extension whose
+// checksum or objects fail (ip_icmp_error_rfc4884_validate). Octets of any
+// other version read valid, so a nonzero length attribute of at least 128
+// octets over the leaf's own octets still cuts the quote there.
 func TestExtensionTheKernelFlagsInvalidIsNotCut(t *testing.T) {
 	for _, c := range []struct {
 		flags byte

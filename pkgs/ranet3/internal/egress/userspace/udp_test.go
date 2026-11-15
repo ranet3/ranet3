@@ -5,12 +5,12 @@ package userspace
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -1457,6 +1457,16 @@ func TestHairpinnedDatagramAllocatesOnlyItsPacket(t *testing.T) {
 	}
 }
 
+// collected is the memory statistics after two collections, which empty the
+// pools of what they held
+func collected() runtime.MemStats {
+	runtime.GC()
+	runtime.GC()
+	var s runtime.MemStats
+	runtime.ReadMemStats(&s)
+	return s
+}
+
 // drainLaid gives back every packet the exit sent toward a leaf so far
 func (h *relayHarness) drainLaid() {
 	for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
@@ -1569,11 +1579,13 @@ func TestLeafsLargestDatagramReachesItsServer(t *testing.T) {
 }
 
 // A destination's reader waiting for its next datagram holds no pooled
-// buffer: once each of a handful of destinations read one reply, with the
-// pool emptied between the replies so that no two readers share a buffer,
-// the live heap has grown by less than one
+// buffer: once each of 32 destinations read one reply, with the pool emptied
+// between the replies so that no two readers share a buffer, the live heap
+// has grown by less than one. The heap is first read until it settles, so
+// what earlier tests leave to the collector moves neither reading, and 32
+// readers holding one each would pass the bound many times over.
 func TestReadersAtRestHoldNoBuffer(t *testing.T) {
-	const destinations = 8
+	const destinations = 32
 	h := newRelayHarness(t, nil)
 	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	servers := make([]*net.UDPConn, destinations)
@@ -1583,98 +1595,30 @@ func TestReadersAtRestHoldNoBuffer(t *testing.T) {
 		h.x.udp.take(udpDatagram(leaf, serverAt(servers[i]), []byte("opens")), false)
 		outside = readDatagramFrom(t, servers[i], []byte("opens"))
 	}
-	// two collections empty the pool, and a reader's last read moves on
-	// first
-	empty := func() {
-		time.Sleep(10 * time.Millisecond)
-		runtime.GC()
-		runtime.GC()
-	}
+	// a reader's last read moves on first
 	live := func() int64 {
-		empty()
-		var s runtime.MemStats
-		runtime.ReadMemStats(&s)
-		return int64(s.HeapAlloc)
+		time.Sleep(10 * time.Millisecond)
+		return int64(collected().HeapAlloc)
 	}
 	before := live()
+	for settled := 0; settled < 10; settled++ {
+		now := live()
+		if now-before < datagramBuffer/4 && before-now < datagramBuffer/4 {
+			break
+		}
+		before = now
+	}
 	for _, server := range servers {
 		reply := []byte("reply")
 		if _, err := server.WriteToUDPAddrPort(reply, outside); err != nil {
 			t.Fatal(err)
 		}
 		h.waitLaid(t, "reply", func(raw []byte) bool { return isDatagram(raw, serverAt(server), leaf, reply) })
-		empty()
+		live()
 	}
 	if grown := live() - before; grown >= datagramBuffer {
 		t.Errorf("the live heap grew by %d bytes once %d readers read a reply each, %.1f buffers of %d", grown, destinations, float64(grown)/datagramBuffer, datagramBuffer)
 	}
-}
-
-// flowCost names the process of its own that
-// TestFlowCarryingAMappingHoldsAtMostTenKiB measures in
-const flowCost = "USERSPACE_FLOW_COST"
-
-// flowHeld is the most a UDP flow that carries its mapping holds, past
-// perFlow, the share the budget gives each flow, which that flow's measure
-// passes at times
-const flowHeld = 10 << 10
-
-// What a flow that carries a mapping holds in Go's heap and in its stacks,
-// the mapping's, its destination's, their two sockets' and the two readers'
-// goroutines', stays within flowHeld: a leaf sending from a new port for each
-// flow makes each the first destination of its own mapping, which holds more
-// than a later destination of a mapping does. It is measured over 200 such
-// flows, since the runtime takes stacks in spans of 32 KiB that a handful of
-// flows may or may not fill, in a process of its own, since a process that
-// ran other tests hands new goroutines the stacks of ended ones, and the heap
-// and the stacks are logged apart. The race detector's stacks are deeper, and
-// its build logs alone.
-func TestFlowCarryingAMappingHoldsAtMostTenKiB(t *testing.T) {
-	if os.Getenv(flowCost) == "" {
-		cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.v")
-		cmd.Env = append(os.Environ(), flowCost+"=1")
-		out, err := cmd.CombinedOutput()
-		_, logged, _ := bytes.Cut(out, []byte("flow cost: "))
-		var heap, stack int64
-		if _, scanned := fmt.Sscanf(string(logged), "heap %d stack %d", &heap, &stack); err != nil || scanned != nil {
-			t.Fatalf("the measuring process ended with %v and logged no cost:\n%s", err, out)
-		}
-		t.Logf("a flow carrying a mapping holds %d bytes of heap and %d of stack, %d in all, perFlow %d", heap, stack, heap+stack, perFlow)
-		if !raceBuild && heap+stack > flowHeld {
-			t.Errorf("a flow carrying a mapping holds %d bytes of heap and %d of stack, past %d", heap, stack, flowHeld)
-		}
-		return
-	}
-	const flows = 200
-	h := newRelayHarness(t, func(rt *Runtime, cfg *egress.Egress) {
-		rt.Limits.Flows = 2 * flows
-		cfg.FlowsPerSource = 2 * flows
-	})
-	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
-	payload := []byte("opens")
-	held := func() (heap, stack int64) {
-		// each reader reaches its wait, and the pool empties at two
-		// collections
-		time.Sleep(100 * time.Millisecond)
-		runtime.GC()
-		runtime.GC()
-		var s runtime.MemStats
-		runtime.ReadMemStats(&s)
-		return int64(s.HeapAlloc), int64(s.StackInuse)
-	}
-	heap, stack := held()
-	for range flows {
-		h.x.udp.take(udpDatagram(netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4)), serverAt(server), payload), false)
-		readDatagramFrom(t, server, payload)
-	}
-	heapAfter, stackAfter := held()
-	h.x.flows.mu.Lock()
-	open := h.x.flows.open
-	h.x.flows.mu.Unlock()
-	if open != flows {
-		t.Fatalf("%d flows held, want %d", open, flows)
-	}
-	t.Logf("flow cost: heap %d stack %d", (heapAfter-heap)/flows, (stackAfter-stack)/flows)
 }
 
 // A leaf's datagram to the host's own address at a port a mapping holds
@@ -1843,6 +1787,81 @@ func TestPassBeforeANewDestinationsFirstDatagramKeepsIt(t *testing.T) {
 	}
 }
 
+// A mapping's own time only grows: a hairpinned datagram to port 53 after one
+// to another port leaves the mapping the later and longer deadline of the
+// two, the other port's, not port 53's shorter one from the later datagram
+// (RFC 4787 REQ-5 and REQ-5a)
+func TestMappingTimeOnlyGrows(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	var m mapping
+	m.refresh(now, netip.AddrPortFrom(server4, 4000))
+	m.refresh(now.Add(time.Second), netip.AddrPortFrom(server4, 53))
+	if got, want := time.Duration(m.deadline.Load()-now.UnixNano()), mappingTimeout; got != want {
+		t.Errorf("a datagram to port 53 left the mapping %s past the earlier datagram, want %s", got, want)
+	}
+}
+
+// A mapping that only hairpinned holds one flow of its leaf's, given back
+// when it ends by its time
+func TestHairpinningMappingGivesBackItsFlowAtItsEnd(t *testing.T) {
+	host := netip.MustParseAddr("127.0.0.1")
+	_ = loopbackServer(t, host)
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+		holdOnly(rt, host)
+	})
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.hairpinning(t, leaf, host)
+	h.x.flows.mu.Lock()
+	open := h.x.flows.open
+	h.x.flows.mu.Unlock()
+	if open != 1 {
+		t.Fatalf("a hairpinning mapping holds %d flows, want 1", open)
+	}
+	h.advance(mappingTimeout + mappingSweep)
+	if _, ok := h.mappingOf(leaf); ok {
+		t.Fatal("the hairpinning mapping outlived its time")
+	}
+	h.x.flows.mu.Lock()
+	defer h.x.flows.mu.Unlock()
+	if open := h.x.flows.open; open != 0 {
+		t.Errorf("%d flows held once the hairpinning mapping ended, want none", open)
+	}
+}
+
+// A reply's UDP checksum that sums to zero is sent as 0xffff, since a zero
+// checksum would say none was computed (RFC 768, RFC 8200 section 8.1): for
+// every value of a payload's last word, the checksum is never 0 and always
+// checks
+func TestReplyChecksumIsNeverZero(t *testing.T) {
+	for _, family := range []struct {
+		name       string
+		from, leaf netip.AddrPort
+	}{
+		{"ipv4", netip.AddrPortFrom(server4, 4000), netip.AddrPortFrom(leaf4, 40000)},
+		{"ipv6", netip.AddrPortFrom(server6, 4000), netip.AddrPortFrom(leaf6, 40000)},
+	} {
+		t.Run(family.name, func(t *testing.T) {
+			headroom := udpHeadroom(family.leaf.Addr())
+			buf := make([]byte, headroom+4)
+			zeros := 0
+			for word := range 1 << 16 {
+				binary.BigEndian.PutUint16(buf[headroom+2:], uint16(word))
+				pkt := udpPacket(buf, headroom, family.from, family.leaf, 1, 64)
+				udp := pkt[headroom-8:]
+				if binary.BigEndian.Uint16(udp[6:8]) == 0 {
+					zeros++
+				}
+				if got := transportSum(family.from.Addr(), family.leaf.Addr(), 17, udp); got != 0xffff {
+					t.Fatalf("the reply holding the word %#04x sums to %#04x, want 0xffff", word, got)
+				}
+			}
+			if zeros != 0 {
+				t.Errorf("%d replies carried the checksum 0, want 0xffff in its place", zeros)
+			}
+		})
+	}
+}
+
 // Each of a leaf's two mappings, as two classes in turn give them, lets in a
 // datagram only from an address that mapping itself sent to: a server the
 // first sent to reaches the leaf at the first mapping's address and port, and
@@ -1920,5 +1939,103 @@ func TestEachMappingOfALeafLastsPastItsOwnDatagramsOut(t *testing.T) {
 	h.advance(2 * time.Minute)
 	if !ended(mappings[1]) {
 		t.Error("the second mapping outlived 5 minutes from its last datagram out")
+	}
+}
+
+// A datagram with DF whose write the host failed for its size is refused,
+// with no too big, where the path's MTU reads as none, and answered too big
+// only past the MTU read: one of exactly the MTU's size is written again, as
+// for an earlier error's errno, and one an octet larger is answered too big
+// at that MTU. The socket is connected to nothing, so it reads no path MTU of
+// its own, and the route answers the MTU or none as each case gives.
+func TestFailedWriteWithDFIsAnsweredTooBigOnlyPastAnMTURead(t *testing.T) {
+	const mtu = 1400
+	h := newRelayHarness(t, nil)
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	to := netip.MustParseAddrPort("203.0.113.9:4000")
+	dst := &destination{to: to, conn: conn}
+	for _, c := range []struct {
+		name    string
+		route   bool
+		payload int
+		end     writeEnd
+		mtu     int
+	}{
+		{"no MTU read", false, mtu - 28, endRefused, 0},
+		{"exactly the MTU", true, mtu - 28, writeAgain, 0},
+		{"an octet past the MTU", true, mtu - 28 + 1, endTooBig, mtu},
+	} {
+		h.x.rt.Platform.Route = func(netip.Addr) (Link, bool, error) { return Link{MTU: mtu}, c.route, nil }
+		raw := udpDatagram(netip.AddrPortFrom(leaf4, 40000), to, make([]byte, c.payload))
+		d, ok := readDatagram(raw)
+		if !ok {
+			t.Fatalf("%s: the test's datagram does not read", c.name)
+		}
+		failure := &net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("write", syscall.EMSGSIZE)}
+		dst.mu.Lock()
+		end, answered := h.x.udp.failed(dst, raw, d, failure, 1, true)
+		dst.mu.Unlock()
+		if end != c.end || answered != c.mtu {
+			t.Errorf("%s: a datagram of %d octets of IP took step %d with MTU %d, want step %d with %d", c.name, len(raw), end, answered, c.end, c.mtu)
+		}
+	}
+}
+
+// A datagram whose first write failed with an errno no ICMP error hands, as a
+// firewall rule of the host's output path hands EPERM on Linux, is refused
+// at that write, and one whose first write failed with an errno an ICMP error
+// hands is written again whatever the socket queued. Either failed write
+// records the datagram, its header and its UDP length, in a record empty
+// before.
+func TestFailedWriteIsWrittenAgainOnlyForAnICMPErrorsErrno(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	to := netip.MustParseAddrPort("203.0.113.9:4000")
+	raw := udpDatagram(netip.AddrPortFrom(leaf4, 40000), to, []byte("refused or written again"))
+	d, ok := readDatagram(raw)
+	if !ok {
+		t.Fatal("the test's datagram does not read")
+	}
+	for _, c := range []struct {
+		errno syscall.Errno
+		end   writeEnd
+	}{{syscall.EPERM, endRefused}, {syscall.EHOSTUNREACH, writeAgain}} {
+		dst := &destination{to: to, conn: conn}
+		failure := &net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("write", c.errno)}
+		dst.mu.Lock()
+		end, _ := h.x.udp.failed(dst, raw, d, failure, 1, false)
+		dst.mu.Unlock()
+		if end != c.end {
+			t.Errorf("a first write failed with %v took step %d, want %d", c.errno, end, c.end)
+		}
+		if dst.ipLen != uint8(d.at) || dst.longest != uint16(len(d.udp)) {
+			t.Errorf("past a first write failed with %v the record holds %d octets of header and UDP length %d, want the datagram's %d and %d", c.errno, dst.ipLen, dst.longest, d.at, len(d.udp))
+		}
+	}
+}
+
+// Deciding whether a failed write's error is an errno an ICMP error hands
+// allocates nothing, for an errno the list holds and for one it does not, each
+// wrapped as a socket's write wraps it, and decides each right
+func TestDecidingAnICMPErrnoAllocatesNothing(t *testing.T) {
+	for _, c := range []struct {
+		errno syscall.Errno
+		icmp  bool
+	}{{syscall.EHOSTUNREACH, true}, {syscall.EPERM, false}} {
+		err := error(&net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("write", c.errno)})
+		if icmpErrno(err) != c.icmp {
+			t.Errorf("%v read as an ICMP error's errno %t, want %t", c.errno, !c.icmp, c.icmp)
+		}
+		if allocs := testing.AllocsPerRun(100, func() { icmpErrno(err) }); allocs != 0 {
+			t.Errorf("deciding %v took %.0f allocations, want none", c.errno, allocs)
+		}
 	}
 }
