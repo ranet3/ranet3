@@ -4,6 +4,7 @@
 package userspace
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -127,23 +128,55 @@ type mapping struct {
 	hairpinnedTo []netip.AddrPort
 }
 
-// destination is a mapping's socket connected to one server
+// destination is a mapping's socket connected to one server, sending from
+// the mapping's address and port, from
 type destination struct {
-	to       netip.AddrPort
+	to, from netip.AddrPort
 	conn     *net.UDPConn
 	deadline atomic.Int64
 
 	// mu orders a send against a change of the socket's fragmenting, which
 	// dontFragment records once fragmentSet, and against a read of the
-	// socket's errors, which quote kept
+	// socket's errors, which quote what keep records
 	mu                        sync.Mutex
 	dontFragment, fragmentSet bool
-	// kept is the IP and UDP header of the leaf's last datagram to the
-	// server, its first keptLen bytes, none where they pass its room, which
-	// an error about the server's datagrams quotes
-	kept    [60 + 8]byte
-	keptLen int
+	// ip and udp are the leaf's IP header, its first ipLen bytes, 0 until a
+	// datagram left, and its UDP header, of the first datagram the socket
+	// sent. varied is the fields a later one carried another value in.
+	// shortest and longest are the least and the greatest UDP length the
+	// socket sent: the range an error's quoted UDP length must fall in, which
+	// macOS's ICMP socket alone hands (relayQuoted), and the most a length the
+	// exit computes claims (quote).
+	ip                [60]byte
+	ipLen             uint8
+	udp               [8]byte
+	varied            fields
+	shortest, longest uint16
 }
+
+// fields is a set of the fields of a leaf's IP and UDP header that one of its
+// datagrams toward a server may carry otherwise than another
+type fields uint8
+
+const (
+	// fieldClass is IPv4's TOS or IPv6's traffic class
+	fieldClass fields = 1 << iota
+	// fieldFlow is IPv6's flow label
+	fieldFlow
+	// fieldIdent and fieldFragment are IPv4's identification, and its flags
+	// and fragment offset
+	fieldIdent
+	fieldFragment
+	// fieldHops is the TTL or the hop limit
+	fieldHops
+	// fieldOptions is IPv4's options or IPv6's extension headers, and with
+	// them the header's length
+	fieldOptions
+	// fieldLength is the UDP length, and with it the IP length, and
+	// fieldChecksum the UDP checksum
+	fieldLength
+	fieldChecksum
+)
 
 func newUDPRelay(x *Exit) *udpRelay {
 	return &udpRelay{x: x, now: time.Now, mappings: map[netip.AddrPort][]*mapping{}, ports: map[netip.AddrPort]*mapping{}}
@@ -470,7 +503,7 @@ func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination,
 	if err != nil {
 		return nil, false, false, err
 	}
-	dst = &destination{to: to, conn: conn}
+	dst = &destination{to: to, from: m.external(), conn: conn}
 	m.destinations[to] = dst
 	u.readers.Add(1)
 	go u.read(m, conn, dst)
@@ -641,8 +674,8 @@ func onSocket(conn *net.UDPConn, set func(fd int) error) error {
 // REQ-13). A send that meets an ICMP error the socket was told of earlier
 // relays the errors the socket queued and is sent again, since the error
 // belongs to an earlier datagram, and a send that fails empties the queue of
-// what its failure queued. The datagram's IP and UDP header is kept for the
-// errors about it. dst's deadline moves before the write, so whoever sees the
+// what its failure queued. A datagram that leaves is kept for the errors
+// about it (keep). dst's deadline moves before the write, so whoever sees the
 // datagram arrive reads the deadline it set, and is put back where the
 // datagram did not leave (RFC 4787 section 4.3 counts a packet that crosses).
 // A datagram refused for a reason of the host's own, neither its size, nor an
@@ -666,15 +699,13 @@ func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment b
 	if err != nil {
 		dst.deadline.Store(before)
 		u.relayErrors(dst)
+	} else {
+		dst.keep(raw, d)
 	}
 	if errors.Is(err, syscall.EMSGSIZE) && dontFragment {
 		if mtu := u.pathMTU(dst); mtu > 0 {
 			u.x.answers.Answer(raw, netstack.ExitTooBig, mtu)
 		}
-	}
-	dst.keptLen = 0
-	if d.at+8 <= len(dst.kept) {
-		dst.keptLen = copy(dst.kept[:], raw[:d.at+8])
 	}
 	// an error the socket was told of is read and the datagram sent again
 	// above, so one still failing is the host's own
@@ -780,33 +811,166 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 
 var errTruncated = errors.New("userspace: datagram past the buffer")
 
-// relayErrors hands dst's leaf each ICMP error dst's socket queued, and
-// empties the queue. dst.mu is held.
-func (u *udpRelay) relayErrors(dst *destination) {
-	buf := buffers[1].Get().(*[]byte)
-	defer buffers[1].Put(buf)
+// relayErrors relays each ICMP error dst's socket queued (relay), which
+// quotes no UDP header, empties the queue, and reports whether it held one.
+// dst.mu is held.
+func (u *udpRelay) relayErrors(dst *destination) bool {
+	buf := datagrams.Get().(*[]byte)
+	defer datagrams.Put(buf)
+	queued := false
 	_ = onSocket(dst.conn, func(fd int) error {
-		drainErrors(fd, (*buf)[:cap(*buf)], func(e icmpError, prefix []byte) {
-			if dst.keptLen == 0 {
-				return
-			}
-			if relayed := relayedError(dst.kept[:dst.keptLen], e, prefix, u.x.hops(dst.to.Addr().Is6())); relayed != nil {
-				u.x.link.send(relayed)
-			}
+		drainErrors(fd, (*buf)[:cap(*buf)], func(e icmpError, prefix []byte, padded bool) {
+			queued = true
+			u.relay(dst, e, 0, prefix, padded)
 		})
 		return nil
 	})
+	return queued
+}
+
+// relay hands dst's leaf e, an ICMP error the host found about a datagram
+// dst's socket sent, quoting that datagram as quote gives, and drops one
+// relayedError builds nothing of: an error of a type the leaf's family has
+// none of, from an offender that is not one host, or about a datagram no
+// error may answer. One on a socket that sent nothing is about no datagram of
+// the exit's, and is counted. length is the UDP length the error quotes, 0
+// where it quotes no UDP header, prefix the payload it quotes, and padded
+// whether an RFC 4884 extension's padding may end prefix. dst.mu is held.
+func (u *udpRelay) relay(dst *destination, e icmpError, length uint16, prefix []byte, padded bool) {
+	if dst.ipLen == 0 {
+		u.x.counts.drop(reasonNotOurs)
+		return
+	}
+	if relayed := relayedError(dst.quote(length, prefix, padded), e, prefix, u.x.hops(dst.to.Addr().Is6())); relayed != nil {
+		u.x.link.send(relayed)
+	}
+}
+
+// keep records d, the leaf's datagram raw holds, as one more datagram dst's
+// socket sent: its IP and UDP header where it is the first, the fixed IPv6
+// header alone where its extension headers pass ip's room, and otherwise the
+// fields it carries otherwise than the first, and its UDP length against the
+// shortest and the longest. dst.mu is held.
+func (dst *destination) keep(raw []byte, d datagram) {
+	ip, length := raw[:d.at], uint16(len(d.udp))
+	if dst.ipLen == 0 {
+		if len(ip) > len(dst.ip) {
+			ip = ip[:40]
+			dst.varied |= fieldOptions
+		}
+		dst.ipLen = uint8(copy(dst.ip[:], ip))
+		copy(dst.udp[:], d.udp)
+		dst.shortest, dst.longest = length, length
+		return
+	}
+	dst.shortest, dst.longest = min(dst.shortest, length), max(dst.longest, length)
+	kept := dst.ip[:dst.ipLen]
+	same := func(field fields, equal bool) {
+		if !equal {
+			dst.varied |= field
+		}
+	}
+	if kept[0]>>4 == 4 {
+		same(fieldClass, kept[1] == ip[1])
+		same(fieldIdent, kept[4] == ip[4] && kept[5] == ip[5])
+		same(fieldFragment, kept[6] == ip[6] && kept[7] == ip[7])
+		same(fieldHops, kept[8] == ip[8])
+		same(fieldOptions, bytes.Equal(kept[20:], ip[20:]))
+	} else {
+		same(fieldClass, (kept[0]^ip[0])&0x0f == 0 && (kept[1]^ip[1])&0xf0 == 0)
+		same(fieldFlow, (kept[1]^ip[1])&0x0f == 0 && kept[2] == ip[2] && kept[3] == ip[3])
+		same(fieldHops, kept[7] == ip[7])
+		same(fieldOptions, kept[6] == ip[6] && bytes.Equal(kept[40:], ip[40:]))
+	}
+	same(fieldLength, dst.udp[4] == d.udp[4] && dst.udp[5] == d.udp[5])
+	same(fieldChecksum, dst.udp[6] == d.udp[6] && dst.udp[7] == d.udp[7])
+}
+
+// quote is the IP and UDP header of the datagram of dst's an ICMP error is
+// about. It holds the leaf's and the server's addresses and ports. A field
+// every datagram dst's socket sent carried alike holds that value, and a field
+// they did not holds 0. Where their IPv4 options or IPv6 extension headers
+// differed, the header holds none. Where their UDP lengths differed, the UDP
+// length is length, the one the error quotes, or where the error quotes no UDP
+// header (length 0) the 8 bytes of a header and prefix, the payload it quotes,
+// held to the longest dst sent. Where padded, an RFC 4884 extension's padding
+// may end prefix, and every zero octet at its end is left out of that count,
+// the datagram's own among them. The IP length follows the UDP length, and an
+// IPv4 header's checksum is its own. dst.ipLen is not 0, and dst.mu is held.
+func (dst *destination) quote(length uint16, prefix []byte, padded bool) []byte {
+	ip := slices.Clone(dst.ip[:dst.ipLen])
+	udp := dst.udp
+	v4 := ip[0]>>4 == 4
+	varied := func(field fields) bool { return dst.varied&field != 0 }
+	switch {
+	case varied(fieldOptions) && v4:
+		ip = ip[:20]
+		ip[0] = 4<<4 | 5
+	case varied(fieldOptions):
+		ip = ip[:40]
+		ip[6] = 17
+	}
+	if v4 {
+		if varied(fieldClass) {
+			ip[1] = 0
+		}
+		if varied(fieldIdent) {
+			ip[4], ip[5] = 0, 0
+		}
+		if varied(fieldFragment) {
+			ip[6], ip[7] = 0, 0
+		}
+		if varied(fieldHops) {
+			ip[8] = 0
+		}
+	} else {
+		if varied(fieldClass) {
+			ip[0], ip[1] = ip[0]&0xf0, ip[1]&0x0f
+		}
+		if varied(fieldFlow) {
+			ip[1], ip[2], ip[3] = ip[1]&0xf0, 0, 0
+		}
+		if varied(fieldHops) {
+			ip[7] = 0
+		}
+	}
+	if varied(fieldLength) {
+		if length == 0 {
+			if padded {
+				prefix = bytes.TrimRight(prefix, "\x00")
+			}
+			length = uint16(min(8+len(prefix), int(dst.longest)))
+		}
+		binary.BigEndian.PutUint16(udp[4:6], length)
+	}
+	if varied(fieldChecksum) {
+		udp[6], udp[7] = 0, 0
+	}
+	size := len(ip) + int(binary.BigEndian.Uint16(udp[4:6]))
+	if v4 {
+		binary.BigEndian.PutUint16(ip[2:4], uint16(size))
+		binary.BigEndian.PutUint16(ip[10:12], 0)
+		binary.BigEndian.PutUint16(ip[10:12], ^uint16(packet.Sum(0, ip)))
+	} else {
+		binary.BigEndian.PutUint16(ip[4:6], uint16(size-40))
+	}
+	return append(ip, udp[:]...)
 }
 
 // relayedError is e answered to the leaf whose datagram's IP and UDP header
 // kept holds, from e's offender with its type and code (RFC 5508 REQ-4, RFC
-// 4787 REQ-12): quoting kept, whose lengths stay the leaf's, then as much of
-// prefix, the payload the error quoted, as the kept datagram's payload holds,
-// the error's own lengths claiming what it holds, within 576 bytes in IPv4
-// (RFC 1812 section 4.3.2.3) and 1280 in IPv6 (RFC 4443 section 2.4 (c)). A
-// too big carries e's MTU and a parameter problem its pointer, and the error
-// the TTL or hop limit hops. nil for an error of any other type, or from the
-// other family.
+// 4787 REQ-12). It quotes kept, then as much of prefix, the payload the error
+// quoted, as kept's UDP length holds, the whole within 576 bytes in IPv4 (RFC
+// 1812 section 4.3.2.3) and 1280 in IPv6 (RFC 4443 section 2.4 (c)). An IPv4
+// Fragmentation Needed carries e's MTU, a parameter problem its pointer, and
+// any other IPv4 error zero past its checksum. An ICMPv6 error of any type
+// below 128 carries the four octets past its checksum as e's info holds them.
+// A type RFC 4443 does not name is relayed too, since such an error is passed
+// on (its section 2.4 (a)). A type 1 or 3 carries the router's RFC 4884
+// length attribute as it came, also where the exit cut the extension it
+// names. The error carries the TTL or hop limit hops. nil for an IPv4 error
+// of another type, an ICMPv6 informational message, or an error from the other
+// family.
 func relayedError(kept []byte, e icmpError, prefix []byte, hops uint8) []byte {
 	payload := int(binary.BigEndian.Uint16(kept[len(kept)-4:len(kept)-2])) - 8
 	quote := append(append(make([]byte, 0, len(kept)+len(prefix)), kept...), prefix[:max(min(len(prefix), payload), 0)]...)
@@ -822,7 +986,7 @@ func relayedError(kept []byte, e icmpError, prefix []byte, hops uint8) []byte {
 			return nil
 		}
 		return packet.Relayed(quote, e.offender, hops, e.kind, e.code, rest)
-	case kept[0]>>4 == 6 && e.offender.Is6() && e.kind >= 1 && e.kind <= 4:
+	case kept[0]>>4 == 6 && e.offender.Is6() && e.kind < 128:
 		return srv6.Relayed(quote, e.offender, hops, e.kind, e.code, e.info)
 	}
 	return nil

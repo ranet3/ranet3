@@ -500,11 +500,16 @@ func twoAddressesHeld(t *testing.T) (*relayHarness, [2]netip.Prefix) {
 	return h, prefixes
 }
 
-// onLoopback claims this namespace and gives loopback each of prefixes it does
-// not hold yet
+// onLoopback claims this namespace, gives loopback the rig's servers as a leaf
+// rig does, once in the process, so that no rig built later finds one of them
+// there before it, and gives loopback each of prefixes it does not hold yet
 func onLoopback(t *testing.T, prefixes ...netip.Prefix) {
 	t.Helper()
 	claim(t)
+	serversOnce.Do(func() { serversErr = addServers() })
+	if serversErr != nil {
+		t.Fatalf("address the servers on loopback: %v", serversErr)
+	}
 	if err := netnstest.BringUp("lo"); err != nil {
 		t.Fatal(err)
 	}

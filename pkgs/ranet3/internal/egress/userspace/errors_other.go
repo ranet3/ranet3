@@ -26,4 +26,4 @@ func connectionFailed(uintptr) bool { return false }
 func watchErrors(int, bool) error { return nil }
 
 // drainErrors finds no error where the kernel keeps no error queue
-func drainErrors(int, []byte, func(icmpError, []byte)) {}
+func drainErrors(int, []byte, func(icmpError, []byte, bool)) {}

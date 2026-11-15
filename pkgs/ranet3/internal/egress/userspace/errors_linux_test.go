@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"os"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -139,6 +140,61 @@ func TestServersErrorReachesTheLeafsSocket(t *testing.T) {
 	}
 }
 
+// Every error a server raises about a destination's datagram reaches the
+// leaf's own socket, whose kernel takes the quote the exit builds where the
+// datagrams differed, with the payload the leaf sent: port unreachables about
+// each of four datagrams of three sizes to a closed port, and about a
+// datagram after 17 to a server that then went away. With the host's errors
+// carrying RFC 5837's interface information in an RFC 4884 extension, the
+// payload the leaf is told of is still its own, no padding or extension
+// after it.
+func TestEveryErrorOfADestinationReachesTheLeafsSocket(t *testing.T) {
+	r := newLeafRig(t, func(rt Runtime) (*Exit, error) { return New(exitConfig(), rt) })
+	for _, extension := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "extension"}[extension], func(t *testing.T) {
+			if extension {
+				for _, path := range []string{"/proc/sys/net/ipv4/icmp_errors_extension_mask", "/proc/sys/net/ipv6/icmp/errors_extension_mask"} {
+					if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
+						t.Skipf("set %s: %v", path, err)
+					}
+					t.Cleanup(func() { _ = os.WriteFile(path, []byte("0\n"), 0o644) })
+				}
+			}
+			for _, family := range rigFamilies {
+				t.Run(family.name, func(t *testing.T) {
+					told := func(leaf *net.UDPConn, to netip.AddrPort, payload []byte) {
+						t.Helper()
+						if _, err := leaf.WriteToUDPAddrPort(payload, to); err != nil {
+							t.Fatal(err)
+						}
+						if e, quoted := waitTold(t, r, leaf); e.offender != to.Addr() || !bytes.Equal(quoted, payload) {
+							t.Errorf("the leaf was told of %+v quoting %x, want an error from %s quoting %x", e, quoted, to.Addr(), payload)
+						}
+					}
+					watch := func(fd int) error { return watchErrors(fd, family.leaf.Is6()) }
+					closed := netip.AddrPortFrom(family.servers[0], freeUDPPort(t, family.servers[0]))
+					leaf := r.leafSocket(t, netip.AddrPortFrom(family.leaf, 0), watch)
+					for _, payload := range [][]byte{bytes.Repeat([]byte{0x11}, 25), bytes.Repeat([]byte{0x22}, 10), bytes.Repeat([]byte{0x33}, 40), bytes.Repeat([]byte{0x44}, 40)} {
+						told(leaf, closed, payload)
+					}
+					server := r.server(t, family.servers[1])
+					flow := r.leafSocket(t, netip.AddrPortFrom(family.leaf, 0), watch)
+					for i := range 17 {
+						payload := []byte{byte(i), 0x55, 0x55, 0x55}
+						if _, err := flow.WriteToUDPAddrPort(payload, serverAt(server)); err != nil {
+							t.Fatal(err)
+						}
+						readDatagramFrom(t, server, payload)
+					}
+					at := serverAt(server)
+					_ = server.Close()
+					told(flow, at, []byte{0x66, 0x66, 0x66, 0x66})
+				})
+			}
+		})
+	}
+}
+
 // waitTold is the first ICMP error conn's error queue holds within exitWait,
 // and the payload it quoted
 func waitTold(t *testing.T, r *leafRig, conn *net.UDPConn) (icmpError, []byte) {
@@ -147,7 +203,7 @@ func waitTold(t *testing.T, r *leafRig, conn *net.UDPConn) (icmpError, []byte) {
 	var quoted [][]byte
 	waitFor(t, "an error queued on "+serverAt(conn).String(), func() bool {
 		_ = onSocket(conn, func(fd int) error {
-			drainErrors(fd, make([]byte, 2048), func(e icmpError, prefix []byte) {
+			drainErrors(fd, make([]byte, 2048), func(e icmpError, prefix []byte, _ bool) {
 				told, quoted = append(told, e), append(quoted, bytes.Clone(prefix))
 			})
 			return nil

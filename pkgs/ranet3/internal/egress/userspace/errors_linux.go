@@ -51,7 +51,8 @@ func (q *errorQueue) read(error) (icmpError, bool) {
 	if err != nil {
 		return icmpError{}, false
 	}
-	return queuedError(oob[:oobn])
+	e, _, ok := queuedError(oob[:oobn])
+	return e, ok
 }
 
 // close turns the queue off and gives its descriptor back. A connection the
@@ -73,10 +74,7 @@ func (q *errorQueue) close() error {
 	if !q.held {
 		return nil
 	}
-	level, option := unix.IPPROTO_IP, unix.IP_RECVERR
-	if q.ipv6 {
-		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
-	}
+	level, option, _ := errorOptions(q.ipv6)
 	_ = unix.SetsockoptInt(q.fd, level, option, 0)
 	awaitLock(q.fd)
 	ended := q.settle()
@@ -147,29 +145,53 @@ func connectionFailed(fd uintptr) bool {
 }
 
 // watchErrors has the kernel queue each ICMP error about fd's datagrams, fd
-// a socket of family ipv6 or IPv4, and hand it to a read as its errno
+// a socket of family ipv6 or IPv4, as watch gives with that family's options
 func watchErrors(fd int, ipv6 bool) error {
-	level, option := unix.IPPROTO_IP, unix.IP_RECVERR
-	if ipv6 {
-		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
-	}
-	return unix.SetsockoptInt(fd, level, option, 1)
+	level, option, extension := errorOptions(ipv6)
+	return watch(fd, level, option, extension)
 }
 
-// drainErrors empties fd's error queue, handing each an ICMP error with the
-// part of the offending datagram's payload the error quoted, read into buf.
-// It skips the errors the kernel raised itself, such as a datagram refused
-// for its size. Emptying the queue gives back the receive buffer its errors
-// held and clears the socket's pending errno.
-func drainErrors(fd int, buf []byte, each func(e icmpError, prefix []byte)) {
+// errorOptions is the level, the error option and the RFC 4884 option of
+// family ipv6 or IPv4
+func errorOptions(ipv6 bool) (level, option, extension int) {
+	if ipv6 {
+		return unix.IPPROTO_IPV6, unix.IPV6_RECVERR, unix.IPV6_RECVERR_RFC4884
+	}
+	return unix.IPPROTO_IP, unix.IP_RECVERR, unix.IP_RECVERR_RFC4884
+}
+
+// watch sets option at level on fd, which has the kernel queue each ICMP
+// error about fd's datagrams and hand it to a read as its errno, and asks for
+// extension, which has it say where an RFC 4884 extension starts in the
+// payload it queues. A kernel before Linux 5.9 lacks extension and refuses
+// it, and its errors then come whole, extension and all.
+func watch(fd, level, option, extension int) error {
+	if err := unix.SetsockoptInt(fd, level, option, 1); err != nil {
+		return err
+	}
+	_ = unix.SetsockoptInt(fd, level, extension, 1)
+	return nil
+}
+
+// drainErrors empties fd's error queue, read into buf, and hands each ICMP
+// error with the payload of the offending datagram it quoted, cut where the
+// kernel says an RFC 4884 extension starts, with padded true where it cut. It
+// skips the errors the kernel raised itself, such as a datagram refused for
+// its size. Emptying the queue gives back the receive buffer its errors held
+// and clears the socket's pending errno.
+func drainErrors(fd int, buf []byte, each func(e icmpError, prefix []byte, padded bool)) {
 	oob := make([]byte, errorSpace())
 	for {
 		n, oobn, _, _, err := unix.Recvmsg(fd, buf, oob, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
 		if err != nil {
 			return
 		}
-		if e, ok := queuedError(oob[:oobn]); ok {
-			each(e, buf[:n])
+		if e, extension, ok := queuedError(oob[:oobn]); ok {
+			if extension > 0 && extension <= n {
+				each(e, buf[:extension], true)
+			} else {
+				each(e, buf[:n], false)
+			}
 		}
 	}
 }
@@ -180,18 +202,31 @@ func errorSpace() int {
 }
 
 // queuedError is the ICMP error the control messages of one read of an error
-// queue name, false where they name none
-func queuedError(oob []byte) (icmpError, bool) {
+// queue name, and where an RFC 4884 extension starts in the payload the read
+// hands, false where they name no error. The offset is 0 where the kernel
+// names none. Where it names one and flags it invalid, which Linux does for
+// a version 2 extension whose checksum or objects fail, the exit takes no
+// offset either.
+func queuedError(oob []byte) (icmpError, int, bool) {
 	messages, err := unix.ParseSocketControlMessage(oob)
 	if err != nil {
-		return icmpError{}, false
+		return icmpError{}, 0, false
 	}
 	for _, m := range messages {
 		if (m.Header.Level == unix.IPPROTO_IP && m.Header.Type == unix.IP_RECVERR) || (m.Header.Level == unix.IPPROTO_IPV6 && m.Header.Type == unix.IPV6_RECVERR) {
-			return extendedError(m.Data)
+			e, ok := extendedError(m.Data)
+			if !ok {
+				return icmpError{}, 0, false
+			}
+			// ee_data's first 16 bits, in the host's byte order, then its
+			// flags (sock_ee_data_rfc4884)
+			if m.Data[14]&unix.SO_EE_RFC4884_FLAG_INVALID != 0 {
+				return e, 0, true
+			}
+			return e, int(binary.NativeEndian.Uint16(m.Data[12:14])), true
 		}
 	}
-	return icmpError{}, false
+	return icmpError{}, 0, false
 }
 
 // extendedError is the ICMP error a sock_extended_err and the offender's

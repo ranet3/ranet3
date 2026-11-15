@@ -459,12 +459,8 @@ func TestLeafErrorAboutAHairpinnedDatagramComesFromTheMappingItWentTo(t *testing
 		t.Errorf("dropped %d errors as about no mapping, want the one whose datagram either of two mappings could have let in", got)
 	}
 	time.Sleep(stackSettle)
-	for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
-		view := pkt.ToView()
-		p, ok := parse(view.AsSlice())
-		view.Release()
-		h.x.link.release(pkt)
-		if ok && p.protocol == protoICMP && p.dst == sender.Addr() {
+	for raw := h.laid(); raw != nil; raw = h.laid() {
+		if p, ok := parse(raw); ok && p.protocol == protoICMP && p.dst == sender.Addr() {
 			t.Errorf("laid %s toward the sender, want nothing", p)
 		}
 	}
@@ -563,12 +559,8 @@ func TestLeafErrorAboutAHairpinnedDatagramGoesByTheMappingsTheRecordStillNames(t
 					t.Errorf("dropped %d errors as about no mapping, want the one the record names two mappings for", dropped)
 				}
 				time.Sleep(stackSettle)
-				for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
-					view := pkt.ToView()
-					p, ok := parse(view.AsSlice())
-					view.Release()
-					h.x.link.release(pkt)
-					if ok && p.protocol == protoICMP && p.dst == sender.Addr() {
+				for raw := h.laid(); raw != nil; raw = h.laid() {
+					if p, ok := parse(raw); ok && p.protocol == protoICMP && p.dst == sender.Addr() {
 						t.Errorf("laid %s toward the sender, want nothing", p)
 					}
 				}
@@ -692,17 +684,6 @@ func tooBigFrom(from, server netip.Addr, kind, code byte, mtu uint32, offending 
 	return ipPacket(from, server, icmpProtocol(from), message)
 }
 
-// withOption4 is segment, an IPv4 packet, with four no-operation option bytes
-// in its header, its lengths and checksum following
-func withOption4(segment []byte) []byte {
-	b := append(append(append([]byte(nil), segment[:20]...), 1, 1, 1, 1), segment[20:]...)
-	b[0] = 4<<4 | 6
-	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
-	binary.BigEndian.PutUint16(b[10:12], 0)
-	binary.BigEndian.PutUint16(b[10:12], fold(sum(0, b[:24])))
-	return b
-}
-
 // sessionsApart has h's lanes reach forger through another session than every
 // other address
 func sessionsApart(h *relayHarness, forger netip.Addr) {
@@ -763,7 +744,7 @@ func TestLeafTooBigAboutTCPReachesTheStackFromAnySessionAtTheLeastMTU(t *testing
 			{"at 100 bytes", family.leaf, 100, segment, reasonLeafErrorMTU},
 		}
 		if family.leaf.Is4() {
-			cases = append(cases, tooBig{"quoting a header with options", family.leaf, family.least, withOption4(segment), ""})
+			cases = append(cases, tooBig{"quoting a header with options", family.leaf, family.least, withOptions(segment, 4), ""})
 		}
 		for _, c := range cases {
 			t.Run(family.name+" "+c.name, func(t *testing.T) {

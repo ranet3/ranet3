@@ -159,4 +159,4 @@ func (d *dialErrors) take(q quotedError) bool {
 func watchErrors(int, bool) error { return nil }
 
 // drainErrors finds no error, since XNU keeps no error queue
-func drainErrors(int, []byte, func(icmpError, []byte)) {}
+func drainErrors(int, []byte, func(icmpError, []byte, bool)) {}

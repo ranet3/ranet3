@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -151,21 +153,31 @@ type fataler interface {
 func (h *relayHarness) waitLaid(t fataler, what string, match func(raw []byte) bool) []byte {
 	deadline := time.Now().Add(exitWait)
 	for time.Now().Before(deadline) {
-		pkt := h.x.link.poll()
-		if pkt == nil {
+		raw := h.laid()
+		if raw == nil {
 			time.Sleep(time.Millisecond)
 			continue
 		}
-		view := pkt.ToView()
-		raw := bytes.Clone(view.AsSlice())
-		view.Release()
-		h.x.link.release(pkt)
 		if match(raw) {
 			return raw
 		}
 	}
 	t.Fatalf("no %s toward a leaf within %s", what, exitWait)
 	return nil
+}
+
+// laid is the bytes of the next packet the exit sent toward a leaf, nil
+// where it sent none since the last
+func (h *relayHarness) laid() []byte {
+	pkt := h.x.link.poll()
+	if pkt == nil {
+		return nil
+	}
+	view := pkt.ToView()
+	raw := bytes.Clone(view.AsSlice())
+	view.Release()
+	h.x.link.release(pkt)
+	return raw
 }
 
 // nextLaid is the next packet the exit sends toward a leaf within exitWait
@@ -1521,6 +1533,73 @@ func TestReadersAtRestHoldNoBuffer(t *testing.T) {
 	if grown := live() - before; grown >= datagramBuffer {
 		t.Errorf("the live heap grew by %d bytes once %d readers read a reply each, %.1f buffers of %d", grown, destinations, float64(grown)/datagramBuffer, datagramBuffer)
 	}
+}
+
+// flowCost names the process of its own that
+// TestFlowCarryingAMappingHoldsAtMostTenKiB measures in
+const flowCost = "USERSPACE_FLOW_COST"
+
+// flowHeld is the most a UDP flow that carries its mapping holds, past
+// perFlow, the share the budget gives each flow, which that flow's measure
+// passes at times
+const flowHeld = 10 << 10
+
+// What a flow that carries a mapping holds in Go's heap and in its stacks,
+// the mapping's, its destination's, their two sockets' and the two readers'
+// goroutines', stays within flowHeld: a leaf sending from a new port for each
+// flow makes each the first destination of its own mapping, which holds more
+// than a later destination of a mapping does. It is measured over 200 such
+// flows, since the runtime takes stacks in spans of 32 KiB that a handful of
+// flows may or may not fill, in a process of its own, since a process that
+// ran other tests hands new goroutines the stacks of ended ones, and the heap
+// and the stacks are logged apart. The race detector's stacks are deeper, and
+// its build logs alone.
+func TestFlowCarryingAMappingHoldsAtMostTenKiB(t *testing.T) {
+	if os.Getenv(flowCost) == "" {
+		cmd := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.v")
+		cmd.Env = append(os.Environ(), flowCost+"=1")
+		out, err := cmd.CombinedOutput()
+		_, logged, _ := bytes.Cut(out, []byte("flow cost: "))
+		var heap, stack int64
+		if _, scanned := fmt.Sscanf(string(logged), "heap %d stack %d", &heap, &stack); err != nil || scanned != nil {
+			t.Fatalf("the measuring process ended with %v and logged no cost:\n%s", err, out)
+		}
+		t.Logf("a flow carrying a mapping holds %d bytes of heap and %d of stack, %d in all, perFlow %d", heap, stack, heap+stack, perFlow)
+		if !raceBuild && heap+stack > flowHeld {
+			t.Errorf("a flow carrying a mapping holds %d bytes of heap and %d of stack, past %d", heap, stack, flowHeld)
+		}
+		return
+	}
+	const flows = 200
+	h := newRelayHarness(t, func(rt *Runtime, cfg *egress.Egress) {
+		rt.Limits.Flows = 2 * flows
+		cfg.FlowsPerSource = 2 * flows
+	})
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	payload := []byte("opens")
+	held := func() (heap, stack int64) {
+		// each reader reaches its wait, and the pool empties at two
+		// collections
+		time.Sleep(100 * time.Millisecond)
+		runtime.GC()
+		runtime.GC()
+		var s runtime.MemStats
+		runtime.ReadMemStats(&s)
+		return int64(s.HeapAlloc), int64(s.StackInuse)
+	}
+	heap, stack := held()
+	for range flows {
+		h.x.udp.take(udpDatagram(netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4)), serverAt(server), payload), false)
+		readDatagramFrom(t, server, payload)
+	}
+	heapAfter, stackAfter := held()
+	h.x.flows.mu.Lock()
+	open := h.x.flows.open
+	h.x.flows.mu.Unlock()
+	if open != flows {
+		t.Fatalf("%d flows held, want %d", open, flows)
+	}
+	t.Logf("flow cost: heap %d stack %d", (heapAfter-heap)/flows, (stackAfter-stack)/flows)
 }
 
 // A leaf's datagram to the host's own address at a port a mapping holds

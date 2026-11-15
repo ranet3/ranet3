@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -102,6 +103,81 @@ func TestServersErrorReachesTheLeafThroughTheICMPSocket(t *testing.T) {
 	if pkt := h.x.link.poll(); pkt != nil {
 		t.Errorf("laid a packet of %d bytes toward a leaf for another program's error handed to the reader", pkt.Size())
 		h.x.link.release(pkt)
+	}
+}
+
+// XNU takes the quote the exit builds of a leaf's datagram, where it knows
+// every field and where two datagrams differed in every field it then zeroes,
+// options and extension headers left out and the UDP length claiming the
+// payload quoted: a port unreachable quoting it, handed through a raw ICMP
+// socket to a UDP socket of the host's connected as the leaf's was, fails the
+// socket's next read with ECONNREFUSED, since XNU finds the socket by the
+// quote's addresses and ports alone. Root alone opens the raw socket.
+func TestXNUTakesTheQuoteOfADatagramWhoseFieldsDiffered(t *testing.T) {
+	for _, loopback := range []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()} {
+		for _, differed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s differed %t", loopback, differed), func(t *testing.T) {
+				domain, protocol, kind, code := unix.AF_INET6, unix.IPPROTO_ICMPV6, byte(1), byte(4)
+				var to unix.Sockaddr = &unix.SockaddrInet6{Addr: loopback.As16()}
+				if loopback.Is4() {
+					domain, protocol, kind, code = unix.AF_INET, unix.IPPROTO_ICMP, 3, 3
+					to = &unix.SockaddrInet4{Addr: loopback.As4()}
+				}
+				fd, err := unix.Socket(domain, unix.SOCK_RAW, protocol)
+				if err != nil {
+					t.Skipf("no raw ICMP socket for the test: %v", err)
+				}
+				defer unix.Close(fd)
+				server := netip.AddrPortFrom(loopback, freeUDPPort(t, loopback))
+				conn, err := net.DialUDP(udpNetwork(loopback), nil, net.UDPAddrFromAddrPort(server))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				leaf := serverAt(conn)
+				payload := []byte("the leaf's datagram")
+				sent := [][]byte{leafDatagram(leaf, server, payload, 1)}
+				if differed {
+					longer := udpMessage(leaf, server, bytes.Repeat([]byte{0x77}, 40))
+					var other []byte
+					if loopback.Is4() {
+						other = ip4(loopback, loopback, protoUDP, 2, 0x4000, 1, longer)
+						other[1] = 0xb8
+						other = withOptions(other, 4)
+					} else {
+						other = ip6(loopback, loopback, ipv6DestinationOptions, 1, append([]byte{protoUDP, 0, 1, 4, 0, 0, 0, 0}, longer...))
+						binary.BigEndian.PutUint32(other[0:4], 6<<28|0xb8<<20|0x12345)
+					}
+					sent = append(sent, other)
+				}
+				dst := &destination{to: server}
+				for _, raw := range sent {
+					d, ok := readDatagram(raw)
+					if !ok {
+						t.Fatalf("the test's datagram %x does not read", raw)
+					}
+					dst.keep(raw, d)
+				}
+				every := fieldClass | fieldIdent | fieldFragment | fieldHops | fieldOptions | fieldLength | fieldChecksum
+				if loopback.Is6() {
+					every = fieldClass | fieldFlow | fieldHops | fieldOptions | fieldLength | fieldChecksum
+				}
+				if want := map[bool]fields{false: 0, true: every}[differed]; dst.varied != want {
+					t.Fatalf("the datagrams differed in %08b, want %08b", dst.varied, want)
+				}
+				message := append(append([]byte{kind, code, 0, 0, 0, 0, 0, 0}, dst.quote(0, payload, false)...), payload...)
+				if loopback.Is4() {
+					binary.BigEndian.PutUint16(message[2:4], fold(sum(0, message)))
+				}
+				if err := unix.Sendto(fd, message, 0, to); err != nil {
+					t.Fatalf("send the port unreachable: %v", err)
+				}
+				_ = conn.SetReadDeadline(time.Now().Add(exitWait))
+				if _, err := conn.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNREFUSED) {
+					t.Errorf("the socket read %v, want ECONNREFUSED", err)
+				}
+			})
+		}
 	}
 }
 
