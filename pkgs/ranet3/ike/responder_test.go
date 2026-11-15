@@ -3750,29 +3750,34 @@ func TestNegotiationStepAndStrayDatagramSpendNoReport(t *testing.T) {
 }
 
 func testNegotiationStepAndStrayDatagramSpendNoReport(t *testing.T) {
-	for name, err := range map[string]error{
-		"INVALID_KE_PAYLOAD": &invalidKEError{DH_CURVE25519},
-		"stray request":      errStray,
+	for name, test := range map[string]struct {
+		err     error
+		message string
+	}{
+		"INVALID_KE_PAYLOAD": {&invalidKEError{DH_CURVE25519}, "ike responder asked an initiator for another group"},
+		"COOKIE":             {errCookieChallenge, "ike responder required a cookie"},
+		"stray request":      {errStray, "ike responder dropped a stray datagram"},
 	} {
 		source := observedEndpoint(t, listenHub(t), 0x66)
-		var levels []slog.Level
-		logtest.SetDefault(t, slog.New(&levelRecorder{levels: &levels}))
+		lines := recordLines(t)
 		r := newFailureRecorder()
 		failures := &recorder{}
 		r.cfg.Events = failures.record
-		r.noteHandshakeFailure(source, err)
-		if len(levels) != 1 || levels[0] != slog.LevelDebug || len(failures.recorded()) != 0 {
-			t.Errorf("%s: wrote %v and recorded %q, want one debug line and nothing recorded", name, levels, failures.recorded())
+		r.noteHandshakeFailure(source, test.err)
+		got := lines.said(slog.LevelDebug, test.message, "err")
+		if len(got) != 1 || got[0].String() != test.err.Error() || len(failures.recorded()) != 0 {
+			t.Errorf("%s: wrote %v and recorded %q, want one debug line with its error and nothing recorded", name, got, failures.recorded())
 		}
-		levels = nil
 		r.noteHandshakeFailure(source, errors.New("no registry entry"))
-		if len(levels) != 1 || levels[0] != slog.LevelWarn || len(failures.recorded()) != 1 {
-			t.Errorf("%s: the source's failure after it wrote %v and recorded %q, want one warn line recorded", name, levels, failures.recorded())
+		got = lines.said(slog.LevelWarn, "ike responder handshake failed", "err")
+		if len(got) != 1 || len(failures.recorded()) != 1 {
+			t.Errorf("%s: the source's failure after it wrote %v and recorded %q, want one warn line recorded", name, got, failures.recorded())
 		}
 	}
 }
 
-func TestCookieNegotiationPreservesRefusalReport(t *testing.T) {
+// a COOKIE answer is no failed handshake, and the same source's next refusal is still warned and recorded
+func TestCookieAnswerSpendsNoReport(t *testing.T) {
 	bubble.Run(func(t *testing.T) {
 		lines := recordLines(t)
 		failures := &recorder{}
@@ -3786,23 +3791,18 @@ func TestCookieNegotiationPreservesRefusalReport(t *testing.T) {
 			t.Fatalf("cookie retry failed: %v", err)
 		}
 		defer initiator.Mux().Close()
-		responder := <-h.sessions
-		defer responder.Mux().Close()
 		<-h.identities
 		time.Sleep(quietPeriod)
-		if got := lines.said(slog.LevelDebug, "ike responder sent a cookie challenge", "peer"); len(got) != 1 {
+		if got := lines.said(slog.LevelDebug, "ike responder required a cookie", "peer"); len(got) != 1 {
 			t.Errorf("cookie negotiation wrote %d debug lines, want one", len(got))
 		}
 		if got := lines.said(slog.LevelWarn, "ike responder handshake failed", "err"); len(got) != 0 {
 			t.Errorf("successful cookie negotiation warned of failures: %v", got)
 		}
-		initialFailures := recordedKind(failures, "ike.handshake.failed")
-		if initialFailures != 0 {
-			t.Errorf("successful cookie negotiation recorded %d failures", initialFailures)
+		if got := recordedKind(failures, "ike.handshake.failed"); got != 0 {
+			t.Errorf("successful cookie negotiation recorded %d failures", got)
 		}
 
-		// passing the global floor isolates the source's report interval
-		time.Sleep(2 * handshakeFloor)
 		_, wrongKey, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
@@ -3820,7 +3820,7 @@ func TestCookieNegotiationPreservesRefusalReport(t *testing.T) {
 		if len(warnings) != 1 || warnings[0].String() != "ike: AUTH signature verification failed" {
 			t.Errorf("refusal after cookie negotiation warned %v, want the signature failure", warnings)
 		}
-		if got := recordedKind(failures, "ike.handshake.failed") - initialFailures; got != 1 {
+		if got := recordedKind(failures, "ike.handshake.failed"); got != 1 {
 			t.Errorf("refusal after cookie negotiation recorded %d new failures, want one", got)
 		}
 	})(t)
@@ -4064,11 +4064,17 @@ func TestCookieAnswersCountOnlySuccessfulWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.halfOpen = cookieThreshold
-	if _, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: raw, Endpoint: endpoint}); !errors.Is(err, errCookieChallenge) {
+	lines := recordLines(t)
+	_, _, err = r.handshake(t.Context(), transport.Unclaimed{Raw: raw, Endpoint: endpoint})
+	if !errors.Is(err, errCookieChallenge) {
 		t.Fatalf("failed cookie write: %v", err)
 	}
 	if got := answers.Load(); got != 3 {
 		t.Fatalf("failed write changed cookie count to %d", got)
+	}
+	r.noteHandshakeFailure(endpoint, err)
+	if got := lines.said(slog.LevelDebug, "ike responder required a cookie", "err"); len(got) != 1 || got[0].String() != err.Error() {
+		t.Errorf("failed cookie write reported %v, want the cookie requirement without claiming a send", got)
 	}
 }
 

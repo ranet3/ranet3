@@ -911,16 +911,18 @@ func contentDigest(m *opened) ([sha256.Size]byte, error) {
 // errStray is the end of a message of an IKE SA this node does not hold, such as a liveness check on one it no longer holds
 var errStray = errors.New("ike: unclaimed message of an IKE SA this node does not hold")
 
-var errCookieChallenge = errors.New("ike: cookie challenge sent")
+// errCookieChallenge ends a request that needs a cookie without spending a failure report, whether its answer was written or not
+var errCookieChallenge = errors.New("ike: cookie required")
 
-// anyone who can reach the port can drive failures, so warnings and events share one limit
+// noteHandshakeFailure reports a handshake that failed at warn, since it is the whole responder side of a peer that cannot connect, and rate limited, since anyone who can reach the port can drive it
+// an answer naming the group to use and a cookie challenge are steps of the negotiation, and a message of an IKE SA this node does not hold is no handshake, so none spends the source's report
 func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error) {
 	if _, wrongGroup := errors.AsType[*invalidKEError](err); wrongGroup {
 		slog.Debug("ike responder asked an initiator for another group", "peer", endpoint, "err", err)
 		return
 	}
 	if errors.Is(err, errCookieChallenge) {
-		slog.Debug("ike responder sent a cookie challenge", "peer", endpoint)
+		slog.Debug("ike responder required a cookie", "peer", endpoint, "err", err)
 		return
 	}
 	if errors.Is(err, errStray) {
@@ -932,7 +934,8 @@ func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error)
 		return
 	}
 	slog.Warn("ike responder handshake failed", "peer", endpoint, "err", err)
-	// a key failing its FIPS 203 check is rate limited too, since anyone past IKE_SA_INIT can send one
+	// recorded where it is said, so a source that fails over and over costs the record what it costs the log
+	// a key failing its FIPS 203 check is among those, since anyone past IKE_SA_INIT can send one
 	if r.cfg.Events != nil {
 		from := slog.String("from", endpoint.String())
 		if rejected, ok := errors.AsType[*kexRejection](err); ok {
