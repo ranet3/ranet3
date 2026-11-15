@@ -680,17 +680,19 @@ which reassembles or parses it first:
   identifier where no other mapping holds it, and an idle echo mapping ends
   after 60 seconds. The exit takes only a reply on an identifier a mapping holds
   from a destination that mapping sent to, and counts the rest.
-- **Errors** a server or a router raises about a mapping's datagram, or about a
-  dial that fails, reach the leaf from the address that raised them. A leaf's
-  own error about a reply leaves from the mapping
-  [the userspace exit](design/protocol-deviations.md#the-userspace-exit) finds
-  for it. Toward a server it goes through a raw socket, which only root opens,
-  and toward a leaf whose datagram the exit hairpinned it goes back to that leaf
-  with no raw socket. Where the exit finds no mapping, or an error toward a
-  server finds no raw socket or fails to send, the error is dropped and counted.
-  Any other error a leaf sends reaches the exit's stack only where the exit
-  reads its quote down to a TCP header, or is dropped and counted as
-  `leaf error quote`. An error in fragments is counted as `leaf error fragment`.
+- **Errors** a server or a router raises about a dial that fails reach the leaf
+  from the address that raised them, and so do those about a mapping's datagram
+  that [the userspace exit](design/protocol-deviations.md#the-userspace-exit)
+  relays, quoting the fields of the datagram the exit kept. A leaf's own error
+  about a reply leaves from a mapping of the leaf's port that sent to the
+  reply's server, the one that section says the exit picks. Toward a server the
+  leaf's error goes through a raw socket, which only root opens, and toward a
+  leaf whose datagram the exit hairpinned it goes back to that leaf with no raw
+  socket. Where the exit finds no mapping, or an error toward a server finds no
+  raw socket or fails to send, the error is dropped and counted. Any other error
+  a leaf sends reaches the exit's stack only where the exit reads its quote down
+  to a TCP header, or is dropped and counted as `leaf error quote`. An error in
+  fragments is counted as `leaf error fragment`.
   - A Packet Too Big below 1280 bytes or a Fragmentation Needed below 552 is
     counted as `leaf error mtu`. One at or above that floor reaches the stack
     from any session, since one from a waypoint or a later hop comes from an
