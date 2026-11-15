@@ -386,9 +386,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
 	}
 	// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
-	fail := func(err error) {
+	fail := func(schedule *rekeySchedule, err error) {
 		if ending == nil {
-			end(childSchedule, "local failure", err)
+			end(schedule, "local failure", err)
 		}
 	}
 	// the time it returns is taken before the timer is reset, so the schedule's own retry never finds itself held
@@ -472,9 +472,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		s.emit("ike.suite.unlisted", slog.String("sa", sa), slog.String("suite", suite), slog.String("action", "rekey"))
 		return nil
 	}
-	resuite := func() error {
+	resuite := func() (*rekeySchedule, error) {
 		if ending != nil || replacing {
-			return nil
+			return nil, nil
 		}
 		child, ikeSA, prf := s.unlisted()
 		if prf {
@@ -484,22 +484,22 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			replacing = true
 			s.emit("ike.suite.unlisted", slog.String("sa", "ike"), slog.String("suite", ikeSA), slog.String("action", "replace"))
 			rekeys.Go(func() { replaced <- s.DeleteIKE() })
-			return nil
+			return nil, nil
 		}
 		if err := force(ikeSchedule, "ike", ikeSA); err != nil {
-			return err
+			return ikeSchedule, err
 		}
 		// RFC 7296 section 2.17: "KEYMAT = prf+(SK_d, Ni | Nr)"
 		// a Child SA rekeys once the IKE SA it takes SK_d from holds listed transforms
 		// or once that IKE SA's rekey failed
 		if ikeSA == "" || ikeSchedule.failures > 0 {
 			if err := force(childSchedule, "child", child); err != nil {
-				return err
+				return childSchedule, err
 			}
 		}
-		return nil
+		return nil, nil
 	}
-	if err := resuite(); err != nil {
+	if _, err := resuite(); err != nil {
 		return err
 	}
 	// RFC 7296 section 2.3: "An IKE endpoint MUST wait for a response to each of its messages before sending a subsequent message unless it has received a SET_WINDOW_SIZE Notify message from its peer informing it that the peer is prepared to maintain state for multiple outstanding messages in order to allow greater throughput."
@@ -541,10 +541,10 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		// every other reading in the pass takes time.Now itself, where a stale reading would do no harm
 		now := s.clock()
 		if err := s.expireChild(now); err != nil {
-			fail(err)
+			fail(childSchedule, err)
 		}
 		if err := s.expireRetiredChildren(now); err != nil {
-			fail(err)
+			fail(childSchedule, err)
 		}
 		if child, ok := s.overdueRetiring(now); ok {
 			rekeys.Go(func() { s.deleteOverdueChild(child) })
@@ -553,7 +553,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		s.expireChain(now)
 		fragmentsExpire, fragmentsHeld := s.expireFragments(now)
 		if err := settleChildRekeys(); err != nil {
-			fail(err)
+			fail(childSchedule, err)
 		}
 		// a check the lists asked for runs here, taken here or by the wait below, which may take a datagram that came after it first
 		// so a peer's Delete crossing this end's own finds the IKE SA's replacement under way, and the session ends for a new handshake
@@ -564,8 +564,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		if resuiteDue {
 			resuiteDue = false
-			if err := resuite(); err != nil {
-				fail(err)
+			if schedule, err := resuite(); err != nil {
+				fail(schedule, err)
 			}
 		}
 		select {
@@ -736,7 +736,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			s.sendPending(pending)
 			continue
 		case err := <-s.childFailed:
-			fail(err)
+			fail(childSchedule, err)
 			continue
 		case <-s.probes:
 			// a quiet session's rekey or the peer's chain it waits on proves the path, and a liveness check beside them is a request the peer may destroy the IKE SA for

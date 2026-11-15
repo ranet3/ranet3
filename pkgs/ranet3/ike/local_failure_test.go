@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/bubble"
@@ -189,6 +190,33 @@ func testRefusedDrawAfterAnIKESARekeyDeletesTheIKESA(t *testing.T) {
 		initiator.rekeyJitterSource = failingDraws(1)
 	})
 	deletedOnFailure(t, pair, "ike")
+}
+
+// a failed draw for a forced rekey records the SA it could not rekey on the close
+func TestRefusedDrawForAnUnlistedSADeletesTheIKESA(t *testing.T) {
+	for _, test := range []struct {
+		sa     string
+		crypto Crypto
+	}{
+		{"ike", Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}}},
+		{"child", Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}}},
+	} {
+		t.Run(test.sa, bubble.Run(func(t *testing.T) {
+			var listed atomic.Pointer[Suites]
+			listed.Store(&Suites{})
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				cfg.IKERekeyInterval = time.Hour
+				cfg.Suites = func() Suites { return *listed.Load() }
+			}, func(initiator, _ *Session) {
+				initiator.rekeyJitterSource = failingDraws(1)
+			})
+			synctest.Wait()
+			aes128 := suitesOf(t, test.crypto)
+			listed.Store(&aes128)
+			pair.initiator.SuitesChanged()
+			deletedOnFailure(t, pair, test.sa)
+		}))
+	}
 }
 
 // a drained Child SA the dataplane refuses to retire closes the IKE SA with a Delete, and is not asked again
