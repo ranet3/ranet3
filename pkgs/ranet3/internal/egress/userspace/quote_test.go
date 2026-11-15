@@ -6,7 +6,11 @@ package userspace
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"net"
 	"net/netip"
+	"os"
+	"syscall"
 	"testing"
 )
 
@@ -418,21 +422,197 @@ func leafDatagram(leaf, server netip.AddrPort, payload []byte, id uint16) []byte
 	return ip4(leaf.Addr(), server.Addr(), protoUDP, id, 0, 64, message)
 }
 
-// An error on a destination's socket that has sent nothing is about no
-// datagram of the exit's: it reaches no leaf and is counted
-func TestErrorOnASocketThatSentNothingIsCounted(t *testing.T) {
+// An error about a destination the exit wrote nothing to is about no datagram
+// of the exit's: it reaches no leaf and is counted `icmp not ours`, not
+// `quoted length`, both as Linux's queue hands it on the destination's socket
+// and as macOS's ICMP socket hands it, quoting a UDP length
+func TestErrorOnASocketTheExitWroteNothingToIsCounted(t *testing.T) {
 	h := newRelayHarness(t, nil)
+	leaf, outside := netip.AddrPortFrom(leaf4, 40004), netip.MustParseAddrPort("198.51.100.17:40004")
 	dst := &destination{to: netip.MustParseAddrPort("203.0.113.9:4000")}
-	before := h.count(false, reasonNotOurs)
-	dst.mu.Lock()
-	h.x.udp.relay(dst, icmpError{offender: netip.MustParseAddr("198.51.100.1"), kind: 3, code: 3}, 0, []byte("a payload"), false)
-	dst.mu.Unlock()
-	if got := h.count(false, reasonNotOurs) - before; got != 1 {
-		t.Errorf("counted %d errors about no datagram of the exit's, want 1", got)
+	defer h.mapped(leaf, outside, dst)()
+	e := icmpError{offender: netip.MustParseAddr("198.51.100.1"), kind: 3, code: 3}
+	for _, how := range []string{"Linux's queue hands", "macOS's socket hands"} {
+		notOurs, dropped := h.count(false, reasonNotOurs), h.count(false, reasonQuotedLength)
+		if how == "Linux's queue hands" {
+			dst.mu.Lock()
+			h.x.udp.relay(dst, e, 0, []byte("a payload"), false)
+			dst.mu.Unlock()
+		} else if !h.x.udp.relayQuoted(quotedError{icmpError: e, protocol: protoUDP, from: outside, to: dst.to, length: 17, prefix: []byte("a payload")}) {
+			t.Errorf("the error %s was not taken as the mapping's", how)
+		}
+		if got, gotDropped := h.count(false, reasonNotOurs)-notOurs, h.count(false, reasonQuotedLength)-dropped; got != 1 || gotDropped != 0 {
+			t.Errorf("the error %s was counted %d times as no flow of the exit's and %d as of a quoted length, want once and none", how, got, gotDropped)
+		}
+		if laid := h.laid(); laid != nil {
+			t.Errorf("the error %s laid a packet of %d bytes toward a leaf", how, len(laid))
+		}
 	}
-	if pkt := h.x.link.poll(); pkt != nil {
-		t.Errorf("laid a packet of %d bytes toward a leaf for an error about no datagram", pkt.Size())
-		h.x.link.release(pkt)
+}
+
+// refusal is a write's failure with EHOSTUNREACH, which either platform
+// hands for a datagram the host refused
+func refusal() error {
+	return &net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("write", syscall.EHOSTUNREACH)}
+}
+
+// An error about a datagram the host refused reaches the leaf whatever the
+// destination's socket sent before or after it, and quotes that datagram's
+// own UDP length: datagrams of 13, 48 and 108 octets all refused, then the
+// one of 48 sent first and the others refused past it, then the others
+// refused before it is sent. Each datagram carries its own TOS or traffic
+// class, TTL or hop limit, UDP checksum and IPv4 identification, and the
+// second differs from the others in its IPv4 DF flag, IPv6 flow label and
+// options or extension headers, so every quote holds 0 for each of those
+// fields and no options or extension headers, beside the leaf's and the
+// server's addresses and ports. The error macOS's ICMP socket hands about
+// each written datagram is relayed with the UDP length it quotes, the IP
+// length that follows and the payload it quotes, and one quoting 12 or 109
+// octets, outside the range of the written ones, is dropped and counted
+// `quoted length`. The error Linux's queue hands, quoting no UDP header,
+// quotes 8 octets more than its payload, held to the longest written
+// datagram, so 108 where it quotes the longest one's payload with 20 octets
+// past it. None is counted `icmp not ours`. Each family's datagrams go to a
+// server on its loopback.
+func TestErrorAboutRefusedDatagramReachesTheLeafWhateverTheSocketSent(t *testing.T) {
+	type write struct {
+		size int
+		sent bool
+	}
+	alone := []write{{5, false}, {40, false}, {100, false}}
+	past := []write{{40, true}, {5, false}, {100, false}}
+	before := []write{{5, false}, {100, false}, {40, true}}
+	for _, c := range []struct {
+		name          string
+		loopback      netip.Addr
+		leaf, outside netip.AddrPort
+		router        netip.Addr
+		kind, code    byte
+		writes        []write
+	}{
+		{"ipv4 refused alone", netip.MustParseAddr("127.0.0.1"), netip.AddrPortFrom(leaf4, 40003), netip.MustParseAddrPort("198.51.100.17:40003"), netip.MustParseAddr("198.51.100.1"), 3, 13, alone},
+		{"ipv6 refused alone", netip.IPv6Loopback(), netip.AddrPortFrom(leaf6, 40003), netip.MustParseAddrPort("[2001:db8:1::1]:40003"), netip.MustParseAddr("2001:db8:2::1"), 1, 1, alone},
+		{"ipv4 refused past a sent datagram", netip.MustParseAddr("127.0.0.1"), netip.AddrPortFrom(leaf4, 40003), netip.MustParseAddrPort("198.51.100.17:40003"), netip.MustParseAddr("198.51.100.1"), 3, 13, past},
+		{"ipv6 refused past a sent datagram", netip.IPv6Loopback(), netip.AddrPortFrom(leaf6, 40003), netip.MustParseAddrPort("[2001:db8:1::1]:40003"), netip.MustParseAddr("2001:db8:2::1"), 1, 1, past},
+		{"ipv4 refused before a sent datagram", netip.MustParseAddr("127.0.0.1"), netip.AddrPortFrom(leaf4, 40003), netip.MustParseAddrPort("198.51.100.17:40003"), netip.MustParseAddr("198.51.100.1"), 3, 13, before},
+		{"ipv6 refused before a sent datagram", netip.IPv6Loopback(), netip.AddrPortFrom(leaf6, 40003), netip.MustParseAddrPort("[2001:db8:1::1]:40003"), netip.MustParseAddr("2001:db8:2::1"), 1, 1, before},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, nil)
+			server := loopbackServer(t, c.loopback)
+			to := serverAt(server)
+			conn, err := net.DialUDP(udpNetwork(c.loopback), nil, net.UDPAddrFromAddrPort(to))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			dst := &destination{to: to, conn: conn}
+			defer h.mapped(c.leaf, c.outside, dst)()
+			payloads := map[uint16][]byte{}
+			for i, w := range c.writes {
+				payload := bytes.Repeat([]byte{byte(w.size)}, w.size)
+				raw := leafDatagram(c.leaf, to, payload, uint16(w.size))
+				if i != 1 {
+					raw = withOptions(raw, 8)
+				}
+				if c.leaf.Addr().Is4() {
+					raw[1], raw[8] = byte(4*(i+1)), byte(64-i)
+					if i != 1 {
+						raw[6] |= 0x40
+					}
+					binary.BigEndian.PutUint16(raw[10:12], 0)
+					binary.BigEndian.PutUint16(raw[10:12], fold(sum(0, raw[:int(raw[0]&0x0f)*4])))
+				} else {
+					flow := uint32(0x12345)
+					if i == 1 {
+						flow = 0x6789a
+					}
+					raw[1], raw[7] = byte(i+1)<<4|byte(flow>>16), byte(64-i)
+					raw[2], raw[3] = byte(flow>>8), byte(flow)
+				}
+				d, ok := readDatagram(raw)
+				if !ok {
+					t.Fatalf("the test's datagram %x does not read", raw)
+				}
+				payloads[uint16(len(d.udp))] = payload
+				if !w.sent {
+					dst.mu.Lock()
+					h.x.udp.failed(dst, raw, d, refusal(), 1, false)
+					dst.mu.Unlock()
+				} else if refused, closed := h.x.udp.send(raw, d, dst, false); refused || closed {
+					t.Fatalf("the datagram toward the loopback's server reported refused %t closed %t", refused, closed)
+				}
+			}
+			header := ipHeader(c.leaf.Addr().Is6())
+			check := func(laid []byte, how string, length int, payload []byte) {
+				t.Helper()
+				if laid == nil {
+					t.Errorf("the error %s reached no leaf", how)
+					return
+				}
+				quote := quoteOf(laid)
+				from, dest := packetAddresses(quote)
+				leaf := netip.AddrPortFrom(from, binary.BigEndian.Uint16(quote[header:header+2]))
+				server := netip.AddrPortFrom(dest, binary.BigEndian.Uint16(quote[header+2:header+4]))
+				if leaf != c.leaf || server != to {
+					t.Errorf("the error %s names %s to %s, want %s to %s", how, leaf, server, c.leaf, to)
+				}
+				if udp, ip := quotedLengths(quote, header); udp != length || ip != header+length || !bytes.Equal(quote[header+8:], payload) {
+					t.Errorf("the error %s quotes UDP length %d, IP length %d and %d octets of payload, want %d, %d and %d", how, udp, ip, len(quote)-header-8, length, header+length, len(payload))
+				}
+				class, hops := quote[0]<<4|quote[1]>>4, quote[7]
+				if c.leaf.Addr().Is4() {
+					class, hops = quote[1], quote[8]
+					if id := binary.BigEndian.Uint16(quote[4:6]); id != 0 {
+						t.Errorf("the error %s holds identification %d, which the written datagrams carried otherwise, want 0", how, id)
+					}
+					if length, flags := quote[0]&0x0f, binary.BigEndian.Uint16(quote[6:8]); length != 5 || flags != 0 {
+						t.Errorf("the error %s holds header length %d and flags and offset %#x, where the written datagrams' options and flags differed, want 5 and 0", how, length, flags)
+					}
+				} else if flow, next := uint32(quote[1]&0x0f)<<16|uint32(quote[2])<<8|uint32(quote[3]), quote[6]; flow != 0 || next != protoUDP {
+					t.Errorf("the error %s holds flow label %#x and next header %d, where the written datagrams' flow labels and extension headers differed, want 0 and %d", how, flow, next, protoUDP)
+				}
+				if checksum := binary.BigEndian.Uint16(quote[header+6 : header+8]); class != 0 || hops != 0 || checksum != 0 {
+					t.Errorf("the error %s holds class %d, hop count %d and UDP checksum %#x, which the written datagrams carried otherwise, want 0 for each", how, class, hops, checksum)
+				}
+			}
+			e := icmpError{offender: c.router, kind: c.kind, code: c.code}
+			notOurs, dropped := h.count(false, reasonNotOurs), h.count(false, reasonQuotedLength)
+			for _, length := range []uint16{13, 108, 48, 12, 109} {
+				h.drainLaid()
+				payload := payloads[length]
+				if !h.x.udp.relayQuoted(quotedError{icmpError: e, protocol: protoUDP, from: c.outside, to: to, length: length, prefix: payload}) {
+					t.Fatalf("the error quoting UDP length %d was not taken as the mapping's", length)
+				}
+				laid := h.laid()
+				switch {
+				case payload == nil && laid != nil:
+					t.Errorf("the error quoting UDP length %d, outside the written ones, reached the leaf", length)
+				case payload != nil:
+					check(laid, fmt.Sprintf("macOS's socket hands quoting UDP length %d", length), int(length), payload)
+				}
+			}
+			if got := h.count(false, reasonQuotedLength) - dropped; got != 2 {
+				t.Errorf("counted %d errors as of a length outside the written ones, want 2", got)
+			}
+			for _, q := range []struct {
+				prefix []byte
+				length int
+			}{
+				{payloads[13], 13},
+				{payloads[108], 108},
+				{append(bytes.Clone(payloads[108]), bytes.Repeat([]byte{0xee}, 20)...), 108},
+			} {
+				h.drainLaid()
+				dst.mu.Lock()
+				h.x.udp.relay(dst, e, 0, q.prefix, false)
+				dst.mu.Unlock()
+				check(h.laid(), fmt.Sprintf("Linux's queue hands quoting %d octets of payload", len(q.prefix)), q.length, q.prefix[:q.length-8])
+			}
+			if got := h.count(false, reasonNotOurs) - notOurs; got != 0 {
+				t.Errorf("counted %d errors as no flow of the exit's, want none", got)
+			}
+		})
 	}
 }
 

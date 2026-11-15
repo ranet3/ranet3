@@ -5,6 +5,7 @@ package userspace
 
 import (
 	"net"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,8 +28,12 @@ func setDontFragment(fd int, ipv6, on bool) error {
 	return unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, mode)
 }
 
-// fitDatagrams sets nothing, since Linux takes a datagram of any size while a
-// UDP socket's send buffer is not full (sock_alloc_send_pskb)
+// fitDatagrams sets nothing. Linux refuses a datagram with ENOBUFS where its
+// fragments past the first would take the socket's memory past twice its
+// send buffer (__ip_append_data), and the default buffer, wmem_default,
+// holds the largest datagram either family carries. A host that sets it
+// below half such a datagram's fragments refuses the largest datagrams with
+// DF clear.
 func fitDatagrams(int) error { return nil }
 
 // socketPathMTU is the MTU of the path conn, a connected socket, sends by, as
@@ -46,6 +51,11 @@ func socketPathMTU(conn *net.UDPConn, ipv6 bool) (int, error) {
 	})
 	return mtu, err
 }
+
+// platformICMPErrnos is the errnos Linux alone hands a socket for an ICMP
+// error, a destination unreachable of code 5 and of code 8
+// (icmp_err_convert, net/ipv4/icmp.c)
+var platformICMPErrnos = []syscall.Errno{syscall.EOPNOTSUPP, syscall.ENONET}
 
 // shareDialPort lets fd, a dial's socket, bind its mapping's address and port
 // while another dial of the mapping holds it toward another server, as

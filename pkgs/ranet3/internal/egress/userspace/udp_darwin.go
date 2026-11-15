@@ -6,6 +6,7 @@ package userspace
 import (
 	"errors"
 	"net"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,9 +33,24 @@ func fitDatagrams(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, datagramBuffer)
 }
 
-// socketPathMTU reads nothing, since darwin keeps no path MTU a socket hands
-// out, and the link's MTU stands for it
+// socketPathMTU reads nothing, so pathMTU takes the MTU of the interface the
+// route picks (Platform.Route). XNU refuses a plain IPv4 datagram with DF
+// against that same MTU, and against a figure that can be lower in two
+// cases: an IPv4 one on an interface it translates IPv4 to IPv6 on (CLAT46),
+// against the link's IPv6 MTU less the translation's overhead (ip_output),
+// and an IPv6 one, against the link's MTU (IN6_LINKMTU in
+// ip6_fragment_packet), which a router's advertisement can set below the
+// interface's. In those two cases a datagram between the figure XNU refuses
+// against and the interface's MTU is refused, written twice, counted unsent
+// and answered nothing. A narrower hop past the link answers with an error
+// of its own, which is relayed. XNU does keep
+// a connected IPv6 socket's path MTU, which IPV6_PATHMTU hands
+// (ip6_ctloutput), and the exit does not read it.
 func socketPathMTU(*net.UDPConn, bool) (int, error) { return 0, errors.ErrUnsupported }
+
+// platformICMPErrnos is none, since every errno XNU's inetctlerrmap and
+// inet6ctlerrmap hand for an ICMP error is Linux's too
+var platformICMPErrnos []syscall.Errno
 
 // shareDialPort lets fd, a dial's socket, bind its mapping's address and port
 // while another dial of the mapping holds it toward another server, which XNU

@@ -29,9 +29,19 @@ const (
 	reasonUDPChecksum = "udp checksum"
 	reasonFiltered    = "udp filtered"
 	reasonTruncated   = "udp truncated"
-	// a datagram its socket refused for a reason of the host's own, such as
-	// an address the host no longer holds
-	reasonUnsent      = "udp unsent"
+	// a datagram refused before it left: its DF setting failed before any
+	// write, or a write of it failed with an errno no ICMP error hands, with
+	// EMSGSIZE and DF where no path MTU reads, or past the first with no
+	// error queued
+	reasonUnsent = "udp unsent"
+	// a datagram written sendTries times, each write failing with an errno
+	// an ICMP error hands, every one past the first with an error queued,
+	// and none with DF failing with EMSGSIZE past the path MTU read or where
+	// none reads
+	reasonPending = "udp error pending"
+	// a datagram whose socket the exit closed before it left, opened again
+	// and closed again (deliver)
+	reasonClosed      = "udp closed"
 	reasonDescriptors = "descriptors"
 	reasonSocket      = "socket"
 	reasonWithdrawn   = "withdrawn"
@@ -60,6 +70,9 @@ const (
 type udpRelay struct {
 	x   *Exit
 	now func() time.Time
+	// drained is nil but in a test, which hands failed an answer of its own in
+	// place of whether the socket's queue held an error
+	drained func(queued bool) bool
 
 	mu sync.RWMutex
 	// mappings holds each leaf address and port's mappings, one on each
@@ -139,13 +152,14 @@ type destination struct {
 	// socket's errors, which quote what keep records
 	mu                        sync.Mutex
 	dontFragment, fragmentSet bool
-	// ip and udp are the leaf's IP header, its first ipLen bytes, 0 until a
-	// datagram left, and its UDP header, of the first datagram the socket
-	// sent. varied is the fields a later one carried another value in.
-	// shortest and longest are the least and the greatest UDP length the
-	// socket sent: the range an error's quoted UDP length must fall in, which
-	// macOS's ICMP socket alone hands (relayQuoted), and the most a length the
-	// exit computes claims (quote).
+	// ip and udp are the leaf's IP header, its first ipLen bytes, 0 until the
+	// exit wrote a datagram, and its UDP header, of the first datagram the
+	// exit wrote to the socket, whether the host sent it or refused it.
+	// varied is the fields a later one carried another value in. shortest and
+	// longest are the least and the greatest UDP length of the datagrams the
+	// exit wrote, sent or refused: the range an error's quoted UDP length must
+	// fall in, which macOS's ICMP socket alone hands (relayQuoted), and the
+	// most a length the exit computes claims (quote).
 	ip                [60]byte
 	ipLen             uint8
 	udp               [8]byte
@@ -323,7 +337,26 @@ func (u *udpRelay) carry(raw []byte, d datagram, dontFragment bool) {
 		u.refuse(raw, reason)
 		return
 	}
-	if u.send(raw, d, dst, dontFragment) && u.gone(m) {
+	u.deliver(raw, d, m, dst, dontFragment)
+}
+
+// deliver sends d, which raw holds, on dst, m's socket toward d's server as
+// open handed it over. Where the exit closed the socket since, as a pass
+// ending what is past its time or an ended mapping does, the datagram
+// crossing that close opens it once more and is sent once more.
+func (u *udpRelay) deliver(raw []byte, d datagram, m *mapping, dst *destination, dontFragment bool) {
+	refused, closed := u.send(raw, d, dst, dontFragment)
+	if closed {
+		var reason string
+		if m, dst, reason = u.open(d.from, d.to); dst == nil {
+			u.refuse(raw, reason)
+			return
+		}
+		if refused, closed = u.send(raw, d, dst, dontFragment); closed {
+			u.x.counts.drop(reasonClosed)
+		}
+	}
+	if refused && u.gone(m) {
 		u.end(m)
 	}
 }
@@ -670,61 +703,121 @@ func onSocket(conn *net.UDPConn, set func(fd int) error) error {
 	return setErr
 }
 
-// send sends d's payload toward its server, fragmenting it on the way out
-// only where dontFragment is false, and answers a datagram the path cannot
-// carry whole with a too big from the exit at the path's MTU (RFC 4787
-// REQ-13). A send that meets an errno the host hands for an ICMP error, the
-// EMSGSIZE a Fragmentation Needed or Packet Too Big leaves pending among
-// them, relays the errors the socket queued and is sent once again, since the
-// error may belong to an earlier datagram, so only a datagram refused for its
-// size on that second send is answered too big. A send that fails empties the
-// queue of what its failure queued. A datagram that leaves is kept for the
-// errors about it (keep). dst's deadline moves before the write, so whoever
-// sees the datagram arrive reads the deadline it set, and is put back where
-// the datagram did not leave (RFC 4787 section 4.3 counts a packet that
-// crosses). A datagram refused for a reason of the host's own, neither its
-// size, nor an ICMP error the socket was told of, nor a socket the exit closed
-// since open handed it over, is counted, and send reports it.
-func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment bool) (refused bool) {
+// send sends d's payload toward its server and reports whether the host
+// refused it (refused) or the exit closed the socket since open handed it
+// over (closed). The socket fragments the datagram on the way out only where
+// dontFragment is false, and failed gives the step past each failed write.
+// dst's deadline moves before the first write, so whoever sees the datagram
+// arrive reads the deadline it set, and is put back where the datagram did
+// not leave (RFC 4787 section 4.3 counts a packet that crosses). A datagram
+// the socket sent joins the record of the datagrams the exit wrote to dst's
+// socket (keep), and one whose write failed joins it in failed, unless the
+// exit had closed the socket.
+func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment bool) (refused, closed bool) {
 	dst.mu.Lock()
 	defer dst.mu.Unlock()
+	end, mtu := writeAgain, 0
 	if !dst.fragmentSet || dontFragment != dst.dontFragment {
-		if err := onSocket(dst.conn, func(fd int) error { return setDontFragment(fd, d.to.Addr().Is6(), dontFragment) }); err != nil {
-			return u.unsent(err)
+		err := onSocket(dst.conn, func(fd int) error { return setDontFragment(fd, d.to.Addr().Is6(), dontFragment) })
+		dst.dontFragment, dst.fragmentSet = dontFragment, err == nil
+		if err != nil {
+			end, mtu = u.failed(dst, raw, d, err, 0, dontFragment)
 		}
-		dst.dontFragment, dst.fragmentSet = dontFragment, true
 	}
 	before := dst.deadline.Swap(u.now().Add(timeoutFor(d.to)).UnixNano())
-	_, err := dst.conn.Write(d.payload())
-	if err != nil && icmpErrno(err) {
-		u.relayErrors(dst)
-		_, err = dst.conn.Write(d.payload())
-	}
-	if err != nil {
-		dst.deadline.Store(before)
-		u.relayErrors(dst)
-	} else {
-		dst.keep(raw, d)
-	}
-	if errors.Is(err, syscall.EMSGSIZE) && dontFragment {
-		if mtu := u.pathMTU(dst); mtu > 0 {
-			u.x.answers.Answer(raw, netstack.ExitTooBig, mtu)
+	for writes := 1; end == writeAgain; writes++ {
+		_, err := dst.conn.Write(d.payload())
+		if err == nil {
+			dst.keep(raw, d)
+			return false, false
 		}
+		end, mtu = u.failed(dst, raw, d, err, writes, dontFragment)
 	}
-	// an error the socket was told of is read and the datagram sent again
-	// above, so one still failing is the host's own
-	return err != nil && !errors.Is(err, syscall.EMSGSIZE) && u.unsent(err)
+	dst.deadline.Store(before)
+	switch end {
+	case endClosed:
+		return false, true
+	case endTooBig:
+		u.x.answers.Answer(raw, netstack.ExitTooBig, mtu)
+	case endPending:
+		u.x.counts.drop(reasonPending)
+	case endRefused:
+		u.x.counts.drop(reasonUnsent)
+		return true, false
+	}
+	return false, false
 }
 
-// unsent counts a datagram whose socket refused it with err, and reports it,
-// where the exit did not close the socket itself since open handed it over,
-// as a sweep or an ended mapping does
-func (u *udpRelay) unsent(err error) bool {
-	if errors.Is(err, net.ErrClosed) {
-		return false
+// writeEnd names the step send takes past a failed write of a datagram
+type writeEnd uint8
+
+const (
+	// endRefused counts the datagram unsent and reports it refused,
+	// endClosed reports its socket closed, endTooBig answers it too big, and
+	// endPending counts it failed by pending errors
+	endRefused writeEnd = iota
+	endClosed
+	endTooBig
+	endPending
+	// writeAgain writes the datagram once more
+	writeAgain
+)
+
+// failed gives the step send takes past a failed write of d, which raw holds,
+// to dst, and the MTU a too big answer carries. err is the failure, and
+// writes the count of writes made, 0 where setting DF failed before any.
+//
+// A socket the exit closed ends the datagram as closed, and a failure before
+// any write refuses it. Past a write the datagram joins the record of the
+// datagrams the exit wrote to dst's socket (keep), and the errors the socket
+// queued are relayed (relayErrors).
+// A write of a datagram with DF that failed with EMSGSIZE is answered too big
+// at the path's MTU where the datagram passes it (RFC 4787 REQ-13), and
+// refused where no MTU reads. Within the MTU read, EMSGSIZE takes the step
+// of any other errno an ICMP error hands.
+//
+// Those two apart, only an errno an ICMP error hands (icmpErrno) is written
+// again, since an ICMP error about an earlier datagram fails the socket's
+// next write with its errno whether or not its queue entry is still there.
+// The first failed write with such an errno is written again whatever the
+// queue held. A later one is written again only where the socket queued an
+// error with it, which Linux alone queues, and the sendTries-th ends as
+// pending.
+//
+// Every other failure refuses the datagram. On Linux a firewall rule of the
+// host's output path fails the write with EPERM, so it ends at the first
+// write. What XNU's pf hands a write it refuses is not read here, and an errno
+// an ICMP error hands would be written twice. A failure past the first with
+// nothing queued is refused whatever raised it: the host's own refusal of a
+// route, which hands such errnos too, an ICMP error whose queue entry the
+// kernel dropped, and on macOS, which queues none, any second failure.
+func (u *udpRelay) failed(dst *destination, raw []byte, d datagram, err error, writes int, dontFragment bool) (writeEnd, int) {
+	switch {
+	case errors.Is(err, net.ErrClosed):
+		return endClosed, 0
+	case writes == 0:
+		return endRefused, 0
 	}
-	u.x.counts.drop(reasonUnsent)
-	return true
+	dst.keep(raw, d)
+	queued := u.relayErrors(dst)
+	if u.drained != nil {
+		queued = u.drained(queued)
+	}
+	if errors.Is(err, syscall.EMSGSIZE) && dontFragment {
+		switch mtu := u.pathMTU(dst); {
+		case mtu == 0:
+			return endRefused, 0
+		case udpHeadroom(d.to.Addr())+len(d.payload()) > mtu:
+			return endTooBig, mtu
+		}
+	}
+	switch {
+	case !icmpErrno(err) || writes > 1 && !queued:
+		return endRefused, 0
+	case writes == sendTries:
+		return endPending, 0
+	}
+	return writeAgain, 0
 }
 
 // pathMTU is the MTU of the path dst's socket sends by, as the kernel learned
@@ -740,14 +833,13 @@ func (u *udpRelay) pathMTU(dst *destination) int {
 	return 0
 }
 
-// icmpErrno is an error a socket hands for an ICMP error it was told of
+// icmpErrno is whether err is an errno a socket hands for an ICMP error it was
+// told of, on either platform or on this one alone (platformICMPErrnos). XNU
+// and Linux hand EHOSTUNREACH, ENETUNREACH and EMSGSIZE for a refusal of the
+// host's own route too, and Linux EACCES.
 func icmpErrno(err error) bool {
-	for _, errno := range []syscall.Errno{syscall.ECONNREFUSED, syscall.EHOSTUNREACH, syscall.ENETUNREACH, syscall.EHOSTDOWN, syscall.EMSGSIZE, syscall.EPROTO, syscall.EACCES, syscall.ENOPROTOOPT} {
-		if errors.Is(err, errno) {
-			return true
-		}
-	}
-	return false
+	is := func(errno syscall.Errno) bool { return errors.Is(err, errno) }
+	return slices.ContainsFunc([]syscall.Errno{syscall.ECONNREFUSED, syscall.EHOSTUNREACH, syscall.ENETUNREACH, syscall.EHOSTDOWN, syscall.EMSGSIZE, syscall.EPROTO, syscall.EACCES, syscall.ENOPROTOOPT}, is) || slices.ContainsFunc(platformICMPErrnos, is)
 }
 
 // read hands m's leaf each datagram conn receives, conn being m's receiving
@@ -833,13 +925,14 @@ func (u *udpRelay) relayErrors(dst *destination) bool {
 }
 
 // relay hands dst's leaf e, an ICMP error the host found about a datagram
-// dst's socket sent, quoting that datagram as quote gives, and drops one
-// relayedError builds nothing of: an error of a type the leaf's family has
-// none of, from an offender that is not one host, or about a datagram no
-// error may answer. One on a socket that sent nothing is about no datagram of
-// the exit's, and is counted. length is the UDP length the error quotes, 0
-// where it quotes no UDP header, prefix the payload it quotes, and padded
-// whether an RFC 4884 extension's padding may end prefix. dst.mu is held.
+// the exit wrote to dst's socket, sent or refused, quoting that datagram as
+// quote gives, and drops one relayedError builds nothing of: an error of a
+// type the leaf's family has none of, from an offender that is not one host,
+// or about a datagram no error may answer. One on a socket the exit wrote
+// nothing to is about no datagram of the exit's, and is counted. length is
+// the UDP length the error quotes, 0 where it quotes no UDP header, prefix
+// the payload it quotes, and padded whether an RFC 4884 extension's padding
+// may end prefix. dst.mu is held.
 func (u *udpRelay) relay(dst *destination, e icmpError, length uint16, prefix []byte, padded bool) {
 	if dst.ipLen == 0 {
 		u.x.counts.drop(reasonNotOurs)
@@ -850,10 +943,12 @@ func (u *udpRelay) relay(dst *destination, e icmpError, length uint16, prefix []
 	}
 }
 
-// keep records d, the leaf's datagram raw holds, as one more datagram dst's
-// socket sent: its IP and UDP header where it is the first, the fixed IPv6
-// header alone where its extension headers pass ip's room, and otherwise the
-// fields it carries otherwise than the first, and its UDP length against the
+// keep records d, the leaf's datagram raw holds, as one more datagram the
+// exit wrote to dst's socket, whether the socket sent it or the host refused
+// it. Where it is the first, keep records its IP and UDP header, the fixed
+// IPv6 header alone where its extension headers pass ip's room. Past the
+// first it marks the fields d carries otherwise than the first, so a field
+// left unmarked is every written datagram's, and d's UDP length joins the
 // shortest and the longest. dst.mu is held.
 func (dst *destination) keep(raw []byte, d datagram) {
 	ip, length := raw[:d.at], uint16(len(d.udp))
@@ -891,16 +986,22 @@ func (dst *destination) keep(raw []byte, d datagram) {
 }
 
 // quote is the IP and UDP header of the datagram of dst's an ICMP error is
-// about. It holds the leaf's and the server's addresses and ports. A field
-// every datagram dst's socket sent carried alike holds that value, and a field
-// they did not holds 0. Where their IPv4 options or IPv6 extension headers
-// differed, the header holds none. Where their UDP lengths differed, the UDP
-// length is length, the one the error quotes, or where the error quotes no UDP
-// header (length 0) the 8 bytes of a header and prefix, the payload it quotes,
-// held to the longest dst sent. Where padded, an RFC 4884 extension's padding
+// about, one the socket sent or one the host refused. It holds the leaf's and
+// the server's addresses and ports. A field every datagram the exit wrote to
+// dst's socket carried alike holds that value, and a field they did not holds
+// 0. Where their IPv4 options or IPv6 extension headers differed, or the
+// first one's passed the 60 octets ip holds, the header holds none, with an
+// IPv4 header length of 5 or an IPv6 next header of 17. Where their UDP
+// lengths differed, the UDP length is the error's own: length, the one it
+// quotes, which lies within the shortest and the longest, or where it quotes
+// no UDP header (length 0) the 8 bytes of a header and prefix, the payload it
+// quotes, held to the longest. Where padded, an RFC 4884 extension's padding
 // may end prefix, and every zero octet at its end is left out of that count,
-// the datagram's own among them. The IP length follows the UDP length, and an
-// IPv4 header's checksum is its own. dst.ipLen is not 0, and dst.mu is held.
+// the datagram's own among them. The IP length follows the UDP length and
+// never wraps, since the header is as long as every written datagram's, or
+// the fixed 20 or 40 octets, and the UDP length is within the longest
+// written, whose own IP length fit its field. An IPv4 header's checksum is
+// its own. dst.ipLen is not 0, and dst.mu is held.
 func (dst *destination) quote(length uint16, prefix []byte, padded bool) []byte {
 	ip := slices.Clone(dst.ip[:dst.ipLen])
 	udp := dst.udp

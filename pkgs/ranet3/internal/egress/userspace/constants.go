@@ -80,6 +80,10 @@ const (
 	// keeps of its hairpinned datagrams, the oldest giving way to a new one,
 	// as echo keeps its last destinations
 	hairpinRecord = 16
+	// sendTries bounds the writes of one datagram (failed). Each write and
+	// its drain hold the lane's worker, so a larger bound lets errors that
+	// keep coming hold it longer for each datagram.
+	sendTries = 4
 	// echoIdle ends an echo mapping with no request out or reply in for this
 	// long, the least RFC 5508 REQ-2 allows
 	echoIdle = time.Minute

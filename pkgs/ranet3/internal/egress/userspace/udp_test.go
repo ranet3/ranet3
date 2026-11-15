@@ -469,7 +469,7 @@ func TestDatagramToAnOpenDestinationReadiesNoSocketAndAllocatesNothing(t *testin
 
 // A datagram whose socket the exit closed after open handed it over, as an
 // ended mapping's are, is no refusal of the host's: send counts nothing as
-// unsent and reports nothing, so no address is asked after
+// unsent and reports it closed, not refused, so no address is asked after
 func TestDatagramOnASocketTheExitClosedIsNotUnsent(t *testing.T) {
 	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
 	h := newRelayHarness(t, nil)
@@ -483,11 +483,86 @@ func TestDatagramOnASocketTheExitClosedIsNotUnsent(t *testing.T) {
 	}
 	h.x.udp.end(m)
 	d, _ := readDatagram(raw)
-	if h.x.udp.send(raw, d, dst, false) {
-		t.Error("send reported a datagram on a socket the exit closed as refused")
+	if refused, closed := h.x.udp.send(raw, d, dst, false); refused || !closed {
+		t.Errorf("send reported a datagram on a socket the exit closed refused %t and closed %t, want closed alone", refused, closed)
 	}
 	if got := h.count(false, reasonUnsent); got != 0 {
 		t.Errorf("udp unsent %d after a send on a closed socket, want 0", got)
+	}
+}
+
+// A datagram that open handed a destination for, and that a pass ending what
+// is past its time crosses, the pass closing the destination before the
+// datagram's send, still reaches its server, the destination opened once
+// again, and is counted nowhere
+func TestDatagramCrossingThePassThatClosesItsDestinationLeaves(t *testing.T) {
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	h := newRelayHarness(t, nil)
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens")), false)
+	readDatagramFrom(t, server, []byte("opens"))
+	h.mu.Lock()
+	h.clock = h.clock.Add(mappingTimeout + time.Second)
+	now := h.clock
+	h.mu.Unlock()
+	raw := udpDatagram(leaf, serverAt(server), []byte("crosses the pass"))
+	d, _ := readDatagram(raw)
+	m, dst, reason := h.x.udp.open(d.from, d.to)
+	if dst == nil {
+		t.Fatalf("open refused an open destination: %s", reason)
+	}
+	h.x.expire(now)
+	if !ended(m) {
+		t.Fatal("the pass past the mapping's time left it open")
+	}
+	h.x.udp.deliver(raw, d, m, dst, false)
+	readDatagramFrom(t, server, []byte("crosses the pass"))
+	if got := h.count(false, reasonUnsent); got != 0 {
+		t.Errorf("udp unsent %d, want none", got)
+	}
+	if _, ok := h.mappingOf(leaf); !ok {
+		t.Error("the datagram that crossed the pass left no mapping open")
+	}
+}
+
+// A datagram whose socket is closed before it leaves, and closed again once
+// opened once more, is sent no third time, counted once as udp closed and as
+// nothing else, and kept for no error: the socket stands closed in the
+// tables, so the open after the first close hands the same one over
+func TestDatagramClosedTwiceIsCountedOnce(t *testing.T) {
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	h := newRelayHarness(t, nil)
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens")), false)
+	readDatagramFrom(t, server, []byte("opens"))
+	raw := udpDatagram(leaf, serverAt(server), []byte("closed twice"))
+	d, _ := readDatagram(raw)
+	m, dst, reason := h.x.udp.open(d.from, d.to)
+	if dst == nil {
+		t.Fatalf("open refused an open destination: %s", reason)
+	}
+	_ = dst.conn.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.x.udp.deliver(raw, d, m, dst, false)
+	}()
+	select {
+	case <-done:
+	case <-time.After(exitWait):
+		t.Fatalf("deliver still sends after %s on a socket that stays closed", exitWait)
+	}
+	if got := h.count(false, reasonClosed); got != 1 {
+		t.Errorf("counted %d datagrams as udp closed, want the one", got)
+	}
+	if got := h.count(false, reasonUnsent); got != 0 {
+		t.Errorf("counted %d datagrams as udp unsent, want none", got)
+	}
+	dst.mu.Lock()
+	varied := dst.varied
+	dst.mu.Unlock()
+	if varied != 0 {
+		t.Errorf("the datagram that never left was kept, marking fields %b as varied", varied)
 	}
 }
 
@@ -1760,7 +1835,7 @@ func TestPassBeforeANewDestinationsFirstDatagramKeepsIt(t *testing.T) {
 			}
 			continue
 		}
-		if refused := h.x.udp.send(raw, d, dst, false); refused {
+		if refused, _ := h.x.udp.send(raw, d, dst, false); refused {
 			t.Fatalf("the first datagram refused, %d unsent", h.count(false, reasonUnsent))
 		}
 		readDatagramFrom(t, server, []byte("first"))

@@ -289,23 +289,59 @@ func TestDestinationReadsOnPastEveryReceiveError(t *testing.T) {
 	}
 }
 
-// A Fragmentation Needed or Packet Too Big about a datagram that left leaves
-// EMSGSIZE pending on its destination's socket, and the next datagram, which
-// fits the narrower path, still reaches its server, with no answer to the
-// leaf, while one past the path is still answered too big at the path's MTU
-// (RFC 4787 REQ-13, RFC 1191, RFC 8201). The destination has no reader, so
-// its send is the first to meet the pending error.
-func TestDatagramThatFitsLeavesPastAPendingTooBig(t *testing.T) {
+// An ICMP error about a datagram that left, pending on its destination's
+// socket, which no reader drains, fails no later datagram: by the time the
+// next send returns, the datagram has reached its server after two writes,
+// the error has reached the leaf where the socket queued it, and nothing is
+// counted as the host's own or as failed by pending errors. So with a
+// Fragmentation Needed or a Packet Too Big, whose EMSGSIZE a datagram that
+// fits the narrower path meets with DF, the datagram past the path then still
+// answered too big at the path's MTU (RFC 4787 REQ-13, RFC 1191, RFC 8201),
+// with a destination unreachable of code 3 (ECONNREFUSED), 5 (EOPNOTSUPP) or
+// 8 (ENONET), and with a port unreachable whose queue entry the kernel
+// dropped since replies filled the socket's receive buffer, its errno pending
+// all the same (sock_queue_err_skb).
+func TestDatagramLeavesPastAPendingError(t *testing.T) {
 	onLoopback(t, rigServer4, rigServer6)
 	h := newRelayHarness(t, nil)
 	h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+	unreachable := func(code byte) func(*net.UDPConn, *net.UDPConn, []byte) {
+		return func(conn, server *net.UDPConn, left []byte) {
+			sendICMP(t, serverAt(conn).Addr(), leafRefusal(serverAt(server).Addr(), serverAt(conn).Addr(), 3, code, left)[20:])
+		}
+	}
 	for _, c := range []struct {
 		name         string
 		source, leaf netip.Addr
-		mtu          int
+		first        int
+		dontFragment bool
+		raise        func(conn, server *net.UDPConn, left []byte)
+		// mtu is the path's past a too big, and queued whether the socket
+		// queues the error
+		mtu    int
+		queued bool
 	}{
-		{"ipv4", rigServer4.Addr(), leaf4, 1000},
-		{"ipv6", rigServer6.Addr(), leaf6, 1280},
+		{"ipv4 too big", rigServer4.Addr(), leaf4, 1400, true, func(conn, server *net.UDPConn, left []byte) {
+			tooBig(t, serverAt(server).Addr(), serverAt(conn).Addr(), 1000, left)
+		}, 1000, true},
+		{"ipv6 too big", rigServer6.Addr(), leaf6, 1400, true, func(conn, server *net.UDPConn, left []byte) {
+			tooBig(t, serverAt(server).Addr(), serverAt(conn).Addr(), 1280, left)
+		}, 1280, true},
+		{"code 3", rigServer4.Addr(), leaf4, 5, false, unreachable(3), 0, true},
+		{"code 5", rigServer4.Addr(), leaf4, 5, false, unreachable(5), 0, true},
+		{"code 8", rigServer4.Addr(), leaf4, 5, false, unreachable(8), 0, true},
+		{"queue entry dropped", rigServer4.Addr(), leaf4, 5, false, func(conn, server *net.UDPConn, left []byte) {
+			if err := onSocket(conn, func(fd int) error { return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, 1) }); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				if _, err := server.WriteToUDPAddrPort(make([]byte, 1000), serverAt(conn)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			time.Sleep(stackSettle)
+			unreachable(3)(conn, server, left)
+		}, 0, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			server := rigLoopbackServer(t, c.source)
@@ -315,42 +351,49 @@ func TestDatagramThatFitsLeavesPastAPendingTooBig(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			outside := serverAt(conn)
 			dst := &destination{to: to, conn: conn}
 			leaf := netip.AddrPortFrom(c.leaf, freeUDPPort(t, c.leaf))
-			big := udpDatagram(leaf, to, bytes.Repeat([]byte{0xb1}, 1400))
-			d, _ := readDatagram(big)
-			if h.x.udp.send(big, d, dst, true) {
-				t.Fatal("the datagram ahead of the path's narrowing was refused")
+			first := udpDatagram(leaf, to, bytes.Repeat([]byte{0xb1}, c.first))
+			d, _ := readDatagram(first)
+			if refused, _ := h.x.udp.send(first, d, dst, c.dontFragment); refused {
+				t.Fatal("the first datagram was refused")
 			}
 			readDatagramFrom(t, server, d.payload())
-			tooBig(t, to.Addr(), outside.Addr(), c.mtu, udpDatagram(outside, to, d.payload()))
+			c.raise(conn, server, udpDatagram(serverAt(conn), to, d.payload()))
 			for start := time.Now(); !pendingError(conn); time.Sleep(time.Millisecond) {
 				if time.Since(start) > exitWait {
-					t.Fatal("the too big left no error pending on the destination's socket")
+					t.Fatal("no error pending on the destination's socket")
 				}
 			}
 
-			h.drainLaid()
-			small := udpDatagram(leaf, to, []byte("fits the path"))
-			ds, _ := readDatagram(small)
+			next := udpDatagram(leaf, to, []byte("fits the path"))
+			dn, _ := readDatagram(next)
 			answered := len(h.mesh.answered())
-			if h.x.udp.send(small, ds, dst, true) {
-				t.Fatalf("the datagram that fits the path was refused, %d unsent", h.count(false, reasonUnsent))
+			h.drainLaid()
+			failures := countFailures(t, h, asQueued)
+			refused, closed := h.x.udp.send(next, dn, dst, c.dontFragment)
+			if refused || closed || *failures != 1 {
+				t.Errorf("the send past the pending error reported refused %t closed %t after %d failed writes, want neither after 1", refused, closed, *failures)
 			}
-			if pkt := h.x.link.poll(); pkt == nil {
-				t.Error("the router's too big had reached no leaf when the send returned")
-			} else {
+			if pkt := h.x.link.poll(); (pkt != nil) != c.queued {
+				t.Errorf("the pending error had reached the leaf %t when the send returned, want %t", pkt != nil, c.queued)
+			} else if pkt != nil {
 				h.x.link.release(pkt)
 			}
-			readDatagramFrom(t, server, ds.payload())
+			readDatagramFrom(t, server, dn.payload())
+			if got := h.count(false, reasonUnsent) + h.count(false, reasonPending); got != 0 {
+				t.Errorf("counted %d datagrams unsent or failed by pending errors, want none", got)
+			}
 			if answers := h.mesh.answered()[answered:]; len(answers) != 0 {
 				t.Errorf("answered %v about the datagram that fits the path", answers)
 			}
-			if h.x.udp.send(big, d, dst, true) {
+			if c.mtu == 0 {
+				return
+			}
+			if refused, _ := h.x.udp.send(first, d, dst, true); refused {
 				t.Fatal("the datagram past the path was refused as one of the host's own")
 			}
-			if answers := h.mesh.answered()[answered:]; len(answers) != 1 || answers[0].kind != netstack.ExitTooBig || answers[0].mtu != c.mtu || !bytes.Equal(answers[0].offending, big) {
+			if answers := h.mesh.answered()[answered:]; len(answers) != 1 || answers[0].kind != netstack.ExitTooBig || answers[0].mtu != c.mtu || !bytes.Equal(answers[0].offending, first) {
 				t.Errorf("answered %v, want one too big at the path's %d quoting the datagram past it", answers, c.mtu)
 			}
 		})
@@ -396,6 +439,30 @@ func pendingError(conn *net.UDPConn) bool {
 		return nil
 	})
 	return pending
+}
+
+// A datagram the host refuses for a reason of its own, the route toward its
+// server made unreachable, is written twice, counted unsent and reported
+// refused, never counted as failed by pending errors, though the host hands
+// EHOSTUNREACH as it would for an ICMP error
+func TestDatagramTheHostRefusesIsWrittenTwice(t *testing.T) {
+	r := newGoneRig(t)
+	to := serverAt(r.both)
+	if got := r.send(t, r.both, "left"); got.Addr() != r.gone.Addr() {
+		t.Fatalf("the server read the datagram from %s, want %s", got, r.gone.Addr())
+	}
+	dst := r.h.mappingsOf(r.leaf)[0].destinations[to]
+	unreachable(t, netip.PrefixFrom(to.Addr(), 32))
+	raw := udpDatagram(r.leaf, to, []byte("refused"))
+	d, _ := readDatagram(raw)
+	failures := countFailures(t, r.h, asQueued)
+	refused, closed := r.h.x.udp.send(raw, d, dst, false)
+	if !refused || closed || *failures != 2 {
+		t.Errorf("the send the host refused reported refused %t closed %t after %d failed writes, want refused after 2", refused, closed, *failures)
+	}
+	if unsent, pending := r.h.count(false, reasonUnsent), r.h.count(false, reasonPending); unsent != 1 || pending != 0 {
+		t.Errorf("counted %d datagrams unsent and %d failed by pending errors, want 1 and 0", unsent, pending)
+	}
 }
 
 // The worst mix of flows, each a UDP mapping's first destination holding the
@@ -1036,3 +1103,114 @@ func sendICMP(t *testing.T, to netip.Addr, message []byte) {
 		t.Fatalf("send an ICMP message toward %s: %v", to, err)
 	}
 }
+
+// A datagram with DF past its path, whose socket the host refuses with
+// EMSGSIZE for its size alone, is written once, answered too big at the
+// path's MTU and recorded with its length: with the queue as the kernel
+// leaves it, and with the queue answering that an error came with the
+// failure, as a too big queued ahead of the datagram would, since the
+// datagram's size past the path still holds
+func TestDatagramPastThePathIsWrittenOnce(t *testing.T) {
+	onLoopback(t, rigServer4)
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := rigLoopbackServer(t, rigServer4.Addr())
+	if err := netnstest.SetLinkMTU(lo.Index, pathMTU); err != nil {
+		t.Fatalf("narrow loopback to %d: %v", pathMTU, err)
+	}
+	t.Cleanup(func() {
+		if err := netnstest.SetLinkMTU(lo.Index, lo.MTU); err != nil {
+			t.Errorf("restore loopback's MTU of %d: %v", lo.MTU, err)
+		}
+	})
+	h := newRelayHarness(t, nil)
+	h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+	to := serverAt(server)
+	for _, c := range []struct {
+		name    string
+		drained func(queued bool) bool
+	}{
+		{"queue as the kernel leaves it", asQueued},
+		{"queue answering an error came", func(bool) bool { return true }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			writes := countFailures(t, h, c.drained)
+			conn, err := h.x.udp.connect(0, rigServer4.Addr(), to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			dst := &destination{to: to, conn: conn}
+			big := udpDatagram(netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4)), to, bytes.Repeat([]byte{0xb2}, pathMTU))
+			d, _ := readDatagram(big)
+			answered := len(h.mesh.answered())
+			h.x.udp.send(big, d, dst, true)
+			if *writes != 1 {
+				t.Errorf("the datagram past the path took %d writes, want 1", *writes)
+			}
+			// the path's MTU is the kernel's for the socket, which an earlier
+			// test's too big toward the same address may have lowered past the
+			// loopback's
+			mtu, err := socketPathMTU(conn, false)
+			if err != nil || mtu > pathMTU {
+				t.Fatalf("the socket's path MTU reads %d, %v, want at most the loopback's %d", mtu, err, pathMTU)
+			}
+			if answers := h.mesh.answered()[answered:]; len(answers) != 1 || answers[0].kind != netstack.ExitTooBig || answers[0].mtu != mtu {
+				t.Errorf("answered %v, want one too big at the path's %d", answers, mtu)
+			}
+			if dst.ipLen == 0 || dst.longest != uint16(len(d.udp)) {
+				t.Errorf("the datagram that did not leave was recorded with %d bytes of IP header and UDP length %d, want its own %d", dst.ipLen, dst.longest, len(d.udp))
+			}
+		})
+	}
+}
+
+// A datagram each of whose writes fails while its socket's queue answers that
+// an ICMP error came with the failure is written 4 times and no more, the
+// cap that holds the lane's worker for a server that keeps the socket's errno
+// set, counted as failed by pending errors, never as the host's own, and
+// reported not refused. The queue's answer is the test's, so no ICMP error is
+// sent: the route toward the server is unreachable, each write failing at
+// once, and the answer turns false past 6 drains, so a send past the cap ends
+// too, with more writes than 4. Each failed write is drained once, which
+// counts the writes.
+func TestDatagramIsWrittenNoMoreThanFourTimes(t *testing.T) {
+	r := newGoneRig(t)
+	to := serverAt(r.both)
+	if got := r.send(t, r.both, "left"); got.Addr() != r.gone.Addr() {
+		t.Fatalf("the server read the datagram from %s, want %s", got, r.gone.Addr())
+	}
+	dst := r.h.mappingsOf(r.leaf)[0].destinations[to]
+	unreachable(t, netip.PrefixFrom(to.Addr(), 32))
+	var writes *int
+	writes = countFailures(t, r.h, func(bool) bool { return *writes <= 6 })
+	raw := udpDatagram(r.leaf, to, []byte("past every pending error"))
+	d, _ := readDatagram(raw)
+	unsent, pending := r.h.count(false, reasonUnsent), r.h.count(false, reasonPending)
+	refused, closed := r.h.x.udp.send(raw, d, dst, false)
+	if refused || closed || *writes != 4 {
+		t.Errorf("the send reported refused %t closed %t after %d writes, want neither after 4", refused, closed, *writes)
+	}
+	if unsent, pending := r.h.count(false, reasonUnsent)-unsent, r.h.count(false, reasonPending)-pending; unsent != 0 || pending != 1 {
+		t.Errorf("counted %d datagrams unsent and %d failed by pending errors, want 0 and 1", unsent, pending)
+	}
+}
+
+// countFailures counts the failed writes of h's sends until the test ends,
+// since failed drains the socket's queue once past each, and has answer give
+// failed whether the queue held an error, from what it held
+func countFailures(t *testing.T, h *relayHarness, answer func(queued bool) bool) *int {
+	t.Helper()
+	failures := 0
+	h.x.udp.drained = func(queued bool) bool {
+		failures++
+		return answer(queued)
+	}
+	t.Cleanup(func() { h.x.udp.drained = nil })
+	return &failures
+}
+
+// asQueued answers whether the queue held an error as the kernel left it
+func asQueued(queued bool) bool { return queued }

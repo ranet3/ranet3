@@ -12,13 +12,19 @@ import (
 
 // The reasons an ICMP message the host handed the exit is dropped
 const (
-	// reasonNotOurs is a message about no flow of the exit's: another
-	// program's echo reply or error, or an error about none of the exit's
-	// sockets
+	// reasonNotOurs is an ICMP message the exit hands no flow of its own. On
+	// Linux, where each destination's socket queues its own errors, it is an
+	// error about a UDP destination the exit wrote nothing to, queued on its
+	// socket. On macOS, whose ICMP socket reads every message the host takes,
+	// it is an error about a UDP destination the exit wrote nothing to,
+	// another program's echo reply, a message of a type the exit relays none
+	// of or that quotes no UDP or TCP header whole, an error about none of the
+	// exit's sockets, and an error about a TCP connection of the exit's past
+	// its dial.
 	reasonNotOurs = "icmp not ours"
 	// reasonQuotedLength is an error about a UDP destination's datagram
 	// whose quoted UDP length is shorter or longer than every datagram the
-	// destination's socket sent, which no datagram of the exit's carried
+	// exit wrote to the destination's socket, sent or refused
 	reasonQuotedLength = "quoted length"
 )
 
@@ -128,12 +134,16 @@ func original(message []byte, ipv6 bool) int {
 }
 
 // relayQuoted relays q, an error about a UDP datagram, to the leaf of the
-// mapping whose socket toward the quoted destination sent it from the quoted
-// source (relay), and reports whether a socket of the exit's sent it. An
+// mapping that holds the quoted source and a destination toward the quoted
+// destination (relay), and reports whether q quotes such a destination of
+// the exit's, whatever the exit wrote to its socket, sent or refused. An
 // error quoting a port from an address no mapping holds it on is about
 // another program's socket. One whose quoted UDP length is shorter or longer
-// than every datagram the destination's socket sent is dropped and counted,
-// so the IP length of the quote relay builds never wraps.
+// than every datagram the exit wrote to the destination's socket, sent or
+// refused, is about none of them, and is dropped and counted. So the UDP
+// length of a quote relay builds lies within the shortest and the longest
+// written, though no written datagram need have carried it, and its IP
+// length never wraps.
 func (u *udpRelay) relayQuoted(q quotedError) bool {
 	if q.protocol != 17 {
 		return false
