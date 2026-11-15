@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -618,7 +619,12 @@ func egressReturnsWhileALaneIsBlocked(t *testing.T, lanes int64) {
 	mesh := newFakeMesh()
 	mesh.answerBlock = make(chan struct{})
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
-	t.Cleanup(func() { close(mesh.answerBlock) })
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(mesh.answerBlock)
+		}
+	})
 	h.exit.rt.Limits.Lanes = lanes
 	h.run(t)
 	expired := ip4(leaf4, server4, protoUDP, 1, 0, 1, make([]byte, 8))
@@ -640,11 +646,21 @@ func egressReturnsWhileALaneIsBlocked(t *testing.T, lanes int64) {
 	case <-time.After(exitWait):
 		t.Fatalf("Egress waited on a blocked lane for %s", exitWait)
 	}
-	if dropped := h.exit.counts.laneDropped.Load(); dropped == 0 {
+	dropped := h.exit.counts.laneDropped.Load()
+	if dropped == 0 {
 		t.Errorf("%d packets to a blocked lane, none dropped", sent)
 	}
 	if held := h.exit.laneHeld.Load(); held > h.exit.rt.Limits.Lanes {
 		t.Errorf("the lanes hold %d bytes past their bound of %d", held, h.exit.rt.Limits.Lanes)
+	}
+	// Each packet the lanes held is answered once the workers go on, and each
+	// they did not is counted once, so the two make up what was sent
+	released = true
+	close(mesh.answerBlock)
+	taken := uint64(sent) - dropped
+	waitFor(t, "the held packets answered", func() bool { return uint64(len(mesh.answered())) >= taken })
+	if got := len(mesh.answered()); uint64(got) != taken || h.exit.counts.laneDropped.Load() != dropped {
+		t.Errorf("of %d packets, %d answered and %d counted as lane full, not one each", sent, got, h.exit.counts.laneDropped.Load())
 	}
 }
 
@@ -665,7 +681,8 @@ func TestMeshClosingUnderARunningExitEndsItsLanes(t *testing.T) {
 }
 
 // SetEnabled(false) reports both families not ready, publishes nothing and
-// takes nothing more from the sessions, and SetEnabled(true) restores it
+// takes nothing more from the sessions, counting each packet handed over as
+// not taking and none as lane full, and SetEnabled(true) restores it
 func TestWithdrawnExitTakesNothing(t *testing.T) {
 	mesh := newFakeMesh()
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
@@ -679,14 +696,20 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 		t.Errorf("announced %v while withdrawn", got)
 	}
 	segment := tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)
-	dropped := h.exit.counts.laneDropped.Load()
-	h.exit.Egress(frames(segment), nil)
+	full, untaken := h.exit.counts.laneDropped.Load(), countOf(h.exit, false, reasonNotTaking)
+	h.exit.Egress(frames(segment, segment), nil)
 	time.Sleep(stackSettle)
 	if laid := mesh.laidPackets(); len(laid) != 0 {
 		t.Errorf("a withdrawn exit carried a segment, laying %d packets", len(laid))
 	}
-	if got := h.exit.counts.laneDropped.Load(); got != dropped+1 {
-		t.Errorf("dropped %d of the one packet taken while withdrawn", got-dropped)
+	if got := countOf(h.exit, false, reasonNotTaking); got != untaken+2 {
+		t.Errorf("counted %d of the two packets taken while withdrawn as not taking", got-untaken)
+	}
+	if got := countOf(h.exit, false, reasonWithdrawn); got != 0 {
+		t.Errorf("counted %d packets taken while withdrawn under the relays' withdrawn", got)
+	}
+	if got := h.exit.counts.laneDropped.Load(); got != full {
+		t.Errorf("counted %d packets taken while withdrawn as lane full", got-full)
 	}
 	h.exit.SetEnabled(true)
 	waitFor(t, "both families ready again", func() bool {
@@ -695,6 +718,95 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 	})
 	h.exit.Egress(frames(segment), nil)
 	waitFor(t, "the reset once enabled again", func() bool { return len(mesh.laidPackets()) != 0 })
+}
+
+// The frames of one call handed to an exit that takes nothing, before Run,
+// are counted as not taking in one update of the counts, and a call of no
+// frames records nothing: a reader that holds the counts' lock next after the
+// call's first hold of it reads all 64 frames counted, never part of them.
+// The test orders the holds without a race to catch: on one processor it
+// puts the counts' lock in sync.Mutex's starvation mode, which hands the lock
+// from each holder to the waiter at the head of its queue, with the call's
+// goroutine at the head and the reader behind it, so the reader holds the
+// lock right after the call's first update, whatever else the call would
+// update after it. Which goroutines wait on the lock it reads from their
+// wait reasons (lockWaiters).
+func TestEgressCountsTheFramesOfACallItTakesNothingOfAtOnce(t *testing.T) {
+	const size = 64
+	h := newExitHarness(t, newFakeMesh(), &fakePlatform{routes4: true, routes6: true})
+	segment := tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)
+	call := frames(slices.Repeat([][]byte{segment}, size)...)
+	h.exit.Egress(nil, nil)
+	h.exit.counts.mu.Lock()
+	_, counted := h.exit.counts.dropped[reasonNotTaking]
+	h.exit.counts.mu.Unlock()
+	if counted {
+		t.Error("a call of no frames recorded a not taking count")
+	}
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	mu := &h.exit.counts.mu
+	// until yields until n of the test's goroutines wait on a lock, the one
+	// the test holds
+	until := func(what string, n int) {
+		t.Helper()
+		for deadline := time.Now().Add(exitWait); lockWaiters(t.Name()) != n; runtime.Gosched() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %d of the test's goroutines wait on the counts' lock, want %d", what, lockWaiters(t.Name()), n)
+			}
+		}
+	}
+	mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.exit.Egress(call, nil)
+	}()
+	until("the call waiting", 1)
+	read := make(chan uint64, 1)
+	go func() {
+		mu.Lock()
+		defer mu.Unlock()
+		read <- h.exit.counts.dropped[reasonNotTaking]
+	}()
+	until("the reader waiting behind the call", 2)
+	// past sync.Mutex's 1 ms, a waiter that wakes to the lock held starves it
+	time.Sleep(2 * time.Millisecond)
+	mu.Unlock()
+	// the one processor runs this goroutine on, ahead of the call it woke,
+	// which then finds the lock held, puts it in starvation mode and waits
+	// again at the head of the queue
+	mu.Lock()
+	until("the call waiting again", 2)
+	mu.Unlock()
+	if n := <-read; n != size {
+		t.Errorf("the not taking count read %d right after the call's first update, want all its %d frames", n, size)
+	}
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if n := h.exit.counts.dropped[reasonNotTaking]; n != size {
+		t.Errorf("counted %d frames as not taking, want %d", n, size)
+	}
+}
+
+// lockWaiters is the count of goroutines whose stack holds a frame whose
+// name holds name and whose wait reason is a sync.Mutex's Lock, as a dump of
+// every goroutine's stack gives them
+func lockWaiters(name string) int {
+	buf := make([]byte, 1<<16)
+	n := runtime.Stack(buf, true)
+	for n == len(buf) {
+		buf = make([]byte, 2*len(buf))
+		n = runtime.Stack(buf, true)
+	}
+	waiting := 0
+	for _, g := range bytes.Split(buf[:n], []byte("\n\n")) {
+		header, stack, _ := bytes.Cut(g, []byte("\n"))
+		if bytes.Contains(header, []byte("[sync.Mutex.Lock")) && bytes.Contains(stack, []byte(name)) {
+			waiting++
+		}
+	}
+	return waiting
 }
 
 // A stop and `ranet3 down` log each family not ready and the advertisement's

@@ -17,12 +17,15 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
-// The reasons the status counts a packet dropped by the queues: a lane full
-// past Limits.Lanes, the link's queue full past Limits.Link, a packet the
-// link's controlled delay dropped at the queue's head, and a packet the pump
-// could lay into no batch. The stack's ICMP and its other packets but TCP are
-// dropped before the link's queue.
+// The reasons the status counts a packet dropped by the queues: a frame
+// handed over while the exit takes nothing, a lane full, where the lanes hold
+// Limits.Lanes bytes or the worker's queue holds workerQueuePackets packets,
+// the link's queue full past Limits.Link, a packet the link's controlled
+// delay dropped at the queue's head, and a packet the pump could lay into no
+// batch. The stack's ICMP and its other packets but TCP are dropped before
+// the link's queue.
 const (
+	reasonNotTaking  = "not taking"
 	reasonLaneFull   = "lane full"
 	reasonLinkFull   = "link full"
 	reasonLinkCodel  = "link codel"

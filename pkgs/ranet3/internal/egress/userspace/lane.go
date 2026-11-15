@@ -85,13 +85,16 @@ func bufferClass(size int) int {
 }
 
 // Egress copies each frame's packet once into a buffer of the exit's and
-// queues it to the worker its addresses pick, dropping and counting it where
-// the lanes already hold Limits.Lanes bytes or the worker's queue is full, so
-// it never waits on a lane
-// it reads no frame after it returns, so it retains nothing of hold
+// queues it to the worker its addresses pick, dropping and counting it as
+// lane full where the lanes already hold Limits.Lanes bytes or the worker's
+// queue holds workerQueuePackets, so it never waits on a lane. Each frame
+// handed over while the exit takes nothing, before Run, withdrawn or
+// stopped, is dropped and counted as not taking, all of a call's frames in
+// one update. It reads no frame after it returns, so it retains nothing of
+// hold.
 func (x *Exit) Egress(frames [][]byte, _ netstack.Hold) {
 	if !x.taking.Load() {
-		x.counts.laneDropped.Add(uint64(len(frames)))
+		x.counts.dropFrames(reasonNotTaking, len(frames))
 		return
 	}
 	for _, frame := range frames {
@@ -112,6 +115,20 @@ func (x *Exit) Egress(frames [][]byte, _ netstack.Hold) {
 			x.counts.laneDropped.Add(1)
 		}
 	}
+}
+
+// dropFrames counts n frames dropped for reason, all in one update of the
+// counts, and records nothing for no frames
+func (c *counts) dropFrames(reason string, n int) {
+	if n == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dropped == nil {
+		c.dropped = map[string]uint64{}
+	}
+	c.dropped[reason] += uint64(n)
 }
 
 // workerOf is the worker raw's addresses pick
