@@ -160,6 +160,10 @@ type Responder struct {
 	afterAdmission func()
 	// beforeReservation is nil outside tests, which pause a reservation split from its decision before it locks
 	beforeReservation func()
+	// decodedRequest is nil outside tests, which observe ownership of the opening payloads
+	decodedRequest func(*Message)
+	// createdHalfOpen is nil outside tests, which observe the initial session and key allocations
+	createdHalfOpen func(*Session, *IKEKeys)
 }
 
 func NewResponder(cfg ResponderConfig) (*Responder, error) {
@@ -264,6 +268,9 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		header.MessageID != 0 || header.SPIResponder != 0 || header.SPIInitiator == 0 ||
 		header.MajorVersion != 2 || header.Length != uint32(len(datagram.Raw)) {
 		return nil, Accepted{}, fmt.Errorf("ike: unclaimed datagram is not an IKE_SA_INIT request")
+	}
+	if r.decodedRequest != nil {
+		r.decodedRequest(request)
 	}
 	spiI := header.SPIInitiator
 
@@ -398,6 +405,9 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 	session := newSession(mux, current, r.cfg.RekeyTiming, r.cfg.Suites, fragments, r.cfg.pathMTU)
 	session.started = started
+	if r.createdHalfOpen != nil {
+		r.createdHalfOpen(session, keys)
+	}
 
 	accepted, created, err := session.completeResponderAuth(ctx, r, datagram.Raw, response, ni, nr, stopCancel)
 	if err != nil {
@@ -689,6 +699,9 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 				return nil, intAuth{}, err
 			}
 			chain, answered = next, answered+1
+			if s.waitingAuth != nil {
+				s.waitingAuth(chain, saInitResponse, nr)
+			}
 		default:
 			// an IKE_AUTH ahead of the last IKE_INTERMEDIATE, or an IKE_INTERMEDIATE past it
 			if response, err := s.responseNotify(ctx, header.MessageID, header.ExchangeType, N_INVALID_SYNTAX); err == nil {

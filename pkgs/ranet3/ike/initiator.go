@@ -160,6 +160,8 @@ type Session struct {
 	fragments bool
 	// pathMTU stands in for the mux's PathMTU, and nil reads the mux
 	pathMTU func() (int, error)
+	// waitingAuth is nil outside tests, which observe retained state after an intermediate answer
+	waitingAuth func(chain intAuth, initialResponse, nonce []byte)
 	// invalidSPIReports counts the INVALID_SPI notifies Run sent, which the sessions view reads off Run's goroutine
 	invalidSPIReports atomic.Uint64
 

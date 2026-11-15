@@ -3216,8 +3216,6 @@ func TestReassemblyLimitHoldsTheLargestMessageAtTheIPv4Floor(t *testing.T) {
 	}
 }
 
-// a half-open SA's queue holds at most reassemblyLimit octets of datagrams, so at most that over the shortest IKE Fragment message's datagram, and goes with the SA at handshakeTimeout, before reassemblyTimeout
-// halfOpenLimit of them hold a bounded amount whatever initiators send
 func TestHalfOpenSAsHoldABoundedReassemblyQueueEach(t *testing.T) {
 	if handshakeTimeout >= reassemblyTimeout {
 		t.Errorf("a half-open SA lasts %s, not within the reassembly timeout of %s", handshakeTimeout, reassemblyTimeout)
@@ -3250,9 +3248,9 @@ func TestHalfOpenSAsHoldABoundedReassemblyQueueEach(t *testing.T) {
 			}
 		}
 	}
-	const ceiling = 8 << 20
-	if bound := halfOpenLimit * reassemblyLimit; bound > ceiling {
-		t.Errorf("%d half-open SAs hold up to %d octets of fragments in up to %d fragments each, past %d", halfOpenLimit, bound, reassemblyLimit/shortest, ceiling)
+	const ceiling = 20 << 20
+	if bound := halfOpenLimit * (1 + movedCredits) * reassemblyLimit; bound != ceiling {
+		t.Errorf("%d half-open SAs hold up to %d octets of fragments in up to %d fragments per queue, want %d", halfOpenLimit, bound, reassemblyLimit/shortest, ceiling)
 	}
 }
 

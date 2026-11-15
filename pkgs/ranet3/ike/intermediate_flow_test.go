@@ -5,24 +5,27 @@ package ike
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/mlkem"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash"
 	"net"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"weak"
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/bubble"
@@ -810,30 +813,245 @@ func TestResponderAnswersAKEPayloadItRefusesWithItsNotifyAlone(t *testing.T) {
 	}
 }
 
-// keptIntermediate returns the length of the IKE_INTERMEDIATE response of method under cipher and the octets a half-open SA keeps of its last such exchange, that response, the request's digest and IntAuth's two values under prf
-func keptIntermediate(t *testing.T, method kemMethod, cipher Transform, prfID uint16) (response, kept int) {
+// keptIntermediate measures the responder's own waiting state after a real initial and intermediate exchange
+func keptIntermediate(t *testing.T, method kemMethod, cipher Transform, prfID, group uint16) (response, kept int) {
 	t.Helper()
-	suite := SASuite{EncrID: cipher.ID, EncrKeyBits: cipher.KeyLengthBits, PRFID: prfID}
+	hub := listenHub(t)
+	defer hub.Close()
+	incoming := hub.Listen()
+	peer := listenPeer(t)
+	initiator, err := GenerateDH(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer := Proposal{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{
+		cipher, {Type: TransPRF, ID: prfID}, {Type: TransDH, ID: group},
+		{Type: TransInteg, ID: INTEG_NONE},
+		{Type: TransADDKE1, ID: method.id},
+	}}
+	for kind := TransADDKE1 + 1; kind <= TransADDKE7; kind++ {
+		offer.Transforms = append(offer.Transforms, Transform{Type: kind})
+	}
+	var hash [2]byte
+	binary.BigEndian.PutUint16(hash[:], HashIdentity)
+	nonce := bytes.Repeat([]byte{7}, 256)
+	opening := Message{Header: Header{SPIInitiator: 1, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator},
+		Payloads: []RawPayload{
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{offer})},
+			{Type: PayloadKE, Body: EncodeKE(group, initiator.PublicBytes())},
+			{Type: PayloadNonce, Body: nonce},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hash[:]})},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INTERMEDIATE_EXCHANGE_SUPPORTED})},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_IKEV2_FRAGMENTATION_SUPPORTED})},
+		}}
+	raw := opening.Encode()
+	// transport's 65536-byte receive buffer includes the four-octet non-ESP marker
+	const maxOpening = 65536 - 4
+	opening.Payloads = append(opening.Payloads, RawPayload{Type: PayloadV, Body: make([]byte, maxOpening-len(raw)-genericPayloadHeaderLen)})
+	raw = opening.Encode()
+	to := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: hub.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := peer.WriteToUDP(withNonESPMarker(raw), to); err != nil {
+		t.Fatal(err)
+	}
+	var datagram transport.Unclaimed
+	select {
+	case datagram = <-incoming:
+	case <-time.After(answerBudget):
+		t.Fatal("the largest opening request never reached the responder")
+	}
+	lists := Suites{ikeCipher: []Transform{cipher}, ikePRF: []Transform{{Type: TransPRF, ID: prfID}},
+		kex: []kexEntry{{group: group, addition: method.id}}}
+	r := &Responder{cfg: ResponderConfig{Hub: hub, Suites: func() Suites { return lists },
+		pathMTU: func() (int, error) { return 576, nil }}}
+	var descriptors weak.Pointer[RawPayload]
+	var ni []byte
+	r.decodedRequest = func(request *Message) {
+		descriptors = weak.Make(&request.Payloads[0])
+		ni = DecodeNonce(request.find(PayloadNonce).Body)
+	}
+	type measured struct {
+		response, kept  int
+		descriptorsLive bool
+	}
+	states, release := make(chan measured, 1), make(chan struct{})
+	r.createdHalfOpen = func(s *Session, oldKeys *IKEKeys) {
+		s.waitingAuth = func(chain intAuth, real2, nr []byte) {
+			runtime.GC()
+			states <- measured{
+				len(s.current.lastPeer.response.message.whole),
+				retainedHalfOpenOctets(oldKeys, s, &chain, datagram.Raw, real2, ni, nr),
+				descriptors.Value() != nil,
+			}
+			<-release
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	ended := make(chan struct{})
+	var handshakeErr error
+	go func() {
+		_, _, handshakeErr = r.handshake(ctx, datagram)
+		close(ended)
+	}()
+	defer func() {
+		close(release)
+		cancel()
+		<-ended
+	}()
+	buf := make([]byte, 65536)
+	_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil || n <= 4 {
+		t.Fatalf("initial answer has %d bytes: %v", n, err)
+	}
+	answer, err := DecodeMessage(buf[4:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa, ke, nr := answer.find(PayloadSA), answer.find(PayloadKE), answer.find(PayloadNonce)
+	if sa == nil || ke == nil || nr == nil {
+		t.Fatal("the responder did not accept the initial request")
+	}
+	_, suite, err := selectIKEProposal(sa.Body, group, lists, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, public, err := DecodeKE(ke.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := initiator.SharedSecret(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := DeriveIKEKeys(suite, shared, nonce, DecodeNonce(nr.Body), 1, answer.Header.SPIResponder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := generateKEM(method.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = EncryptMessage(suite, keys.SKei, Header{SPIInitiator: 1, SPIResponder: answer.Header.SPIResponder, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: 1}, nil,
+		[]RawPayload{{Type: PayloadKE, Body: EncodeKE(method.id, pair.PublicBytes())}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(withNonESPMarker(raw), to); err != nil {
+		t.Fatal(err)
+	}
+	var state measured
+	select {
+	case state = <-states:
+	case <-ended:
+		t.Fatalf("handshake ended before the intermediate state: %v", handshakeErr)
+	case <-time.After(answerBudget):
+		t.Fatal("the responder never reached its intermediate state")
+	}
+	if state.descriptorsLive {
+		t.Fatal("the opening payload descriptors remain live in the half-open wait")
+	}
 	params, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := make([]byte, params.KeyLen+params.SaltLen)
-	ctx := &ikeContext{suite: suite, spiI: 1, spiR: 2, responder: true, skei: key, sker: key}
-	sealed, err := (&Session{current: ctx}).response(ctx, 1, IKE_INTERMEDIATE, []RawPayload{{Type: PayloadKE, Body: EncodeKE(method.id, make([]byte, kemSizes[method.id][1]))}})
-	if err != nil {
-		t.Fatal(err)
+	if want := HeaderLen + genericPayloadHeaderLen + params.IVLen + genericPayloadHeaderLen + 4 + kemSizes[method.id][1] + 1 + params.ICVLen; state.response != want {
+		t.Fatalf("intermediate response has %d bytes, want %d", state.response, want)
 	}
-	raw := sealed.whole
-	// the IKE header, the Encrypted payload's header and IV, the KE payload's header and method, the ciphertext, the Pad Length octet and the ICV
-	if want := HeaderLen + genericPayloadHeaderLen + params.IVLen + genericPayloadHeaderLen + 4 + kemSizes[method.id][1] + 1 + params.ICVLen; len(raw) != want {
-		t.Errorf("method %d under cipher %d sends a response of %d octets, want %d", method.id, cipher.ID, len(raw), want)
-	}
-	return len(raw), len(raw) + sha256.Size + 2*len(prf(prfID, nil, nil))
+	return state.response, state.kept
 }
 
-// a half-open SA keeps its last IKE_INTERMEDIATE response, the request's digest and IntAuth, so halfOpenLimit of them keep a bounded amount whatever an initiator sends
-// the responses are the sizes design section 4.12 counts, from Table 1's KE payloads under AES-GCM, and the cipher of most overhead under the PRF of the longest output bounds the rest
+// retainedHalfOpenOctets counts live byte fields, payload descriptors and their unions, not other object headers or allocator slack
+// the old encryption keys retain the whole logical prf+ stream, including its SK_d, SK_pi and SK_pr
+// walking the retained objects also counts a byte field added to them without a second field list to update
+func retainedHalfOpenOctets(oldKeys *IKEKeys, roots ...any) int {
+	type span struct{ start, end uintptr }
+	var spans []span
+	seen := make(map[uintptr]bool)
+	inline := 0
+	var visit func(reflect.Value)
+	visit = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Pointer:
+			// the separately bounded transport queues and shared hub are outside the retained exchange-data figure
+			if v.Type() == reflect.TypeFor[*transport.Mux]() {
+				return
+			}
+			if !v.IsNil() && !seen[v.Pointer()] {
+				seen[v.Pointer()] = true
+				visit(v.Elem())
+			}
+		case reflect.Interface:
+			if !v.IsNil() {
+				visit(v.Elem())
+			}
+		case reflect.Struct:
+			for i := range v.NumField() {
+				visit(v.Field(i))
+			}
+		case reflect.Array, reflect.Slice:
+			if v.Len() == 0 {
+				return
+			}
+			if v.Type().Elem().Kind() == reflect.Uint8 {
+				var start uintptr
+				if v.Kind() == reflect.Slice {
+					start = v.Pointer()
+				} else if v.CanAddr() {
+					start = v.UnsafeAddr()
+				} else {
+					inline += v.Len()
+					return
+				}
+				spans = append(spans, span{start, start + uintptr(v.Len())})
+				return
+			}
+			if v.Kind() == reflect.Slice && v.Type().Elem() == reflect.TypeFor[RawPayload]() {
+				spans = append(spans, span{v.Pointer(), v.Pointer() + uintptr(v.Len())*v.Type().Elem().Size()})
+			}
+			for i := range v.Len() {
+				visit(v.Index(i))
+			}
+		case reflect.Map:
+			it := v.MapRange()
+			for it.Next() {
+				visit(it.Key())
+				visit(it.Value())
+			}
+		}
+	}
+	merge := func(spans []span) []span {
+		slices.SortFunc(spans, func(a, b span) int { return cmp.Compare(a.start, b.start) })
+		merged := spans[:0]
+		for _, s := range spans {
+			if n := len(merged); n != 0 && s.start <= merged[n-1].end {
+				merged[n-1].end = max(merged[n-1].end, s.end)
+			} else {
+				merged = append(merged, s)
+			}
+		}
+		return merged
+	}
+	visit(reflect.ValueOf(oldKeys))
+	owners := merge(spans)
+	spans, inline = nil, 0
+	for _, root := range roots {
+		visit(reflect.ValueOf(root))
+	}
+	for i, s := range spans {
+		for _, owner := range owners {
+			if s.start < owner.end && owner.start < s.end {
+				spans[i].start, spans[i].end = min(spans[i].start, owner.start), max(spans[i].end, owner.end)
+			}
+		}
+	}
+	total := inline
+	for _, s := range merge(spans) {
+		total += int(s.end - s.start)
+	}
+	runtime.KeepAlive(roots)
+	return total
+}
+
 // draft-ietf-ipsecme-ikev2-mlkem-09 section 2.1 Table 1: "ML-KEM-768 | 1192 / 1096 | 36 | 1184 / 1088" and "ML-KEM-1024 | 1576 / 1576 | 37 | 1568 / 1568"
 func TestHalfOpenSAsKeepABoundedIntermediateStateEach(t *testing.T) {
 	for _, test := range []struct {
@@ -844,22 +1062,30 @@ func TestHalfOpenSAsKeepABoundedIntermediateStateEach(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, _ := keptIntermediate(t, method, encrAES256, PRF_HMAC_SHA2_384); got != test.response {
+		if got, _ := keptIntermediate(t, method, encrAES256, PRF_HMAC_SHA2_384, DH_CURVE25519); got != test.response {
 			t.Errorf("method %d sends a response of %d octets, want design section 4.12's %d", test.method, got, test.response)
 		}
 	}
 	largest := 0
+	var largestOffer string
 	for _, method := range kemMethods {
-		for _, cipher := range (Suites{}).ikeCiphers() {
-			for _, prfID := range []uint16{PRF_HMAC_SHA2_256, PRF_HMAC_SHA2_384} {
-				_, kept := keptIntermediate(t, method, cipher, prfID)
-				largest = max(largest, kept)
+		for _, cipher := range cipherNames {
+			for _, prf := range prfNames {
+				for _, group := range kexNames {
+					_, kept := keptIntermediate(t, method, cipher.transform, prf.transform.ID, group.transform.ID)
+					if kept > largest {
+						largest = kept
+						largestOffer = fmt.Sprintf("cipher=%s prf=%s dh=%s addke1=%d", cipher.name, prf.name, group.name, method.id)
+					}
+				}
 			}
 		}
 	}
-	const ceiling = 512 << 10
-	if bound := halfOpenLimit * largest; bound > ceiling {
-		t.Errorf("%d half-open SAs keep up to %d octets of IKE_INTERMEDIATE state, %d each, past %d", halfOpenLimit, bound, largest, ceiling)
+	t.Logf("largest retained state: %d octets per SA, %d in all, offer %s integrity=none addke2-7=none", largest, halfOpenLimit*largest, largestOffer)
+	// design/limits.md counts the opening request and answer, both key generations, the nonce and the retained intermediate exchange
+	const perSA, allSAs = 71539, 18313984
+	if largest != perSA || halfOpenLimit*largest != allSAs {
+		t.Errorf("half-open state holds %d octets per SA and %d in all, want %d and %d", largest, halfOpenLimit*largest, perSA, allSAs)
 	}
 }
 
