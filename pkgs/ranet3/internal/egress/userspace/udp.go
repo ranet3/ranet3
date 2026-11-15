@@ -139,8 +139,8 @@ type destination struct {
 	mu                        sync.Mutex
 	dontFragment, fragmentSet bool
 	// kept is the IP and UDP header of the leaf's last datagram to the
-	// server, its first keptLen bytes, which an error about the server's
-	// datagrams quotes
+	// server, its first keptLen bytes, none where they pass its room, which
+	// an error about the server's datagrams quotes
 	kept    [60 + 8]byte
 	keptLen int
 }
@@ -150,51 +150,53 @@ func newUDPRelay(x *Exit) *udpRelay {
 }
 
 // datagram is a UDP datagram as take reads it from its packet: the leaf's
-// address and port, the server's, and the UDP header and payload whole
+// address and port, the server's, the UDP header and payload whole, and where
+// the UDP header starts in the packet
 type datagram struct {
 	from, to netip.AddrPort
 	udp      []byte
+	at       int
 }
 
 func (d datagram) payload() []byte { return d.udp[8:] }
 
 // readDatagram reads raw, one IPv4 or IPv6 packet holding a whole UDP
-// datagram right after its header, and reports false where the UDP length
-// claims more than the packet holds or less than its header
+// datagram right after its header, an IPv6 one's extension headers, and
+// reports false where the UDP length claims more than the packet holds or
+// less than its header
 func readDatagram(raw []byte) (datagram, bool) {
 	raw, version := packet.Payload(raw)
-	var d datagram
-	var body []byte
 	switch version {
 	case 4:
-		header := int(raw[0]&0x0f) * 4
-		if raw[9] != 17 {
-			return d, false
+		if raw[9] == 17 {
+			return udpAt(raw, int(raw[0]&0x0f)*4)
 		}
-		d.from = netip.AddrPortFrom(netip.AddrFrom4([4]byte(raw[12:16])), 0)
-		d.to = netip.AddrPortFrom(netip.AddrFrom4([4]byte(raw[16:20])), 0)
-		body = raw[header:]
 	case 6:
-		if raw[6] != 17 {
-			return d, false
+		if at, next, fragment, ok := icmp6At(raw); ok && next == 17 && !fragment {
+			return udpAt(raw, at)
 		}
-		d.from = netip.AddrPortFrom(netip.AddrFrom16([16]byte(raw[8:24])), 0)
-		d.to = netip.AddrPortFrom(netip.AddrFrom16([16]byte(raw[24:40])), 0)
-		body = raw[40:]
-	default:
-		return d, false
 	}
+	return datagram{}, false
+}
+
+// udpAt reads raw, an IPv4 or IPv6 packet whose UDP header starts at at, as
+// readDatagram does
+func udpAt(raw []byte, at int) (datagram, bool) {
+	body := raw[at:]
 	if len(body) < 8 {
-		return d, false
+		return datagram{}, false
 	}
 	length := int(binary.BigEndian.Uint16(body[4:6]))
 	if length < 8 || length > len(body) {
-		return d, false
+		return datagram{}, false
 	}
-	d.from = netip.AddrPortFrom(d.from.Addr(), binary.BigEndian.Uint16(body[0:2]))
-	d.to = netip.AddrPortFrom(d.to.Addr(), binary.BigEndian.Uint16(body[2:4]))
-	d.udp = body[:length]
-	return d, true
+	from, to := packetAddresses(raw)
+	return datagram{
+		from: netip.AddrPortFrom(from, binary.BigEndian.Uint16(body[0:2])),
+		to:   netip.AddrPortFrom(to, binary.BigEndian.Uint16(body[2:4])),
+		udp:  body[:length],
+		at:   at,
+	}, true
 }
 
 // checksumValid is whether the datagram's checksum holds over RFC 768's
@@ -233,10 +235,24 @@ func fastUDP(raw []byte) (dontFragment, ok bool) {
 	return false, false
 }
 
-// takeUDP takes each UDP datagram the stack hands its default handler as one
-// packet with no fragment or extension header, which any socket may fragment,
-// since its source did
+// takeUDP takes each UDP datagram the stack hands its default handler. An
+// IPv6 one the leaf did not cut, behind extension headers, goes as the leaf
+// sent it, which no socket may fragment, as the lane's fast path sends one
+// with none (RFC 8200 section 4.5). Any other the stack reassembled from the
+// leaf's fragments, an IPv4 one reaching it only so, and it goes as one packet
+// with no fragment or extension header, which any socket may fragment.
 func (x *Exit) takeUDP(_ stack.TransportEndpointID, pkt *stack.PacketBuffer) {
+	if network := pkt.NetworkHeader().Slice(); len(network) >= 40 && network[0]>>4 == 6 {
+		if at, _, fragmented, ok := icmp6At(network); ok && !fragmented {
+			raw := slices.Concat(network, pkt.TransportHeader().Slice(), pkt.Data().AsRange().ToSlice())
+			if d, ok := udpAt(raw, at); ok {
+				x.udp.carry(raw, d, true)
+			} else {
+				x.counts.drop(reasonMalformed)
+			}
+			return
+		}
+	}
 	raw, ok := reassembled(pkt, 17)
 	if !ok {
 		x.counts.drop(reasonMalformed)
@@ -245,18 +261,24 @@ func (x *Exit) takeUDP(_ stack.TransportEndpointID, pkt *stack.PacketBuffer) {
 	x.udp.take(raw, false)
 }
 
-// take relays raw, one UDP datagram a leaf sent, whole in one packet with no
-// fragment or extension header, which the lane's fast path and the stack's
-// default handler both hand here. dontFragment is whether the socket sending
-// it may not fragment it. The checksum is checked first on both paths, since
-// the socket computes a new one: a damaged datagram is dropped and counted,
-// answered with no error, and touches no mapping (RFC 1122 section 4.1.3.4).
+// take relays raw, one UDP datagram a leaf sent, whole in one packet, which
+// the lane's fast path and a reassembled datagram of the stack's hand here.
+// dontFragment is whether the socket sending it may not fragment it.
 func (u *udpRelay) take(raw []byte, dontFragment bool) {
 	d, ok := readDatagram(raw)
-	switch {
-	case !ok:
+	if !ok {
 		u.x.counts.drop(reasonMalformed)
 		return
+	}
+	u.carry(raw, d, dontFragment)
+}
+
+// carry relays d, the datagram raw holds, as take and takeUDP read it. The
+// checksum is checked first on both of the relay's paths, since the socket
+// computes a new one: a damaged datagram is dropped and counted, answered
+// with no error, and touches no mapping (RFC 1122 section 4.1.3.4).
+func (u *udpRelay) carry(raw []byte, d datagram, dontFragment bool) {
+	switch {
 	case !d.checksumValid():
 		u.x.counts.drop(reasonUDPChecksum)
 		return
@@ -650,11 +672,10 @@ func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment b
 			u.x.answers.Answer(raw, netstack.ExitTooBig, mtu)
 		}
 	}
-	header := 40
-	if raw[0]>>4 == 4 {
-		header = int(raw[0]&0x0f) * 4
+	dst.keptLen = 0
+	if d.at+8 <= len(dst.kept) {
+		dst.keptLen = copy(dst.kept[:], raw[:d.at+8])
 	}
-	dst.keptLen = copy(dst.kept[:], raw[:header+8])
 	// an error the socket was told of is read and the datagram sent again
 	// above, so one still failing is the host's own
 	return err != nil && !errors.Is(err, syscall.EMSGSIZE) && u.unsent(err)

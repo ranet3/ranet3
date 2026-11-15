@@ -8,6 +8,7 @@ package userspace
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -181,6 +182,80 @@ func TestDatagramWithDFIsAnsweredTooBigPastThePath(t *testing.T) {
 				t.Errorf("the server read %d bytes from %s, want the %d the leaf let be fragmented", len(got), from, len(payload))
 			}
 		})
+	}
+}
+
+// An IPv6 datagram reaches its server whole within the path's MTU, and past it
+// leaves in fragments only where its leaf sent it in fragments: one the leaf
+// sent whole, behind no extension header, a destination options header or a
+// hop-by-hop options header, is answered too big at the path's MTU quoting it
+// as the leaf sent it, and reaches no server, as a router answers one (RFC
+// 8200 section 4.5, RFC 4443 section 3.2)
+func TestIPv6DatagramIsFragmentedOnlyWhereItsLeafFragmentedIt(t *testing.T) {
+	onLoopback(t, rigServer6)
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netnstest.SetLinkMTU(lo.Index, pathMTU); err != nil {
+		t.Fatalf("narrow loopback to %d: %v", pathMTU, err)
+	}
+	t.Cleanup(func() {
+		if err := netnstest.SetLinkMTU(lo.Index, lo.MTU); err != nil {
+			t.Errorf("restore loopback's MTU of %d: %v", lo.MTU, err)
+		}
+	})
+	h := newRelayHarness(t, nil)
+	h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+	server := rigLoopbackServer(t, rigServer6.Addr())
+	// an options header holding one PadN option, followed by UDP
+	options := []byte{protoUDP, 0, 1, 4, 0, 0, 0, 0}
+	for _, c := range []struct {
+		name       string
+		next       byte
+		fragmented bool
+	}{
+		{"no extension header", protoUDP, false},
+		{"destination options", ipv6DestinationOptions, false},
+		{"hop-by-hop options", 0, false},
+		{"fragments the leaf made", ipv6Fragment, true},
+	} {
+		for _, size := range []int{pathMTU - 300, pathMTU + 50} {
+			t.Run(fmt.Sprintf("%s of %d bytes", c.name, size), func(t *testing.T) {
+				leaf := netip.AddrPortFrom(leaf6, freeUDPPort(t, leaf6))
+				payload := bytes.Repeat([]byte{byte(size)}, size)
+				message := udpMessage(leaf, serverAt(server), payload)
+				var packets [][]byte
+				switch c.next {
+				case protoUDP:
+					packets = [][]byte{ip6(leaf6, rigServer6.Addr(), protoUDP, 64, message)}
+				case ipv6Fragment:
+					packets = fragments(leaf6, rigServer6.Addr(), protoUDP, 7, message, 512)
+				default:
+					packets = [][]byte{ip6(leaf6, rigServer6.Addr(), c.next, 64, append(bytes.Clone(options), message...))}
+				}
+				answered := len(h.mesh.answered())
+				for _, raw := range packets {
+					h.x.handle(h.lane, raw)
+				}
+				if 40+len(message) <= pathMTU || c.fragmented {
+					readDatagramFrom(t, server, payload)
+					if answers := h.mesh.answered()[answered:]; len(answers) != 0 {
+						t.Errorf("answered %v, want the datagram carried alone", answers)
+					}
+					return
+				}
+				answers := h.mesh.answered()[answered:]
+				if len(answers) != 1 || answers[0].kind != netstack.ExitTooBig || answers[0].mtu != pathMTU || !bytes.Equal(answers[0].offending, packets[0]) {
+					t.Errorf("answered %v, want one too big at the path's %d quoting the leaf's packet", answers, pathMTU)
+				}
+				_ = server.SetReadDeadline(time.Now().Add(stackSettle))
+				buf := make([]byte, 1<<16)
+				if n, _, err := server.ReadFromUDPAddrPort(buf); err == nil {
+					t.Errorf("the server read %d bytes, want nothing of the datagram past the path", n)
+				}
+			})
+		}
 	}
 }
 
@@ -445,6 +520,40 @@ func onLoopback(t *testing.T, prefixes ...netip.Prefix) {
 	for _, prefix := range prefixes {
 		if err := netlink.AddAddress(lo.Index, prefix); err != nil && err != unix.EEXIST {
 			t.Fatal(err)
+		}
+	}
+}
+
+// rigLoopbackServer is a UDP socket at address on the loopback the test
+// brought up in its own namespace (onLoopback), and fails the test, never
+// skips it, where that loopback carries no datagram to it within exitWait.
+// An address just added may carry nothing for a moment, so the socket sends
+// itself a new probe every 10 ms until one arrives, and is handed over once
+// it read the last probe it sent, the probes before it read or lost.
+func rigLoopbackServer(t *testing.T, address netip.Addr) *net.UDPConn {
+	t.Helper()
+	conn, err := net.ListenUDP(udpNetwork(address), net.UDPAddrFromAddrPort(netip.AddrPortFrom(address, 0)))
+	if err != nil {
+		t.Fatalf("a server at %s: %v", address, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	buf := make([]byte, 64)
+	for i, deadline := 0, time.Now().Add(exitWait); ; i++ {
+		probe := fmt.Appendf(nil, "loopback probe %d", i)
+		_, err := conn.WriteToUDPAddrPort(probe, serverAt(conn))
+		if err != nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+		for err == nil {
+			_ = conn.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+			var n int
+			if n, err = conn.Read(buf); err == nil && bytes.Equal(buf[:n], probe) {
+				_ = conn.SetReadDeadline(time.Time{})
+				return conn
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the loopback of %s, which the test brought up, carries no datagram within %v: %v", address, exitWait, err)
 		}
 	}
 }
