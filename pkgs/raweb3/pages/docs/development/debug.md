@@ -398,22 +398,19 @@ These commands take flags of their own:
   exchange is bounded at 10 seconds, and `--for` is ignored.
 - `debug wait <kind> [--peer P] [--attr k=v]... [--past 2s] [--timeout 10s]`
   waits for one event of that kind carrying every attribute named, up to 16,
-  each with the value the event prints for it, prints the event and how long
-  after the wait began it happened, and exits 0. It exits 1 when none came
-  within the timeout, and 2 when it could not watch for one: no daemon
-  answering, a refusal, every stream place taken, a mistyped command line, or
-  the stream ending or dropping such an event first. The daemon applies the
-  kind, the peer and the attributes before an event enters the stream's queue,
-  so a burst of other events cannot push out the one awaited. `--past` takes an
-  event that recent from the recorder as well, for one that may have happened
-  just before the wait began. The recorder holds such an event only until 1024
-  later events of its subsystem have come, and the wait does not see one evicted
-  before it subscribed. A recorded event is judged by its stamp on the daemon's
-  clock, and one that comes after the wait subscribed is taken whatever its
-  stamp, so a clock stepped back during the wait hides nothing. With `--json` it
-  prints 1 object with the `event` and `after`, the time from the start of the
-  wait to the event. `after` is negative for an event recorded before the wait
-  began.
+  each with the value the event prints for it, and prints the event and how long
+  after the wait began it happened. See [exit status](../cli.md#exit-status).
+  The daemon applies the kind, the peer and the attributes before an event
+  enters the stream's queue, so a burst of other events cannot push out the one
+  awaited. `--past` takes an event that recent from the recorder as well, for
+  one that may have happened just before the wait began. The recorder holds such
+  an event only until 1024 later events of its subsystem have come, and the wait
+  does not see one evicted before it subscribed. A recorded event is judged by
+  its stamp on the daemon's clock, and one that comes after the wait subscribed
+  is taken whatever its stamp, so a clock stepped back during the wait hides
+  nothing. With `--json` it prints 1 object with the `event` and `after`, the
+  time from the start of the wait to the event. `after` is negative for an event
+  recorded before the wait began.
 - `debug trace [--src P]... [--dst P]... [--proto P] [--decision D] [--peer P] [--rate 1000] [--payload 0] [--pcap FILE] [--for 30s]`
   prints a record of each packet the node's forwarding decision handles and the
   filter selects, as the node decides it, until `--for` has passed, and then

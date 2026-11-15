@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-13
+updated: 2026-11-15
 order: 75
 ---
 
@@ -267,13 +267,17 @@ it. [Debugging](development/debug.md) describes each command and the events.
 
 ## Exit status
 
+These statuses apply unless a signal kills the command. A write that fails
+because a standard-output or standard-error pipe has no reader ends the command
+by SIGPIPE, without an error message for that write.
+
 | Command        | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| every command  | 0 on success. 1 on an error, which goes to standard error.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| every command  | 0 on success, or 1 on an error unless listed otherwise below, using standard error for error messages.                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `daemon`       | 0 after a clean shutdown, a stop during the start among them. 1 when it refuses to start, a `--pprof` or `--metrics` address it cannot bind among the refusals, when a second signal cuts the shutdown short, when serving pprof, metrics or the control socket or the mesh failed while it ran, when its tun went away under it, or when the route reconciler, the egress translator or the antispoof filter could not withdraw what it installed. A failed pass of any of them does not change the status. |
 | `debug socket` | 1 when the answer's status is not 2xx.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `debug wait`   | 0 when the event came. 1 when none came within `--timeout`. 2 when it could not watch for the event or lost it, or refused an argument or flag.                                                                                                                                                                                                                                                                                                                                                              |
-| `rekey`        | 1 when a session did not rekey, after the answer lists it with the reason.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `debug wait`   | 0 when the event came and was written. 1 when none came within `--timeout` or its output could not be written. 2 when it could not watch for the event or lost it, or refused an argument or flag.                                                                                                                                                                                                                                                                                                           |
+| `rekey`        | 1 when a session did not rekey or the answer could not be written.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 The daemon logs why it exits 1 at the error level, which every `--log-level`
 keeps: why it refuses to start, which part failed while it ran, stopped or undid
