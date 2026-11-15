@@ -130,7 +130,7 @@ func interfaceIndex(t *testing.T, name string) int {
 }
 
 // testTUNPlatform opens the backend on one device, covering both families so
-// that nothing it writes is scoped.
+// that only a hold or a source-specific route it writes is scoped.
 func testTUNPlatform(t *testing.T, name string) *routePlatform {
 	t.Helper()
 	opened, err := newPlatform(

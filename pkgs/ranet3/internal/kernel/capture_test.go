@@ -365,9 +365,8 @@ func TestCaptureWithdrawalIsLoggedForWhatAFailedStopLeft(t *testing.T) {
 	}
 }
 
-// A retracted default is a hold, and with no session live the reconciler
-// installs nothing for it.
-// captureLiveness holds it back the same way.
+// A retracted default is a hold, which the reconciler declines whatever
+// captureLiveness allows, so with no session live it installs nothing for it.
 func TestReconcileHoldsBackARetractedDefaultToo(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 0 }})
 	reconciler.now = func() time.Time { return start }
