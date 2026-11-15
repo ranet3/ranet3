@@ -399,7 +399,7 @@ func TestSegmentNoEndpointHoldsComesBackAsResetThroughALane(t *testing.T) {
 		h.exit.Egress(frames(tcpSegment(leaf, server, 1000, 1, tcpACK, nil)), nil)
 		waitFor(t, "reset toward "+leaf.String(), func() bool {
 			for _, raw := range mesh.laidPackets() {
-				if p, ok := parse(raw); ok && p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == leaf && netip.AddrPortFrom(p.src, p.srcPort) == server {
+				if p, ok := parse(raw); ok && p.resetToward(leaf) && netip.AddrPortFrom(p.src, p.srcPort) == server {
 					return true
 				}
 			}

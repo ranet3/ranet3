@@ -265,6 +265,11 @@ type sent struct {
 	payload    int
 }
 
+// resetToward is whether p is a TCP reset toward to
+func (p sent) resetToward(to netip.AddrPort) bool {
+	return p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == to
+}
+
 // parse reads raw, one IPv4 or IPv6 packet with no extension header
 func parse(raw []byte) (sent, bool) {
 	var p sent

@@ -316,7 +316,7 @@ func TestServersResetReachesTheLeafAsAReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.waitSent(t, "reset toward the leaf", func(p sent) bool {
-		return p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == leaf
+		return p.resetToward(leaf)
 	})
 	for _, p := range h.sentSoFar() {
 		if p.protocol == protoTCP && p.flags&tcpFIN != 0 {

@@ -40,6 +40,9 @@ type stackHarness struct {
 	// icmp is each message the ICMP handler took, udp each datagram the UDP
 	// handler took
 	icmp, udp []sent
+	// datagrams is each datagram the UDP handler took, as reassembled writes
+	// it again
+	datagrams [][]byte
 	// written is every packet the stack sent so far, in order
 	written []sent
 }
@@ -56,7 +59,14 @@ func newStackHarnessOn(t *testing.T, clock tcpip.Clock) *stackHarness {
 	// the link's clock stays at zero, so its controlled delay drops no packet the test waits for
 	fakeClock(h.link)
 	s, err := newStackOn(clock, h.link, stackWindow, stackHandlers{
-		udp:  func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) { h.took(&h.udp, protoUDP, id, pkt) },
+		udp: func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) {
+			h.took(&h.udp, protoUDP, id, pkt)
+			if raw, ok := reassembled(pkt, protoUDP); ok {
+				h.mu.Lock()
+				h.datagrams = append(h.datagrams, raw)
+				h.mu.Unlock()
+			}
+		},
 		icmp: func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) { h.took(&h.icmp, 0, id, pkt) },
 	})
 	if err != nil {
@@ -235,7 +245,7 @@ func TestStackAnswersNoEchoAndSendsOnlyTCP(t *testing.T) {
 			h.inject(t, ipPacket(family.leaf, family.server, protoUncarried, make([]byte, 8)))
 
 			h.waitSent(t, "reset to the segment no endpoint holds", func(p sent) bool {
-				return p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == unheld
+				return p.resetToward(unheld)
 			})
 			time.Sleep(stackSettle)
 			h.drain()
@@ -244,7 +254,7 @@ func TestStackAnswersNoEchoAndSendsOnlyTCP(t *testing.T) {
 				t.Logf("sent: %s", p)
 				switch {
 				case p.protocol == protoTCP && netip.AddrPortFrom(p.src, p.srcPort) == server && netip.AddrPortFrom(p.dst, p.dstPort) == leaf:
-				case p.protocol == protoTCP && p.flags&tcpRST != 0 && p.srcPort == 81 && netip.AddrPortFrom(p.dst, p.dstPort) == unheld:
+				case p.resetToward(unheld) && p.srcPort == 81:
 				default:
 					t.Errorf("the stack sent %s, which no flow and no unheld segment asks for", p)
 				}
@@ -299,7 +309,7 @@ func TestStackSendsTowardALeafOnlyTCP(t *testing.T) {
 	unheld := netip.AddrPortFrom(leaf4, 40001)
 	h.inject(t, tcpSegment(unheld, netip.AddrPortFrom(server4, 81), 1000, 0, tcpSYN, nil))
 	h.waitSent(t, "reset to the SYN no endpoint holds", func(p sent) bool {
-		return p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == unheld
+		return p.resetToward(unheld)
 	})
 	deadline := time.Now().Add(stackWait)
 	for h.link.icmp.Load()-before < uint64(len(triggers)) && time.Now().Before(deadline) {
@@ -335,6 +345,33 @@ func neighborSolicitation(src, dst, target netip.Addr) []byte {
 	copy(b[8:], target.AsSlice())
 	binary.BigEndian.PutUint16(b[2:4], fold(sum(pseudo(src, dst, protoICMPv6, len(b)), b)))
 	return b
+}
+
+// A datagram the lane passed in fragments is written again, once the stack
+// has reassembled it, as an IPv4 packet whose header checksum holds, the
+// datagram whole behind it
+func TestReassembledIPv4DatagramIsWholeAndItsChecksumHolds(t *testing.T) {
+	h := newStackHarness(t)
+	message := udpMessage(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 53), bytes.Repeat([]byte{'d'}, 3000))
+	h.inject(t, fragments(leaf4, server4, protoUDP, 9, message, 1200)...)
+	var raw []byte
+	waitFor(t, "datagram the UDP handler took", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if len(h.datagrams) > 0 {
+			raw = h.datagrams[0]
+		}
+		return raw != nil
+	})
+	if len(raw) < 20 || raw[0] != 4<<4|5 {
+		t.Fatalf("handed %x, want an IPv4 packet with a header of 20 bytes", raw[:min(len(raw), 20)])
+	}
+	if fold(sum(0, raw[:20])) != 0 {
+		t.Error("the header's checksum fails")
+	}
+	if !bytes.Equal(raw[20:], message) {
+		t.Errorf("the packet carries %d bytes, want the datagram's %d whole", len(raw)-20, len(message))
+	}
 }
 
 // The link claims no receive checksum offload, so gVisor checks a TCP
