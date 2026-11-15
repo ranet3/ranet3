@@ -763,18 +763,18 @@ where it is missing.
 
 The daemon counts its own writers. Each holds the table from its first write
 that succeeds, or from the read that finds what an earlier instance of it left,
-until its withdrawal, or until it ends without one. The last of them to withdraw
-deletes the table, in the transaction that deletes its own, so a clean stop
-leaves no table. The count decides for the daemon's writers: once one has ended
-without withdrawing, as the antispoof filter and the kill switch do at a stop
-for the mesh's failure, no later withdrawal deletes the table. The withdrawal's
-listing decides for anything else in the table: the last withdrawal deletes the
-table only where it lists nothing but its own and no flag but dormant, so a
-chain of another program's keeps the table where the listing shows it, and goes
-with the table where a listing comes back without it. No other withdrawal
-deletes the table, whatever it lists, so a daemon that dies between two
-withdrawals, or a start without `cap.table` that deletes the kill switch an
-earlier instance left, leaves the table for the next start to take over.
+until its withdrawal, or until it ends without one. The count decides for the
+daemon's writers: once one has ended without withdrawing, as the antispoof
+filter and the kill switch do at a stop for the mesh's failure, no later
+withdrawal deletes the table. The withdrawal's listing decides for anything else
+in the table: the last withdrawal deletes the table in the transaction that
+deletes its own, only where it lists nothing but its own and no flag but
+dormant. A chain, set, object or flowtable that is not its own keeps the table
+where the listing shows it, and goes with the table where a listing comes back
+without it. No other withdrawal deletes the table, whatever it lists, so a
+daemon that dies between two withdrawals, or a start without `cap.table` that
+deletes the kill switch an earlier instance left, leaves the table for the next
+start to take over.
 
 A table another writer gave a flag other than dormant refuses every writer's
 rewrite, and each writer names the flag beside the refusal: the translator in
