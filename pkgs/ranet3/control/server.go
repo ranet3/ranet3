@@ -387,8 +387,8 @@ func newServer(src Source) *http.Server {
 	}
 }
 
-// Bound is listener under the node's bound on the connections open at once,
-// with places of its own, and its Close is listener's alone.
+// Bound holds listener to maxConnections connections open at once, counted
+// apart from those of every other listener it bounds.
 func Bound(listener net.Listener) net.Listener {
 	return &boundedListener{Listener: listener, places: make(chan struct{}, maxConnections)}
 }
