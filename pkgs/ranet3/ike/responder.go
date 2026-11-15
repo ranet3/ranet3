@@ -155,6 +155,11 @@ type Responder struct {
 	previousValid  bool
 	cookieVersion  uint8
 	cookieRotated  time.Time
+
+	// afterAdmission is nil outside tests, which wait outside mu after a no-cookie decision
+	afterAdmission func()
+	// beforeReservation is nil outside tests, which pause a reservation split from its decision before it locks
+	beforeReservation func()
 }
 
 func NewResponder(cfg ResponderConfig) (*Responder, error) {
@@ -276,19 +281,19 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, fmt.Errorf("ike: IKE_SA_INIT request marks payload type %d critical", unsupported)
 	}
 
+	// a COOKIE must not exceed its request, which below this bound cannot complete IKE_SA_INIT
+	if len(datagram.Raw) < cookieAnswerLen {
+		return nil, Accepted{}, errInitialTooShort
+	}
+
 	// RFC 7296 section 2.6: "These attacks can be made less effective if a responder uses minimal CPU and commits no state to an SA until it knows the initiator can receive packets at the address from which it claims to be sending them."
-	if required, err := r.cookieRequired(request, ni, spiI, datagram.Endpoint); err != nil {
+	if required, err := r.admit(request, ni, spiI, datagram.Endpoint); err != nil {
 		return nil, Accepted{}, err
 	} else if required {
 		return nil, Accepted{}, errCookieChallenge
 	}
 
-	// the slot is taken before the key exchange, the first cost an unauthenticated datagram imposes
-	// and it is the pressure cookieThreshold reads
 	source := datagram.Endpoint.AddrPort().Addr()
-	if !r.enterHalfOpen(source) {
-		return nil, Accepted{}, fmt.Errorf("ike: too many half-open SAs")
-	}
 	defer r.leaveHalfOpen(source)
 
 	supportsIdentity, err := supportsSignatureHash(request.Payloads, HashIdentity)
@@ -1116,8 +1121,16 @@ func firstUnsupportedCritical(lists ...[]RawPayload) (PayloadType, bool) {
 }
 
 func (r *Responder) enterHalfOpen(source netip.Addr) bool {
+	if r.beforeReservation != nil {
+		r.beforeReservation()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.enterHalfOpenLocked(source)
+}
+
+// enterHalfOpenLocked requires r.mu held
+func (r *Responder) enterHalfOpenLocked(source netip.Addr) bool {
 	if r.halfOpen >= halfOpenLimit || r.halfOpenBySource[source] >= halfOpenPerSource {
 		return false
 	}
@@ -1144,9 +1157,15 @@ func (r *Responder) leaveHalfOpen(source netip.Addr) {
 	r.mu.Unlock()
 }
 
-// cookieRequired reports whether request, under pressure on the half-open count or on this address's share of it, was answered with a cookie, and the caller then stops without allocating
+var (
+	errHalfOpenFull    = errors.New("ike: too many half-open SAs")
+	errInitialTooShort = errors.New("ike: IKE_SA_INIT request is shorter than a cookie answer")
+)
+
+// admit reserves a half-open slot or requires a cookie
+// false, nil owns the slot until leaveHalfOpen, and every other return owns none
 // RFC 7296 section 2.6: "When a responder detects a large number of half-open IKE SAs, it SHOULD reply to IKE_SA_INIT requests with a response containing the COOKIE notification."
-func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, endpoint transport.Endpoint) (bool, error) {
+func (r *Responder) admit(request *Message, ni []byte, spiI uint64, endpoint transport.Endpoint) (bool, error) {
 	source := endpoint.AddrPort().Addr()
 	r.mu.Lock()
 	// the share one address may hold without a cookie stops an off-path spoofer spending a named peer's whole share while the node is idle
@@ -1164,12 +1183,18 @@ func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, end
 		r.cookieVersion++
 		r.cookieRotated = time.Now()
 	}
+	if !pressure {
+		// below the cookie thresholds there is room under both hard caps
+		r.enterHalfOpenLocked(source)
+		r.mu.Unlock()
+		if r.afterAdmission != nil {
+			r.afterAdmission()
+		}
+		return false, nil
+	}
 	secret, version := r.cookieSecret, r.cookieVersion
 	previous, havePrevious := r.previousSecret, r.previousValid
 	r.mu.Unlock()
-	if !pressure {
-		return false, nil
-	}
 	expected := cookieValue(secret, version, ni, spiI, endpoint)
 	accepted := [][]byte{expected}
 	if havePrevious {
@@ -1185,6 +1210,9 @@ func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, end
 		}
 		for _, candidate := range accepted {
 			if hmac.Equal(notify.Data, candidate) {
+				if !r.enterHalfOpen(source) {
+					return false, errHalfOpenFull
+				}
 				return false, nil
 			}
 		}

@@ -3,7 +3,10 @@
 
 package ike
 
-import "time"
+import (
+	"crypto/sha256"
+	"time"
+)
 
 // the rekey timings the Crypto accessors fill in, which a node runs with when cap.crypto is absent
 const (
@@ -89,6 +92,7 @@ const (
 	cookieLifetime                 = 2 * time.Minute
 	// RFC 2104 section 3 asks for a key at least as long as the HMAC-SHA-256 output
 	cookieSecretLen = 32
+	cookieAnswerLen = HeaderLen + genericPayloadHeaderLen + 4 + 1 + sha256.Size
 	// the error notifies sent in the clear answer a fleet's redial after an outage, up to halfOpenLimit dials, and the rate refills them within internal/client's 10 second reconnect delay
 	statelessErrorBurst      = halfOpenLimit
 	statelessErrorsPerSecond = 32

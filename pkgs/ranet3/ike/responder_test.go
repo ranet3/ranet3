@@ -1764,7 +1764,7 @@ func testResponderDemandsCookieUnderPressure(t *testing.T) {
 
 	r := &Responder{halfOpen: cookieThreshold}
 	r.cfg.Hub = hub
-	required, err := r.cookieRequired(&Message{}, bytes.Repeat([]byte{7}, 32), 1, endpoint)
+	required, err := r.admit(&Message{}, bytes.Repeat([]byte{7}, 32), 1, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1772,11 +1772,9 @@ func testResponderDemandsCookieUnderPressure(t *testing.T) {
 		t.Fatal("a request under pressure was carried forward with no cookie at all")
 	}
 
-	// Below the threshold it does nothing at all, keeping the
-	// ordinary case a two-message exchange.
 	quiet := &Responder{}
 	quiet.cfg.Hub = hub
-	required, err = quiet.cookieRequired(&Message{}, bytes.Repeat([]byte{7}, 32), 1, endpoint)
+	required, err = quiet.admit(&Message{}, bytes.Repeat([]byte{7}, 32), 1, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1815,7 +1813,7 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 	}
 	accepted := func(t *testing.T, request *Message, ni []byte, spi uint64, ep transport.Endpoint) bool {
 		t.Helper()
-		required, err := r.cookieRequired(request, ni, spi, ep)
+		required, err := r.admit(request, ni, spi, ep)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1852,7 +1850,7 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 	// an idle responder ignores it the same way, and goes on with the request
 	quiet := &Responder{}
 	quiet.cfg.Hub = hub
-	if required, err := quiet.cookieRequired(withCookie(valid[:1]), nonce, 1, endpoint); err != nil || required {
+	if required, err := quiet.admit(withCookie(valid[:1]), nonce, 1, endpoint); err != nil || required {
 		t.Errorf("an idle responder held back a request carrying a cookie it never issued (%v)", err)
 	}
 
@@ -1909,7 +1907,7 @@ func testResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
 			}),
 		}
 	}
-	required, err := r.cookieRequired(request(nil, groups[0]), nonce, 1, endpoint)
+	required, err := r.admit(request(nil, groups[0]), nonce, 1, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1928,7 +1926,7 @@ func testResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
 	}
 	echoed := []RawPayload{{Type: PayloadN, Body: EncodeNotify(cookie)}}
 	for _, group := range groups {
-		required, err := r.cookieRequired(request(echoed, group), nonce, 1, endpoint)
+		required, err := r.admit(request(echoed, group), nonce, 1, endpoint)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2257,23 +2255,18 @@ func testOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
 	r.cookieRotated = time.Now()
 
 	victim := observedEndpoint(t, hub, randUint64Nonzero())
-	source := victim.AddrPort().Addr()
 	nonce := bytes.Repeat([]byte{7}, 32)
 	empty := &Message{}
-	// The node is idle, so the global threshold is nowhere near.
 	for i := range halfOpenPerSourceWithoutCookie {
-		required, err := r.cookieRequired(empty, nonce, uint64(i+1), victim)
+		required, err := r.admit(empty, nonce, uint64(i+1), victim)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if required {
 			t.Fatalf("an idle responder demanded a cookie for slot %d, which costs every handshake a round trip", i)
 		}
-		if !r.enterHalfOpen(source) {
-			t.Fatal("the responder refused a slot below one address's share")
-		}
 	}
-	required, err := r.cookieRequired(empty, nonce, 99, victim)
+	required, err := r.admit(empty, nonce, 99, victim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2283,6 +2276,116 @@ func testOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
 	if r.halfOpen >= cookieThreshold {
 		t.Fatalf("the global threshold was reached at %d, so this proves nothing about the per-address one", r.halfOpen)
 	}
+}
+
+// the COOKIE answer must fit the request at either threshold, including a request whose SA and KE bodies are empty
+func TestCookieAnswersDoNotAmplify(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		dh, err := GenerateDH(DH_CURVE25519)
+		if err != nil {
+			t.Fatal(err)
+		}
+		minimum := Message{Header: Header{SPIInitiator: 1, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator},
+			Payloads: []RawPayload{
+				{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{
+					{Type: TransEncr, ID: ENCR_CHACHA20_POLY1305}, {Type: TransPRF, ID: PRF_HMAC_SHA2_256}, {Type: TransDH, ID: DH_CURVE25519},
+				}}})},
+				{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+				{Type: PayloadNonce, Body: bytes.Repeat([]byte{7}, 16)},
+			}}
+		raw := minimum.Encode()
+		// 28 header + 36 SA + 40 KE + 20 Nonce is the smallest complete request
+		if len(raw) != 124 {
+			t.Fatalf("the smallest complete request is %d octets, want 124", len(raw))
+		}
+		var hash [2]byte
+		binary.BigEndian.PutUint16(hash[:], HashIdentity)
+		minimum.Payloads = append(minimum.Payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hash[:]})})
+		raw = minimum.Encode()
+		// Ed25519 also needs the ten-octet signature-hash notify, and this request must still be admitted without pressure
+		if len(raw) != 134 {
+			t.Fatalf("the smallest Ed25519 request is %d octets, want 134", len(raw))
+		}
+		hub := listenHub(t)
+		endpoint, peer := observedPeerFrom(t, hub, 0x777, net.IPv4(127, 0, 0, 1))
+		r := &Responder{cfg: ResponderConfig{
+			Hub: hub, Suites: func() Suites { return Suites{kex: []kexEntry{{group: DH_CURVE25519}}} },
+		}}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		ended := make(chan struct{})
+		go func() {
+			session, _, _ := r.handshake(ctx, transport.Unclaimed{Raw: raw, Endpoint: endpoint})
+			if session != nil {
+				session.Mux().Close()
+			}
+			close(ended)
+		}()
+		buf := make([]byte, 2048)
+		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		n, _, readErr := peer.ReadFromUDP(buf)
+		cancel()
+		<-ended
+		if readErr != nil || n <= 4 {
+			t.Fatalf("the smallest Ed25519 request drew no initial answer: %d, %v", n, readErr)
+		}
+		answer, err := DecodeMessage(buf[4:n])
+		if err != nil || findType(answer.Payloads, PayloadSA) == nil {
+			t.Fatalf("the smallest Ed25519 request was not admitted: %v", err)
+		}
+		admissions := 0
+		r.afterAdmission = func() { admissions++ }
+		for _, nonceLen := range []int{16, 28} {
+			short := (&Message{Header: minimum.Header, Payloads: []RawPayload{
+				{Type: PayloadSA}, {Type: PayloadKE}, {Type: PayloadNonce, Body: bytes.Repeat([]byte{7}, nonceLen)},
+			}}).Encode()
+			if _, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: short, Endpoint: endpoint}); !errors.Is(err, errInitialTooShort) {
+				t.Errorf("idle responder did not drop a %d-octet request before admission: %v", len(short), err)
+			}
+			if admissions != 0 || r.halfOpen != 0 {
+				t.Error("a short request took a half-open place at idle")
+			}
+			_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+			if n, _, err := peer.ReadFromUDP(buf); err == nil {
+				t.Errorf("idle responder answered %d IKE octets with %d", len(short), n-4)
+			}
+		}
+		for _, node := range []bool{true, false} {
+			hub := listenHub(t)
+			endpoint, peer := observedPeerFrom(t, hub, 0x778, net.IPv4(127, 0, 0, 1))
+			r := &Responder{cfg: ResponderConfig{Hub: hub}}
+			if node {
+				r.halfOpen = cookieThreshold
+			} else {
+				r.halfOpen = halfOpenPerSourceWithoutCookie
+				r.halfOpenBySource = map[netip.Addr]int{endpoint.AddrPort().Addr(): halfOpenPerSourceWithoutCookie}
+			}
+			var requests [][]byte
+			for _, nonceLen := range []int{16, 28, 29} {
+				request := Message{Header: minimum.Header, Payloads: []RawPayload{
+					{Type: PayloadSA}, {Type: PayloadKE}, {Type: PayloadNonce, Body: bytes.Repeat([]byte{7}, nonceLen)},
+				}}
+				requests = append(requests, request.Encode())
+			}
+			requests = append(requests, raw)
+			for _, request := range requests {
+				if session, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: request, Endpoint: endpoint}); session != nil || err == nil {
+					t.Fatalf("node pressure %v: a %d-octet request was carried forward", node, len(request))
+				}
+				_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+				n, _, err := peer.ReadFromUDP(buf)
+				if len(request) < 69 {
+					if err == nil {
+						t.Errorf("node pressure %v: %d IKE octets drew %d, want no answer", node, len(request), n-4)
+					}
+				} else if err != nil || n <= 4 {
+					t.Errorf("node pressure %v: a %d-octet request drew no cookie: %v", node, len(request), err)
+				} else if n-4 > len(request) || firstTestNotify(t, buf[4:n]).Type != N_COOKIE {
+					t.Errorf("node pressure %v: %d IKE octets drew %d, want a cookie no larger", node, len(request), n-4)
+				}
+			}
+		}
+	})(t)
 }
 
 // A cookie is issued and echoed a round trip apart. Rotating the secret in
@@ -2316,13 +2419,13 @@ func testCookieSurvivesRotationThatFollowsIt(t *testing.T) {
 	echoed := &Message{Payloads: []RawPayload{
 		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_COOKIE, Data: issued})},
 	}}
-	if required, err := r.cookieRequired(echoed, nonce, 1, endpoint); err != nil || required {
+	if required, err := r.admit(echoed, nonce, 1, endpoint); err != nil || required {
 		t.Fatalf("the responder refused the cookie it had just issued: required=%v err=%v", required, err)
 	}
 
 	// The secret rotates while the retry is still on the wire.
 	r.cookieRotated = time.Now().Add(-2 * cookieLifetime)
-	if required, err := r.cookieRequired(echoed, nonce, 1, endpoint); err != nil || required {
+	if required, err := r.admit(echoed, nonce, 1, endpoint); err != nil || required {
 		t.Errorf("a cookie in flight through a rotation was refused: required=%v err=%v", required, err)
 	}
 	if !r.previousValid {
@@ -2332,7 +2435,7 @@ func testCookieSurvivesRotationThatFollowsIt(t *testing.T) {
 	// One generation is all that is kept: a cookie two rotations old is older
 	// than the lifetime it was issued under.
 	r.cookieRotated = time.Now().Add(-2 * cookieLifetime)
-	if required, err := r.cookieRequired(echoed, nonce, 1, endpoint); err != nil || !required {
+	if required, err := r.admit(echoed, nonce, 1, endpoint); err != nil || !required {
 		t.Errorf("a cookie two rotations old was still accepted: required=%v err=%v", required, err)
 	}
 }
@@ -3913,3 +4016,63 @@ func (h *levelRecorder) Handle(_ context.Context, r slog.Record) error {
 }
 func (h *levelRecorder) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *levelRecorder) WithGroup(string) slog.Handler      { return h }
+
+func TestHandshakeReturnsExactlyItsOwnHalfOpenPlace(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		h := newResponderHarness(t, nil)
+		r := h.responder
+		endpoint, peer := observedPeerFrom(t, r.cfg.Hub, 0x779, net.IPv4(127, 0, 0, 1))
+		raw := encodeTestSAInit(t, 101, bytes.Repeat([]byte{7}, 32), ikeProposal(), nil)
+		ctx, cancel := context.WithCancel(t.Context())
+		ended := make(chan struct{})
+		go func() {
+			_, _, _ = r.handshake(ctx, transport.Unclaimed{Raw: raw, Endpoint: endpoint})
+			close(ended)
+		}()
+		defer func() { cancel(); <-ended }()
+		var buf [2048]byte
+		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		n, _, err := peer.ReadFromUDP(buf[:])
+		if err != nil || n <= 4 {
+			t.Fatalf("the held handshake drew no initial answer: %v", err)
+		}
+		answer, err := DecodeMessage(buf[4:n])
+		if err != nil || answer.find(PayloadSA) == nil {
+			t.Fatalf("the held handshake was not accepted: %v", err)
+		}
+		check := func(want int) {
+			t.Helper()
+			r.mu.Lock()
+			total, source := r.halfOpen, r.halfOpenBySource[endpoint.AddrPort().Addr()]
+			r.mu.Unlock()
+			if total != want || source != want {
+				t.Fatalf("%d handshakes remain, but node counts %d and source counts %d", want, total, source)
+			}
+		}
+		check(1)
+		initiator, err := h.dial(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer initiator.Mux().Close()
+		select {
+		case session := <-h.sessions:
+			defer session.Mux().Close()
+		case <-time.After(answerBudget):
+			t.Fatal("the complete handshake was not accepted")
+		}
+		check(1)
+		bad, err := DecodeMessage(encodeTestSAInit(t, 102, bytes.Repeat([]byte{7}, 32), ikeProposal(), nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad.Payloads = bad.Payloads[:3]
+		if _, _, err := r.handshake(t.Context(), transport.Unclaimed{Raw: bad.Encode(), Endpoint: endpoint}); err == nil {
+			t.Fatal("a request without signature-hash support was accepted")
+		}
+		check(1)
+		cancel()
+		<-ended
+		check(0)
+	})(t)
+}
