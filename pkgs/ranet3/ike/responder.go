@@ -800,7 +800,11 @@ func (s *Session) answerInitRepeat(c *repeatCredits, request, response, raw []by
 // answerRepeat sends the answer ctx.lastPeer holds to source where raw, decoded as m, repeats its request, gathering in source's credit a repeat in fragments from anywhere but the origin
 // it is the one rule of every site that resends a kept answer: the half-open wait, whose IKE_SA_INIT exchange answerInitRepeat answers with the same account and draw, Run's dispatch and answerAgain, which is the wait after IKE_AUTH's
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
-// the origin is the session's endpoint: in the half-open wait the address and port the IKE_SA_INIT request came from, which proved it receives only where this end asked it for a cookie, and after IKE_AUTH where the peer's last fresh message came from
+// the origin is the session's endpoint
+// a responder's endpoint starts at the address and port the IKE_SA_INIT request came from and moves to those of the IKE_AUTH request
+// the IKE_SA_INIT source proved the peer receives there only where this end asked the peer for a cookie
+// an initiator's endpoint stays at the address and port it dialed until Run
+// in Run either end's endpoint moves to where a fresh authenticated request or the authenticated answer to its outstanding request came from
 // a repeat from the origin is answered on its fragment 1, at most maxRetransmitsWhileBusy times in each exchange, the bound on the sends of one request this end counts, so each counted send of a peer that resends as this end does draws the answer
 // one from any other address and port is answered once all of the request has come from there, and only where the octets of that address's repeats in the exchange cover those of every answer it drew in it
 // so an address other than the origin draws no more octets in an exchange than it sent repeating the request, and neither an initiator that holds the keys without having authenticated nor anyone replaying a captured request or fragment can aim more at another address than is sent in that address's name
