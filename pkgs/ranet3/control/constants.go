@@ -30,7 +30,9 @@ const (
 	maxConnections = 32
 	// requestTimeout bounds reading a request, its headers and its body together, which a local client sends at once
 	requestTimeout = 5 * time.Second
-	// writeTimeout bounds writing an answer to a client that stopped reading, a stream excepted
+	// writeTimeout bounds a request from the end of its headers to the end of its answer, a stream excepted
+	// its deadline is fixed when the headers are read, so the wait for the body, the verb's run and the answer's write all
+	// count against it
 	writeTimeout = 30 * time.Second
 	// idleTimeout closes a connection that finished a request and went quiet, which nothing else bounds
 	idleTimeout = 30 * time.Second
@@ -42,13 +44,14 @@ const (
 	// maxStreams is how many streams a daemon holds open at once, leaving the rest of maxConnections to the reads
 	maxStreams = 4
 	// streamBudget is how long one stream write may wait on its reader before the stream is dropped
-	// long enough for a reader on a loaded host, short enough that a stopped one does not hold a place
+	// long enough for a reader on a loaded host
 	streamBudget = 5 * time.Second
 	// streamHeartbeat is how often a quiet stream writes, so a reader can tell a quiet daemon from a dead one
 	streamHeartbeat = 15 * time.Second
 	// streamTick is how often a stream reports what its feed refused since it last did, as a trace's stream.dropped note
 	streamTick = time.Second
-	// streamBatch is how many events one stream flush carries at most, which bounds the time between flushes
+	// streamBatch is how many events or trace records one drain of a live stream takes at most before it flushes, beside the
+	// notes it adds, which bounds the time between flushes
 	streamBatch = 64
 	// maxLine is the longest stream line a client reads, in bytes, far past any event and short of a runaway
 	maxLine = 1 << 20

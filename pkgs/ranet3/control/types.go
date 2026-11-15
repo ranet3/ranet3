@@ -23,9 +23,7 @@
 //
 // Nothing outside this package is needed to speak the protocol: the types are
 // plain structs over [net/netip] addresses and a [Duration] that marshals as a
-// Go duration string, and the paths are named constants. This package imports
-// nothing else in this repository, so a caller takes it without taking the
-// daemon.
+// Go duration string, and the paths are named constants.
 //
 // # What the socket grants
 //
@@ -63,10 +61,7 @@
 // # Versioning
 //
 // Paths carry a /v0 prefix. v0 promises that a client and a daemon built from
-// the same revision agree, and nothing wider: a field may be added at any
-// time, and a caller ignores what it does not know rather than refusing it. A
-// removal or a change of meaning takes a new prefix, so a caller pinned to
-// /v0 keeps reading what it read.
+// the same revision agree, and nothing wider.
 package control
 
 import (
@@ -155,7 +150,7 @@ func SubsystemNames() []string {
 
 // Request is the body of a write. One shape serves every verb, and each verb
 // reads the fields it needs and ignores the others. A member no field names is
-// refused. An empty body decodes as the zero value, and reload is asked with one.
+// refused. An empty body decodes as the zero value.
 type Request struct {
 	Subsystem Subsystem `json:"subsystem,omitempty"`
 	Peer      string    `json:"peer,omitempty"`
@@ -265,7 +260,6 @@ type Status struct {
 	FullMesh  bool `json:"full_mesh"`
 	NoTransit bool `json:"no_transit"`
 	// ForwardsIPv4 and ForwardsIPv6 are the kernel's forwarding, per family, null where the node could not read the setting
-	// an exit egresses only a family its kernel forwards, and transit needs neither
 	ForwardsIPv4 *bool        `json:"forwards_ipv4"`
 	ForwardsIPv6 *bool        `json:"forwards_ipv6"`
 	Registry     RegistryInfo `json:"registry"`
@@ -564,11 +558,8 @@ type KernelTaken struct {
 // between the two.
 //
 // Advertise and Announced are separate fields because they disagree exactly
-// when something is wrong. A prefix is announced only while its family's
-// chains, set and timeout objects read back as written, the kernel forwards the
-// family, the host holds every address its classes translate to and its route
-// lookups, where they run, find a translated packet and its reply leaving by
-// the devices the translation needs, so a configured prefix missing from
+// when something is wrong. A prefix is announced only while its family is
+// ready (exit-nodes.md, "Readiness"), so a configured prefix missing from
 // Announced is this node declining to attract traffic it would have to drop,
 // and it is the line to read when a customer's exit node has stopped being
 // selected.
@@ -627,8 +618,8 @@ type EgressStatus struct {
 	Err       string   `json:"err,omitempty"`
 	// Userspace is the detail of an exit that carries each flow on sockets
 	// of its own rather than through rules, absent for one that installs
-	// rules. Where it is set, the rules' counts read zero and conntrack's are
-	// absent.
+	// rules. Where it is set, Installed, Flows, Bytes and Untranslated read
+	// zero, Conflicts is empty and conntrack's are absent.
 	Userspace *EgressUserspace `json:"userspace,omitempty"`
 }
 
@@ -704,8 +695,7 @@ type EgressSourceFlows struct {
 	Held   int        `json:"held,omitempty"`
 }
 
-// EgressPackets is a count of packets in each family as the last pass read
-// it. A rewrite of the rules starts it from zero.
+// EgressPackets is a count of packets in each family
 type EgressPackets struct {
 	IPv4 uint64 `json:"ipv4"`
 	IPv6 uint64 `json:"ipv6"`

@@ -120,8 +120,7 @@ func TestHandlerRoutesEveryVerb(t *testing.T) {
 				t.Errorf("rekey --all reached %+v", s)
 			}
 		}},
-		// Empty rather than "{}": reload reads no field, so it is asked with
-		// no body at all and the handler has to take that as the zero request.
+		// an empty body is the zero request
 		"reload": {path: PathReload, body: "", check: func(t *testing.T, s *writingSource) {
 			if s.verb != "reload" {
 				t.Errorf("reload reached %+v", s)

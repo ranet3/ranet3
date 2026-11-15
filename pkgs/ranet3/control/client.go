@@ -202,7 +202,7 @@ func (c *Client) explain(err error) error {
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return fmt.Errorf("control: nothing is listening at %s, so the daemon is not running", c.path)
 	case errors.Is(err, os.ErrPermission):
-		return fmt.Errorf("control: %s cannot be opened by this user: the socket is mode 0660 and owned by the daemon", c.path)
+		return fmt.Errorf("control: %s cannot be opened by this user: the daemon's socket admits root, its own user and its group, and a directory that was there before the daemon keeps its own group and mode", c.path)
 	}
 	return fmt.Errorf("control: %w", err)
 }

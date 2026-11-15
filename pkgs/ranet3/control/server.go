@@ -330,8 +330,6 @@ func readRequest(w http.ResponseWriter, r *http.Request) (Request, bool) {
 		return Request{}, false
 	}
 	var request Request
-	// An empty body is the zero request rather than a decode failure, so
-	// reload, which reads no field, is asked with nothing at all.
 	if len(body) > 0 {
 		if err := jsonv2.Unmarshal(body, &request, jsonv2.RejectUnknownMembers(true)); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

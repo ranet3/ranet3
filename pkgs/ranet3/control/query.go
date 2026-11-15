@@ -14,10 +14,9 @@ import (
 // the way the subcommands do, and so that a test asks them of the wire form
 // rather than of a table.
 
-// Covering is every route whose destination contains an address, longest
-// prefix first, so the first entry is the one the forwarding table would use.
-// Entries of equal length are ordered by their source prefix, since a
-// source-specific route is keyed by the pair and several can share one
+// Covering is every route whose destination contains an address, the longest
+// destination first and, among equal ones, the most specific source first,
+// since a source-specific route is keyed by the pair and several can share one
 // destination.
 //
 // A retracted prefix is in the answer like any other, with no next hop. It is
