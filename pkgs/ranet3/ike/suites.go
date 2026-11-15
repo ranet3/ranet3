@@ -392,6 +392,7 @@ func choose(preferred, offered []Transform) (Transform, bool) {
 // acceptable is false where it offers integrity transforms and no NONE this end takes among them, or a Transform Type outside types and the ADDKE types
 // RFC 7296 section 3.3: "Combined-mode ciphers include both integrity and encryption in a single encryption algorithm, and MUST either offer no integrity algorithm or a single integrity algorithm of "NONE", with no integrity algorithm being the RECOMMENDED method."
 // RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
+// RFC 7296 section 3.3.5: "The Key Length attribute MUST NOT be used with transforms that use a fixed-length key."
 // RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
 func combinedIntegrity(transforms []Transform, types ...TransformType) (integ *Transform, acceptable bool) {
 	offered := false
@@ -399,7 +400,7 @@ func combinedIntegrity(transforms []Transform, types ...TransformType) (integ *T
 		switch {
 		case transform.Type == TransInteg:
 			offered = true
-			if integ == nil && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
+			if integ == nil && transform.ID == INTEG_NONE && transform.KeyLengthBits == 0 && !transform.UnsupportedAttributes {
 				integ = &transforms[i]
 			}
 		case !slices.Contains(types, transform.Type) && !additional(transform.Type):

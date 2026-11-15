@@ -269,3 +269,24 @@ func TestUnusableIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T) {
 		t.Errorf("the second proposal was not considered: %v, %v", selected.Number, err)
 	}
 }
+
+// RFC 7296 section 3.3.5: "The Key Length attribute MUST NOT be used with transforms that use a fixed-length key."
+// section 3.3.6: "other transforms with the same Transform Type are processed as usual."
+func TestIKEProposalWhoseIntegrityNONECarriesAKeyLengthIsUnacceptable(t *testing.T) {
+	keyed := Transform{Type: TransInteg, ID: INTEG_NONE, KeyLengthBits: 128}
+	plain := Transform{Type: TransInteg, ID: INTEG_NONE}
+	for _, alternative := range []bool{false, true} {
+		proposal := Proposal{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{encrAES256, prfSHA256, dhX25519, keyed}}
+		if alternative {
+			proposal.Transforms = append(proposal.Transforms, plain)
+		}
+		selected, _, err := selectIKEProposal(EncodeSA([]Proposal{proposal}), DH_CURVE25519, Suites{}, false)
+		if !alternative {
+			if err == nil {
+				t.Errorf("an offer whose only integrity transform carries a key length was taken: %+v", selected)
+			}
+		} else if err != nil || !slices.Contains(selected.Transforms, plain) || slices.Contains(selected.Transforms, keyed) {
+			t.Errorf("the answer chose %+v, %v, want the plain integrity alternative", selected, err)
+		}
+	}
+}

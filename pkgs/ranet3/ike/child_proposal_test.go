@@ -863,6 +863,7 @@ func TestChildSAProposalOfAnUnknownTypeOrWithoutESNIsUnacceptable(t *testing.T) 
 // a Child SA proposal whose only ESN carries an attribute this end does not understand or a key length is unacceptable, as is one whose only integrity transform is a NONE carrying such an attribute
 // and a proposal after it in the same offer is taken
 // RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable"
+// RFC 7296 section 3.3.5: "The Key Length attribute MUST NOT be used with transforms that use a fixed-length key."
 func TestChildSAProposalWhoseESNOrIntegrityNONECarriesAnAttributeIsUnacceptable(t *testing.T) {
 	valid := espProposal([]byte{0, 0, 0, 9})
 	valid.Number = 2
@@ -874,6 +875,7 @@ func TestChildSAProposalWhoseESNOrIntegrityNONECarriesAnAttributeIsUnacceptable(
 		"an ESN carrying an attribute this end does not understand":        {first: esnNone, attributed: true},
 		"an ESN carrying a key length":                                     {first: Transform{Type: TransESN, ID: ESN_NO, KeyLengthBits: 128}},
 		"an INTEG NONE carrying an attribute this end does not understand": {first: Transform{Type: TransInteg, ID: INTEG_NONE}, attributed: true},
+		"an INTEG NONE carrying a key length":                              {first: Transform{Type: TransInteg, ID: INTEG_NONE, KeyLengthBits: 128}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			unusable := espProposal([]byte{0, 0, 0, 8})
@@ -890,6 +892,18 @@ func TestChildSAProposalWhoseESNOrIntegrityNONECarriesAnAttributeIsUnacceptable(
 				case len(offer) == 2 && (err != nil || selection.proposal.Number != valid.Number):
 					t.Errorf("an offer of a proposal with %s and another was answered with proposal %d, %v, want the other", name, selection.proposal.Number, err)
 				}
+			}
+			unusable.Transforms = append(unusable.Transforms, Transform{Type: test.first.Type})
+			body := EncodeSA([]Proposal{unusable})
+			if test.attributed {
+				body = addUnknownTVAttributeToFirstTransform(body)
+			}
+			selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
+			if err != nil {
+				t.Fatalf("a proposal with %s beside a plain alternative was refused: %v", name, err)
+			}
+			if test.first.Type == TransInteg && selection.integ != (Transform{Type: TransInteg, ID: INTEG_NONE}) {
+				t.Errorf("the answer chose integrity transform %+v, want plain NONE", selection.integ)
 			}
 		})
 	}
