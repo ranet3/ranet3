@@ -2740,10 +2740,21 @@ four-tuple again: the stack hands a SYN in TIME_WAIT to no forwarder, and the
 conditions RFC 1122 section 4.2.2.13 puts on that reopening are not checked, see
 its row. A connection is freed at once after a reset, where RFC 7857 section 2.2
 asks 4 minutes. A leaf's opening connection is held while the exit's dial to the
-server runs, and answered once the host's TCP gives the dial up. An established
-connection has no idle timer of the exit's: it is kept until an end closes or
-resets it, or stops answering the keepalives the exit's stack sends the leaf and
-the host's TCP the server.
+server runs, and answered once the host's TCP gives the dial up. A connection
+the host's TCP ends during the dial, as one whose server sends bytes, a FIN and
+a reset at once, is answered by where the end lands. An end before Go's connect
+has read the socket's errno and its peer fails that connect on Linux and macOS
+alike, and the connect takes the end's errno. The dial then fails, and the leaf
+is reset at its SYN with none of those bytes. On macOS an end after that is
+handed over: the leaf's handshake completes, the leaf is passed the bytes the
+relay reads before it meets the reset, and then the leaf is reset. On Linux,
+where the exit runs in tests alone, an end after the connect and before the
+close of the dial's error queue reads the connection's state fails the dial the
+same way. That close took the end's errno from the socket, so a relay would end
+the connection in a FIN. An end after that read is handed over, and its leaf is
+reset after its handshake. An established connection has no idle timer of the
+exit's: it is kept until an end closes or resets it, or stops answering the
+keepalives the exit's stack sends the leaf and the host's TCP the server.
 
 The [closing user timeout](limits.md#closing-tcp) follows RFC 6429 section 4's
 permission for an application to close a connection in persist. That section
