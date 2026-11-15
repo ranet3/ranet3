@@ -981,7 +981,7 @@ can configure are in
 
 | Limit                                          | Value                                                                                                                                | Past it                                                                                              |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                                                                       | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)                  |
+| Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address, including concurrent requests                                                                        | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)                  |
 | Half-open SAs                                  | 256 in all, 16 from 1 address                                                                                                        | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                            |
 | Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                                                                    | A further one is not sent, and at most 1 log line every minute counts those held back                |
 | Responder handshake                            | 30 seconds until it answers an authenticated `IKE_AUTH`                                                                              | The handshake is abandoned                                                                           |
@@ -1002,10 +1002,12 @@ can configure are in
 | Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                                                                           | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile            |
 | Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                                                                     | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                      |
 | Messages in reassembly                         | 1 for each direction of an IKE SA, beside the repeats below                                                                          | A fragment of another message drops the fragments held                                               |
-| Fragments of 1 message in reassembly           | 16 KiB of the IKE messages they came in                                                                                              | The IKE SA ends, and a dial fails                                                                    |
+| Fragments of 1 message in reassembly           | 16 KiB of charged datagrams, descriptor capacity and map storage                                                                     | The IKE SA ends, and a dial fails                                                                    |
 | Wait for the rest of a message's fragments     | 62 seconds from the first fragment of its cut                                                                                        | The fragments held are dropped                                                                       |
 | Answers to the peer's repeats of 1 request     | 20 from the origin, the session's stored peer endpoint defined below                                                                 | A further repeat from there draws nothing                                                            |
 | Other addresses repeating 1 request            | 4, each with a credit of the bytes it sent repeating it                                                                              | A newcomer takes the place of the one heard from least recently                                      |
+| Received IKE datagram                          | 65,532 octets, after the non-ESP marker                                                                                              | The receive buffer cannot retain more                                                                |
+| Decoded payload descriptors of 1 datagram      | 524,032 octets on 64-bit builds                                                                                                      | The datagram cannot carry another payload header                                                     |
 
 The second row holds even for a request with a valid cookie. More than 16 nodes
 behind 1 NAT that restart at once therefore wait for their retransmissions.
@@ -1015,8 +1017,9 @@ The errors the third row limits are `INVALID_MAJOR_VERSION`,
 request that no IKE SA protects. Each of them ends the exchange. A `COOKIE`, an
 `INVALID_KE_PAYLOAD` and an `IKE_SA_INIT` response that carries the handshake
 forward are outside the limit: an initiator goes on after each of them, and one
-source that spends the limit cannot stop another's dial. A `COOKIE` is the
-defense against a flood of `IKE_SA_INIT` requests that
+source that spends the limit cannot stop another's dial. A `COOKIE` is 69 IKE
+octets, no larger than the request it answers. It is the defense against a flood
+of `IKE_SA_INIT` requests that
 [RFC 7296 section 2.6](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.6)
 gives a responder. An `INVALID_KE_PAYLOAD` is 1 IKE message of 38 octets
 answering a request of at least 102 octets, and it gives its half-open slot back
@@ -1027,21 +1030,52 @@ SA that follows the answer has ended, and the half-open limits and cookies bound
 it. The burst of 256 error answers can answer every half-open slot at once, and
 the rate of 32 a second fills the burst again within the reconnect delay.
 
-No ML-KEM key travels in `IKE_SA_INIT`. A responder runs ML-KEM only for an
-initiator that holds a half-open slot, past the cookies. The responder's 30
-seconds for a handshake cover its `IKE_INTERMEDIATE` exchange. A half-open SA
-that has answered one keeps the answer as it was sent, to answer a retransmitted
-request: the sealed message, its inner payloads in plaintext and its datagrams,
-with digests of the request and the 2 values of IntAuth. That is 2249 octets for
-an ML-KEM-768 answer sent whole (1153 and 1096), 3528 for one cut at the IPv4
-floor, and 5029 for an ML-KEM-1024 answer cut at the IPv4 floor (1633, 1576 and
-1820 in 4 datagrams). The 256 half-open SAs keep up to 1,287,424 octets of it,
-under 1.25 MiB, whatever the initiators send.
+Datagrams refused by their headers are dropped before payload decoding. A
+decoded chain allocates one descriptor array, with one descriptor for each
+payload. The opening request's array lives through proposal selection, not
+through the wait for authentication. This transient allocation is separate from
+the retained data below. The responder starts a goroutine for each unclaimed
+datagram, so the half-open cap does not bound the number of concurrent decodes.
 
-An IKE SA gathers 1 message of the peer's in fragments for each direction, the
-peer's requests and its answers to this end's. The fragments of a message are
-held only within 16 KiB, counted as the IKE messages they carry, headers, IV and
-ICV included, rather than as their decrypted content. Past that limit:
+No ML-KEM key travels in `IKE_SA_INIT`. A responder runs ML-KEM only for an
+initiator that holds a half-open slot, past the cookies. Its handshake deadline
+covers `IKE_INTERMEDIATE` too. Until the handshake ends it keeps the opening
+request whole. The initiator chooses its size up to the received-datagram bound
+above, with no smaller admission limit.
+
+After an intermediate exchange, the largest retained byte buffers and digests
+use ML-KEM-1024, AES-256-GCM and HMAC-SHA2-384, cut at the IPv4 floor:
+
+| Retained data                       |     Octets |
+| ----------------------------------- | ---------: |
+| One half-open SA                    |     71,539 |
+| All half-open SAs at the node's cap | 18,313,984 |
+
+These figures include the opening request and answer, the responder nonce, both
+key generations, the sealed intermediate answer and its plaintext and fragments,
+request digests and both intermediate authentication values. The initiator nonce
+shares the opening request. Each key generation occupies one prf+ stream, which
+the old encryption keys keep whole. Shared bytes are counted once.
+
+The figures exclude reassembly, counted below, and each half-open SA's
+[IKE receive queue](#dataplane-and-sockets). That queue can hold its full
+datagram count while the handshake goroutine is busy, each datagram up to the
+received-datagram bound above. Add those stores for every occupied half-open
+slot when sizing a node. Also excluded are the transient decoded descriptors
+above and the datagrams waiting for the responder in the same socket table.
+Concurrent unclaimed handshakes have no aggregate memory bound from admission.
+
+These are data lengths, not heap-use limits. Unused byte-slice capacity, fixed
+objects, goroutine stacks and [allocator overhead](https://go.dev/doc/gc-guide)
+are outside them.
+
+An IKE SA gathers one message of the peer's in fragments for each direction. Its
+reassembly charge includes each stored datagram's full length, including
+headers, IV and ICV, the capacity reserved for cleartext payload descriptors and
+the final encrypted descriptor, and allowances for the queue's map and each
+stored entry. Cleartext bodies share the retained header rather than copies.
+Allocator size-class slack in the byte and descriptor arrays is outside the
+charge. Past the reassembly limit above:
 
 - an established session closes without a Delete, logs a warning and records
   `ike.sa.closed` with the reason `fragment limit`
@@ -1059,12 +1093,13 @@ half-open SA's fragments go with the SA at the 30 seconds of its handshake,
 before that.
 
 Beside its own queues, the exchange an IKE SA last answered holds up to 4
-repeats from other addresses in reassembly, 1 for each credit below, each within
-the 16 KiB and gone at the next exchange, after the 62 seconds or with the SA.
-An established IKE SA thus holds at most 6 messages in reassembly, a half-open
-SA 5, since it takes no answer, and the 256 half-open SAs at most 20 MiB of
-fragments. Fragments from a peer that did not send
-`IKEV2_FRAGMENTATION_SUPPORTED` are dropped before anything of them is held.
+repeats from other addresses in reassembly, one for each credit below, each
+within the same bound and gone at the next exchange, at the reassembly timeout
+or with the SA. An established IKE SA thus holds at most 6 messages in
+reassembly, a half-open SA 5, since it takes no answer. The node's half-open cap
+allows at most 20 MiB of reassembly charges, separate from the other stores
+above. Fragments from a peer that did not send `IKEV2_FRAGMENTATION_SUPPORTED`
+are dropped before anything of them is held.
 
 A peer's repeat of a request this end has answered draws the kept answer again
 under 1 rule wherever it comes: in a half-open SA's wait for `IKE_AUTH`, whose

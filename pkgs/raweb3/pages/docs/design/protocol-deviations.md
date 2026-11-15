@@ -578,10 +578,10 @@ situations".
 
 [Section 5](https://www.rfc-editor.org/rfc/rfc7383.html#section-5) recommends
 bounding the "sum of the sizes of Encrypted Fragment payload contents (after
-decryption)" in a reassembly queue. A node bounds the stored fragments as the
-IKE messages they arrived as instead, 16 KiB of them. Those hold more than their
-content, and the bound covers what each fragment costs beside it. The bound
-leaves the largest message a peer sends room at the IPv4 floor.
+decryption)" in a reassembly queue. A node charges the stored datagrams,
+descriptor capacity and map storage against the
+[reassembly limit](limits.md#ike) instead. The charge exceeds their decrypted
+content and leaves the largest message a peer sends room at the IPv4 floor.
 
 [Section 2.5.2](https://www.rfc-editor.org/rfc/rfc7383.html#section-2.5.2) has
 the initiator of an exchange probe smaller thresholds, coarse-grained. On Linux

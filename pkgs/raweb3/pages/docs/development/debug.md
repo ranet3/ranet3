@@ -845,6 +845,7 @@ A `COOKIE` challenge, an `INVALID_KE_PAYLOAD` answer naming the group to use,
 and a message of an IKE SA this node does not hold record no
 `ike.handshake.failed`. The responder logs each at debug, and the warning it
 gives an address for a refused handshake stays for the next refusal from there.
+`COOKIE` answers also raise [`ranet3_ike_cookie_answers_total`](../metrics.md).
 
 An `ike.kex.rejected` is recorded when this node refuses the peer's side of an
 ML-KEM key exchange. Its `exchange` is `IKE_INTERMEDIATE` in a handshake and
