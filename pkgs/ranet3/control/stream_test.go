@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -239,9 +240,8 @@ func serveStream(t *testing.T, src Source, shape func(*http.Server)) *Client {
 	return Dial(path)
 }
 
-// a stream clears the write deadline the server puts on every answer, the server's read deadline ends before the handler of
-// a request without a body, and its client reads with none of its own
-// an event written well past the three timeouts still arrives
+// an event written well past the write timeout, the request timeout and the client's timeout still arrives
+// the stream clears its write deadline, net/http the request timeout before a bodiless handler, and its client sets none
 func TestStreamOutlivesTheWriteAndReadTimeouts(t *testing.T) {
 	src := newStreamSource(16)
 	client := serveHeard(t, src, func(server *http.Server) { server.WriteTimeout, server.ReadTimeout = shortBound, shortBound })
@@ -465,6 +465,39 @@ func TestFifthStreamIsRefusedAndReadsStillAnswer(t *testing.T) {
 	}
 	if _, err := client.Status(); err != nil {
 		t.Errorf("a read failed while every stream place was held: %v", err)
+	}
+}
+
+// a stream that ends gives its place back, so a fifth is served once one of four has ended
+func TestEndedStreamGivesItsPlaceBack(t *testing.T) {
+	src := newStreamSource(16)
+	client := serveStream(t, src, func(*http.Server) {})
+	ctx := t.Context()
+	var first *http.Response
+	var ended *feed
+	for range maxStreams {
+		response, err := client.Raw(ctx, http.MethodGet, pathProbeStream, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if f := src.nextFeed(t); ended == nil {
+			first, ended = response, f
+		}
+	}
+	ended.end("the test is done")
+	// the answer ends once its handler has returned, which is after the stream gave its place back
+	if _, err := io.ReadAll(first.Body); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Raw(ctx, http.MethodGet, pathProbeStream, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		answer, _ := io.ReadAll(response.Body)
+		t.Errorf("a stream asked for once 1 of %d had ended answered %s: %s", maxStreams, response.Status, answer)
 	}
 }
 

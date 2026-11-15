@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -402,7 +403,8 @@ func TestListenRefusesALiveSocketItCannotDial(t *testing.T) {
 
 // An idle connection costs the daemon a goroutine and a descriptor until
 // something closes it. net/http clears the read deadline between requests, so
-// ReadTimeout does not bound one that has finished a request and gone quiet.
+// the request timeout does not bound one that has finished a request and gone
+// quiet.
 func TestIdleConnectionsAreBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits for an idle timeout")
@@ -412,9 +414,7 @@ func TestIdleConnectionsAreBounded(t *testing.T) {
 		t.Fatal("an idle connection is bounded by IdleTimeout and by nothing else")
 	}
 	server.IdleTimeout = 100 * time.Millisecond
-	client, daemon := net.Pipe()
-	defer client.Close()
-	go server.Serve(&onePipe{daemon: daemon})
+	client, _ := servePipe(t, server)
 
 	if _, err := client.Write([]byte("GET " + PathStatus + " HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
 		t.Fatal(err)
@@ -428,26 +428,59 @@ func TestIdleConnectionsAreBounded(t *testing.T) {
 	}
 }
 
-// A body that has not come whole within the request timeout is answered and its connection closed, which gives its place
-// back, whether a verb reads the body or the server discards it after a handler that does not
+// a connection that sends nothing is closed once the request timeout has passed
+// the idle timeout runs only after a request
+func TestSilentConnectionIsClosed(t *testing.T) {
+	server := newServer(fakeSource{})
+	if server.ReadTimeout == 0 {
+		t.Fatal("a connection that sends nothing is bounded by the request timeout and by nothing else")
+	}
+	server.ReadTimeout = shortBound
+	client, _ := servePipe(t, server)
+	client.SetReadDeadline(time.Now().Add(testWait))
+	if answer, err := io.ReadAll(client); len(answer) != 0 || err != nil {
+		t.Errorf("a connection that sent nothing was answered %q and %v, want it closed", answer, err)
+	}
+}
+
+// a client that reads nothing of its answer is closed once a write has waited out WriteTimeout
+func TestConnectionThatDoesNotReadIsClosed(t *testing.T) {
+	server := newServer(fakeSource{})
+	if server.WriteTimeout == 0 {
+		t.Fatal("a client that stops reading is bounded by WriteTimeout and by nothing else")
+	}
+	server.WriteTimeout = shortBound
+	// a pipe holds no byte, so the answer's first write waits on the client
+	client, closed := servePipe(t, server)
+	if _, err := client.Write([]byte("GET " + PathStatus + " HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(testWait):
+		t.Fatal("a connection whose client read nothing of its answer is still open")
+	}
+}
+
+// a body not whole within the request timeout is answered and its connection closed
+// a verb reads its body and the server discards one no handler reads, both under the timeout
 func TestBodyThatDoesNotArriveIsAnsweredAndItsConnectionClosed(t *testing.T) {
 	for name, test := range map[string]struct {
 		path   string
 		status int
+		says   string
 	}{
-		"a verb's body": {PathRedial, http.StatusBadRequest},
-		"a read's body": {PathStatus, http.StatusMethodNotAllowed},
+		"a verb's body": {PathRedial, http.StatusBadRequest, "did not come whole within the request timeout"},
+		"a read's body": {PathStatus, http.StatusMethodNotAllowed, "takes a GET"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sink := &writingSource{}
 			server := newServer(sink)
 			if server.ReadTimeout == 0 {
-				t.Fatal("a body that never arrives is bounded by ReadTimeout and by nothing else")
+				t.Fatal("a body that never arrives is bounded by the request timeout and by nothing else")
 			}
 			server.ReadTimeout = shortBound
-			client, daemon := net.Pipe()
-			defer client.Close()
-			go server.Serve(&onePipe{daemon: daemon})
+			client, _ := servePipe(t, server)
 			client.SetDeadline(time.Now().Add(testWait))
 			if _, err := client.Write([]byte("POST " + test.path + " HTTP/1.1\r\nHost: x\r\nContent-Length: 64\r\n\r\n{")); err != nil {
 				t.Fatal(err)
@@ -457,10 +490,10 @@ func TestBodyThatDoesNotArriveIsAnsweredAndItsConnectionClosed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("a body held back past the request timeout was not answered: %v", err)
 			}
-			io.Copy(io.Discard, response.Body)
+			answer, _ := io.ReadAll(response.Body)
 			response.Body.Close()
-			if response.StatusCode != test.status {
-				t.Errorf("a body held back past the request timeout was answered %s, want %d", response.Status, test.status)
+			if response.StatusCode != test.status || !strings.Contains(string(answer), test.says) {
+				t.Errorf("a body held back past the request timeout was answered %s %q, want %d saying %q", response.Status, answer, test.status, test.says)
 			}
 			if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) {
 				t.Errorf("the connection of a body held back past the request timeout is still open: %v", err)
@@ -559,6 +592,29 @@ func (p *onePipe) Accept() (net.Conn, error) {
 }
 func (p *onePipe) Close() error   { return nil }
 func (p *onePipe) Addr() net.Addr { return p.daemon.LocalAddr() }
+
+// watchedConn is the server's end of a connection, which tells a test when the server closed it
+type watchedConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *watchedConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// servePipe serves server one connection over a pipe, and returns the client's end and a channel closed once the server has
+// closed its own
+func servePipe(t *testing.T, server *http.Server) (net.Conn, <-chan struct{}) {
+	t.Helper()
+	client, daemon := net.Pipe()
+	t.Cleanup(func() { client.Close() })
+	watched := &watchedConn{Conn: daemon, closed: make(chan struct{})}
+	go server.Serve(&onePipe{daemon: watched})
+	return client, watched.closed
+}
 
 // A client that accumulates connections costs the daemon a goroutine and a
 // descriptor apiece, and a node out of descriptors cannot be asked anything at
