@@ -173,7 +173,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64
-	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for a non-mapped outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or a non-mapped inner packet to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -264,6 +264,15 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 				version = 4
 			}
 			source, destination := addressesOf(result.Inner, version)
+			if mappedAddress(source) {
+				m.segmentsDropped.Add(1)
+				m.transitCounts[transitMartian].Add(1)
+				m.reportTransitDrop(transitMartian, source, destination)
+				if records != nil {
+					records.acted(TraceDrop, transitMartian, packet, result.Inner)
+				}
+				continue
+			}
 			// a group or the limited broadcast reaches no exit, whatever its source, as the decision's reaches no tun
 			if linkScoped(destination) && group(destination) {
 				m.segmentsDropped.Add(1)
@@ -361,9 +370,10 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 	return routed, granted
 }
 
-// martian is a packet no router forwards by its source, or by a destination other than the limited broadcast and multicast, the test the decision applies past its link-scoped destinations
+// martian is a packet no router forwards by its source, or by a destination other than the limited broadcast and multicast
+// the decision tests mapped sources before its link-scoped destinations and the other martians after them
 func martian(source, destination netip.Addr) bool {
-	return packet.InvalidSource(source) || martianDestination(destination)
+	return mappedAddress(source) || packet.InvalidSource(source) || martianDestination(destination)
 }
 
 // refuseEgress counts an egress segment's refusal of a packet, dropped and refused, and claims the interval's report as segmentDropDue does
@@ -374,16 +384,21 @@ func (m *Mesh) refuseEgress() bool {
 	return m.segmentDropDue()
 }
 
-// actLocally runs this node's own segments until the packet is going somewhere
-// else. A kernel repeats its FIB lookup after a waypoint rewrites the
-// destination, so a list naming two segments of one node is acted on twice
-// there, and consulting the table again does the same here. Without it the
-// second segment has no mesh route, because a node does not route to itself,
-// and the packet is dropped one hop short.
+// actLocally leaves a mapped outer source to the decision and otherwise runs
+// this node's own segments until the packet is going somewhere else. A kernel
+// repeats its FIB lookup after a waypoint rewrites the destination, so a list
+// naming two segments of one node is acted on twice there, and consulting the
+// table again does the same here. Without it the second segment has no mesh
+// route, because a node does not route to itself, and the packet is dropped
+// one hop short.
 //
 // The number of times is bounded by the longest list this node acts on rather
 // than by the hop limit, which the peer chooses.
 func actLocally(table *srv6.LocalTable, packet []byte) srv6.Result {
+	// mapped outer sources must reach the decision before a segment changes or removes their header
+	if len(packet) >= 40 && packet[0]>>4 == 6 && mappedAddressBytes(packet[8:20]) {
+		return srv6.Result{Action: srv6.ActionPass}
+	}
 	result := table.Handle(packet)
 	for range srv6.MaxSegments {
 		if result.Action != srv6.ActionForward {

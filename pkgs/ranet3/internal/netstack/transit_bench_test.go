@@ -144,6 +144,10 @@ func BenchmarkDecide(b *testing.B) {
 		{"forwarded IPv4 with Record Route", withOptions(udpPacket(transitSender[4], transitFar[4], 100, false), benchRecordRoute)},
 		{"delivered IPv4", udpPacket(transitSender[4], transitOwn[4], 100, false)},
 		{"delivered IPv6", udpPacket(transitSender[6], transitOwn[6], 100, false)},
+		{"peer link-local exchange", udpPacket(segAddr("fe80::2"), segAddr("fe80::1"), 100, false)},
+		{"mapped source to peer", udpPacket(segAddr("::ffff:192.0.2.1"), transitFar[6], 100, false)},
+		{"mapped source to own", udpPacket(segAddr("::ffff:192.0.2.1"), transitOwn[6], 100, false)},
+		{"mapped source to link-local", udpPacket(segAddr("::ffff:192.0.2.1"), segAddr("fe80::1"), 100, false)},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			benchmarkDecide(b, benchTransitMesh(b), [][]byte{c.packet})

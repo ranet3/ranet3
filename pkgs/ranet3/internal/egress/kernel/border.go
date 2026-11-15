@@ -504,9 +504,10 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 // antispoof chain's ahead of the entry chain's, the sets, and the carve-outs
 // the antispoof chain accepts with the exemptions' conflicts, neither where
 // overlay is not written. The mapped drop comes first, ahead of the inside
-// devices' accepts, since a peer's packet reaches the tun from any source. The
-// carved drops come ahead of every accept by source, so neither a carve-out
-// nor an exemption lets in a source the carved sets hold.
+// devices' accepts, since a packet arriving on an inside device such as lo
+// need not have passed the mesh's source checks. The carved drops come ahead
+// of every accept by source, so neither a carve-out nor an exemption lets in
+// a source the carved sets hold.
 func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 	// the sets and the rules read one configuration, so no pass carves from two
 	cfg := f.config.Load()

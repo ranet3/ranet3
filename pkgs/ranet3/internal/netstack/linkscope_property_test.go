@@ -28,7 +28,7 @@ const (
 )
 
 // scopeClass builds a destination of one class by its leading bits and names the fate of a packet to it from a source no router refuses
-// routed is a class the table decides, which an unspecified source makes a martian, where the other classes meet their fate whatever the source
+// routed is a class the table decides, which an unspecified source makes a martian, where the other classes meet their fate unless the source is mapped
 // RFC 4291 section 2.7 puts every IPv6 group under ff00::/8 and section 2.5.6 link-local unicast under fe80::/10, RFC 1112 section 4 the IPv4 groups under 224.0.0.0/4
 // RFC 1812 section 5.3.5 names 255.255.255.255 the limited broadcast, and RFC 4291 section 2.5.5.2 maps an IPv4 address under ::ffff:0:0/96
 type scopeClass struct {
@@ -94,10 +94,11 @@ var scopeClasses = []scopeClass{
 	{"another node's IPv6", 6, func(hegel.TestCase) netip.Addr { return transitFar[6] }, fateForwarded, true},
 }
 
-// over drawn batches a session delivers, of destinations in every class above, from the sender or the unspecified address, under a default of each family to another peer
-// the tun takes exactly the packets to IPv6 link-local unicast, whatever their source, and those to this node's own from the sender, in their order
-// every packet to a group or the limited broadcast is dropped and counted session_multicast whatever its source, so none reaches the tun or a peer
-// a mapped or IPv4 link-local destination, and the unspecified source past those, is a martian, and nothing is answered
+// over drawn batches a session delivers, of destinations in every class above, from the sender, the unspecified address or a mapped source, under a default of each family to another peer
+// the tun takes exactly the packets to IPv6 link-local unicast from non-mapped sources, and those to this node's own from the sender, in their order
+// every packet to a group or the limited broadcast from a non-mapped source is dropped and counted session_multicast, so none reaches the tun or a peer
+// a mapped source or destination, an IPv4 link-local destination, and the unspecified source past link scope, is a martian, and nothing is answered
+// every batch also holds both mapped endpoints, their native neighbors and a genuine source of each family, and Explain must name each modeled fate
 func TestDecisionWritesNoGroupToTheTun(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		n := newTransitNode(ht, DefaultMTU)
@@ -106,32 +107,56 @@ func TestDecisionWritesNoGroupToTheTun(t *testing.T) {
 		var packets, wantTun [][]byte
 		var drawn []string
 		var want TransitCounters
-		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
-			class := scopeClasses[hegel.Draw(ht, pbt.Spanning(0, len(scopeClasses)-1))]
-			destination := class.build(ht)
-			source := transitSender[class.family]
-			unspecified := hegel.Draw(ht, hegel.Booleans())
-			if unspecified {
-				source = map[int]netip.Addr{4: netip.IPv4Unspecified(), 6: netip.IPv6Unspecified()}[class.family]
-			}
-			fate := class.fate
-			if unspecified && class.routed {
-				fate = fateMartian
-			}
+		add := func(source, destination netip.Addr, fate scopeFate) {
 			raw := udpPacket(source, destination, 100, false)
 			packets = append(packets, raw)
-			drawn = append(drawn, class.name+" from "+source.String())
+			drawn = append(drawn, source.String()+" to "+destination.String())
+			decision, reason := TraceDrop, ""
 			switch fate {
 			case fateTun:
 				wantTun = append(wantTun, raw)
 				want.Delivered++
+				decision = TraceDeliver
 			case fateForwarded:
 				want.Forwarded++
+				decision = TraceForward
 			case fateGroup:
 				want.SessionMulticast++
+				reason = "session_multicast"
 			case fateMartian:
 				want.Martian++
+				reason = "martian"
 			}
+			if got := n.m.Explain(raw); got.Decision != decision || got.Reason != reason {
+				ht.Fatalf("%s to %s: explanation %+v, want %s/%s", source, destination, got, decision, reason)
+			}
+		}
+		for _, source := range []netip.Addr{mapped(netip.IPv4Unspecified()), mapped(segAddr("255.255.255.255"))} {
+			add(source, transitFar[6], fateMartian)
+		}
+		for _, source := range []netip.Addr{segAddr("::fffe:ffff:ffff"), segAddr("::1:0:0:0"), transitSender[6]} {
+			add(source, transitFar[6], fateForwarded)
+		}
+		add(transitSender[4], transitFar[4], fateForwarded)
+		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
+			class := scopeClasses[hegel.Draw(ht, pbt.Spanning(0, len(scopeClasses)-1))]
+			destination := class.build(ht)
+			source := transitSender[class.family]
+			kinds := 1
+			if class.family == 6 {
+				kinds = 2
+			}
+			kind := hegel.Draw(ht, pbt.Spanning(0, kinds))
+			if kind == 1 {
+				source = map[int]netip.Addr{4: netip.IPv4Unspecified(), 6: netip.IPv6Unspecified()}[class.family]
+			} else if kind == 2 {
+				source = mapped(netip.AddrFrom4([4]byte(drawBytes(ht, 4))))
+			}
+			fate := class.fate
+			if kind == 2 || kind == 1 && class.routed {
+				fate = fateMartian
+			}
+			add(source, destination, fate)
 		}
 		tun, out, back := n.deliver(ht, packets...)
 		if !slices.EqualFunc(tun, wantTun, bytes.Equal) {

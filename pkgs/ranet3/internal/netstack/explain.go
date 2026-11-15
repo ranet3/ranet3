@@ -30,10 +30,13 @@ type Explanation struct {
 	Match Match
 }
 
-// ExplainSegment names what the segment of this node at dst asks of src, the outer source of a packet a session delivers, before the decision sees it, false where no segment of this node is at dst
+// ExplainSegment names what the segment of this node at dst asks of src, the outer source of a packet a session delivers, before the decision sees it, false for a mapped source or where no segment of this node is at dst
 // the Explanation is the drop of a source it refuses, as its record names it, and zero for one it admits
 // End then acts on the next segment, and End.DT46 on the inner packet, which an egress segment checks against its allow list and one delivering to the mesh hands to the decision whatever cap.transit says
 func (m *Mesh) ExplainSegment(src, dst netip.Addr) (srv6.Admission, Explanation, bool) {
+	if mappedAddress(src) {
+		return srv6.Admission{}, Explanation{}, false
+	}
 	admission, ok := m.segmentTable.Load().Admit(dst, src)
 	var e Explanation
 	if ok && admission.Err != nil {
@@ -42,10 +45,10 @@ func (m *Mesh) ExplainSegment(src, dst netip.Addr) (srv6.Admission, Explanation,
 	return admission, e, ok
 }
 
-// Explain names decide's action on raw, one packet a session delivers to no SID of this node
+// Explain names decide's action on raw, one packet a session delivers that no SID of this node takes
 // it calls decide's checks in decide's order, on the table, the overlay, cap.transit and the readiness as they are now
 // and spends no ICMP token, moves no counter, takes no forward batch, writes nothing and leaves raw as it is
-// a packet to a SID of this node meets ExplainSegment's segment instead, so raw is never the inner packet an End.DT46 grants transit to, and a forward here needs cap.transit
+// a packet to a SID of this node from a non-mapped source meets ExplainSegment's segment instead, so raw is never the inner packet an End.DT46 grants transit to, and a forward here needs cap.transit
 func (m *Mesh) Explain(raw []byte) Explanation {
 	var e Explanation
 	frame := raw
@@ -59,6 +62,9 @@ func (m *Mesh) Explain(raw []byte) Explanation {
 		return e.decided(site)
 	}
 	src, dst := addressesOf(raw, version)
+	if mappedAddress(src) {
+		return e.decided(sessionSite(nil, TraceDrop, transitMartian))
+	}
 	if linkScoped(dst) {
 		if group(dst) {
 			return e.decided(sessionSite(nil, TraceDrop, transitSessionMulticast))

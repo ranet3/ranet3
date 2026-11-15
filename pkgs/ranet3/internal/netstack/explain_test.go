@@ -269,20 +269,28 @@ var explainEnd, explainDT46, explainEgress = segAddr("3fff:5::10"), transitSID, 
 // explainListed is an address outside the overlay that the egress segment's allow list holds
 var explainListed = segAddr("2001:db8:77::7")
 
-// explainSegments is a tracedNode holding those three segments, ready to egress either family through them
-func explainSegments(t *testing.T) (*transitNode, *TraceFeed) {
+// explainAllow admits the ordinary sender and one address outside overlay
+var explainAllow = []schema.Prefix{schema.PrefixFrom(hostPrefix(transitSender[6])), schema.PrefixFrom(hostPrefix(explainListed))}
+
+// explainSegments is a tracedNode holding those three segments with the given allow list and overlay, ready to egress either family through them
+// an empty overlay installs no segments, since a SID requires an IPv6 overlay to admit outer sources
+func explainSegments(t testing.TB, allow, overlay []schema.Prefix) (*transitNode, *TraceFeed) {
 	t.Helper()
 	n, feed := tracedNode(t)
+	n.m.SetOverlay(overlay)
+	n.m.SetEgressReady(true, true)
+	if len(overlay) == 0 {
+		return n, feed
+	}
 	table, err := srv6.NewLocalTable([]srv6.Segment{
 		{SID: schema.AddrFrom(explainEnd), Behavior: srv6.BehaviorEnd},
 		{SID: schema.AddrFrom(explainDT46), Behavior: srv6.BehaviorEndDT46},
-		{SID: schema.AddrFrom(explainEgress), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: []schema.Prefix{schema.PrefixFrom(hostPrefix(transitSender[6])), schema.PrefixFrom(hostPrefix(explainListed))}},
-	}, transitOverlay)
+		{SID: schema.AddrFrom(explainEgress), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow},
+	}, overlay)
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.m.SetSegments(table)
-	n.m.SetEgressReady(true, true)
 	return n, feed
 }
 
@@ -314,7 +322,7 @@ var segmentCases = func() []segmentCase {
 func TestExplainSegmentNamesWhatTheSegmentAsks(t *testing.T) {
 	for _, c := range segmentCases {
 		t.Run(c.name, func(t *testing.T) {
-			n, _ := explainSegments(t)
+			n, _ := explainSegments(t, explainAllow, transitOverlay)
 			admission, got, ok := n.m.ExplainSegment(c.src, c.sid)
 			if !ok || admission.Segment.SID.Addr != c.sid || admission.Overlay != c.overlay || admission.Allowed != c.allowed {
 				t.Errorf("the segment at %s answers %+v, %v", c.sid, admission, ok)
@@ -324,7 +332,7 @@ func TestExplainSegmentNamesWhatTheSegmentAsks(t *testing.T) {
 			}
 		})
 	}
-	n, _ := explainSegments(t)
+	n, _ := explainSegments(t, explainAllow, transitOverlay)
 	if admission, _, ok := n.m.ExplainSegment(transitSender[6], transitFar[6]); ok {
 		t.Errorf("an address no segment is at answers %+v", admission)
 	}
@@ -357,7 +365,7 @@ func TestExplainSpendsAndChangesNothing(t *testing.T) {
 	}
 	for _, c := range segmentCases {
 		t.Run(c.name, func(t *testing.T) {
-			n, feed := explainSegments(t)
+			n, feed := explainSegments(t, explainAllow, transitOverlay)
 			for range icmpSourceBurst + 1 {
 				n.m.ExplainSegment(c.src, c.sid)
 			}

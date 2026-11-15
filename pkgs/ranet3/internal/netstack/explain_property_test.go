@@ -292,7 +292,7 @@ func TestExplainNamesWhatTheDecisionRecords(t *testing.T) {
 func TestExplainSegmentNamesWhatTheSegmentRecords(t *testing.T) {
 	for _, sid := range []netip.Addr{explainEnd, explainDT46, explainEgress} {
 		for _, source := range []netip.Addr{transitSender[6], transitFar[6], transitStranger[6]} {
-			n, feed := explainSegments(t)
+			n, feed := explainSegments(t, explainAllow, transitOverlay)
 			path := []netip.Addr{sid}
 			if sid == explainEnd {
 				path = append(path, transitFar[6])

@@ -5,6 +5,7 @@ package netstack
 
 import (
 	"cmp"
+	"encoding/binary"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -37,7 +38,7 @@ const (
 	// transitInvalid counts a frame holding no whole IP packet, a read off the tun that is not exactly one, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
 	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
-	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes
+	// transitMartian counts mapped sources before linkScoped and other sources or destinations no router forwards after it
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute
@@ -47,7 +48,7 @@ const (
 	transitNotReady
 	// transitTooBig counts packets larger than the session to their next hop, answered or past cutting
 	transitTooBig
-	// transitSessionMulticast counts packets to a multicast destination or the limited broadcast, an egress segment's inner packets among them, which the mesh routes none of and hands neither to the tun nor to the exit
+	// transitSessionMulticast counts packets from non-mapped sources to a multicast destination or the limited broadcast, an egress segment's inner packets among them, which the mesh routes none of and hands neither to the tun nor to the exit
 	transitSessionMulticast
 	// transitMulticast counts reads off the tun to a multicast destination or the limited broadcast, which the mesh routes none of
 	transitMulticast
@@ -153,13 +154,13 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 	return false
 }
 
-// TransitCounters counts the forwarding decision's outcomes since startup, those of the checks of a read off the tun, and an egress segment's drops of an inner packet to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE
+// TransitCounters counts the forwarding decision's outcomes since startup, those of the checks of a read off the tun, and an egress segment's drops of an inner packet from a mapped source or to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE
 type TransitCounters struct {
 	// Forwarded counts the packets the decision handed to the next peer's send, one cut into fragments once
 	// Delivered the ones written to the tun or handed to the exit, and the reads off the tun written back into it to an address the tun holds
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig and SessionMulticast count the packets a session delivered that were dropped, by reason
-	// SessionMulticast those to a multicast destination or the limited broadcast, an egress segment's inner packets among them
+	// SessionMulticast those from non-mapped sources to a multicast destination or the limited broadcast, an egress segment's inner packets among them
 	// NoRoute, Held, Invalid and TooBig count the reads off the tun dropped for them as well
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig, SessionMulticast uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
@@ -256,15 +257,26 @@ func group(destination netip.Addr) bool {
 // and the host forwards 169.254/16 as any unicast destination, out of an exit's uplink, where it forwards no fe80::/10
 // an IPv4-mapped destination is no IPv6 link scope either, whatever its IPv4 form, and the decision counts it a martian
 func linkScoped(destination netip.Addr) bool {
-	if destination.Is4In6() {
+	if mappedAddress(destination) {
 		return false
 	}
 	return group(destination) || destination.Is6() && destination.IsLinkLocalUnicast()
 }
 
+// mappedAddress is the IPv4-mapped IPv6 form of RFC 4291 section 2.5.5.2, which RFC 6890 section 2.2.3 admits as neither source nor destination
+func mappedAddress(address netip.Addr) bool {
+	return address.Is4In6()
+}
+
+// mappedAddressBytes tests the same form in an IPv6 address's first 12 octets, without building an address or copying its bytes
+// the caller supplies at least 12 octets, and an IPv4 packet's source is not this form
+func mappedAddressBytes(address []byte) bool {
+	return binary.LittleEndian.Uint64(address[:8]) == 0 && binary.LittleEndian.Uint32(address[8:12]) == 0xffff0000
+}
+
 // martianDestination is a destination no router forwards, as packet.InvalidDestination has it, and an IPv4-mapped one, which RFC 6890 has no router forward
 func martianDestination(destination netip.Addr) bool {
-	return packet.InvalidDestination(destination) || destination.Is4In6()
+	return packet.InvalidDestination(destination) || mappedAddress(destination)
 }
 
 func addressesOf(raw []byte, version byte) (netip.Addr, netip.Addr) {
@@ -302,7 +314,7 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 // granted marks the inner packets, which go on whatever cap.transit says, nil where there are none
 // from is the peer of the session they came through, nil for frames of no session, and hold covers their storage as DeliverInboundBatch's does
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
-// the frame, link-scoped and martian checks run first, then the table, RFC 1812 section 5.2.2's header check and the checks past it, for IPv6 as for IPv4
+// the frame, mapped-source, link-scoped and other martian checks run first, then the table, RFC 1812 section 5.2.2's header check and the checks past it, for IPv6 as for IPv4
 // each check comes before any answer, so a malformed packet draws none but the Payload Length answer of the first
 func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) [][]byte {
 	trace := m.tracer.Load()
@@ -340,6 +352,17 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) []
 		}
 		frame = frame[:TUNHeadroom+len(raw)]
 		src, dst := addressesOf(raw, version)
+		if mappedAddress(src) {
+			// counters and trace keep every refusal, but reporting needs no clock read for each mapped packet in a batch
+			if tally.counts[transitMartian] == 0 {
+				m.reportTransitDrop(transitMartian, src, dst)
+			}
+			tally.add(transitMartian)
+			if trace != nil {
+				trace.session(from, TraceDrop, transitMartian, raw)
+			}
+			continue
+		}
 		if linkScoped(dst) {
 			if group(dst) {
 				m.dropTransit(&tally, transitSessionMulticast, src, dst)
