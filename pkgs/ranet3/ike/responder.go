@@ -448,7 +448,7 @@ func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, su
 }
 
 // completeResponderAuth waits for IKE_AUTH, authenticates the initiator and answers with this end's AUTH and the selected Child SA
-// a repeat of IKE_SA_INIT while it waits is answered with the identical response, and each IKE_INTERMEDIATE exchange the suite runs first
+// the IKE_INTERMEDIATE exchanges the suite runs come first, and awaitAuthRequest answers the repeats of each exchange before IKE_AUTH
 // created, with an error, reports an answer carrying this end's AUTH and the Child SA's error, which leaves the IKE SA established
 func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2, ni, nr []byte, deadline time.Time) (_ Accepted, created bool, _ error) {
 	ctx := s.current
@@ -595,10 +595,12 @@ type authRequest struct {
 	source transport.Endpoint
 }
 
-// awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of the IKE_SA_INIT request with the response it sent and first the IKE_INTERMEDIATE exchange of the additional key exchange the suite runs, where it runs one
+// awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of the IKE_SA_INIT request through answerInitRepeat and first the IKE_INTERMEDIATE exchange of the additional key exchange the suite runs, where it runs one
 // it returns IntAuth's chain over that exchange
 // RFC 7296 section 2.1: "It is not sufficient to use the initiator's SPI and/or IP address to differentiate between these three cases because two different peers behind a single NAT could choose the same initiator SPI."
 // so a repeat is matched on the whole packet, which also keeps a bare header naming a live SPIi, which anyone who opened one knows, from drawing the response at whatever source it claims
+// RFC 7296 section 2.1: "The responder MUST remember each response until it receives a request whose sequence number is larger than or equal to the sequence number in the response plus its window size"
+// the window is 1 until IKE_AUTH, so the IKE_SA_INIT response is forgotten once the IKE_INTERMEDIATE request at Message ID 1 is answered, and a repeat after draws nothing
 // RFC 9242 section 3.2: "Implementations MUST verify that Message IDs in the IKE_INTERMEDIATE messages they receive actually follow this rule."
 // RFC 9242 section 3.2: "these exchanges MUST be sequential and MUST all be completed before the IKE_AUTH exchange is initiated."
 // RFC 9242 section 5: "Specifications utilizing the Intermediate Exchange MUST NOT allow an unlimited number of these exchanges to take place at the initiator's discretion."
@@ -613,6 +615,7 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 	var chain intAuth
 	// answered counts the IKE_INTERMEDIATE exchanges run, and ctx.lastPeer holds the request of the last one
 	var answered uint32
+	var saInit repeatCredits
 	for {
 		raw, source, err := s.mux.RecvIKEFromUntil(deadline)
 		if err != nil {
@@ -627,11 +630,10 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 			continue
 		}
 		if header.ExchangeType == IKE_SA_INIT && header.MessageID == 0 && header.SPIResponder == 0 {
-			if !bytes.Equal(raw, saInitRequest) {
-				continue
-			}
-			if err := s.mux.SendIKETo(saInitResponse, source); err != nil {
-				return nil, intAuth{}, err
+			if answered == 0 {
+				if err := s.answerInitRepeat(&saInit, saInitRequest, saInitResponse, raw, source); err != nil {
+					return nil, intAuth{}, err
+				}
 			}
 			continue
 		}
@@ -689,14 +691,19 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 
 // answeredRequest is the request of the last exchange of the peer's an IKE SA answered, the key it came under and its answer, as a repeat of the request is read against: an IKE_INTERMEDIATE in the half-open wait, any request after
 // digest is the SHA-256 of its octets as it came whole, or of the header its fragments make, whose Length counts more octets than it holds, and content that of what it carries however it came
-// answers counts the repeats the origin drew the answer with, others holds the credit of each address other than the origin a repeat came from, at most movedCredits of them, and arrivals counts the datagrams those credits took, which orders them
 type answeredRequest struct {
+	repeatCredits
 	digest, content [sha256.Size]byte
 	key             []byte
 	response        *transmission
-	answers         int
-	others          []*credit
-	arrivals        int
+}
+
+// repeatCredits holds the count and the credits an exchange keeps of the repeats of its request under answerRepeat's rule
+// answers counts the repeats the origin drew the answer with, others holds the credit of each address other than the origin a repeat came from, at most movedCredits of them, and arrivals counts the datagrams those credits took, which orders them
+type repeatCredits struct {
+	answers  int
+	others   []*credit
+	arrivals int
 }
 
 // credit is the state an exchange keeps for one address other than the origin that repeats its request
@@ -721,29 +728,77 @@ func (a *answeredRequest) answered(request *opened, key []byte, response *transm
 
 // account takes octets of a repeat from source, an address other than the origin, into source's credit in the exchange, and returns that credit
 // a repeat from one address never touches another's credit, nor the queue the next request is gathered in
-func (a *answeredRequest) account(source transport.Endpoint, octets int) *credit {
-	a.arrivals++
+func (r *repeatCredits) account(source transport.Endpoint, octets int) *credit {
+	r.arrivals++
 	var c *credit
-	if at := slices.IndexFunc(a.others, func(c *credit) bool { return c.from.AddrPort() == source.AddrPort() }); at >= 0 {
-		c = a.others[at]
-	} else if len(a.others) < movedCredits {
+	if at := slices.IndexFunc(r.others, func(c *credit) bool { return c.from.AddrPort() == source.AddrPort() }); at >= 0 {
+		c = r.others[at]
+	} else if len(r.others) < movedCredits {
 		c = &credit{from: source}
-		a.others = append(a.others, c)
+		r.others = append(r.others, c)
 	} else {
-		c = slices.MinFunc(a.others, func(x, y *credit) int { return x.last - y.last })
+		c = slices.MinFunc(r.others, func(x, y *credit) int { return x.last - y.last })
 		*c = credit{from: source}
 	}
-	c.octets, c.last = c.octets+octets, a.arrivals
+	c.octets, c.last = c.octets+octets, r.arrivals
 	return c
 }
 
+// draw reports whether an answer in datagrams carrying octets of IKE message goes to source, and takes it from the origin's count where from is nil and otherwise from from, source's credit
+func (r *repeatCredits) draw(from *credit, source transport.Endpoint, datagrams, octets int) bool {
+	if from == nil {
+		if r.spent() {
+			return false
+		}
+		r.answers++
+		return true
+	}
+	spent := onWire(source, datagrams, octets)
+	if spent > from.octets {
+		return false
+	}
+	from.octets -= spent
+	return true
+}
+
+// spent reports whether the origin has drawn its maxRetransmitsWhileBusy answers in the exchange, after which draw answers it no more
+func (r *repeatCredits) spent() bool {
+	return r.answers >= maxRetransmitsWhileBusy
+}
+
+// moved reports whether source is an address and port other than the origin's, the session's endpoint
+func (s *Session) moved(source transport.Endpoint) bool {
+	return source.AddrPort() != s.mux.Endpoint().AddrPort()
+}
+
+// answerInitRepeat sends response, the IKE_SA_INIT answer, to source where raw repeats request octet for octet, through the account and draw of answerRepeat's rule, c holding the IKE_SA_INIT exchange's count and credits
+// RFC 7383 section 2.2: "This implies that messages of the IKE_SA_INIT exchange cannot be fragmented."
+// so the answer goes whole in one datagram, which draw counts as one
+// a send that fails toward another address never ends the handshake, since any datagram can name one, and one toward the origin ends it as the answer's first send does, where answerRepeat ends nothing
+func (s *Session) answerInitRepeat(c *repeatCredits, request, response, raw []byte, source transport.Endpoint) error {
+	if !bytes.Equal(raw, request) {
+		return nil
+	}
+	var from *credit
+	if s.moved(source) {
+		from = c.account(source, onWire(source, 1, len(raw)))
+	}
+	if !c.draw(from, source, 1, len(response)) {
+		return nil
+	}
+	if err := s.mux.SendIKETo(response, source); err != nil && from == nil {
+		return err
+	}
+	return nil
+}
+
 // answerRepeat sends the answer ctx.lastPeer holds to source where raw, decoded as m, repeats its request, gathering in source's credit a repeat in fragments from anywhere but the origin
-// it is the one rule of every site that resends a kept answer: the half-open wait, Run's dispatch and answerAgain, which is the wait after IKE_AUTH's
+// it is the one rule of every site that resends a kept answer: the half-open wait, whose IKE_SA_INIT exchange answerInitRepeat answers with the same account and draw, Run's dispatch and answerAgain, which is the wait after IKE_AUTH's
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
-// the origin is the session's endpoint, the address and port the peer proved it receives at: in the half-open wait the IKE_SA_INIT source, which took the IKE_SA_INIT answer, and after IKE_AUTH where its last fresh message came from
+// the origin is the session's endpoint: in the half-open wait the address and port the IKE_SA_INIT request came from, which proved it receives only where this end asked it for a cookie, and after IKE_AUTH where the peer's last fresh message came from
 // a repeat from the origin is answered on its fragment 1, at most maxRetransmitsWhileBusy times in each exchange, the bound on the sends of one request this end counts, so each counted send of a peer that resends as this end does draws the answer
 // one from any other address and port is answered once all of the request has come from there, and only where the octets of that address's repeats in the exchange cover those of every answer it drew in it
-// so an address that never proved it receives draws no more octets in an exchange than it sent repeating the request, and neither an initiator that holds the keys without having authenticated nor anyone replaying a captured fragment 1 can aim more at another than is sent in that address's name
+// so an address other than the origin draws no more octets in an exchange than it sent repeating the request, and neither an initiator that holds the keys without having authenticated nor anyone replaying a captured request or fragment can aim more at another address than is sent in that address's name
 // that credit bounds what another address draws, so its answers spend nothing of the origin's count, which a replay sent in the origin's own address and port spends as the origin's own repeats do
 // those octets are counted on the wire, where an answer aimed at an address lands, and onWire counts a datagram of either side with its IP header, UDP header and non-ESP marker as path counts one
 // the answer goes within the datagrams that drew it, fragment 1 from the origin and the largest of the set from elsewhere, and its octets are counted as that send cuts it
@@ -753,8 +808,9 @@ func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source t
 	if a.response == nil {
 		return nil
 	}
-	moved := source.AddrPort() != s.mux.Endpoint().AddrPort()
-	if !moved && a.answers >= maxRetransmitsWhileBusy {
+	moved := s.moved(source)
+	// ahead of the answer's cut and the path MTU read it takes, which draw would refuse the origin after
+	if !moved && a.spent() {
 		return nil
 	}
 	suite := ctx.suite
@@ -794,15 +850,8 @@ func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source t
 		fit = message.largest
 	}
 	threshold, size := s.cutFor(a.response, fit)
-	if from == nil {
-		a.answers++
-	} else {
-		datagrams, octets := a.response.carried(size)
-		spent := onWire(source, datagrams, octets)
-		if spent > from.octets {
-			return nil
-		}
-		from.octets -= spent
+	if datagrams, octets := a.response.carried(size); !a.draw(from, source, datagrams, octets) {
+		return nil
 	}
 	_, _ = s.sendCut(a.response, threshold, size, s.to(source))
 	return nil

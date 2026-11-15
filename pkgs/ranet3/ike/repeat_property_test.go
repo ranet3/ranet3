@@ -131,7 +131,7 @@ type repeatSite struct {
 	r    *repeatRequest
 	came []byte
 	form form
-	// inner is the answer's plaintext, answer the model's answer and went the datagrams it last went in
+	// inner is the answer's plaintext, or its octets at initSite, answer the model's answer and went the datagrams it last went in
 	inner  []byte
 	answer answerModel
 	went   [][]byte
@@ -183,22 +183,32 @@ func (h *repeatSite) begin(request *opened, r *repeatRequest, whole bool) {
 
 // wantAnswer fails the case unless datagrams carry the answer in the model's cut
 func (h *repeatSite) wantAnswer(what string, datagrams [][]byte) {
-	if len(datagrams) != max(1, h.answer.total) || largest(datagrams) != h.answer.largest() || octetsOf(datagrams) != h.answer.octets() || !bytes.Equal(carried(h.s.current.localEncryptionKey(), datagrams), h.inner) {
+	same := bytes.Equal(carried(h.s.current.localEncryptionKey(), datagrams), h.inner)
+	if h.site == initSite {
+		same = len(datagrams) == 1 && bytes.Equal(datagrams[0], h.inner)
+	}
+	if len(datagrams) != max(1, h.answer.total) || largest(datagrams) != h.answer.largest() || octetsOf(datagrams) != h.answer.octets() || !same {
 		h.ht.Fatalf("%s at %d went in %d datagrams of at most %d octets, %d in all, want the answer in %d of at most %d, %d in all", what, h.r.mid, len(datagrams), largest(datagrams), octetsOf(datagrams), max(1, h.answer.total), h.answer.largest(), h.answer.octets())
 	}
 }
 
-// repeat hands raw, a datagram at the answered Message ID from places[place], to the site, to answerRepeat as awaitAuthRequest does in the half-open wait, and checks what each place takes against the model
+// repeat hands raw, a datagram at the answered Message ID from places[place], to the site, to answerRepeat as awaitAuthRequest does in the half-open wait or to answerInitRepeat in its IKE_SA_INIT exchange, and checks what each place takes against the model
 // it reports whether the SA goes on
 func (h *repeatSite) repeat(raw []byte, place int, d repeatDatagram) bool {
 	source := h.places[place]
 	var err error
 	ended := false
-	if take := takers[h.site]; take != nil {
-		ended = take(h.s, raw, source)
-	} else if m, decoded := DecodeMessage(raw); decoded == nil {
-		err = h.s.answerRepeat(h.s.current, raw, m, source)
+	switch h.site {
+	case initSite:
+		err = h.s.answerInitRepeat(&h.s.current.lastPeer.repeatCredits, h.came, h.inner, raw, source)
 		ended = err != nil
+	case halfOpenSite:
+		if m, decoded := DecodeMessage(raw); decoded == nil {
+			err = h.s.answerRepeat(h.s.current, raw, m, source)
+			ended = err != nil
+		}
+	default:
+		ended = takers[h.site](h.s, raw, source)
 	}
 	h.sent[place] += len(raw) + wireAround
 	was := h.answer
@@ -509,14 +519,7 @@ func testRepeatsAtTheBoundsOfTheRuleDrawTheAnswerAsTheModelDoes(t *testing.T) {
 // atBounds adds the draws of the property at the bounds, and a case without it draws none of them
 func repeatsAsTheModelDraws(t *testing.T, sites []string, moves []bool, atBounds bool) {
 	hub := listenHub(t)
-	// the first place is the address and port the IKE_SA_INIT answer went to, which is the session's endpoint past IKE_AUTH
-	// the others outnumber movedCredits, so a newcomer takes the place of a credit
-	var places []transport.Endpoint
-	var conns []*transport.MemoryConn
-	for _, spi := range []uint64{0x71, 0x72, 0x73, 0x74, 0x75, 0x76} {
-		place, conn := observedPeerFrom(t, hub, spi, net.IPv4(127, 0, 0, 1))
-		places, conns = append(places, place), append(conns, conn)
-	}
+	places, conns := repeatPlaces(t, hub)
 	mux, err := hub.NewMuxTo(places[0])
 	if err != nil {
 		t.Fatal(err)
@@ -764,6 +767,78 @@ func repeatsAsTheModelDraws(t *testing.T, sites []string, moves []bool, atBounds
 			}
 			h.begin(arrived, next, whole)
 			ctx.skei = bytes.Repeat([]byte{byte(len(requests) + 1)}, modelKeyLen)
+		}
+	})
+}
+
+// repeatPlaces are the places the repeat property's repeats come from on hub and the sockets behind them
+// the first place is the address and port the IKE_SA_INIT answer went to, which is the session's endpoint past IKE_AUTH
+// the others outnumber movedCredits, so a newcomer takes the place of a credit
+func repeatPlaces(t *testing.T, hub *transport.Hub) ([]transport.Endpoint, []*transport.MemoryConn) {
+	var places []transport.Endpoint
+	var conns []*transport.MemoryConn
+	for _, spi := range []uint64{0x71, 0x72, 0x73, 0x74, 0x75, 0x76} {
+		place, conn := observedPeerFrom(t, hub, spi, net.IPv4(127, 0, 0, 1))
+		places, conns = append(places, place), append(conns, conn)
+	}
+	return places, conns
+}
+
+// initSite is the half-open wait's IKE_SA_INIT exchange, whose answer goes in the clear and whole
+// the property hands answerInitRepeat the count and credits of ctx.lastPeer, which the other sites spend through answerRepeat and wantCredits reads at every site
+const initSite = "IKE_SA_INIT exchange"
+
+// initKinds are the runs of datagrams the IKE_SA_INIT repeat property draws, each drawn outright
+var initKinds = []string{"the request", "another request", "the origin's repeats to its cap"}
+
+// in the half-open wait, with IKE fragmentation negotiated on a path of the IPv4 floor, repeats of the IKE_SA_INIT request draw its answer as the repeat property's model draws a repeat whole, the answer whole in one datagram, which the model holds as an answer whole of the answer's octets
+// the request and the answer are of 100 to 1500 octets, the answer within 400 octets of the request in half the cases, and the repeats come from the origin or five other places, in half the cases the runs of the first two kinds from the others alone
+// a run is the request octet for octet up to four times over from one place, the request with one octet turned, which draws nothing, or the origin's repeats to its count's cap less one, at it or one past it, after which the request comes from another place as often as that place's credit needs to cover the answer
+// so no place other than the origin draws more octets on the wire than it sent, the origin draws at most maxRetransmitsWhileBusy answers, and the session keeps the credits the model keeps, at most movedCredits
+// RFC 7383 section 2.2: "This implies that messages of the IKE_SA_INIT exchange cannot be fragmented."
+func TestIKESAInitRepeatsDrawTheAnswerAsTheModelDoes(t *testing.T) {
+	bubble.Run(testIKESAInitRepeatsDrawTheAnswerAsTheModelDoes)(t)
+}
+
+func testIKESAInitRepeatsDrawTheAnswerAsTheModelDoes(t *testing.T) {
+	hub := listenHub(t)
+	places, conns := repeatPlaces(t, hub)
+	message := func(flags uint8, octets int) []byte {
+		header := Header{SPIInitiator: 0x0102030405060708, ExchangeType: IKE_SA_INIT, Flags: flags}
+		return (&Message{Header: header, Payloads: []RawPayload{{Type: PayloadNonce, Body: make([]byte, octets-HeaderLen-genericPayloadHeaderLen)}}}).Encode()
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		mux, err := hub.NewMuxTo(places[0])
+		if err != nil {
+			ht.Fatal(err)
+		}
+		defer mux.Close()
+		size, answer := hegel.Draw(ht, pbt.Spanning(100, 1500)), hegel.Draw(ht, pbt.Spanning(100, 1500))
+		if hegel.Draw(ht, hegel.Booleans()) {
+			answer = max(100, size+hegel.Draw(ht, pbt.Spanning(-400, 400)))
+		}
+		request, response := message(FlagInitiator, size), message(FlagResponse, answer)
+		h := &repeatSite{ht: ht, site: initSite, s: &Session{mux: mux, current: &ikeContext{}, fragments: true, pathMTU: noPathMTU}, places: places, conns: conns, room: floorRoom, now: time.Now(),
+			r: &repeatRequest{whole: request}, came: request, inner: response, answer: answerModel{inner: len(response) - wholeAround}, went: [][]byte{response},
+			sent: make([]int, len(places)), drawn: make([]int, len(places))}
+		first := hegel.Draw(ht, pbt.Spanning(0, 1))
+		for range hegel.Draw(ht, pbt.Spanning(1, 24)) {
+			place := hegel.Draw(ht, pbt.Spanning(first, len(places)-1))
+			switch hegel.Draw(ht, hegel.SampledFrom(initKinds)) {
+			case "the request":
+				for range hegel.Draw(ht, pbt.Spanning(1, 4)) {
+					h.repeat(request, place, repeatDatagram{whole: true, exact: true})
+				}
+			case "another request":
+				other := slices.Clone(request)
+				other[hegel.Draw(ht, pbt.Spanning(0, len(other)-1))] ^= 1
+				h.repeat(other, place, repeatDatagram{whole: true})
+			case "the origin's repeats to its cap":
+				for range maxRetransmitsWhileBusy + hegel.Draw(ht, pbt.Spanning(-1, 1)) - h.answers {
+					h.repeat(request, 0, repeatDatagram{whole: true, exact: true})
+				}
+				h.cover(max(place, 1))
+			}
 		}
 	})
 }

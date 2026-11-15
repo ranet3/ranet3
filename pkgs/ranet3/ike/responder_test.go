@@ -906,6 +906,401 @@ func testResponderDoesNotReflectOnSPIAlone(t *testing.T) {
 	}
 }
 
+// openSAInitRepeats opens a half-open SA of h's responder through a scripted initiator that offers ML-KEM-768 and IKE fragmentation, whose IKE_SA_INIT answer is larger than its request
+func openSAInitRepeats(t *testing.T, h *responderHarness) *scripted {
+	t.Helper()
+	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
+	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
+	if s == nil {
+		t.Fatalf("the responder refused the offer with notify %d", refused)
+	}
+	if len(s.message2) <= len(s.message1) {
+		t.Fatalf("the IKE_SA_INIT answer of %d octets is no larger than its request of %d", len(s.message2), len(s.message1))
+	}
+	return s
+}
+
+// originRepeats sends s's IKE_SA_INIT request from the origin times times and fails unless the first answered of them each draw the answer whole in one datagram and the rest nothing
+func originRepeats(t *testing.T, s *scripted, times, answered int) {
+	t.Helper()
+	for repeat := 1; repeat <= times; repeat++ {
+		if err := s.mux.SendIKE(s.message1); err != nil {
+			t.Fatal(err)
+		}
+		if repeat > answered {
+			if !s.silent() {
+				t.Fatalf("the origin's repeat %d of IKE_SA_INIT drew the answer, want at most %d", repeat, answered)
+			}
+			continue
+		}
+		got, err := recvIKEUntil(s.mux, time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatalf("the origin's repeat %d of IKE_SA_INIT drew nothing: %v", repeat, err)
+		}
+		if !bytes.Equal(got, s.message2) {
+			t.Fatalf("the origin's repeat %d of IKE_SA_INIT drew %d octets, want the answer of %d whole", repeat, len(got), len(s.message2))
+		}
+	}
+}
+
+// replaySAInit sends s's IKE_SA_INIT request from conn, an address other than the origin, and reports whether it drew the answer, failing unless what came back is nothing or the answer whole in one datagram
+func replaySAInit(t *testing.T, s *scripted, conn *transport.MemoryConn) bool {
+	t.Helper()
+	to := &net.UDPAddr{IP: conn.LocalAddr().(*net.UDPAddr).IP, Port: s.h.remotePort}
+	if _, err := conn.WriteToUDP(withNonESPMarker(s.message1), to); err != nil {
+		t.Fatal(err)
+	}
+	got := peerReads(t, conn, quietPeriod)
+	if len(got) > 1 || len(got) == 1 && !bytes.Equal(got[0], s.message2) {
+		t.Fatalf("a replay of IKE_SA_INIT from %s drew %d datagrams, want nothing or the answer whole", conn.LocalAddr(), len(got))
+	}
+	return len(got) == 1
+}
+
+// replaySocket is a socket at ip on t's network, which replays a request from an address other than the origin
+func replaySocket(t *testing.T, ip net.IP) *transport.MemoryConn {
+	t.Helper()
+	conn, err := testNetwork(t).ListenUDP(ip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+// in the half-open wait the origin's repeats of the IKE_SA_INIT request draw the answer at most maxRetransmitsWhileBusy times, each the answer whole in one datagram though both ends negotiated IKE fragmentation, and the handshake goes on after the one past them
+// RFC 7383 section 2.2: "This implies that messages of the IKE_SA_INIT exchange cannot be fragmented."
+func TestIKESAInitRepeatsFromTheOriginAreAnsweredWholeAtMostTheBound(t *testing.T) {
+	bubble.Run(testIKESAInitRepeatsFromTheOriginAreAnsweredWholeAtMostTheBound)(t)
+}
+
+func testIKESAInitRepeatsFromTheOriginAreAnsweredWholeAtMostTheBound(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	s := openSAInitRepeats(t, h)
+	originRepeats(t, s, maxRetransmitsWhileBusy+1, maxRetransmitsWhileBusy)
+	s.intermediate(1, ML_KEM_768)
+	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
+		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
+	}
+	s.accepted(2, ML_KEM_768)
+}
+
+// in the half-open wait a replay of the IKE_SA_INIT request from an address other than the origin draws the answer only where the octets on the wire of that address's replays cover those of every answer it drew, this one included
+// each datagram is counted with the IP header of the address's family, the UDP header and the non-ESP marker, so one replay draws nothing where the answer is larger than the request
+func TestIKESAInitReplayFromAnotherAddressDrawsTheAnswerOnlyWithinTheOctetsItSent(t *testing.T) {
+	for _, family := range []struct {
+		name   string
+		ip     net.IP
+		around int
+	}{{"IPv4", net.IPv4(127, 0, 0, 2), 20 + 8 + NonESPMarkerLen}, {"IPv6", net.IPv6loopback, 40 + 8 + NonESPMarkerLen}} {
+		t.Run(family.name, bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
+			s := openSAInitRepeats(t, h)
+			conn := replaySocket(t, family.ip)
+			sent, drawn := 0, 0
+			for replay := 1; replay <= 12; replay++ {
+				sent += len(s.message1) + family.around
+				want := sent >= drawn+len(s.message2)+family.around
+				if got := replaySAInit(t, s, conn); got != want {
+					t.Fatalf("replay %d, after %d octets on the wire sent and %d drawn, drew the answer %v, want %v", replay, sent, drawn, got, want)
+				}
+				if want {
+					drawn += len(s.message2) + family.around
+				}
+				if replay == 1 && drawn > 0 {
+					t.Fatal("one replay drew an answer larger than itself")
+				}
+			}
+		}))
+	}
+}
+
+// the answers a replay of the IKE_SA_INIT request from an address other than the origin draws spend nothing of the origin's count, so the origin's repeats then draw maxRetransmitsWhileBusy answers and the one after nothing
+func TestIKESAInitAnswersElsewhereSpendNothingOfTheOriginsCount(t *testing.T) {
+	bubble.Run(testIKESAInitAnswersElsewhereSpendNothingOfTheOriginsCount)(t)
+}
+
+func testIKESAInitAnswersElsewhereSpendNothingOfTheOriginsCount(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	s := openSAInitRepeats(t, h)
+	conn := replaySocket(t, net.IPv4(127, 0, 0, 2))
+	answers := 0
+	for replay := 0; replay < 8 && answers < 2; replay++ {
+		if replaySAInit(t, s, conn) {
+			answers++
+		}
+	}
+	if answers < 2 {
+		t.Fatalf("8 replays from another address drew %d answers, want 2", answers)
+	}
+	originRepeats(t, s, maxRetransmitsWhileBusy+1, maxRetransmitsWhileBusy)
+}
+
+// the IKE_SA_INIT exchange keeps a credit for at most movedCredits addresses other than the origin, a newcomer past them taking the place of the one heard from least recently
+// an address whose one replay drew nothing draws the answer with its second while fewer than movedCredits newcomers replayed between the two, and draws nothing where movedCredits did, since its credit then starts over
+func TestIKESAInitRepeatsKeepCreditsForAtMostMovedCreditsAddresses(t *testing.T) {
+	for _, newcomers := range []int{movedCredits - 1, movedCredits} {
+		t.Run(fmt.Sprintf("%d newcomers", newcomers), bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
+			s := openSAInitRepeats(t, h)
+			if 2*len(s.message1) < len(s.message2) {
+				t.Fatalf("2 requests of %d octets do not cover the answer of %d", len(s.message1), len(s.message2))
+			}
+			first := replaySocket(t, net.IPv4(127, 0, 0, 2))
+			if replaySAInit(t, s, first) {
+				t.Fatal("one replay drew an answer larger than itself")
+			}
+			for at := range newcomers {
+				if replaySAInit(t, s, replaySocket(t, net.IPv4(127, 0, 0, byte(3+at)))) {
+					t.Fatalf("newcomer %d's one replay drew an answer larger than itself", at+1)
+				}
+			}
+			if got, want := replaySAInit(t, s, first), newcomers < movedCredits; got != want {
+				t.Errorf("the first address's second replay after %d newcomers drew the answer %v, want %v", newcomers, got, want)
+			}
+		}))
+	}
+}
+
+// smallestSAInit is the smallest IKE_SA_INIT request the harness's responder answers: one proposal of ChaCha20-Poly1305, HMAC-SHA2-256 and X25519, a nonce of 16 octets, SIGNATURE_HASH_ALGORITHMS and no NAT detection
+func smallestSAInit(t *testing.T, spiI uint64) []byte {
+	t.Helper()
+	return saInitOf(t, spiI, 16, true)
+}
+
+// saInitOf is smallestSAInit with a nonce of nonce octets, and without SIGNATURE_HASH_ALGORITHMS where hash is false
+func saInitOf(t *testing.T, spiI uint64, nonce int, hash bool) []byte {
+	t.Helper()
+	dh, err := GenerateDH(DH_CURVE25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := Proposal{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{encrChaCha, {Type: TransPRF, ID: PRF_HMAC_SHA2_256}, {Type: TransDH, ID: DH_CURVE25519}}}
+	payloads := []RawPayload{
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+		{Type: PayloadNonce, Body: EncodeNonce(bytes.Repeat([]byte{1}, nonce))},
+	}
+	if hash {
+		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})})
+	}
+	return (&Message{Header: Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator}, Payloads: payloads}).Encode()
+}
+
+// forgedSAInit sends request from conn to h's responder and returns what came back, failing on a datagram that is no IKE message
+// answered reports whether it was the IKE_SA_INIT answer, which carries an SA payload, and cookie whether it was a COOKIE
+func forgedSAInit(t *testing.T, h *responderHarness, conn *transport.MemoryConn, request []byte) (got [][]byte, answered, cookie bool) {
+	t.Helper()
+	to := &net.UDPAddr{IP: conn.LocalAddr().(*net.UDPAddr).IP, Port: h.remotePort}
+	if _, err := conn.WriteToUDP(withNonESPMarker(request), to); err != nil {
+		t.Fatal(err)
+	}
+	got = peerReads(t, conn, quietPeriod)
+	for _, raw := range got {
+		m, err := DecodeMessage(raw)
+		if err != nil {
+			t.Fatalf("a request from %s drew %d octets that are no IKE message: %v", conn.LocalAddr(), len(raw), err)
+		}
+		answered = answered || m.find(PayloadSA) != nil
+		cookie = cookie || carriesNotify(m, N_COOKIE)
+	}
+	return got, answered, cookie
+}
+
+// smallestSAInit's request draws the IKE_SA_INIT answer, and the same request with a nonce of 15 octets, or without SIGNATURE_HASH_ALGORITHMS, draws none
+func TestIKESAInitRequestBelowTheSmallestDrawsNoAnswer(t *testing.T) {
+	bubble.Run(testIKESAInitRequestBelowTheSmallestDrawsNoAnswer)(t)
+}
+
+func testIKESAInitRequestBelowTheSmallestDrawsNoAnswer(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	for at, request := range []struct {
+		name    string
+		request []byte
+		want    bool
+	}{
+		{"the smallest request", smallestSAInit(t, 0x0d0d0d0d0d0d0d0d), true},
+		{"a nonce of 15 octets", saInitOf(t, 0x0e0e0e0e0e0e0e0e, 15, true), false},
+		{"no SIGNATURE_HASH_ALGORITHMS", saInitOf(t, 0x0f0f0f0f0f0f0f0f, 16, false), false},
+	} {
+		if _, answered, _ := forgedSAInit(t, h, replaySocket(t, net.IPv4(127, 0, 0, byte(20+at))), request.request); answered != request.want {
+			t.Errorf("%s, %d octets, drew the IKE_SA_INIT answer %v, want %v", request.name, len(request.request), answered, request.want)
+		}
+	}
+}
+
+// below the cookie threshold of the node every address holds halfOpenPerSourceWithoutCookie (2) half-open SAs without a cookie, so 16 addresses open cookieThreshold (32) of them, and the request of a 17th address draws a COOKIE and no answer
+func TestNodeAsksForACookieAtItsHalfOpenThreshold(t *testing.T) {
+	bubble.Run(testNodeAsksForACookieAtItsHalfOpenThreshold)(t)
+}
+
+func testNodeAsksForACookieAtItsHalfOpenThreshold(t *testing.T) {
+	const addresses, eachBeforeCookie = 16, 2
+	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil,
+		func(cfg *ResponderConfig) { cfg.HandshakeTimeout = handshakeTimeout })
+	for at := range addresses {
+		conn := replaySocket(t, net.IPv4(127, 0, 1, byte(1+at)))
+		for sa := range eachBeforeCookie {
+			if _, answered, _ := forgedSAInit(t, h, conn, smallestSAInit(t, uint64(0x1000+eachBeforeCookie*at+sa))); !answered {
+				t.Fatalf("half-open SA %d of address %d, %d on the node, drew no answer", sa+1, at+1, eachBeforeCookie*at+sa+1)
+			}
+		}
+	}
+	if _, answered, cookie := forgedSAInit(t, h, replaySocket(t, net.IPv4(127, 0, 2, 1)), smallestSAInit(t, 0x2000)); answered || !cookie {
+		t.Errorf("a new address's request at %d half-open SAs drew the answer %v and a COOKIE %v, want a COOKIE alone", addresses*eachBeforeCookie, answered, cookie)
+	}
+}
+
+// below the cookie thresholds the origin of a half-open SA is the source of its first IKE_SA_INIT request, which proved nothing it receives
+// the smallest request forged in one address and repeated from there draws the answer and 20 repeats of it in each half-open SA, each answer 238 octets on the IPv4 wire for a request of 166, for 2 half-open SAs, and the address's third request draws a COOKIE and no answer
+// the figures are the limits page's, each a literal, so behavior that moves under the page fails here
+func TestForgedOriginDrawsTheBoundForEachOfItsHalfOpenSAs(t *testing.T) {
+	bubble.Run(testForgedOriginDrawsTheBoundForEachOfItsHalfOpenSAs)(t)
+}
+
+func testForgedOriginDrawsTheBoundForEachOfItsHalfOpenSAs(t *testing.T) {
+	const (
+		// the answer and maxRetransmitsWhileBusy (20) repeats
+		answersEach = 21
+		// halfOpenPerSourceWithoutCookie
+		halfOpenBeforeCookie = 2
+		// the smallest request and its answer on the IPv4 wire, each with an IP header, the UDP header and the non-ESP marker
+		requestOnWire, answerOnWire = 166, 238
+	)
+	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil,
+		func(cfg *ResponderConfig) { cfg.HandshakeTimeout = handshakeTimeout })
+	victim := replaySocket(t, net.IPv4(127, 0, 0, 5))
+	to := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 5), Port: h.remotePort}
+	send := func(request []byte) [][]byte {
+		t.Helper()
+		if _, err := victim.WriteToUDP(withNonESPMarker(request), to); err != nil {
+			t.Fatal(err)
+		}
+		return peerReads(t, victim, quietPeriod)
+	}
+	for at := range halfOpenBeforeCookie {
+		request := smallestSAInit(t, uint64(0x0a0a0a0a0a0a0a0a+at))
+		answers, in, out := 0, 0, 0
+		for range answersEach + 1 {
+			got := send(request)
+			in += len(request) + 20 + 8 + NonESPMarkerLen
+			for _, answer := range got {
+				m, err := DecodeMessage(answer)
+				if err != nil || m.find(PayloadSA) == nil {
+					t.Fatalf("half-open SA %d drew %d octets that are no IKE_SA_INIT answer: %v", at+1, len(answer), err)
+				}
+				answers, out = answers+1, out+len(answer)+20+8+NonESPMarkerLen
+			}
+		}
+		if answers != answersEach || in != (answersEach+1)*requestOnWire || out != answersEach*answerOnWire {
+			t.Fatalf("half-open SA %d: %d requests forged in one address, %d octets on the wire, drew %d answers of %d octets, want %d answers of %d octets each for requests of %d",
+				at+1, answersEach+1, in, answers, out, answersEach, answerOnWire, requestOnWire)
+		}
+	}
+	got := send(smallestSAInit(t, 0x0c0c0c0c0c0c0c0c))
+	if len(got) != 1 {
+		t.Fatalf("the address's request past its %d half-open SAs drew %d datagrams, want a COOKIE", halfOpenBeforeCookie, len(got))
+	}
+	if m, err := DecodeMessage(got[0]); err != nil || !carriesNotify(m, N_COOKIE) || m.find(PayloadSA) != nil {
+		t.Errorf("the address's request past its %d half-open SAs drew %d octets, want a COOKIE and no answer: %v", halfOpenBeforeCookie, len(got[0]), err)
+	}
+}
+
+// at each site that resends a kept answer, a repeat from the endpoint once its maxRetransmitsWhileBusy answers are spent is turned away before the answer's cut is weighed, so it reads no path MTU
+func TestOriginRepeatPastItsAnswersReadsNoPathMTU(t *testing.T) {
+	for name, take := range repeatSites() {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			s, peer := fragmentingSession(t, &recorder{})
+			var reads atomic.Int32
+			s.pathMTU = func() (int, error) {
+				reads.Add(1)
+				return 0, errors.ErrUnsupported
+			}
+			ctx := s.current
+			mid := ctx.nextPeerMID
+			request := peerRequestWhole(t, s, mid, []RawPayload{bulkyStatus(300)})
+			response, err := ctx.seal(ctx.localEncryptionKey(), Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: FlagInitiator | FlagResponse, MessageID: mid}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent, err := s.keepAnswer(ctx, mid, response, openedOf(t, s, [][]byte{request}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for repeat := 1; repeat <= maxRetransmitsWhileBusy; repeat++ {
+				take(s, request, s.mux.Endpoint())
+				if got := peerTakes(t, peer, len(sent.datagrams)); !slices.EqualFunc(got, sent.datagrams, bytes.Equal) {
+					t.Fatalf("the endpoint's repeat %d drew %d datagrams, want the answer", repeat, len(got))
+				}
+			}
+			before := reads.Load()
+			if before == 0 {
+				t.Fatal("the answered repeats read no path MTU, so the count below proves nothing")
+			}
+			take(s, request, s.mux.Endpoint())
+			if got := peerReads(t, peer, quietPeriod); len(got) != 0 || reads.Load() != before {
+				t.Errorf("the endpoint's repeat %d drew %d datagrams and read the path MTU %d times, want none of either", maxRetransmitsWhileBusy+1, len(got), reads.Load()-before)
+			}
+		}))
+	}
+}
+
+// a send of the IKE_SA_INIT answer that fails toward an address other than the origin leaves the half-open wait going, its credit spent, and one that fails toward the origin ends it, as the answer's first send does
+func TestFailedIKESAInitAnswerEndsTheHandshakeOnlyTowardTheOrigin(t *testing.T) {
+	bubble.Run(testFailedIKESAInitAnswerEndsTheHandshakeOnlyTowardTheOrigin)(t)
+}
+
+func testFailedIKESAInitAnswerEndsTheHandshakeOnlyTowardTheOrigin(t *testing.T) {
+	request, response := bytes.Repeat([]byte{1}, 100), bytes.Repeat([]byte{2}, 150)
+	unreachable := unsendableMux(t)
+	hub := listenHub(t)
+	origin, _ := observedPeerFrom(t, hub, 0x71, net.IPv4(127, 0, 0, 1))
+	mux, err := hub.NewMuxTo(origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	var elsewhere repeatCredits
+	s := &Session{mux: mux}
+	for replay := 1; replay <= 3; replay++ {
+		if err := s.answerInitRepeat(&elsewhere, request, response, request, unreachable.Endpoint()); err != nil {
+			t.Fatalf("replay %d from an address that takes nothing ended the handshake: %v", replay, err)
+		}
+	}
+	in, out := onWire(unreachable.Endpoint(), 1, len(request)), onWire(unreachable.Endpoint(), 1, len(response))
+	if len(elsewhere.others) != 1 || elsewhere.others[0].octets != 3*in-2*out {
+		t.Fatalf("3 replays of %d octets on the wire left the credits %+v, want one of %d after 2 answers of %d", in, elsewhere.others, 3*in-2*out, out)
+	}
+	var atOrigin repeatCredits
+	s = &Session{mux: unreachable}
+	if err := s.answerInitRepeat(&atOrigin, request, response, request, unreachable.Endpoint()); err == nil {
+		t.Fatal("a repeat from an origin that takes nothing left the handshake going")
+	}
+}
+
+// the half-open SA forgets its IKE_SA_INIT answer once it has answered the first IKE_INTERMEDIATE request, so a repeat of the IKE_SA_INIT request then draws nothing from the origin or from anywhere else, and the handshake goes on
+// RFC 7296 section 2.1: "The responder MUST remember each response until it receives a request whose sequence number is larger than or equal to the sequence number in the response plus its window size"
+func TestIKESAInitRepeatsDrawNothingOnceIKEIntermediateIsAnswered(t *testing.T) {
+	bubble.Run(testIKESAInitRepeatsDrawNothingOnceIKEIntermediateIsAnswered)(t)
+}
+
+func testIKESAInitRepeatsDrawNothingOnceIKEIntermediateIsAnswered(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	s := openSAInitRepeats(t, h)
+	s.intermediate(1, ML_KEM_768)
+	originRepeats(t, s, 1, 0)
+	conn := replaySocket(t, net.IPv4(127, 0, 0, 2))
+	for replay := 1; replay <= 3; replay++ {
+		if replaySAInit(t, s, conn) {
+			t.Fatalf("replay %d from another address after IKE_INTERMEDIATE drew the IKE_SA_INIT answer", replay)
+		}
+	}
+	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
+		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
+	}
+	s.accepted(2, ML_KEM_768)
+}
+
 // The slot has to come before the key exchange rather than after it, for the
 // reason enterHalfOpen's call site gives.
 //
