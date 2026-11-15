@@ -128,10 +128,9 @@ type mapping struct {
 	hairpinnedTo []netip.AddrPort
 }
 
-// destination is a mapping's socket connected to one server, sending from
-// the mapping's address and port, from
+// destination is a mapping's socket connected to one server
 type destination struct {
-	to, from netip.AddrPort
+	to       netip.AddrPort
 	conn     *net.UDPConn
 	deadline atomic.Int64
 
@@ -492,7 +491,9 @@ func (u *udpRelay) drop(m *mapping) {
 
 // destination is m's socket toward to, opened where it has none, whether this
 // call opened it, and why it failed. closed reports m ended before it could
-// take the destination. The caller has admitted the flow a new one is.
+// take the destination. The caller has admitted the flow a new one is. A new
+// destination holds a deadline mappingSweep away before m holds it, so no
+// pass that sees it ends it before its first datagram's time.
 func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination, closed, opened bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -503,7 +504,8 @@ func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination,
 	if err != nil {
 		return nil, false, false, err
 	}
-	dst = &destination{to: to, from: m.external(), conn: conn}
+	dst = &destination{to: to, conn: conn}
+	dst.deadline.Store(u.now().Add(mappingSweep).UnixNano())
 	m.destinations[to] = dst
 	u.readers.Add(1)
 	go u.read(m, conn, dst)

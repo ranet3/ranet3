@@ -1727,6 +1727,47 @@ func TestMappingTimersFollowOnlyTheDatagramsOut(t *testing.T) {
 	}
 }
 
+// A pass that ends the mappings past their time and runs between a new
+// destination's opening and its first datagram, at any time short of
+// mappingSweep after the opening, keeps the destination, which holds a
+// deadline from the moment a pass can see it, so the datagram leaves, and a
+// pass mappingSweep after the opening ends both where no datagram left
+func TestPassBeforeANewDestinationsFirstDatagramKeepsIt(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	for _, sent := range []bool{true, false} {
+		raw := udpDatagram(leaf, serverAt(server), []byte("first"))
+		d, ok := readDatagram(raw)
+		if !ok {
+			t.Fatalf("the test's datagram %x does not read", raw)
+		}
+		m, dst, reason := h.x.udp.open(d.from, d.to)
+		if dst == nil {
+			t.Fatalf("a new destination refused for %q", reason)
+		}
+		h.advance(mappingSweep - time.Nanosecond)
+		m.mu.RLock()
+		_, kept := m.destinations[d.to]
+		m.mu.RUnlock()
+		if !kept {
+			t.Fatal("a pass between a destination's opening and its first datagram ended it")
+		}
+		if !sent {
+			h.advance(time.Nanosecond)
+			if _, ok := h.mappingOf(leaf); ok {
+				t.Errorf("a mapping no datagram left outlived a pass %s after it opened", mappingSweep)
+			}
+			continue
+		}
+		if refused := h.x.udp.send(raw, d, dst, false); refused {
+			t.Fatalf("the first datagram refused, %d unsent", h.count(false, reasonUnsent))
+		}
+		readDatagramFrom(t, server, []byte("first"))
+		h.advance(mappingTimeout + mappingSweep)
+	}
+}
+
 // Each of a leaf's two mappings, as two classes in turn give them, lets in a
 // datagram only from an address that mapping itself sent to: a server the
 // first sent to reaches the leaf at the first mapping's address and port, and

@@ -67,9 +67,10 @@ const (
 	mappingTimeout = 5 * time.Minute
 	dnsTimeout     = 30 * time.Second
 	// mappingSweep spaces the passes that end the mappings past their time,
-	// each ending at most this late. A new mapping holds it before its first
-	// datagram's time, so no pass ends it while it opens, and one that no
-	// datagram goes out of ends within two passes.
+	// each ending at most this late. A new mapping and a new destination
+	// hold it before their first datagram's time, so no pass ends either
+	// while it opens, and one that no datagram goes out of ends within two
+	// passes.
 	mappingSweep = 5 * time.Second
 	// lowPortSearch bounds the other ports below 1024 a new mapping tries
 	// for a leaf's port below 1024 that the host holds, so one datagram costs
