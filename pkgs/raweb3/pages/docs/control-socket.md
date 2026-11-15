@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-14
+updated: 2026-11-15
 order: 80
 ---
 
@@ -302,37 +302,36 @@ empty.
 
 ### Status codes
 
-| Code | When                                                                                                                                                                                                                                                                         |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 200  | The read or the verb succeeded.                                                                                                                                                                                                                                              |
-| 400  | The node refused a verb, a body or query does not parse, a query names more kinds, attributes or prefixes than the limits allow, or a trace's rate or payload is out of its bounds. The body says why.                                                                       |
-| 404  | No such path.                                                                                                                                                                                                                                                                |
-| 405  | The method does not fit the path. `Allow` names the one that does.                                                                                                                                                                                                           |
-| 500  | The daemon could not encode its answer. The body says why.                                                                                                                                                                                                                   |
-| 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                                                                                                                                                   |
-| 503  | A 5th stream, of events or a trace, asked for while 4 are open, a trace asked for while the daemon stops, or any request but `reload` while the start waits for the key or the trust document, as [restarts and the network](service.md#restarts-and-the-network) describes. |
+| Code | When                                                                                                                                                                                                                                                                                |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 200  | The read or the verb succeeded.                                                                                                                                                                                                                                                     |
+| 400  | The node refused a verb, a body is past its limit, did not come whole within the request timeout or does not parse, a query does not parse or names more kinds, attributes or prefixes than the limits allow, or a trace's rate or payload is out of its bounds. The body says why. |
+| 404  | No such path.                                                                                                                                                                                                                                                                       |
+| 405  | The method does not fit the path. `Allow` names the one that does.                                                                                                                                                                                                                  |
+| 500  | The daemon could not encode its answer. The body says why.                                                                                                                                                                                                                          |
+| 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                                                                                                                                                          |
+| 503  | A 5th stream, of events or a trace, asked for while 4 are open, a trace asked for while the daemon stops, or any request but `reload` while the start waits for the key or the trust document, as [restarts and the network](service.md#restarts-and-the-network) describes.        |
 
 ### Limits
 
-| Limit                                                     | Value                                                                                     |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Connections open at once                                  | 32, and the daemon closes the next one as it accepts it                                   |
-| Idle connection between requests                          | closed after 30 seconds                                                                   |
-| Request headers                                           | 5 seconds                                                                                 |
-| Writing an answer, a stream excepted                      | 30 seconds                                                                                |
-| Verb body the daemon reads                                | 64 KiB                                                                                    |
-| Streams open at once, of events and traces together       | 4                                                                                         |
-| Source and destination prefixes in 1 trace query          | 16 of each                                                                                |
-| 1 stream write waiting on its reader                      | 5 seconds, then the stream ends                                                           |
-| Heartbeat on a quiet stream                               | every 15 seconds                                                                          |
-| Kinds in 1 events query                                   | 16                                                                                        |
-| Attributes in 1 events query                              | 16                                                                                        |
-| Socket path                                               | 83 bytes, the 103 a unix socket holds less the 20 the directory it is first bound in adds |
-| 1 exchange of `ranet3` with the daemon, a stream excepted | 10 seconds                                                                                |
-| Wait of `rekey` for the rekeys it asked for               | 5 seconds                                                                                 |
-| Answer `ranet3` reads                                     | 64 MiB                                                                                    |
-| 1 stream line `ranet3` reads                              | 1 MiB                                                                                     |
-| Events in 1 stream write                                  | 64                                                                                        |
+| Limit                                                                                                                                   | Value                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Connections open at once                                                                                                                | 32, and the daemon closes the next one as it accepts it                                   |
+| Idle connection between requests                                                                                                        | closed after 30 seconds                                                                   |
+| Request headers and body together                                                                                                       | 5 seconds                                                                                 |
+| From a request's headers read to its answer written, the wait for its body, the verb's run and the write all counted, a stream excepted | 30 seconds                                                                                |
+| Verb body                                                                                                                               | 64 KiB, and a longer one is refused                                                       |
+| Streams open at once, of events and traces together                                                                                     | 4                                                                                         |
+| Source and destination prefixes in 1 trace query                                                                                        | 16 of each                                                                                |
+| 1 stream write waiting on its reader                                                                                                    | 5 seconds, then the stream ends                                                           |
+| Heartbeat on a quiet stream                                                                                                             | every 15 seconds                                                                          |
+| Kinds in 1 events query                                                                                                                 | 16                                                                                        |
+| Attributes in 1 events query                                                                                                            | 16                                                                                        |
+| Socket path                                                                                                                             | 83 bytes, the 103 a unix socket holds less the 20 the directory it is first bound in adds |
+| 1 exchange of `ranet3` with the daemon, a stream excepted                                                                               | 10 seconds                                                                                |
+| Wait of `rekey` for the rekeys it asked for                                                                                             | 5 seconds                                                                                 |
+| Answer `ranet3` reads                                                                                                                   | 64 MiB                                                                                    |
+| 1 stream line `ranet3` reads                                                                                                            | 1 MiB                                                                                     |
 
 The table holds once the daemon serves the node. While the start waits for the
 key or the trust document, as

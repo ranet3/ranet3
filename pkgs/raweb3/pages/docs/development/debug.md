@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-12
+updated: 2026-11-15
 order: 30
 ---
 
@@ -73,7 +73,7 @@ These commands take flags of their own:
 
 | Command        | Flag             | Default              | What it sets                                                                  |
 | -------------- | ---------------- | -------------------- | ----------------------------------------------------------------------------- |
-| `debug socket` | `--timeout`      | 10 seconds           | how long the whole exchange may take, a stream included                       |
+| `debug socket` | `--timeout`      | 10 seconds           | how long the exchange with the daemon may take, a stream included             |
 | `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                                     |
 | `debug events` | `-f`, `--follow` | off                  | print later events as they come                                               |
 | `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                                         |
@@ -99,10 +99,13 @@ These commands take flags of their own:
 - `debug socket [METHOD] PATH [BODY|-]` sends 1 request as written and prints
   the answer's body as it arrives, with the status line on standard error, and
   exits 1 on anything but a 2xx. The method is GET, or POST where a body follows
-  the path, and `-` reads the body from standard input. `--timeout`, 10 seconds
-  by default, bounds the whole exchange, a stream included. It reaches a path no
-  command covers yet, or a daemon of another revision. Its completion offers
-  GET, HEAD and POST, then every control and debug path.
+  the path. `-` reads the body from standard input to its end before the command
+  dials, and a body past the verb body's limit in
+  [the control socket's limits](../control-socket.md#limits) is refused there.
+  `--timeout`, 10 seconds by default, bounds the exchange with the daemon that
+  follows, a stream included, and not the wait for standard input. It reaches a
+  path no command covers yet, or a daemon of another revision. Its completion
+  offers GET, HEAD and POST, then every control and debug path.
 - `debug runtime` is the daemon's process: its version and revision, the Go
   version, GOMAXPROCS and the CPUs, goroutines, the OS threads the runtime has
   started, open descriptors against `RLIMIT_NOFILE`, the heap and the collector,
