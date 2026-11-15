@@ -259,10 +259,6 @@ func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.
 	for _, mapped := range []bool{true, false} {
 		var mapping *tcpMapping
 		bind := func(fd int) (err error) {
-			// Go dials again with a new socket, through Control again, where
-			// it takes a connect's EADDRNOTAVAIL for spurious or the socket
-			// reached itself, and the earlier socket's mapping is then given
-			// back
 			r.mappings.release(mapping)
 			mapping = nil
 			if !mapped {
@@ -290,7 +286,10 @@ func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.
 
 // control readies a dial's socket: the platform's Prepare toward server, the
 // host's readying for the hold's abort (prepareHostSocket), bind, and the
-// error queue opened
+// error queue opened. Go dials again with a new socket, through control
+// again, where it takes a connect's EADDRNOTAVAIL for spurious or the socket
+// reached itself, so bind gives back the try before's mapping, and the queue
+// the descriptor of its socket, before each holds the new socket's.
 func (r *tcpRelay) control(server netip.AddrPort, bind func(fd int) error, queue *errorQueue) func(string, string, syscall.RawConn) error {
 	return func(network, _ string, raw syscall.RawConn) error {
 		if err := r.x.rt.Platform.Prepare(network, server, raw); err != nil {
@@ -302,6 +301,7 @@ func (r *tcpRelay) control(server netip.AddrPort, bind func(fd int) error, queue
 				return
 			}
 			if set = bind(int(fd)); set == nil {
+				queue.close()
 				set = queue.open(int(fd), server)
 			}
 		}); err != nil {

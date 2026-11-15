@@ -10,7 +10,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"syscall"
 	"testing"
@@ -209,16 +208,6 @@ func TestWorstMixOfFlowsKeepsTheNodesDescriptors(t *testing.T) {
 	if got := h.count(true, reasonTotal); got != 6 {
 		t.Errorf("refused %d flows for the total, want the 6 past Flows %d", got, limits.Flows)
 	}
-}
-
-// openFiles is how many descriptors the process holds open
-func openFiles(t *testing.T) int {
-	t.Helper()
-	entries, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return len(entries)
 }
 
 // Withdrawing the exit ends every mapping and gives back its flows, and once

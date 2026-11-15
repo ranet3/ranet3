@@ -559,16 +559,6 @@ func liveHeap() uint64 {
 	return stats.HeapAlloc
 }
 
-// openFiles is the descriptors the process holds
-func openFiles(t *testing.T) int {
-	t.Helper()
-	entries, err := os.ReadDir("/dev/fd")
-	if err != nil {
-		t.Fatalf("read the descriptors: %v", err)
-	}
-	return len(entries)
-}
-
 func TestHostHoldClockRunsWhileLeafStillCloses(t *testing.T) {
 	hostHoldEndsWhileLeafCloses(t, xnuHostSockets())
 }
