@@ -1675,6 +1675,25 @@ func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *test
 	}
 }
 
+// malformedResponse has peer answer the request at Message ID 3 on ctx with a response that authenticates and whose payloads do not parse, and returns it as mux took it
+// its payload is a Notify whose stated length is shorter than its own header, then no padding
+func malformedResponse(t *testing.T, peer *transport.MemoryConn, mux *transport.Mux, ctx *ikeContext) ([]byte, transport.Endpoint) {
+	t.Helper()
+	header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: 3}
+	malformed, err := encryptMessagePlaintextIV(ctx.suite, ctx.sker, header, nil, PayloadN, []byte{0, 0, 0, 3, 0}, make([]byte, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(withNonESPMarker(malformed), muxLoopback(mux)); err != nil {
+		t.Fatal(err)
+	}
+	raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw, source
+}
+
 // RFC 7296 section 2.21.3 on errors in a response: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
 // a response to the exchange under way that authenticates and whose payloads do not parse ends that exchange with an error and draws nothing
 func TestSessionSaysNothingOfAMalformedResponse(t *testing.T) {
@@ -1696,19 +1715,7 @@ func testSessionSaysNothingOfAMalformedResponse(t *testing.T) {
 	}
 	result := make(chan requestResult, 1)
 	pending := &pendingRequest{exchange: INFORMATIONAL, result: result, context: held, msgID: 3}
-	// a Notify whose stated length is shorter than its own header, then no padding
-	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: 3}
-	malformed, err := encryptMessagePlaintextIV(held.suite, held.sker, header, nil, PayloadN, []byte{0, 0, 0, 3, 0}, make([]byte, 8))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := peer.WriteToUDP(withNonESPMarker(malformed), muxLoopback(mux)); err != nil {
-		t.Fatal(err)
-	}
-	raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw, source := malformedResponse(t, peer, mux, held)
 	if !s.dispatch(raw, source, &pending) {
 		t.Fatal("the malformed response was not taken as an authenticated message")
 	}
@@ -1723,6 +1730,59 @@ func testSessionSaysNothingOfAMalformedResponse(t *testing.T) {
 	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
 	if n, _, err := peer.ReadFromUDP(make([]byte, 2048)); err == nil {
 		t.Errorf("the malformed response drew %d bytes", n)
+	}
+}
+
+// a response on a replaced IKE SA that authenticates and whose payloads do not parse ends that exchange with an error and the replaced SA alone, as a malformed request on it does, since the replacement holds the Child SAs
+// RFC 7296 section 2.8: "An IKE SA so created inherits all of the original IKE SA's Child SAs."
+func TestMalformedResponseOnAReplacedIKESAEndsItAlone(t *testing.T) {
+	bubble.Run(testMalformedResponseOnAReplacedIKESAEndsItAlone)(t)
+}
+
+func testMalformedResponseOnAReplacedIKESAEndsItAlone(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	replaced, replacement := testContext(), testContext()
+	replacement.spiI, replacement.spiR = replaced.spiI+1, replaced.spiR+1
+	s := &Session{mux: mux, current: replacement, old: replaced}
+	for _, spi := range []uint64{replaced.spiI, replacement.spiI} {
+		if err := mux.RegisterIKE(spi); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// unbuffered, so dispatch hands the result over while the test reads what it dropped before
+	result := make(chan requestResult)
+	pending := &pendingRequest{exchange: INFORMATIONAL, result: result, context: replaced, msgID: 3}
+	raw, source := malformedResponse(t, peer, mux, replaced)
+	taken := make(chan bool, 1)
+	go func() { taken <- s.dispatch(raw, source, &pending) }()
+	synctest.Wait()
+	// the rekey waiting on the request releases the replaced SA once the request ends, so dispatch drops that SA first
+	if _, retained := s.contexts(); retained != nil {
+		t.Error("the malformed response ends its request while the replaced SA is still retained")
+	}
+	var got requestResult
+	select {
+	case got = <-result:
+	case <-taken:
+		t.Fatal("the malformed response settled nothing")
+	}
+	if got.err == nil {
+		t.Errorf("the malformed response settled the exchange with %v", got.inner)
+	}
+	if !<-taken {
+		t.Fatal("the malformed response was not taken as an authenticated message")
+	}
+	if mux.IsClosed() {
+		t.Fatal("the malformed response on the replaced SA closed the session its replacement carries")
+	}
+	if current, retained := s.contexts(); current != replacement || retained != nil {
+		t.Errorf("after the malformed response the session is current on the replacement %v and still holds the replaced SA %v, want the replacement alone", current == replacement, retained != nil)
 	}
 }
 

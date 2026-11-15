@@ -1086,14 +1086,16 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	}
 	inner, err := decodeMessagePlaintext(innerFirst, plaintext)
 	if err != nil {
+		// section 2.21.3's "the IKE SA is deleted" names the IKE SA the message came on, so a retained one ends alone, as when the peer answers INVALID_SYNTAX on it
+		// an answer's SA goes before its request ends, since the rekey waiting on that request releases the SA once it ends, and the SA would then not read as retained here
+		retained := s.removeRetainedContext(ctx)
 		if matching != nil {
 			matching.result <- requestResult{err: fmt.Errorf("ike: malformed authenticated response: %w", err)}
 			*pending = nil
 		} else if response, _ := s.refuseRequest(ctx, hdr.MessageID, hdr.ExchangeType, err); response != nil {
 			s.answer(response, message.form, source)
 		}
-		// section 2.21.3's "the IKE SA is deleted" names the IKE SA the request came on, so a retained one ends alone, as when the peer answers INVALID_SYNTAX on it
-		if matching == nil && s.removeRetainedContext(ctx) {
+		if retained {
 			return true
 		}
 		// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
