@@ -238,6 +238,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if timeout <= 0 {
 		timeout = handshakeTimeout
 	}
+	serveCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -398,7 +399,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		if created {
 			// RFC 7296 section 1.2: "If creating the Child SA during the IKE_AUTH exchange fails for some reason, the IKE SA is still created as usual."
 			// an IKE SA carries nothing here without its Child SA, so the IKE SA goes with a Delete
-			_ = session.run(ctx, err)
+			// responder shutdown still ends the Delete, but the handshake deadline must not cut its retransmissions short
+			_ = session.run(serveCtx, err)
 		}
 		return nil, Accepted{}, err
 	}

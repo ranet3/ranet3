@@ -75,7 +75,8 @@ const (
 	// a send that comes after them, the backoff's or a probe's, steps the request, and starts the backoff over where the step cuts it
 	stepDownSends = 2
 
-	// handshakeTimeout bounds a responder's whole handshake, the life of the cheapest state an unauthenticated peer can make it hold
+	// handshakeTimeout bounds the wait for an authenticated commit, not the teardown after a Child SA refusal
+	// the half-open place stays reserved until that teardown ends
 	handshakeTimeout = 30 * time.Second
 	// cookieThreshold is the half-open SAs at which IKE_SA_INIT is answered with a COOKIE, RFC 7296 section 2.6
 	cookieThreshold = 32

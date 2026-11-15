@@ -4,6 +4,7 @@
 package ike
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"strings"
@@ -143,4 +144,93 @@ func TestResponderHandshakeDeadlinePreventsSuccess(t *testing.T) {
 			}
 		}))
 	}
+}
+
+// a refused Child SA gets the Delete's full budget even when IKE_AUTH arrives just before the handshake deadline
+func TestRefusedChildDeleteOutlivesHandshakeDeadline(t *testing.T) {
+	const expiry = requestTimeout * ((1 << teardownRetransmits) - 1)
+	bubble.Run(func(t *testing.T) {
+		failures := &recorder{}
+		ended := make(chan time.Time, 1)
+		h := newConfiguredResponderHarness(t,
+			map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil,
+			func(cfg *ResponderConfig) { cfg.HandshakeTimeout = handshakeTimeout },
+			func(local, remote identity.Identity, kind string, attrs ...slog.Attr) {
+				failures.record(local, remote, kind, attrs...)
+				if kind == "ike.handshake.failed" {
+					ended <- time.Now()
+				}
+			})
+		mux := childRefusedMux(t, h)
+		held, _ := dialSignedBy(t, h, mux, h.private, "testorg/client:2", "testorg/server:1",
+			func(*Proposal) { time.Sleep(handshakeTimeout - requestTimeout/2) })
+		started := time.Now()
+		answer, inner, _ := responderMessage(t, mux, held)
+		if answer.ExchangeType != IKE_AUTH || !answer.IsResponse() || findType(inner, PayloadAUTH) == nil || notifyIn(t, inner) != N_NO_PROPOSAL_CHOSEN {
+			t.Fatal("the responder did not authenticate its Child SA refusal")
+		}
+		var first []byte
+		for attempt := range teardownRetransmits {
+			header, inner, raw := responderMessage(t, mux, held)
+			wantIKEDelete(t, header, inner)
+			if first == nil {
+				first = raw
+			} else if !bytes.Equal(raw, first) {
+				t.Error("the responder changed its Delete retransmission's bytes")
+			}
+			want := requestTimeout * ((1 << attempt) - 1)
+			if elapsed := time.Since(started); elapsed != want {
+				t.Errorf("the responder sent Delete %d at %s, want %s", attempt+1, elapsed, want)
+			}
+		}
+		select {
+		case end := <-ended:
+			if elapsed := end.Sub(started); elapsed != expiry {
+				t.Errorf("the responder ended its Delete after %s, want %s", elapsed, expiry)
+			}
+		case <-time.After(answerBudget):
+			t.Fatal("the responder did not finish its unanswered Delete")
+		}
+		awaitHandshakeEnd(t, h, failures, held.spiI)
+		if raw, err := recvIKEUntil(mux, time.Now().Add(quietPeriod)); err == nil {
+			t.Errorf("the responder sent %d bytes after the Delete budget", len(raw))
+		}
+		select {
+		case session := <-h.sessions:
+			session.mux.Close()
+			t.Fatal("the responder handed over a refused Child SA")
+		default:
+		}
+	})(t)
+}
+
+// stopping the responder ends a refused Child SA's teardown without waiting for its next Delete
+func TestResponderStopEndsRefusedChildTeardown(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		h := newConfiguredResponderHarness(t,
+			map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil,
+			func(cfg *ResponderConfig) { cfg.HandshakeTimeout = handshakeTimeout })
+		mux := childRefusedMux(t, h)
+		held, _ := dialSignedBy(t, h, mux, h.private, "testorg/client:2", "testorg/server:1",
+			func(*Proposal) { time.Sleep(handshakeTimeout - requestTimeout/2) })
+		header, _, _ := responderMessage(t, mux, held)
+		if header.ExchangeType != IKE_AUTH || !header.IsResponse() {
+			t.Fatal("the responder did not answer IKE_AUTH before its Delete")
+		}
+		header, inner, _ := responderMessage(t, mux, held)
+		wantIKEDelete(t, header, inner)
+		stopped := time.Now()
+		h.cancel()
+		select {
+		case <-h.done:
+			if delay := time.Since(stopped); delay != 0 {
+				t.Errorf("the responder stopped after %s, want no wait", delay)
+			}
+		case <-time.After(answerBudget):
+			t.Fatal("the responder did not stop during the refused Child SA's teardown")
+		}
+		if raw, err := recvIKEUntil(mux, time.Now().Add(quietPeriod)); err == nil {
+			t.Errorf("the responder sent %d bytes after its stop", len(raw))
+		}
+	})(t)
 }
