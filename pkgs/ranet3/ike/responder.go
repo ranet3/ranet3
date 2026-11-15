@@ -251,23 +251,30 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	if header, err := decodeHeader(datagram.Raw); err == nil {
+	header, err := decodeHeader(datagram.Raw)
+	if err == nil {
 		if higherVersion(r.cfg.Hub.SendIKETo, header, datagram.Endpoint) {
 			return nil, Accepted{}, fmt.Errorf("ike: unclaimed request at major version %d", header.MajorVersion)
 		}
 		if header.MajorVersion == 2 && header.SPIResponder != 0 && header.ExchangeType != IKE_SA_INIT {
 			return nil, Accepted{}, errStray
 		}
+		switch {
+		case header.Length < HeaderLen:
+			err = fmt.Errorf("ike: header length %d is smaller than header size", header.Length)
+		case header.Length != uint32(len(datagram.Raw)):
+			err = fmt.Errorf("ike: header length %d does not match packet size %d", header.Length, len(datagram.Raw))
+		case header.ExchangeType != IKE_SA_INIT || !header.IsInitiator() ||
+			header.MessageID != 0 || header.SPIResponder != 0 || header.SPIInitiator == 0 || header.MajorVersion != 2:
+			return nil, Accepted{}, fmt.Errorf("ike: unclaimed datagram is not an IKE_SA_INIT request")
+		}
 	}
-	request, err := DecodeMessage(datagram.Raw)
+	var request *Message
+	if err == nil {
+		request, err = DecodeMessage(datagram.Raw)
+	}
 	if err != nil {
 		return nil, Accepted{}, fmt.Errorf("ike: decode IKE_SA_INIT request: %w", err)
-	}
-	header := request.Header
-	if header.ExchangeType != IKE_SA_INIT || !header.IsInitiator() ||
-		header.MessageID != 0 || header.SPIResponder != 0 || header.SPIInitiator == 0 ||
-		header.MajorVersion != 2 || header.Length != uint32(len(datagram.Raw)) {
-		return nil, Accepted{}, fmt.Errorf("ike: unclaimed datagram is not an IKE_SA_INIT request")
 	}
 	if r.decodedRequest != nil {
 		r.decodedRequest(request)
@@ -284,7 +291,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 	// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included."
 	if unsupported, found := firstUnsupportedCritical(request.Payloads); found {
-		r.sendStatelessNotify(datagram, &header, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
+		r.sendStatelessNotify(datagram, header, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
 		return nil, Accepted{}, fmt.Errorf("ike: IKE_SA_INIT request marks payload type %d critical", unsupported)
 	}
 
@@ -311,7 +318,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		// RFC 7296 section 3.10.1 on AUTHENTICATION_FAILED: "Sent in the response to an IKE_AUTH message when, for some reason, the authentication failed."
 		// and on NO_PROPOSAL_CHOSEN: "This can be sent in any case where the offered proposals (including but not limited to SA payload values, USE_TRANSPORT_MODE notify, IPCOMP_SUPPORTED notify) are not acceptable for the responder."
 		// an initiator that advertises no hash this end signs under offers nothing it can accept
-		r.sendStatelessNotify(datagram, &header, N_NO_PROPOSAL_CHOSEN, nil)
+		r.sendStatelessNotify(datagram, header, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, fmt.Errorf("ike: initiator did not advertise Ed25519 Identity hash support")
 	}
 
@@ -330,16 +337,16 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err != nil {
 		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
 			// outside statelessErrors, as COOKIE is
-			_ = r.cfg.Hub.SendIKETo(statelessNotify(&header, N_INVALID_KE_PAYLOAD, invalidKENotifyData(wrongGroup.group)), datagram.Endpoint)
+			_ = r.cfg.Hub.SendIKETo(statelessNotify(header, N_INVALID_KE_PAYLOAD, invalidKENotifyData(wrongGroup.group)), datagram.Endpoint)
 			return nil, Accepted{}, err
 		}
-		r.sendStatelessNotify(datagram, &header, N_NO_PROPOSAL_CHOSEN, nil)
+		r.sendStatelessNotify(datagram, header, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, err
 	}
 
 	// RFC 7296 section 2.10: a nonce "MUST be at least half the key size of the negotiated pseudorandom function", known once the proposal is chosen
 	if !validNonceFor(ni, suite.PRFID) {
-		r.sendStatelessNotify(datagram, &header, N_NO_PROPOSAL_CHOSEN, nil)
+		r.sendStatelessNotify(datagram, header, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, fmt.Errorf("ike: initiator nonce length %d is short for the negotiated PRF", len(ni))
 	}
 

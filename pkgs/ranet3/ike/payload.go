@@ -92,10 +92,10 @@ func decodePayloadChain(first PayloadType, b []byte) ([]RawPayload, error) {
 	return out, err
 }
 
-// walkPayloads walks the Next-Payload chain from first through b, ending it at an SK or SKF payload where encrypted holds, and returns that payload's offset in b, or -1 where the chain held none
+// walkPayloads returns the payloads and, only in encrypted mode, the SK or SKF offset in b, otherwise -1
 // RFC 7383 section 2.5: "As is the case for the Encrypted payload, the Encrypted Fragment payload, if present in a message, MUST be the last payload in the message."
 func walkPayloads(first PayloadType, b []byte, encrypted bool) ([]RawPayload, int, error) {
-	var out []RawPayload
+	count, encryptedAt := 0, -1
 	next := first
 	rest := b
 	for next != PayloadNone {
@@ -106,26 +106,31 @@ func walkPayloads(first PayloadType, b []byte, encrypted bool) ([]RawPayload, in
 		if int(plLen) < genericPayloadHeaderLen || int(plLen) > len(rest) {
 			return nil, 0, fmt.Errorf("ike: invalid payload length %d", plLen)
 		}
-		p := RawPayload{
-			Type:     next,
-			Critical: rest[1]&0x80 != 0,
-			Body:     rest[genericPayloadHeaderLen:plLen],
-		}
-		at := len(b) - len(rest)
-		out = append(out, p)
-		next = PayloadType(rest[0])
-		rest = rest[plLen:]
-		if encrypted && (p.Type == PayloadSK || p.Type == PayloadSKF) {
+		count++
+		if encrypted && (next == PayloadSK || next == PayloadSKF) {
+			encryptedAt = len(b) - len(rest)
+			rest = rest[plLen:]
 			if len(rest) != 0 {
 				return nil, 0, fmt.Errorf("ike: %d trailing bytes after SK payload", len(rest))
 			}
-			return out, at, nil
+			break
 		}
+		next = PayloadType(rest[0])
+		rest = rest[plLen:]
 	}
 	if len(rest) != 0 {
 		return nil, 0, fmt.Errorf("ike: %d trailing bytes after payload chain", len(rest))
 	}
-	return out, -1, nil
+	// each retained descriptor needs at least one generic header on the wire
+	out := make([]RawPayload, count)
+	next, rest = first, b
+	for i := range out {
+		plLen := binary.BigEndian.Uint16(rest[2:4])
+		out[i] = RawPayload{Type: next, Critical: rest[1]&0x80 != 0, Body: rest[genericPayloadHeaderLen:plLen]}
+		next = PayloadType(rest[0])
+		rest = rest[plLen:]
+	}
+	return out, encryptedAt, nil
 }
 
 // DecodeMessage parses an IKE header and its payload chain, and leaves the SK or SKF payload that ends it encrypted, its Body the IV, ciphertext and ICV, after Fragment Number and Total Fragments for SKF
