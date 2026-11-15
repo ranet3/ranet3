@@ -49,7 +49,6 @@ var (
 	// utunAddress is the host address the node on a real utun announces and carries on it
 	utunAddress = netip.MustParsePrefix("203.0.113.201/32")
 	// utunRoute is a prefix the mesh of that node holds unreachable, which its reconciler installs out of the utun as a reject route
-	// the kernel refuses a packet for it rather than handing the packet to the mesh, which has no peer behind it
 	utunRoute = netip.MustParsePrefix("203.0.113.128/26")
 )
 
