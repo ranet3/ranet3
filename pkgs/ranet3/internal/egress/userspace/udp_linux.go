@@ -27,6 +27,10 @@ func setDontFragment(fd int, ipv6, on bool) error {
 	return unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, mode)
 }
 
+// fitDatagrams sets nothing, since Linux takes a datagram of any size while a
+// UDP socket's send buffer is not full (sock_alloc_send_pskb)
+func fitDatagrams(int) error { return nil }
+
 // socketPathMTU is the MTU of the path conn, a connected socket, sends by, as
 // the kernel last learned it
 func socketPathMTU(conn *net.UDPConn, ipv6 bool) (int, error) {

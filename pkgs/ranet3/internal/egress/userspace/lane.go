@@ -70,6 +70,13 @@ var buffers = [2]sync.Pool{
 	{New: func() any { b := make([]byte, 0, largeBuffer); return &b }},
 }
 
+// datagrams are the buffers the UDP relay moves a datagram toward a leaf
+// through, a reply read off a mapping's socket or a hairpinned datagram, with
+// its headers written ahead of it, and reads an error queue into. Each holds
+// the largest IPv6 packet, the largest payload with its headers, which
+// buffers' large class does not.
+var datagrams = sync.Pool{New: func() any { b := make([]byte, 0, datagramBuffer); return &b }}
+
 func bufferClass(size int) int {
 	if size <= smallBuffer {
 		return 0

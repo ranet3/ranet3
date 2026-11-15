@@ -13,6 +13,9 @@ import (
 // setDontFragment refuses, since no build for this platform carries the exit
 func setDontFragment(int, bool, bool) error { return errors.ErrUnsupported }
 
+// fitDatagrams refuses, since no build for this platform carries the exit
+func fitDatagrams(int) error { return errors.ErrUnsupported }
+
 // socketPathMTU reads nothing, since no build for this platform carries the
 // exit
 func socketPathMTU(*net.UDPConn, bool) (int, error) { return 0, errors.ErrUnsupported }

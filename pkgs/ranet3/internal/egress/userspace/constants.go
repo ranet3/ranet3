@@ -40,6 +40,10 @@ const (
 	// largest IP packet, the two sizes of Egress's copies
 	smallBuffer = 2048
 	largeBuffer = 1<<16 - 1
+	// datagramBuffer holds the largest UDP datagram of either family past
+	// the headers the relay writes ahead of it toward a leaf: an IPv6 header
+	// and the largest payload its length names
+	datagramBuffer = 40 + 1<<16 - 1
 	// cutReads and cutSlab hold the segments of the largest frame the stack
 	// writes at the least segment size its TCP sends, each with the largest
 	// headers and ReadPacketSpacing around it

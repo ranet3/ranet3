@@ -24,6 +24,14 @@ func setDontFragment(fd int, ipv6, on bool) error {
 	return unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_DONTFRAG, value)
 }
 
+// fitDatagrams has fd, a UDP socket toward a server, send a datagram of the
+// largest payload either family carries: XNU's sosend refuses a datagram past
+// the socket's send buffer with EMSGSIZE, and a UDP socket's starts at
+// net.inet.udp.maxdgram, 9216 bytes by default
+func fitDatagrams(fd int) error {
+	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, datagramBuffer)
+}
+
 // socketPathMTU reads nothing, since darwin keeps no path MTU a socket hands
 // out, and the link's MTU stands for it
 func socketPathMTU(*net.UDPConn, bool) (int, error) { return 0, errors.ErrUnsupported }

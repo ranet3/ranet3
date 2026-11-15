@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1401,7 +1402,7 @@ func freeUDPPortOn(t *testing.T, addresses ...netip.Addr) uint16 {
 // Each server's reply comes back to the leaf from that server, as a datagram
 // the exit built with its checksum at the host's TTL or hop limit, and an
 // IPv6 reply larger than the leaf's session comes back cut as its source cuts
-// it
+// it, up to the largest payload an IPv6 header's length names
 func TestRepliesComeBackFromTheirServer(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -1415,12 +1416,18 @@ func TestRepliesComeBackFromTheirServer(t *testing.T) {
 		{"ipv4 past the session", leaf4, "127.0.0.1", 3000, 1280, 1},
 		{"ipv6", leaf6, "::1", 200, 0, 1},
 		{"ipv6 past the session", leaf6, "::1", 3000, 1280, 3},
+		{"ipv6 of the largest payload", leaf6, "::1", 1<<16 - 1 - 8, 1280, 54},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newRelayHarness(t, nil)
 			h.mesh.mtu = c.mtu
 			h.x.SetHopLimits(hostTTL, hostHopLimit)
 			server := loopbackServer(t, netip.MustParseAddr(c.loop))
+			// macOS refuses a UDP socket's datagram past its send buffer, 9216
+			// bytes at the start, with EMSGSIZE
+			if err := server.SetWriteBuffer(datagramBuffer); err != nil {
+				t.Fatal(err)
+			}
 			leaf := netip.AddrPortFrom(c.leaf, freeUDPPort(t, c.leaf))
 			h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("request")), false)
 			outside := readDatagramFrom(t, server, []byte("request"))
@@ -1452,6 +1459,67 @@ func TestRepliesComeBackFromTheirServer(t *testing.T) {
 				t.Errorf("laid %s, want the reply from %s to %s whole with its checksum", p, serverAt(server), leaf)
 			}
 		})
+	}
+}
+
+// A leaf's IPv4 datagram of the largest payload, which it lets be fragmented,
+// reaches its server whole, past the send buffer a UDP socket of macOS starts
+// with, which refuses it with EMSGSIZE as the host's own refusal, counted
+// unsent, where the socket's buffer is not widened
+func TestLeafsLargestDatagramReachesItsServer(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	if err := server.SetReadBuffer(2 * datagramBuffer); err != nil {
+		t.Fatal(err)
+	}
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	payload := bytes.Repeat([]byte{0x4c}, 1<<16-1-20-8)
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), payload), false)
+	if got := h.count(false, reasonUnsent); got != 0 {
+		t.Fatalf("counted %d datagrams unsent, want the largest one sent", got)
+	}
+	readDatagramFrom(t, server, payload)
+}
+
+// A destination's reader waiting for its next datagram holds no pooled
+// buffer: once each of a handful of destinations read one reply, with the
+// pool emptied between the replies so that no two readers share a buffer,
+// the live heap has grown by less than one
+func TestReadersAtRestHoldNoBuffer(t *testing.T) {
+	const destinations = 8
+	h := newRelayHarness(t, nil)
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	servers := make([]*net.UDPConn, destinations)
+	var outside netip.AddrPort
+	for i := range servers {
+		servers[i] = loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+		h.x.udp.take(udpDatagram(leaf, serverAt(servers[i]), []byte("opens")), false)
+		outside = readDatagramFrom(t, servers[i], []byte("opens"))
+	}
+	// two collections empty the pool, and a reader's last read moves on
+	// first
+	empty := func() {
+		time.Sleep(10 * time.Millisecond)
+		runtime.GC()
+		runtime.GC()
+	}
+	live := func() int64 {
+		empty()
+		var s runtime.MemStats
+		runtime.ReadMemStats(&s)
+		return int64(s.HeapAlloc)
+	}
+	before := live()
+	for _, server := range servers {
+		reply := []byte("reply")
+		if _, err := server.WriteToUDPAddrPort(reply, outside); err != nil {
+			t.Fatal(err)
+		}
+		h.waitLaid(t, "reply", func(raw []byte) bool { return isDatagram(raw, serverAt(server), leaf, reply) })
+		empty()
+	}
+	if grown := live() - before; grown >= datagramBuffer {
+		t.Errorf("the live heap grew by %d bytes once %d readers read a reply each, %.1f buffers of %d", grown, destinations, float64(grown)/datagramBuffer, datagramBuffer)
 	}
 }
 
@@ -1499,27 +1567,30 @@ func TestHairpinReachesAnotherMappingFromTheSendersOwn(t *testing.T) {
 	}
 }
 
-// A hairpinned IPv6 datagram whose payload, past the leaf's header, the exit's
-// largest buffer holds only cut is dropped and counted, never carried cut with
-// a checksum over what is left
-func TestHairpinTooLargeForItsBufferIsDropped(t *testing.T) {
+// A hairpinned IPv6 datagram of the largest payload an IPv6 header's length
+// names reaches the target's leaf whole, with its checksum, cut as its source
+// cuts it to the leaf's session
+func TestLargestHairpinnedDatagramArrivesWhole(t *testing.T) {
 	host := netip.IPv6Loopback()
 	_ = loopbackServer(t, host)
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
 		holdOnly(rt, host)
 	})
+	h.mesh.mtu = 1280
 	listener := netip.AddrPortFrom(leaf6, freeUDPPort(t, leaf6))
 	port := h.hairpinning(t, listener, host)
 	sender := netip.AddrPortFrom(other6, freeUDPPort(t, other6))
-	h.x.udp.take(udpDatagram(sender, netip.AddrPortFrom(host, port), make([]byte, 1<<16-1-8)), false)
-	if got := h.count(false, reasonTruncated); got != 1 {
-		t.Errorf("dropped %d datagrams as truncated, want the one too large for the buffer", got)
+	senderPort := h.hairpinning(t, sender, host)
+	h.x.udp.take(udpDatagram(listener, netip.AddrPortFrom(host, senderPort), []byte("lets the host's address in")), false)
+	payload := bytes.Repeat([]byte{0x5a}, 1<<16-1-8)
+	h.x.udp.take(udpDatagram(sender, netip.AddrPortFrom(host, port), payload), false)
+	var laid [][]byte
+	for range 54 {
+		laid = append(laid, h.nextLaid(t, "a fragment of the largest hairpinned datagram"))
 	}
-	time.Sleep(stackSettle)
-	for _, raw := range h.mesh.laidPackets() {
-		if p, ok := parse(raw); ok && p.protocol == protoUDP && netip.AddrPortFrom(p.dst, p.dstPort) == listener {
-			t.Errorf("laid %s toward the mapping's leaf, want nothing", p)
-		}
+	whole, ok := reassemble6(laid)
+	if !ok || !isDatagram(whole, netip.AddrPortFrom(host, senderPort), listener, payload) {
+		t.Errorf("the %d packets laid reassemble %t, want the hairpinned datagram whole from %s", len(laid), ok, netip.AddrPortFrom(host, senderPort))
 	}
 }
 

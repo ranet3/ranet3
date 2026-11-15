@@ -541,7 +541,8 @@ func mappingPorts(leaf uint16) []uint16 {
 // connect opens a mapping's socket toward to, on source and the mapping's
 // port, connected, as the transport binds its pairs: beside the receiving
 // socket, the kernel hands it to's datagrams alone, and the ICMP errors about
-// them, which it queues
+// them, which it queues. The socket sends a datagram of any size its family
+// carries (fitDatagrams).
 func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*net.UDPConn, error) {
 	prepare := func(network, _ string, raw syscall.RawConn) error {
 		if err := u.x.rt.Platform.Prepare(network, to, raw); err != nil {
@@ -551,6 +552,9 @@ func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*
 		if err := raw.Control(func(fd uintptr) {
 			if set = shareMappingPort(int(fd)); set == nil {
 				set = watchErrors(int(fd), to.Addr().Is6())
+			}
+			if set == nil {
+				set = fitDatagrams(int(fd))
 			}
 		}); err != nil {
 			return err
@@ -712,13 +716,14 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 			readErr error
 		)
 		if err := raw.Read(func(fd uintptr) bool {
-			buf = buffers[1].Get().(*[]byte)
+			buf = datagrams.Get().(*[]byte)
 			window := (*buf)[headroom:cap(*buf)]
 			var flags int
 			var sa unix.Sockaddr
 			n, _, flags, sa, readErr = unix.Recvmsg(int(fd), window, nil, unix.MSG_DONTWAIT)
 			if errors.Is(readErr, unix.EAGAIN) {
-				buffers[1].Put(buf)
+				datagrams.Put(buf)
+				buf = nil
 				return false
 			}
 			if readErr == nil && flags&unix.MSG_TRUNC != 0 {
@@ -734,7 +739,7 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 			u.x.counts.drop(reasonTruncated)
 		case readErr != nil:
 			if !icmpErrno(readErr) && !errors.Is(readErr, syscall.EINTR) {
-				buffers[1].Put(buf)
+				datagrams.Put(buf)
 				return
 			}
 			if dst != nil && icmpErrno(readErr) {
@@ -748,7 +753,7 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 			ident := u.x.ident.Add(1)
 			u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, m.leaf, uint16(ident), u.x.hops(m.leaf.Addr().Is6())), ident)
 		}
-		buffers[1].Put(buf)
+		datagrams.Put(buf)
 	}
 }
 
@@ -951,10 +956,6 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 		return
 	}
 	headroom := udpHeadroom(d.to.Addr())
-	if headroom+len(d.payload()) > largeBuffer {
-		u.x.counts.drop(reasonTruncated)
-		return
-	}
 	sender, reason := u.hairpinFrom(d.from, d.to, target.leaf)
 	if sender == nil {
 		u.refuse(raw, reason)
@@ -967,8 +968,8 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 		u.x.counts.drop(reasonFiltered)
 		return
 	}
-	buf := buffers[1].Get().(*[]byte)
-	defer buffers[1].Put(buf)
+	buf := datagrams.Get().(*[]byte)
+	defer datagrams.Put(buf)
 	n := copy((*buf)[headroom:cap(*buf)], d.payload())
 	ident := u.x.ident.Add(1)
 	u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, target.leaf, uint16(ident), u.x.hops(target.leaf.Addr().Is6())), ident)
