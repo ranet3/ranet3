@@ -421,11 +421,9 @@ These commands take flags of their own:
   neither does one the antispoof filter drops from outside the mesh or one
   `mesh_entry` keeps out of the tun, since chain `antispoof` drops the first
   before the host routes it and `mesh_entry` the second before the tun reads it.
-  A peer's packet from an IPv4-mapped source that the decision delivers to this
-  host appears as `deliver`, and on a Linux node where `overlay` is written
-  chain `antispoof` then drops it as it arrives on the tun, as
-  [where it runs](../antispoof.md#where-it-runs) gives. With `--json` each line
-  is an object holding a `packet` or a `note`.
+  The [mapped-source check](../routing.md#transit) records `drop` with reason
+  `martian`. With `--json` each line is an object holding a `packet` or a
+  `note`.
 
 ## Route rows
 

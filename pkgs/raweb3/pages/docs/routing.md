@@ -293,11 +293,17 @@ draws none but the first check's:
    code 0, pointing at that field, unless its source or destination is one the
    next 2 checks drop or send to the tun. A session's own packet that holds no
    whole IP packet is dropped before its segments or this decision read it.
-2. An IPv6 link-local destination goes to the tun, whatever the table holds. A
-   multicast or limited broadcast destination is dropped with no answer and
-   counted [`session_multicast`](metrics.md#transit-counters), whatever the
-   table holds or the packet's source. An IPv4 link-local destination does not
-   go to the tun, since
+2. An IPv4-mapped IPv6 source in `::ffff:0:0/96` is dropped without an answer on
+   every platform, with or without `overlay`, before any destination can deliver
+   or forward it. A segment leaves a mapped outer source to this decision. An
+   egress segment's mapped-source check follows decapsulation, the allow list
+   and ECN checks, and precedes the inner destination checks. Both source checks
+   count [`martian`](metrics.md#transit-counters). The inner drop also counts in
+   [`segments dropped`](metrics.md), not `segments refused`. For other sources,
+   an IPv6 link-local destination goes to the tun, and a multicast or limited
+   broadcast destination is dropped without an answer and counted
+   [`session_multicast`](metrics.md#transit-counters), whatever the table holds.
+   An IPv4 link-local destination does not go to the tun, since
    [RFC 3927 section 7](https://www.rfc-editor.org/rfc/rfc3927.html#section-7)
    says "A router MUST NOT forward a packet with an IPv4 Link-Local source or
    destination address", and the next check drops it.

@@ -65,13 +65,14 @@ unless an exemption of that node passes it. A source an `allow` entry outside
 the overlay admits, which [egress segments](segment-routing.md#egress-segments)
 describe, meets `mesh_entry` alone. The filter on the exit itself keeps a forged
 mesh source arriving from outside the mesh off the host's services, but what its
-[carve-outs](#carve-outs) and [exemptions](#exemptions) pass. It accepts a
-peer's packet through the tun from any source but an IPv4-mapped one, which
-[what it drops](#what-it-drops) covers, since nothing ties a source to the
-session's peer, as
-[ingress filtering](design/protocol-deviations.md#ingress-filtering) says.
-Another node's SID that delivers to the mesh is protected by that node, as
-[below](#what-it-drops) describes.
+[carve-outs](#carve-outs) and [exemptions](#exemptions) pass. The
+[forwarding decision's source checks](routing.md#transit) apply to a peer's
+packet before this filter. The tun's accept ties no source to the session's
+peer, as [ingress filtering](design/protocol-deviations.md#ingress-filtering)
+says. Where `overlay` is written, the Linux mapped-source rule covers the host's
+other interfaces, as [what it drops](#what-it-drops) gives. Another node's SID
+that delivers to the mesh is protected by that node, as [below](#what-it-drops)
+describes.
 
 The filter guards the mesh's edge on the interfaces outside it. A packet this
 host's own kernel routes into the tun enters the mesh by the other side of that
@@ -109,8 +110,9 @@ refuse such a source
 ([ip6_input.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/ip6_input.c#L255-L300)),
 so the first rule drops every
 [IPv4-mapped address](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.5.2)
-as an IPv6 source. It comes ahead of the inside accepts, since a peer's packet
-reaches the tun from any source.
+as an IPv6 source. It comes ahead of the inside accepts because a packet
+arriving on an inside interface, such as `lo`, need not have passed the mesh's
+source checks.
 
 The overlay is the address space every node of the mesh is numbered from, the
 same on every node. An exit's `allow` entry admits an outer source only where
