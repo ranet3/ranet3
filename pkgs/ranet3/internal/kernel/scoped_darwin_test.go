@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -195,13 +196,17 @@ func TestDarwinScopesARouteThatCountsAsADefault(t *testing.T) {
 }
 
 // scopeLookupFamily is one family's addresses: mesh and other are the two
-// utuns' own, target lies in narrow and beside in wide outside narrow
+// utuns' own, held lies inside wide and holds narrow, target lies in narrow,
+// beside in wide outside narrow, and aside in held outside narrow. piece is
+// the piece of held or wide cut around narrow that holds aside, and foreign a
+// source holding no address of either utun.
 type scopeLookupFamily struct {
-	name           string
-	mesh, other    netip.Prefix
-	narrow, wide   netip.Prefix
-	target, beside netip.Addr
-	cells          map[string]map[string]scopeLookupWant
+	name                  string
+	mesh, other           netip.Prefix
+	narrow, held, wide    netip.Prefix
+	target, beside, aside netip.Addr
+	piece, foreign        netip.Prefix
+	cells                 map[string]map[string]scopeLookupWant
 }
 
 type scopeLookupCell struct {
@@ -242,26 +247,50 @@ var (
 var scopeLookupFamilies = []scopeLookupFamily{
 	{
 		name: "ipv4", mesh: prefix("198.51.100.1/24"), other: prefix("192.0.2.1/24"),
-		narrow: prefix("203.0.113.0/28"), wide: prefix("203.0.113.0/24"),
+		narrow: prefix("203.0.113.0/28"), held: prefix("203.0.113.0/26"), wide: prefix("203.0.113.0/24"),
 		target: netip.MustParseAddr("203.0.113.9"), beside: netip.MustParseAddr("203.0.113.200"),
+		aside: netip.MustParseAddr("203.0.113.33"),
+		piece: prefix("203.0.113.32/27"), foreign: prefix("192.0.2.128/25"),
 		cells: map[string]map[string]scopeLookupWant{
-			"isolated": {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeCarried},
-			"other":    {"unbound": scopeOther, "address": scopeCarried, "boundif": scopeCarried},
-			"same":     {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
-			"removed":  {"unbound": scopeHost},
-			"wider":    {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"isolated":      {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeCarried},
+			"other":         {"unbound": scopeOther, "address": scopeCarried, "boundif": scopeCarried},
+			"same":          {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"removed":       {"unbound": scopeHost},
+			"whole":         {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"whole.aside":   {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeCarried},
+			"wider":         {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"wider.aside":   {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeCarried},
+			"nested":        {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"nested.aside":  {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"host":          {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"host.aside":    {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeCarried},
+			"outer":         {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"skipped.aside": {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeCarried},
+			"parted":        {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
 		},
 	},
 	{
 		name: "ipv6", mesh: prefix("2001:db8:bb::1/64"), other: prefix("2001:db8:aa::1/64"),
-		narrow: prefix("2001:db8:ffff::/64"), wide: prefix("2001:db8:ffff::/48"),
+		narrow: prefix("2001:db8:ffff::/64"), held: prefix("2001:db8:ffff::/56"), wide: prefix("2001:db8:ffff::/48"),
 		target: netip.MustParseAddr("2001:db8:ffff::9"), beside: netip.MustParseAddr("2001:db8:ffff:1::9"),
+		aside: netip.MustParseAddr("2001:db8:ffff:2::9"),
+		piece: prefix("2001:db8:ffff:2::/63"), foreign: prefix("2001:db8:5::/48"),
 		cells: map[string]map[string]scopeLookupWant{
-			"isolated": {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeRefused},
-			"other":    {"unbound": scopeOther, "address": scopeCarried, "boundif": scopeRefused},
-			"same":     {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
-			"removed":  {"unbound": scopeHost},
-			"wider":    {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
+			"isolated":      {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeRefused},
+			"other":         {"unbound": scopeOther, "address": scopeCarried, "boundif": scopeRefused},
+			"same":          {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
+			"removed":       {"unbound": scopeHost},
+			"whole":         {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
+			"whole.aside":   {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeRefused},
+			"wider":         {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"wider.aside":   {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeRefused},
+			"nested":        {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"nested.aside":  {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
+			"host":          {"unbound": scopeCarried, "address": scopeCarried, "boundif": scopeCarried},
+			"host.aside":    {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeRefused},
+			"outer":         {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
+			"skipped.aside": {"unbound": scopeHost, "address": scopeCarried, "boundif": scopeRefused},
+			"parted":        {"unbound": scopeRefused, "address": scopeCarried, "boundif": scopeRefused},
 		},
 	},
 }
@@ -286,8 +315,18 @@ var scopeLookupSockets = []string{"unbound", "address", "boundif"}
 
 // A hold scoped to the mesh utun, as scopeRoute installs one, alone, beside a
 // wider route on another interface, under a wider unscoped route of the same
-// utun, and over a narrower one. Each cell is logged as
-// `cell <family> <setting> <socket>: ...` for a script to read.
+// utun, and over a narrower one: whole, as a pass leaves it past the budget of
+// pieces, and cut as the reconciler cuts it, under a live route of its own
+// and not, under a hold left whole, over a live host route, which the cut
+// leaves alone, beside a live route the platform skips, which the cut does
+// not leave out, and beside the same route from a source holding the utun's
+// address, which the cut keeps clear of pieces. In a family the platform
+// holds as addressless the hold and the live route are skipped and the cut
+// leaves the hold whole. A hold over the parts the endpoint cut leaves of a
+// live route around it stays whole. A cell at aside is at an address of the
+// hold outside the live route.
+// Each cell is logged as `cell <family> <setting> <socket>: ...` for a script
+// to read.
 func TestDarwinScopedHoldBesideRoutesOfTheSameUTUN(t *testing.T) {
 	requireNetTest(t)
 	meshName, meshFD := createUTUNWithFD(t)
@@ -313,30 +352,108 @@ func TestDarwinScopedHoldBesideRoutesOfTheSameUTUN(t *testing.T) {
 			hold := routeWant{prefix: family.narrow, device: meshName, flags: unix.RTF_REJECT | unix.RTF_IFSCOPE}
 			installRoute(t, mesh, Route{Destination: family.narrow, Unreachable: true})
 
-			lab.check(t, "isolated", &hold, nil, scopeLookupSockets...)
+			lab.check(t, "isolated", family.target, &hold, nil, scopeLookupSockets...)
 
 			wide := Route{Destination: family.wide}
 			installRoute(t, other, wide)
-			lab.check(t, "other", &hold, &routeWant{prefix: family.wide, device: otherName}, scopeLookupSockets...)
+			lab.check(t, "other", family.target, &hold, &routeWant{prefix: family.wide, device: otherName}, scopeLookupSockets...)
 			withdrawRoute(t, other, wide)
 
 			installRoute(t, mesh, wide)
 			if answer := lookUpRoute(t, family.beside, 0); !(routeWant{prefix: family.wide, device: meshName}).matches(answer) {
 				t.Fatalf("an unbound lookup of %s answers %s, want %s unscoped on %s", family.beside, answer.fields(""), family.wide, meshName)
 			}
-			lab.check(t, "same", &hold, &hold, scopeLookupSockets...)
+			lab.check(t, "same", family.target, &hold, &hold, scopeLookupSockets...)
 			withdrawRoute(t, mesh, wide)
 
-			lab.check(t, "removed", &hold, nil, "unbound")
+			lab.check(t, "removed", family.target, &hold, nil, "unbound")
 
 			withdrawRoute(t, mesh, Route{Destination: family.narrow, Unreachable: true})
 			if answer := lookUpRoute(t, family.target, mesh.index); hold.matches(answer) {
 				t.Fatalf("after its withdrawal the lookup of %s scoped to the utun still answers the hold %s", family.target, answer.fields(""))
 			}
-			installRoute(t, mesh, Route{Destination: family.wide, Unreachable: true})
-			installRoute(t, mesh, Route{Destination: family.narrow})
 			wideHold := routeWant{prefix: family.wide, device: meshName, flags: unix.RTF_REJECT | unix.RTF_IFSCOPE}
-			lab.check(t, "wider", &wideHold, &wideHold, scopeLookupSockets...)
+			narrow := routeWant{prefix: family.narrow, device: meshName}
+			piece := routeWant{prefix: family.piece, device: meshName, flags: unix.RTF_REJECT | unix.RTF_IFSCOPE}
+			heldWide, liveNarrow := Route{Destination: family.wide, Unreachable: true}, Route{Destination: family.narrow}
+			held := Route{Destination: family.held, Unreachable: true}
+			lab.setting(t, []Route{heldWide, liveNarrow}, nil, func([]Route) {
+				lab.check(t, "whole", family.target, &wideHold, &wideHold, scopeLookupSockets...)
+				lab.check(t, "whole.aside", family.aside, &wideHold, nil, scopeLookupSockets...)
+			})
+			routes := []Route{heldWide, liveNarrow}
+			lab.setting(t, routes, routes, func([]Route) {
+				lab.check(t, "wider", family.target, &narrow, &narrow, scopeLookupSockets...)
+				lab.check(t, "wider.aside", family.aside, &piece, nil, scopeLookupSockets...)
+			})
+			routes = []Route{wide, held, liveNarrow}
+			lab.setting(t, routes, routes, func([]Route) {
+				lab.check(t, "nested", family.target, &narrow, &narrow, scopeLookupSockets...)
+				lab.check(t, "nested.aside", family.aside, &piece, &piece, scopeLookupSockets...)
+			})
+			// the hold at held cut around narrow under the hold at wide whole, as
+			// a pass leaves them past the budget of pieces
+			routes = []Route{held, liveNarrow}
+			pieces, _ := cutHolds(routes, routes, mesh.scopeRoute, []netip.Prefix{family.mesh}, nil, holdPieceBudget)
+			lab.setting(t, append([]Route{heldWide}, pieces...), nil, func([]Route) {
+				lab.check(t, "outer", family.target, &wideHold, &wideHold, scopeLookupSockets...)
+			})
+			// a live host route at target inside the hold at wide, which the cut
+			// leaves alone, answering ahead of the hold
+			host := Route{Destination: netip.PrefixFrom(family.target, family.target.BitLen())}
+			routes = []Route{host, heldWide}
+			lab.setting(t, routes, routes, func(installed []Route) {
+				if len(installed) != 2 {
+					t.Errorf("the cut makes %v of a hold around a host route, want both as they were", installed)
+				}
+				hostWant := routeWant{prefix: host.Destination, device: meshName}
+				lab.check(t, "host", family.target, &hostWant, &hostWant, scopeLookupSockets...)
+				lab.check(t, "host.aside", family.aside, &wideHold, nil, scopeLookupSockets...)
+			})
+			// a live route at aside from a source the platform skips, as setting
+			// asserts, whose addresses the piece holding aside then holds
+			skipped := Route{Destination: netip.PrefixFrom(family.aside, family.narrow.Bits()).Masked(), Source: family.foreign}
+			routes = []Route{heldWide, liveNarrow, skipped}
+			lab.setting(t, routes, routes, func([]Route) {
+				lab.check(t, "skipped.aside", family.aside, &piece, nil, scopeLookupSockets...)
+			})
+			// the same live route from a source holding the utun's address, which
+			// the platform writes scoped, as setting asserts, and which the cut
+			// keeps clear of pieces
+			sourced := Route{Destination: skipped.Destination, Source: family.mesh.Masked()}
+			routes = []Route{heldWide, liveNarrow, sourced}
+			lab.setting(t, routes, routes, func(installed []Route) {
+				if !slices.Contains(installed, sourced) {
+					t.Errorf("the setting installs %v, without %s from %s", installed, sourced.Destination, sourced.Source)
+				}
+				lab.check(t, "sourced.aside", family.aside, &routeWant{prefix: sourced.Destination, device: meshName, flags: unix.RTF_IFSCOPE}, nil)
+			})
+			// the hold and the live route in a family the platform holds as
+			// addressless, which the platform skips and the cut leaves whole, as
+			// setting asserts
+			func() {
+				lab.mesh.bare = []Family{familyOf(family.target)}
+				defer func() { lab.mesh.bare = nil }()
+				routes = []Route{heldWide, liveNarrow}
+				lab.setting(t, routes, routes, func(installed []Route) {
+					if len(installed) != 0 {
+						t.Errorf("the setting installs %v in a family the platform holds as addressless, want none", installed)
+					}
+				})
+			}()
+			// the hold at held whole beside the parts the endpoint cut leaves of
+			// the live route at wide around aside, which lie inside the hold
+			parted := []Route{held}
+			for _, part := range without(family.wide, hostPrefixes(family.aside)) {
+				parted = append(parted, Route{Destination: part})
+			}
+			heldWant := routeWant{prefix: family.held, device: meshName, flags: unix.RTF_REJECT | unix.RTF_IFSCOPE}
+			lab.setting(t, parted, []Route{wide, held}, func(installed []Route) {
+				if len(installed) != len(parted) {
+					t.Errorf("the cut makes %d routes of the hold and %d parts of a route around it, want them as they were", len(installed), len(parted)-1)
+				}
+				lab.check(t, "parted", family.target, &heldWant, &heldWant, scopeLookupSockets...)
+			})
 
 			for setting, sockets := range family.cells {
 				for socket := range sockets {
@@ -379,17 +496,51 @@ func withdrawRoute(t *testing.T, on *routePlatform, r Route) {
 	}
 }
 
-// check compares each lookup whose want is not nil, and each cell the table
-// holds
-func (lab *scopeLookupLab) check(t *testing.T, setting string, scoped, unscoped *routeWant, sockets ...string) {
+// setting installs routes on the mesh utun, after the reconciler's cut of
+// their holds around the live routes of table where table is not nil
+// (cutHolds), each skipped by the platform exactly where the cut takes it for
+// one the platform does not write (platformWrites), on the utun's address and
+// the families the platform holds as addressless, as a pass hands both, runs
+// checks with what went in, and withdraws each again under its scope
+func (lab *scopeLookupLab) setting(t *testing.T, routes, table []Route, checks func([]Route)) {
 	t.Helper()
-	unscopedAnswer := lookUpRoute(t, lab.family.target, 0)
-	scopedAnswer := lookUpRoute(t, lab.family.target, lab.mesh.index)
+	tun := []netip.Prefix{lab.family.mesh}
+	if table != nil {
+		routes, _ = cutHolds(routes, table, lab.mesh.scopeRoute, tun, lab.mesh.bare, holdPieceBudget)
+	}
+	var installed []Route
+	for _, r := range routes {
+		err := lab.mesh.AddRoute(r)
+		if writes := platformWrites(r, tun, lab.mesh.bare); writes == errors.Is(err, errRouteSkipped) {
+			t.Fatalf("installing %s from %s answers %v, where the cut takes it as written: %v", r.Destination, r.Source, err, writes)
+		}
+		if err != nil && !errors.Is(err, errRouteSkipped) {
+			t.Fatalf("install %s on %s: %v", r.Destination, lab.mesh.rt.Interface, err)
+		}
+		if err == nil {
+			scoped := r
+			scoped.Scoped = lab.mesh.scopeRoute(r)
+			t.Cleanup(func() { _ = lab.mesh.DelRoute(scoped) })
+			installed = append(installed, r)
+		}
+	}
+	checks(installed)
+	for i := len(installed) - 1; i >= 0; i-- {
+		withdrawRoute(t, lab.mesh, installed[i])
+	}
+}
+
+// check compares each lookup of destination whose want is not nil, and each
+// cell the table holds
+func (lab *scopeLookupLab) check(t *testing.T, setting string, destination netip.Addr, scoped, unscoped *routeWant, sockets ...string) {
+	t.Helper()
+	unscopedAnswer := lookUpRoute(t, destination, 0)
+	scopedAnswer := lookUpRoute(t, destination, lab.mesh.index)
 	if scoped != nil && !scoped.matches(scopedAnswer) {
-		t.Errorf("%s: the lookup of %s scoped to the utun answers %s, want %s", setting, lab.family.target, scopedAnswer.fields(""), *scoped)
+		t.Errorf("%s: the lookup of %s scoped to the utun answers %s, want %s", setting, destination, scopedAnswer.fields(""), *scoped)
 	}
 	if unscoped != nil && !unscoped.matches(unscopedAnswer) {
-		t.Errorf("%s: the unscoped lookup of %s answers %s, want %s", setting, lab.family.target, unscopedAnswer.fields(""), *unscoped)
+		t.Errorf("%s: the unscoped lookup of %s answers %s, want %s", setting, destination, unscopedAnswer.fields(""), *unscoped)
 	}
 	for _, socket := range sockets {
 		payload := []byte("scope " + lab.family.name + " " + setting + " " + socket)
@@ -400,11 +551,11 @@ func (lab *scopeLookupLab) check(t *testing.T, setting string, scoped, unscoped 
 		case "boundif":
 			boundIf = lab.mesh.index
 		}
-		got := scopeLookupCell{errno: sendTo(t, lab.family.target, source, boundIf, payload)}
+		got := scopeLookupCell{errno: sendTo(t, destination, source, boundIf, payload)}
 		if got.errno == 0 {
-			got.utun = carriedOut(lab.meshFD, lab.family.target, payload)
+			got.utun = carriedOut(lab.meshFD, destination, payload)
 			if !got.utun {
-				got.other = carriedOut(lab.otherFD, lab.family.target, payload)
+				got.other = carriedOut(lab.otherFD, destination, payload)
 			}
 		}
 		t.Logf("cell %s %s %s: err=%s utun=%s %s %s other=%s", lab.family.name, setting, socket,
