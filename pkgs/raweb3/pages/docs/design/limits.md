@@ -1324,16 +1324,33 @@ side holds about `Window` however short the server's reads. That count is
 
 ### Kernel routes
 
-| Route                                                                                                  | What the reconciler does                                                                                     |
-| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| An IPv4 source-specific route                                                                          | Never installs it, and warns once. The mesh's own table still applies it                                     |
-| A prefix lying wholly in a range `overlay` refuses, such as a multicast, link-local or loopback prefix | Never installs it, and warns once. Each names a link, a group, the host or no host rather than a destination |
-| On macOS, a route of a family the utun holds no address of                                             | Installs none out of the utun, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives   |
-| A route another program changed without a notification                                                 | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise                    |
+| Route                                                                                                                                 | What the reconciler does                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An IPv4 source-specific route                                                                                                         | Never installs it, and warns once. The mesh's own table still applies it                                                                                                                                |
+| A prefix lying wholly in a range `overlay` refuses, such as a multicast, link-local or loopback prefix                                | Never installs it, and warns once. Each names a link, a group, the host or no host rather than a destination                                                                                            |
+| On macOS, a route of a family the utun holds no address of                                                                            | Installs none out of the utun, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives                                                                                              |
+| On macOS, a hold around live routes of the mesh, as [holds around live routes](../routing.md#holds-around-live-routes-on-macos) gives | Cuts it into its pieces around them, up to 4,096 pieces in place of the holds a pass cuts, both families together, and `ranet3 status` counts the holds left whole whose pieces would pass what is left |
+| A route another program changed without a notification                                                                                | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise                                                                                                               |
 
 The kernel's IPv4 table has no source-specific lookup. Installing such a route
 as an ordinary one would take traffic from every other source. The mesh's own
 table applies it to packets the kernel sends into the tun.
+
+The budget of pieces is a quarter of the mesh's table at its limit, so a full
+table's kernel routes grow by a quarter at most. Without it, a peer's
+announcements inside a wide prefix it then retracts could cut one hold into more
+pieces than the table has entries. The budget is one for every peer, taken in
+the order
+[holds around live routes](../routing.md#holds-around-live-routes-on-macos)
+gives, so one peer's routes inside a prefix it withdrew can spend it ahead of
+another peer's hold, which then goes in whole and refuses as before.
+`ranet3 status` and the pass's event count the pieces and the holds left whole,
+and name neither whose routes spent the budget nor whose hold went in whole.
+
+A route of the mesh that arrives, leaves or changes can leave one hold whole and
+cut thousands of others in its place, or the reverse. So a pass deletes at most
+8,192 pieces and holds, twice the budget, plus one for each hold at or around
+the routes that changed, and adds at most as many.
 [Platforms](../platforms.md#macos) describes which routes macOS scopes to the
 tun.
 
