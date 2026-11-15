@@ -267,9 +267,13 @@ it. [Debugging](development/debug.md) describes each command and the events.
 
 ## Exit status
 
-These statuses apply unless a signal kills the command. A write that fails
-because a standard-output or standard-error pipe has no reader ends the command
-by SIGPIPE, without an error message for that write.
+These statuses apply unless a signal the command does not handle ends it, in the
+way
+[Go's runtime](https://pkg.go.dev/os/signal#hdr-Default_behavior_of_signals_in_Go_programs)
+decides for that signal. The daemon handles the signals of
+[its table](#running-the-node), and no other command handles any. A write that
+fails because a standard-output or standard-error pipe has no reader ends the
+command by SIGPIPE, without an error message for that write.
 
 | Command        | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -277,7 +281,7 @@ by SIGPIPE, without an error message for that write.
 | `daemon`       | 0 after a clean shutdown, a stop during the start among them. 1 when it refuses to start, a `--pprof` or `--metrics` address it cannot bind among the refusals, when a second signal cuts the shutdown short, when serving pprof, metrics or the control socket or the mesh failed while it ran, when its tun went away under it, or when the route reconciler, the egress translator or the antispoof filter could not withdraw what it installed. A failed pass of any of them does not change the status. |
 | `debug socket` | 1 when the answer's status is not 2xx.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `debug wait`   | 0 when the event came and was written. 1 when none came within `--timeout` or its output could not be written. 2 when it could not watch for the event or lost it, or refused an argument or flag.                                                                                                                                                                                                                                                                                                           |
-| `rekey`        | 1 when a session did not rekey or the answer could not be written.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `rekey`        | 1 when a session did not rekey or the answer could not be written. When the answer is written, it lists each session that did not rekey with the reason.                                                                                                                                                                                                                                                                                                                                                     |
 
 The daemon logs why it exits 1 at the error level, which every `--log-level`
 keeps: why it refuses to start, which part failed while it ran, stopped or undid

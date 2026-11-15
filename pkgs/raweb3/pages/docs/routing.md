@@ -174,13 +174,14 @@ selection would take, weighed with every feasible route, if it were feasible
 draws 1 seqno request to its neighbor, not repeated. Once 2.5 intervals of the
 update that refreshed a selected route have passed with no other, the speaker
 asks that route's neighbor for the prefix with 1 unicast route request, once for
-each update (RFC 8966 section 3.8.2.3). The speaker holds back a second request
-to a neighbor for the same prefix and origin inside 2 seconds, but not one for a
-newer seqno, and a starvation request it holds back is still repeated. A route
-is sent back toward its own next hop as a retraction, which is split horizon. An
-update a neighbor sends under this node's own router id, which is this node's
-route come back, takes out the route or offer that neighbor last sent for the
-prefix, as a retraction does.
+each update (RFC 8966 section 3.8.2.3). A route whose 2.5 intervals passed while
+it was not selected is asked for as soon as selection takes it. The speaker
+holds back a second request to a neighbor for the same prefix and origin inside
+2 seconds, but not one for a newer seqno, and a starvation request it holds back
+is still repeated. A route is sent back toward its own next hop as a retraction,
+which is split horizon. An update a neighbor sends under this node's own router
+id, which is this node's route come back, takes out the route or offer that
+neighbor last sent for the prefix, as a retraction does.
 
 A route that appears or goes away sends a triggered update, as do a change of
 origin and a metric rise of at least `rx` (RFC 8966 section 3.7.2). A new seqno

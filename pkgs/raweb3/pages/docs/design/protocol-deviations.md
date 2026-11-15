@@ -263,10 +263,10 @@ address.
 Behind a NAT, someone who captures a request or an answer and resends it from
 another address before the original arrives can move a session's sends to that
 address, and the original then moves nothing. The peer's next fresh request
-moves them back. When that request goes depends on the peer's own liveness
-interval, with [the IKE limits](limits.md#ike) giving a ranet3 peer's times. In
-`Run`, either end can follow a moved peer when it takes a fresh authenticated
-request or the authenticated answer to its outstanding request.
+moves them back. When that request goes is the peer's own choice, with
+[the IKE limits](limits.md#ike) giving a ranet3 peer's times. In `Run`, either
+end can follow a moved peer when it takes a fresh authenticated request or the
+authenticated answer to its outstanding request.
 
 ## Answer addresses
 
@@ -620,37 +620,37 @@ request was received",
 a retransmitted request draw the answer again. A node answers a repeat of a
 request it has answered under 1 rule, in a half-open SA, an established session
 and the wait after `IKE_AUTH` alike, as [limits](limits.md#ike) gives it in
-full. From the origin, the peer's own address and port, it answers at most 20
-repeats of each exchange, every counted send of a peer that resends as ranet3
-does. A peer asked to probe its path many times in 1 exchange can send more,
-since a probe that cuts nothing resends a request uncounted, and its repeats
-past the 20 draw nothing. A repeat from any other address and port is answered
-only once the whole request has come from there, and only within the bytes on
-the wire that address sent repeating it in the exchange, which spends nothing of
-the origin's 20. The exchange keeps that credit for at most 4 addresses, the one
-heard from least recently giving way to a newcomer. Without the rule, a replayed
-request or fragment would aim answers at any address: an `IKE_SA_INIT` request,
-which goes in the clear, an answer up to 72 octets larger than itself, and a
-fragment 1 of tens of octets, which an initiator in a half-open SA holds the
-keys for and anyone who captured one can replay past `IKE_AUTH`, an answer of up
-to 1820 octets in 4 datagrams. It leaves 3 residues. Below the cookie thresholds
-the origin of a half-open SA is the source of its first `IKE_SA_INIT`, which
-proved nothing, so a request forged in another address draws its answer and 20
-repeats there in each half-open SA, within the figures [limits](limits.md#ike)
-gives. An observer sending from more than 3 fresh addresses between every 2 of a
-moved initiator's datagrams can hold it until its exchange times out. A replay
-in the origin's own address and port spends the origin's count: up to 20 answers
-an exchange to a replayed fragment 1, 38,960 bytes on the wire for an
-ML-KEM-1024 answer at the IPv4 floor. When the path MTU falls before every
-answer the 20 come to up to 78,020 bytes over IPv4 and up to 83,500 over IPv6.
-Such an answer is kept in at most 4 datagrams at or above the IPv4 floor and in
-at most 2 at or above the IPv6 floor, and each fall cuts it into 2 more. Over
-IPv6 the answers take fewer datagrams, 4 to 42 against 6 to 44, but each carries
-an IP header of 40 bytes against 20. A new `IKE_SA_INIT` that carries the
-initiator SPI of a live half-open SA, as another initiator behind the same NAT
-may choose it, reaches that SA, since the node routes IKE by the initiator SPI,
-and draws nothing unless it repeats the SA's request octet for octet, where
-section 2.1 gives it a new IKE SA.
+full. From the origin, the session's stored peer endpoint as that page defines
+it, it answers at most 20 repeats of each exchange, every counted send of a peer
+that resends as ranet3 does. A peer asked to probe its path many times in 1
+exchange can send more, since a probe that cuts nothing resends a request
+uncounted, and its repeats past the 20 draw nothing. A repeat from any other
+address and port is answered only once the whole request has come from there,
+and only within the bytes on the wire that address sent repeating it in the
+exchange, which spends nothing of the origin's 20. The exchange keeps that
+credit for at most 4 addresses, the one heard from least recently giving way to
+a newcomer. Without the rule, a replayed request or fragment would aim answers
+at any address: an `IKE_SA_INIT` request, which goes in the clear, an answer up
+to 72 octets larger than itself, and a fragment 1 of tens of octets, which an
+initiator in a half-open SA holds the keys for and anyone who captured one can
+replay past `IKE_AUTH`, an answer of up to 1820 octets in 4 datagrams. It leaves
+3 residues. Below the cookie thresholds the origin of a half-open SA is the
+source of its first `IKE_SA_INIT`, which proved nothing, so a request forged in
+another address draws its answer and 20 repeats there in each half-open SA,
+within the figures [limits](limits.md#ike) gives. An observer sending from more
+than 3 fresh addresses between every 2 of a moved initiator's datagrams can hold
+it until its exchange times out. A replay in the origin's own address and port
+spends the origin's count: up to 20 answers an exchange to a replayed fragment
+1, 38,960 bytes on the wire for an ML-KEM-1024 answer at the IPv4 floor. When
+the path MTU falls before every answer the 20 come to up to 78,020 bytes over
+IPv4 and up to 83,500 over IPv6. Such an answer is kept in at most 4 datagrams
+at or above the IPv4 floor and in at most 2 at or above the IPv6 floor, and each
+fall cuts it into 2 more. Over IPv6 the answers take fewer datagrams, 4 to 42
+against 6 to 44, but each carries an IP header of 40 bytes against 20. A new
+`IKE_SA_INIT` that carries the initiator SPI of a live half-open SA, as another
+initiator behind the same NAT may choose it, reaches that SA, since the node
+routes IKE by the initiator SPI, and draws nothing unless it repeats the SA's
+request octet for octet, where section 2.1 gives it a new IKE SA.
 
 Fragments from a peer that sent no `IKEV2_FRAGMENTATION_SUPPORTED` are dropped
 before anything of them is held.

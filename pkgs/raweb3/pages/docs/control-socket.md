@@ -333,11 +333,12 @@ empty.
 | Answer `ranet3` reads                                                                                                                   | 64 MiB                                                                                    |
 | 1 stream line `ranet3` reads                                                                                                            | 1 MiB                                                                                     |
 
-The table holds once the daemon serves the node. While the start waits for the
-key or the trust document, as
+While the start waits for the key or the trust document, as
 [restarts and the network](service.md#restarts-and-the-network) describes, the
-socket bounds reading a request and writing its answer to 10 seconds each, and
-the connections open at once as the table does.
+table's bound on connections open at once already holds, and the socket bounds
+reading a request and writing its answer to 10 seconds each. The daemon's rows
+on idle connections, requests, verbs, queries and streams hold once it serves
+the node.
 
 ## Acting on a running node
 
