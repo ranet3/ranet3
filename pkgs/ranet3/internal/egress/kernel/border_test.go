@@ -395,8 +395,9 @@ func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 	}
 }
 
-// The sets follow what the runtime derives: a pass that finds them moved
-// moves the moved ones alone, from what the filter holds, and rewrites no
+// The sets follow what the runtime derives, under a start that took over what
+// an earlier one wrote as under the one that wrote it: a pass that finds them
+// moved moves the moved ones alone, from what the filter holds, and rewrites no
 // chain, a pass woken by the mesh's table that finds nothing moved reads
 // nothing, and another writer's change to a set's elements has the whole filter
 // rewritten
@@ -405,15 +406,22 @@ func TestBorderRefillsTheSetsThatMovedAlone(t *testing.T) {
 	rt := borderRuntime(nil)
 	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
 	be := &fakeBorder{}
-	f, err := startBorderFilter(nil, rt, be)
-	if err != nil {
+	if _, err := startBorderFilter(nil, rt, be); err != nil {
 		t.Fatal(err)
 	}
 	if got := be.sets[ownedSet+"4"]; !slices.Equal(got, derived.Owned) {
 		t.Fatalf("the start wrote owned4 %v, want %v", got, derived.Owned)
 	}
-	f.trigger = "routes"
 	mark := len(be.entries())
+	f, err := startBorderFilter(nil, rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := be.entries()[mark:]; !slices.Equal(got, []string{"rules"}) {
+		t.Fatalf("the start that took the filter over went %q, want its read alone", got)
+	}
+	f.trigger = "routes"
+	mark = len(be.entries())
 	if err := f.reconcile(); err != nil || len(be.entries()) != mark {
 		t.Errorf("a pass that found nothing moved went %q with %v", be.entries()[mark:], err)
 	}

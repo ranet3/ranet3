@@ -324,7 +324,8 @@ type BorderFilter struct {
 	finish func() error
 
 	// the rest belong to the run goroutine, and to NewBorderFilter before it
-	// starts. held is nil where no write's sets are known, last is the rules
+	// starts. held is the sets the last write or clean read found, nil where
+	// none is known, last is the rules
 	// of the last pass that read the filter back as written, made is whether
 	// the first pass's read found nothing the filter writes, so whatever is
 	// there is this start's, and found whether that read found any of it.
@@ -639,6 +640,9 @@ func (f *BorderFilter) reconcile() error {
 	if f.trigger == "start" {
 		// a failed read tells nothing of the filter, which is then left
 		f.made, f.found = err == nil && !read.held, err == nil && read.held
+	}
+	if err == nil && read.fault == "" {
+		f.held = want
 	}
 	changed := sets.changed(want)
 	switch {
