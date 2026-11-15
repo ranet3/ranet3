@@ -673,16 +673,18 @@ func onSocket(conn *net.UDPConn, set func(fd int) error) error {
 // send sends d's payload toward its server, fragmenting it on the way out
 // only where dontFragment is false, and answers a datagram the path cannot
 // carry whole with a too big from the exit at the path's MTU (RFC 4787
-// REQ-13). A send that meets an ICMP error the socket was told of earlier
-// relays the errors the socket queued and is sent again, since the error
-// belongs to an earlier datagram, and a send that fails empties the queue of
-// what its failure queued. A datagram that leaves is kept for the errors
-// about it (keep). dst's deadline moves before the write, so whoever sees the
-// datagram arrive reads the deadline it set, and is put back where the
-// datagram did not leave (RFC 4787 section 4.3 counts a packet that crosses).
-// A datagram refused for a reason of the host's own, neither its size, nor an
-// ICMP error the socket was told of, nor a socket the exit closed since open
-// handed it over, is counted, and send reports it.
+// REQ-13). A send that meets an errno the host hands for an ICMP error, the
+// EMSGSIZE a Fragmentation Needed or Packet Too Big leaves pending among
+// them, relays the errors the socket queued and is sent once again, since the
+// error may belong to an earlier datagram, so only a datagram refused for its
+// size on that second send is answered too big. A send that fails empties the
+// queue of what its failure queued. A datagram that leaves is kept for the
+// errors about it (keep). dst's deadline moves before the write, so whoever
+// sees the datagram arrive reads the deadline it set, and is put back where
+// the datagram did not leave (RFC 4787 section 4.3 counts a packet that
+// crosses). A datagram refused for a reason of the host's own, neither its
+// size, nor an ICMP error the socket was told of, nor a socket the exit closed
+// since open handed it over, is counted, and send reports it.
 func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment bool) (refused bool) {
 	dst.mu.Lock()
 	defer dst.mu.Unlock()
@@ -694,7 +696,7 @@ func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment b
 	}
 	before := dst.deadline.Swap(u.now().Add(timeoutFor(d.to)).UnixNano())
 	_, err := dst.conn.Write(d.payload())
-	if err != nil && !errors.Is(err, syscall.EMSGSIZE) && icmpErrno(err) {
+	if err != nil && icmpErrno(err) {
 		u.relayErrors(dst)
 		_, err = dst.conn.Write(d.payload())
 	}

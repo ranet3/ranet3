@@ -8,6 +8,7 @@ package userspace
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -286,6 +287,115 @@ func TestDestinationReadsOnPastEveryReceiveError(t *testing.T) {
 			h.waitLaid(t, "reply after the error", func(raw []byte) bool { return isDatagram(raw, serverAt(server), leaf, reply) })
 		})
 	}
+}
+
+// A Fragmentation Needed or Packet Too Big about a datagram that left leaves
+// EMSGSIZE pending on its destination's socket, and the next datagram, which
+// fits the narrower path, still reaches its server, with no answer to the
+// leaf, while one past the path is still answered too big at the path's MTU
+// (RFC 4787 REQ-13, RFC 1191, RFC 8201). The destination has no reader, so
+// its send is the first to meet the pending error.
+func TestDatagramThatFitsLeavesPastAPendingTooBig(t *testing.T) {
+	onLoopback(t, rigServer4, rigServer6)
+	h := newRelayHarness(t, nil)
+	h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+	for _, c := range []struct {
+		name         string
+		source, leaf netip.Addr
+		mtu          int
+	}{
+		{"ipv4", rigServer4.Addr(), leaf4, 1000},
+		{"ipv6", rigServer6.Addr(), leaf6, 1280},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			server := rigLoopbackServer(t, c.source)
+			to := serverAt(server)
+			conn, err := h.x.udp.connect(0, c.source, to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			outside := serverAt(conn)
+			dst := &destination{to: to, conn: conn}
+			leaf := netip.AddrPortFrom(c.leaf, freeUDPPort(t, c.leaf))
+			big := udpDatagram(leaf, to, bytes.Repeat([]byte{0xb1}, 1400))
+			d, _ := readDatagram(big)
+			if h.x.udp.send(big, d, dst, true) {
+				t.Fatal("the datagram ahead of the path's narrowing was refused")
+			}
+			readDatagramFrom(t, server, d.payload())
+			tooBig(t, to.Addr(), outside.Addr(), c.mtu, udpDatagram(outside, to, d.payload()))
+			for start := time.Now(); !pendingError(conn); time.Sleep(time.Millisecond) {
+				if time.Since(start) > exitWait {
+					t.Fatal("the too big left no error pending on the destination's socket")
+				}
+			}
+
+			h.drainLaid()
+			small := udpDatagram(leaf, to, []byte("fits the path"))
+			ds, _ := readDatagram(small)
+			answered := len(h.mesh.answered())
+			if h.x.udp.send(small, ds, dst, true) {
+				t.Fatalf("the datagram that fits the path was refused, %d unsent", h.count(false, reasonUnsent))
+			}
+			if pkt := h.x.link.poll(); pkt == nil {
+				t.Error("the router's too big had reached no leaf when the send returned")
+			} else {
+				h.x.link.release(pkt)
+			}
+			readDatagramFrom(t, server, ds.payload())
+			if answers := h.mesh.answered()[answered:]; len(answers) != 0 {
+				t.Errorf("answered %v about the datagram that fits the path", answers)
+			}
+			if h.x.udp.send(big, d, dst, true) {
+				t.Fatal("the datagram past the path was refused as one of the host's own")
+			}
+			if answers := h.mesh.answered()[answered:]; len(answers) != 1 || answers[0].kind != netstack.ExitTooBig || answers[0].mtu != c.mtu || !bytes.Equal(answers[0].offending, big) {
+				t.Errorf("answered %v, want one too big at the path's %d quoting the datagram past it", answers, c.mtu)
+			}
+		})
+	}
+}
+
+// tooBig sends to, from from, a Fragmentation Needed or a Packet Too Big at
+// mtu quoting datagram, as a router on the path sends it
+func tooBig(t *testing.T, from, to netip.Addr, mtu int, datagram []byte) {
+	t.Helper()
+	message := append([]byte{3, 4, 0, 0, 0, 0, 0, 0}, datagram[:20+8]...)
+	binary.BigEndian.PutUint16(message[6:8], uint16(mtu))
+	var family, protocol int
+	var at unix.Sockaddr
+	running := uint32(0)
+	if to.Is4() {
+		family, protocol, at = unix.AF_INET, unix.IPPROTO_ICMP, &unix.SockaddrInet4{Addr: to.As4()}
+	} else {
+		message = append([]byte{2, 0, 0, 0, 0, 0, 0, 0}, datagram[:40+8]...)
+		binary.BigEndian.PutUint32(message[4:8], uint32(mtu))
+		family, protocol, at = unix.AF_INET6, unix.IPPROTO_ICMPV6, &unix.SockaddrInet6{Addr: to.As16()}
+		running = pseudo(from, to, protoICMPv6, len(message))
+	}
+	binary.BigEndian.PutUint16(message[2:4], fold(sum(running, message)))
+	fd, err := unix.Socket(family, unix.SOCK_RAW|unix.SOCK_CLOEXEC, protocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Sendto(fd, message, 0, at); err != nil {
+		t.Fatalf("send the too big toward %s: %v", to, err)
+	}
+}
+
+// pendingError is whether conn's socket shows an error, pending or queued,
+// read without taking it
+func pendingError(conn *net.UDPConn) bool {
+	var pending bool
+	_ = onSocket(conn, func(fd int) error {
+		fds := []unix.PollFd{{Fd: int32(fd)}}
+		n, err := unix.Poll(fds, 0)
+		pending = err == nil && n == 1 && fds[0].Revents&unix.POLLERR != 0
+		return nil
+	})
+	return pending
 }
 
 // The worst mix of flows, each a UDP mapping's first destination holding the

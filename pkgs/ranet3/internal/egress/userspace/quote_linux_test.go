@@ -30,15 +30,7 @@ func TestICMPv6ErrorOfUnknownTypeReachesTheLeaf(t *testing.T) {
 	payload := []byte("before the error")
 	h.x.udp.take(udpDatagram(leaf, serverAt(server), payload), false)
 	outside := readDatagramFrom(t, server, payload)
-	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_ICMPV6)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(fd)
-	message := append([]byte{100, 7, 0, 0, 0xde, 0xad, 0xbe, 0xef}, udpDatagram(outside, serverAt(server), payload)...)
-	if err := unix.Sendto(fd, message, 0, &unix.SockaddrInet6{Addr: outside.Addr().As16()}); err != nil {
-		t.Fatal(err)
-	}
+	sendICMP(t, outside.Addr(), append([]byte{100, 7, 0, 0, 0xde, 0xad, 0xbe, 0xef}, udpDatagram(outside, serverAt(server), payload)...))
 	h.waitLaid(t, "relayed error of type 100", func(raw []byte) bool {
 		p, ok := parse(raw)
 		return ok && p.protocol == protoICMPv6 && p.kind == 100 && p.code == 7 && len(raw) >= 48 && binary.BigEndian.Uint32(raw[44:48]) == 0xdeadbeef
