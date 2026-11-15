@@ -28,6 +28,13 @@ const (
 	watchSettle = 250 * time.Millisecond
 	// watchSweep is how often the network watch reads the host with no notification, and its longest wait between two reads that fail
 	watchSweep = DefaultReconcileInterval
+	// meshRouteKeys is the destination and source pairs the mesh's table holds
+	// at most, babel's maxRouteKeys
+	meshRouteKeys = 16384
+	// holdPieceBudget is the most pieces a pass puts in place of the holds it
+	// cuts, both families together (cutHolds): a quarter of the mesh's table at
+	// its limit
+	holdPieceBudget = meshRouteKeys / 4
 )
 
 // The priorities of the policy rules ranet3 derives, in two blocks, one below

@@ -386,6 +386,21 @@ func TestSwitchLeavesAnOverlayKeyTheMeshRetractedToTheHold(t *testing.T) {
 	}.check(t, t)
 }
 
+// Two nested holds of the mesh's inside an overlay prefix, over the parts the
+// endpoint cut leaves of the mesh's ::/1 around an endpoint at the prefix's
+// first address, stay whole, as a pass with no switch and no split leaves
+// them
+func TestSwitchKeepsNestedHoldsOverThePartsOfAWiderRoute(t *testing.T) {
+	switchCase{
+		overlay:     coverOverlay,
+		mesh:        []netip.Prefix{prefix("::/1")},
+		unreachable: []netip.Prefix{prefix("3fff:c::/33"), prefix("3fff:c::/36")},
+		hosts:       []hostRoute{{destination: prefix("::/1"), index: 2}, {destination: prefix("3fff:c::/31"), index: 2}},
+		endpoints:   []netip.Addr{netip.MustParseAddr("3fff:c::")},
+		addresses:   coverAddresses[1:],
+	}.check(t, t)
+}
+
 // check fails ht where a pass over c breaks the property of
 // TestSwitchKeepsTheTunsRoutesOffTheRejectsKeys
 func (c switchCase) check(t *testing.T, ht testing.TB) {
@@ -426,6 +441,34 @@ func (c switchCase) check(t *testing.T, ht testing.TB) {
 		slices.SortFunc(out, compareRoutes)
 		return out
 	}
+	// a pass puts a scoped hold in as its pieces around the routes of the
+	// mesh's inside it (cutHolds), so a hold is read by the addresses its
+	// scoped rejects hold: boundAt is the route a lookup bound to the tun meets
+	// at address among routes, the longest scoped route holding it, a reject by
+	// its fields alone
+	boundAt := func(routes []Route, address netip.Addr) (Route, bool) {
+		var best Route
+		found := false
+		for _, r := range routes {
+			if r.Destination.Contains(address) && (!found || r.Destination.Bits() > best.Destination.Bits()) {
+				best, found = r, true
+			}
+		}
+		if best.Unreachable {
+			best.Destination = netip.Prefix{}
+		}
+		return best, found
+	}
+	// longestHold is the longest hold of c holding address
+	longestHold := func(address netip.Addr) netip.Prefix {
+		var out netip.Prefix
+		for _, hold := range c.unreachable {
+			if hold.Contains(address) && (!out.IsValid() || hold.Bits() > out.Bits()) {
+				out = hold
+			}
+		}
+		return out
+	}
 	asked := c.mode != 0
 	held, _ := k.held()
 	// the switch reads holding with no exit live and passing with one, never not holding
@@ -436,8 +479,30 @@ func (c switchCase) check(t *testing.T, ht testing.TB) {
 		ht.Fatalf("with no switch asked for the fake holds rejects at %v", held)
 	}
 	ours := k.snapshot()
-	if got, want := scopedOf(ours), scopedOf(bare); !slices.Equal(got, want) {
-		ht.Fatalf("the routes of ours scoped to the tun at or inside the overlay are %v, want %v\ncase %+v", got, want, c)
+	live := func(routes []Route) []Route {
+		return slices.DeleteFunc(scopedOf(routes), func(r Route) bool { return r.Unreachable })
+	}
+	if got, want := live(ours), live(bare); !slices.Equal(got, want) {
+		ht.Fatalf("the routes of ours scoped to the tun at or inside the overlay that carry traffic are %v, want %v\ncase %+v", got, want, c)
+	}
+	// at the first and last address of each of those routes and just past
+	// them, and at each address the property probes, but under a hold at an
+	// overlay key, which darwin writes whole on lo0 where the covering fake
+	// scopes it
+	var addresses []netip.Addr
+	for _, r := range slices.Concat(scopedOf(ours), scopedOf(bare)) {
+		addresses = append(addresses, r.Destination.Addr(), r.Destination.Addr().Prev(), lastAddress(r.Destination), lastAddress(r.Destination).Next())
+	}
+	for _, address := range append(addresses, c.probes()...) {
+		if !address.IsValid() || !slices.ContainsFunc(overlayKeys(c.overlay), func(key netip.Prefix) bool { return key.Contains(address) }) ||
+			slices.Contains(overlayKeys(c.overlay), longestHold(address)) {
+			continue
+		}
+		got, found := boundAt(scopedOf(ours), address)
+		want, wanted := boundAt(scopedOf(bare), address)
+		if got != want || found != wanted {
+			ht.Fatalf("a lookup of %s bound to the tun meets %+v (%v), want %+v (%v)\ncase %+v\nours %v\nwith no switch and no split %v", address, got, found, want, wanted, c, scopedOf(ours), scopedOf(bare))
+		}
 	}
 	for _, r := range ours {
 		if asked && !r.Scoped && slices.Contains(rejectKeys, r.Destination) {

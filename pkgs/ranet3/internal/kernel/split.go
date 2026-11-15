@@ -4,8 +4,11 @@
 package kernel
 
 import (
+	"encoding/binary"
+	"math/bits"
 	"net/netip"
 	"slices"
+	"sort"
 
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -199,4 +202,258 @@ func (r *Reconciler) splitKeys(desired []Route) (keys, rejected []netip.Prefix) 
 		}
 	}
 	return keys, rejected
+}
+
+// holdCut counts the pieces cutHolds put in the list in place of the holds it
+// cut, and the holds it left whole because their pieces would pass what was
+// left of the budget
+type holdCut struct{ pieces, whole int }
+
+// platformWrites reports whether r is of a family addressless does not name,
+// and from no source or from one holding an address of tun's: the two tests
+// darwin's AddRoute skips a route by before it writes. A route that passes
+// them may still be refused there: at a scoped key it already holds for
+// another source, at a key another program holds, at the limited broadcast
+// address, which no pass hands it, or where reading the tun's addresses or
+// the write fails.
+func platformWrites(r Route, tun []netip.Prefix, addressless []Family) bool {
+	return !slices.Contains(addressless, familyOf(r.Destination.Addr())) &&
+		(!r.Source.IsValid() || slices.ContainsFunc(tun, func(address netip.Prefix) bool { return r.Source.Contains(address.Addr()) }))
+}
+
+// cutHolds is routes with each hold the platform scopes and writes cut around
+// the routes of table inside it that carry traffic and that the platform
+// writes, where an unscoped one is among them. table is the list before the
+// cover and the cuts, which leave parts of a shorter route inside a hold, and
+// such a part is no reason to cut it. A reject scoped to the tun answers an
+// IPv6 lookup ahead of a longer unscoped route out of the tun but not ahead of
+// a host route (rt_lookup_common, bsd/net/route.c), so a host route is no
+// reason to cut and a piece holds its address. A scoped route answers by its
+// own length, so it alone is no reason to cut, and no piece lies inside it.
+// The IPv6 holds take the budget first, since the refusal a cut ends is of
+// IPv6 datagrams (in6_selectif, bsd/netinet6/in6_src.c), then the IPv4 holds
+// take what is left. Within a family the holds go in the order diffRoutes
+// lists them in, so every node cuts the same ones of a table, and each is cut
+// while its pieces fit in what budget has left, a hold inside a cut hold
+// counting the pieces it shares with it again. A hold the platform keeps one
+// of at its key goes in whole.
+func cutHolds(routes, table []Route, scoped func(Route) bool, tun []netip.Prefix, addressless []Family, budget int) ([]Route, holdCut) {
+	writes := func(r Route) bool { return platformWrites(r, tun, addressless) }
+	var holds []Route
+	for _, r := range routes {
+		if r.Unreachable && scoped(r) && writes(r) {
+			holds = append(holds, r)
+		}
+	}
+	if len(holds) == 0 {
+		return routes, holdCut{}
+	}
+	alone := make(map[netip.Prefix]Route, len(holds))
+	for _, hold := range holds {
+		alone[hold.Destination] = hold
+	}
+	for _, r := range routes {
+		if hold, found := alone[r.Destination]; found && hold != r && scoped(r) && writes(r) {
+			delete(alone, r.Destination)
+		}
+	}
+	holds = slices.DeleteFunc(holds, func(hold Route) bool { _, found := alone[hold.Destination]; return !found })
+	slices.SortFunc(holds, compareRoutes)
+	holds = slices.Compact(holds)
+	// prefixes nest or lie apart, so the holds no other hold holds are disjoint
+	// and in address order, and one of them holds each address a hold does
+	var outermost []netip.Prefix
+	for _, hold := range holds {
+		if len(outermost) == 0 || !encloses(outermost[len(outermost)-1], hold.Destination) {
+			outermost = append(outermost, hold.Destination)
+		}
+	}
+	insideHold := func(destination netip.Prefix) bool {
+		i := sort.Search(len(outermost), func(i int) bool { return comparePrefixes(outermost[i], destination) > 0 }) - 1
+		return i >= 0 && outermost[i].Bits() < destination.Bits() && outermost[i].Contains(destination.Addr())
+	}
+	var live []liveRoute
+	unscoped := false
+	for _, r := range table {
+		if !r.Unreachable && !r.Throw && !r.Destination.IsSingleIP() && insideHold(r.Destination) && writes(r) {
+			live = append(live, liveRoute{destination: r.Destination, first: wordOf(r.Destination.Addr()), scoped: scoped(r)})
+			unscoped = unscoped || !scoped(r)
+		}
+	}
+	if !unscoped {
+		return routes, holdCut{}
+	}
+	slices.SortFunc(live, func(a, b liveRoute) int { return comparePrefixes(a.destination, b.destination) })
+	writtenAt := map[netip.Prefix]bool{}
+	for _, r := range routes {
+		if insideHold(r.Destination) && scoped(r) && writes(r) {
+			writtenAt[r.Destination] = true
+		}
+	}
+	var counts holdCut
+	var pieces []Route
+	cut := map[Route]bool{}
+	left := budget
+	ipv6 := sort.Search(len(holds), func(i int) bool { return holds[i].Destination.Addr().Is6() })
+	for _, hold := range slices.Concat(holds[ipv6:], holds[:ipv6]) {
+		lo, hi := liveInside(live, hold.Destination)
+		if !slices.ContainsFunc(live[lo:hi], func(r liveRoute) bool { return !r.scoped }) {
+			continue
+		}
+		n, fits := holdPieces(hold.Destination, live[lo:hi], left)
+		if !fits {
+			counts.whole++
+			continue
+		}
+		left -= n
+		cut[hold] = true
+		for _, destination := range holdPiecesOf(hold.Destination, live[lo:hi]) {
+			if !writtenAt[destination] {
+				writtenAt[destination] = true
+				piece := hold
+				piece.Destination, piece.Scoped = destination, true
+				pieces = append(pieces, piece)
+			}
+		}
+	}
+	if len(cut) == 0 {
+		return routes, counts
+	}
+	out := make([]Route, 0, len(routes)+len(pieces))
+	for _, r := range routes {
+		if !r.Unreachable || !cut[r] {
+			out = append(out, r)
+		}
+	}
+	counts.pieces = len(pieces)
+	return append(out, pieces...), counts
+}
+
+// liveRoute is a route a hold is cut around: its destination, the
+// destination's first address as a word128, and whether the platform scopes it
+type liveRoute struct {
+	destination netip.Prefix
+	first       word128
+	scoped      bool
+}
+
+// liveInside is the run of live, sorted by comparePrefixes, that lies inside
+// prefix and is longer than it
+func liveInside(live []liveRoute, prefix netip.Prefix) (lo, hi int) {
+	lo = sort.Search(len(live), func(i int) bool { return comparePrefixes(live[i].destination, prefix) > 0 })
+	last := lastAddress(prefix)
+	hi = lo + sort.Search(len(live)-lo, func(i int) bool { return live[lo+i].destination.Addr().Compare(last) > 0 })
+	return lo, hi
+}
+
+// holdGaps calls each, until it returns false, with each run of hold's
+// addresses outside the live routes inside it, in address order. A run is the
+// part before or after the outermost live route r beside it of the prefix of
+// length from that holds r. It takes a piece at each bit past from up to r's
+// length that r's first address has set before r or clear after it: the half,
+// on the run's side, of the prefix of r's first address one bit shorter. from
+// is the hold's length outside the first and the last live route, and between
+// two neighbors the first bit they differ at.
+func holdGaps(hold netip.Prefix, inside []liveRoute, each func(r liveRoute, from int, before bool) bool) {
+	last := -1
+	for i, r := range inside {
+		if last >= 0 && inside[last].destination.Contains(r.destination.Addr()) {
+			continue
+		}
+		from := hold.Bits()
+		if last >= 0 {
+			from = partAt(inside[last].first, r.first)
+			if !each(inside[last], from, false) {
+				return
+			}
+		}
+		if !each(r, from, true) {
+			return
+		}
+		last = i
+	}
+	if last >= 0 {
+		each(inside[last], hold.Bits(), false)
+	}
+}
+
+// holdPieces is how many pieces hold is cut into around inside, holdGaps'
+// pieces counted by run until the count passes left, and whether it does not.
+// A run adds at most a family's length, so the count stops within that of
+// left, and a hold that does not fit has no piece made.
+func holdPieces(hold netip.Prefix, inside []liveRoute, left int) (int, bool) {
+	n := 0
+	holdGaps(hold, inside, func(r liveRoute, from int, before bool) bool {
+		ones := r.first.ones(from, r.destination.Bits())
+		if before {
+			n += ones
+		} else {
+			n += r.destination.Bits() - from - ones
+		}
+		return n <= left
+	})
+	return n, n <= left
+}
+
+// holdPiecesOf is holdGaps' pieces of hold around inside, in address order
+func holdPiecesOf(hold netip.Prefix, inside []liveRoute) []netip.Prefix {
+	var out []netip.Prefix
+	holdGaps(hold, inside, func(r liveRoute, from int, before bool) bool {
+		length := r.destination.Bits()
+		for at := range length - from {
+			bit := from + 1 + at
+			if !before {
+				bit = length - at
+			}
+			if r.first.bit(bit) == before {
+				out = append(out, halves(netip.PrefixFrom(r.destination.Addr(), bit-1).Masked())[boolOrder(!before)])
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// word128 is an address of either family as 128 bits from the left, an IPv4
+// address in the first 32, so that the bit a prefix length counts to is the
+// same bit in both. Bits count from 1.
+type word128 struct{ hi, lo uint64 }
+
+func wordOf(address netip.Addr) word128 {
+	if address.Is4() {
+		raw := address.As4()
+		return word128{hi: uint64(binary.BigEndian.Uint32(raw[:])) << 32}
+	}
+	raw := address.As16()
+	return word128{hi: binary.BigEndian.Uint64(raw[:8]), lo: binary.BigEndian.Uint64(raw[8:])}
+}
+
+// leading is the first n bits set
+func leading(n int) word128 {
+	if n <= 64 {
+		return word128{hi: ^uint64(0) << (64 - n)}
+	}
+	return word128{hi: ^uint64(0), lo: ^uint64(0) << (128 - n)}
+}
+
+// ones is how many of w's bits past from up to to are set
+func (w word128) ones(from, to int) int {
+	upTo, past := leading(to), leading(from)
+	return bits.OnesCount64(w.hi&upTo.hi&^past.hi) + bits.OnesCount64(w.lo&upTo.lo&^past.lo)
+}
+
+func (w word128) bit(i int) bool {
+	if i <= 64 {
+		return w.hi>>(64-i)&1 == 1
+	}
+	return w.lo>>(128-i)&1 == 1
+}
+
+// partAt is the first bit a and b differ at, which two disjoint prefixes inside
+// one hold do at or before the shorter one's length
+func partAt(a, b word128) int {
+	if x := a.hi ^ b.hi; x != 0 {
+		return bits.LeadingZeros64(x) + 1
+	}
+	return 64 + bits.LeadingZeros64(a.lo^b.lo) + 1
 }

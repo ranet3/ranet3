@@ -796,6 +796,15 @@ type Stats struct {
 	Skipped   int
 	Added     int
 	Removed   int
+	// HoldPieces is the pieces this pass's list put in place of the holds it
+	// cut around the live routes inside them (cutHolds), a piece the platform
+	// then refused among them, and HoldsWhole the holds it left whole because
+	// their pieces would have passed what was left of HoldPieceBudget, the
+	// pieces a pass may put in place of its cut holds where the platform scopes
+	// them
+	HoldPieces      int
+	HoldsWhole      int
+	HoldPieceBudget int
 	// Cover is the families in which this pass left a zero route installed as
 	// its zero-free cover.
 	Cover []Family
@@ -1380,6 +1389,9 @@ func (r *Reconciler) recordPass(err error, took time.Duration) {
 	attrs := []slog.Attr{slog.String("trigger", r.trigger), slog.Duration("took", took),
 		slog.Int("added", stats.Added), slog.Int("removed", stats.Removed),
 		slog.Int("skipped", stats.Skipped), slog.Int("installed", stats.Installed)}
+	if r.platformScopes() != nil {
+		attrs = append(attrs, slog.Int("hold_pieces", stats.HoldPieces), slog.Int("holds_whole", stats.HoldsWhole))
+	}
 	if err != nil {
 		attrs = append(attrs, slog.String("err", stats.Err))
 	}
@@ -1517,11 +1529,13 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// The halves go in after withheld has judged the whole members (see
 	// cutAround)
 	keys, rejected := r.splitKeys(desired)
-	// The splits and the cut are the last steps that make a route, a half of a
-	// /31 or /127 overlay key or a piece at one address the tun holds among
-	// them, so each list they make leaves a route at such an address here
-	// (atOwnAddress), the members handed back after a refused route among
-	// them, and each hole the piece with it
+	// The splits and the cut are the last steps that make a route at one
+	// address, a half of a /31 or /127 overlay key or a piece at one address
+	// the tun holds among them, so each list they make leaves a route at such
+	// an address here (atOwnAddress), the members handed back after a refused
+	// route among them, and each hole the piece with it. A piece of a hold cut
+	// after them is no longer than a live route inside the hold, and no live
+	// route is a host route.
 	cut := func(routes []Route) ([]Route, []Hole) {
 		pieces, holes := cutAround(routes, keys, rejected, r.keyer, scoped, hosts, func(routes []Route) ([]Route, []Hole) {
 			return cutHoles(routes, scoped, endpoints, hosts, r.rt.Overlay)
@@ -1542,6 +1556,9 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		dropped = r.reportMemberless(bare, families)
 	}
 	desired, holes := cut(desired)
+	// after the cuts, so that a piece gives way to a scoped part they leave at
+	// its destination, around the routes of bare (cutHolds)
+	desired, cuts := cutHolds(desired, bare, scoped, r.tun, addressless, holdPieceBudget)
 	var beneath []Beneath
 	for _, route := range desired {
 		if host, ok := hosts.beneath(route, r.rt.Overlay); ok {
@@ -1681,16 +1698,21 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	}
 	slices.SortFunc(members, comparePrefixes)
 	r.routePass = Stats{
-		Members:   members,
-		Holes:     holes,
-		Beneath:   beneath,
-		Desired:   desiredCount,
-		Installed: len(actual) - removed + added,
-		Skipped:   skipped,
-		Added:     added,
-		Removed:   removed,
-		Cover:     coveredFamilies(slices.Collect(maps.Keys(held))),
-		Path:      r.pathPass(held),
+		Members:    members,
+		Holes:      holes,
+		Beneath:    beneath,
+		Desired:    desiredCount,
+		Installed:  len(actual) - removed + added,
+		Skipped:    skipped,
+		Added:      added,
+		Removed:    removed,
+		HoldPieces: cuts.pieces,
+		HoldsWhole: cuts.whole,
+		Cover:      coveredFamilies(slices.Collect(maps.Keys(held))),
+		Path:       r.pathPass(held),
+	}
+	if scopes != nil {
+		r.routePass.HoldPieceBudget = holdPieceBudget
 	}
 	r.reportCover(r.routePass.Cover)
 	r.reportUnderlay(holes, beneath)
