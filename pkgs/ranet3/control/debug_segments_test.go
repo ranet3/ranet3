@@ -9,10 +9,6 @@ import (
 	"testing"
 )
 
-// segmentsFixtures is one answer of the segments view for each golden file:
-// an exit's End and egress segments with two policies steering and no
-// cap.exit via, a node with neither, the same policies stopped beside cap.exit
-// via's path, and a node whose only path is cap.exit via's
 func segmentsFixtures() map[string]SegmentsInfo {
 	sid := netip.MustParseAddr
 	via := &SteerPolicy{Source: sid("3fff:b:0:100::1"), Path: []netip.Addr{sid("3fff:b:0:406::1")}, Overhead: 64}
@@ -29,9 +25,10 @@ func segmentsFixtures() map[string]SegmentsInfo {
 				Egress: &SegmentEgress{Served: true, Ready: []string{"ipv4", "ipv6"}}},
 		},
 		Steering: steering,
-		Counters: SegmentCounters{Forwarded: 12, Delivered: 7, Dropped: 2, Steered: 40, Answered: 1, Egressed: 5, Refused: 1},
+		Counters: SegmentCounters{Forwarded: 12, Delivered: 7, Dropped: 2, Steered: 40, Answered: 1, Egressed: 5, Refused: 1, ECNUnused: 3},
 	}
 	stopped := full
+	stopped.Counters.Delivered = 0
 	stoppedSteering := *steering
 	stoppedSteering.Enabled, stoppedSteering.Via = false, via
 	stopped.Steering = &stoppedSteering

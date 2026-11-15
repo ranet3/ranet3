@@ -77,8 +77,6 @@ type SteerPolicy struct {
 // Segments reads cap.segment with its policies and counters
 func (c *Client) Segments() (SegmentsInfo, error) { return read[SegmentsInfo](c, PathDebugSegments) }
 
-// RenderSegments writes each local segment, cap.exit via's path, the steering
-// policies as a table where there are any, then the counters
 func RenderSegments(w io.Writer, info SegmentsInfo) {
 	if len(info.Segments) == 0 && info.Steering == nil {
 		fmt.Fprintln(w, "No local segment and no steering policy")
@@ -98,9 +96,13 @@ func RenderSegments(w io.Writer, info SegmentsInfo) {
 		}
 	}
 	c := info.Counters
+	handled := fmt.Sprintf("%d forwarded, %d delivered, %d dropped, %d answered, %d egressed, %d refused, %d not ready",
+		c.Forwarded, c.Delivered, c.Dropped, c.Answered, c.Egressed, c.Refused, c.NotReady)
+	if c.ECNUnused > 0 {
+		handled += fmt.Sprintf(", %d "+ecnUnusedWords, c.ECNUnused)
+	}
 	counters := [][]string{
-		{"Counters", fmt.Sprintf("%d forwarded, %d delivered, %d dropped, %d answered, %d egressed, %d refused, %d not ready",
-			c.Forwarded, c.Delivered, c.Dropped, c.Answered, c.Egressed, c.Refused, c.NotReady)},
+		{"Counters", handled},
 		{"Steered", fmt.Sprintf("%d steered, %d too large to encapsulate, %d with no route to their first segment", c.Steered, c.Unsteered, c.Unrouted)},
 	}
 	s := info.Steering

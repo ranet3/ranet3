@@ -19,6 +19,8 @@ import (
 // that a test can hold the columns still: the column set is the promise the
 // subcommands make, and a rename of one is a change an operator's scripts see.
 
+const ecnUnusedWords = "with an unused ECN combination"
+
 // table writes rows under a header, aligned. Every renderer goes through it so
 // the whole command speaks in one shape.
 func table(w io.Writer, header []string, rows [][]string) {
@@ -94,7 +96,7 @@ func espLine(e ESPCounters) string {
 		line += fmt.Sprintf(", %d marked CE", e.InboundCE)
 	}
 	if e.InboundECNUnused > 0 {
-		line += fmt.Sprintf(", %d with an unused ECN combination", e.InboundECNUnused)
+		line += fmt.Sprintf(", %d "+ecnUnusedWords, e.InboundECNUnused)
 	}
 	return line
 }
@@ -446,7 +448,7 @@ func segmentLine(s Status) string {
 		{s.SegmentCounters.Egressed, "egressed"},
 		{s.SegmentCounters.Refused, "refused"},
 		{s.SegmentCounters.NotReady, "not ready"},
-		{s.SegmentCounters.ECNUnused, "with an unused ECN combination"},
+		{s.SegmentCounters.ECNUnused, ecnUnusedWords},
 	} {
 		if count.n > 0 {
 			fmt.Fprintf(&line, ", %d %s", count.n, count.name)
