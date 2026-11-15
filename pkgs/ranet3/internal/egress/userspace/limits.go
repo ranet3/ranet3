@@ -21,8 +21,8 @@ type Limits struct {
 	// at once and TCP connections held closed for a host socket (hostHolds),
 	// each source's share of cap.egress inside it
 	Flows int
-	// Connections is the most TCP connections open at once, the flows that
-	// hold gVisor's buffers
+	// Connections is the most admitted TCP connections, dials among them.
+	// A closing leaf keeps its place until TIME_WAIT, closed or error.
 	Connections int
 	// Dials is the most TCP connections being dialed at once, below the
 	// forwarder's in-flight bound

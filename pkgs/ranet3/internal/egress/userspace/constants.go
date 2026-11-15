@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 
 	"ranet3.com/pkgs/wireguard/tun"
 )
@@ -48,6 +49,9 @@ const (
 	// copyBuffer is the bytes one copy of a relayed connection moves at
 	// most, a socket read's worth
 	copyBuffer = 32 << 10
+	// closingTimeout is the default keepalive horizon, applied as a user
+	// timeout once copying ends
+	closingTimeout = tcp.DefaultKeepaliveIdle + tcp.DefaultKeepaliveInterval*tcp.DefaultKeepaliveCount
 	// relayedTTL is the TTL and the hop limit of the packets the exit builds
 	// until it is given the host's own
 	relayedTTL = 64

@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
@@ -187,6 +188,10 @@ func (c *counts) add(into *map[string]uint64, reason string) {
 // carry: a class of none, return, and an advertised prefix that does not
 // count as a default.
 func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
+	return newOn(nil, cfg, rt)
+}
+
+func newOn(clock tcpip.Clock, cfg egress.Egress, rt Runtime) (*Exit, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -228,7 +233,7 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := newStack(x.link, rt.Limits.Window, stackHandlers{udp: x.takeUDP, icmp: x.takeICMP})
+	s, err := newStackOn(clock, x.link, rt.Limits.Window, stackHandlers{udp: x.takeUDP, icmp: x.takeICMP})
 	if err != nil {
 		return nil, err
 	}

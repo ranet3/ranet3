@@ -148,12 +148,13 @@ func (f *flows) admit(source netip.Addr) (string, bool) {
 }
 
 // admitTCP opens a TCP connection's flow for source as admit does, where
-// bound, the host ports hostHolds.limit allows, is also above the relay's
-// connections and every flow held, and otherwise reports the limit it met
-func (f *flows) admitTCP(source netip.Addr, connections, bound int) (string, bool) {
+// bound, the host ports hostHolds.limit allows, exceeds hosts, the admissions
+// whose host end step has yet to run, plus every held host slot. Otherwise it
+// reports the limit it met.
+func (f *flows) admitTCP(source netip.Addr, hosts, bound int) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if connections+f.held >= bound {
+	if hosts+f.held >= bound {
 		return reasonHostPorts, false
 	}
 	return f.admitLocked(source)

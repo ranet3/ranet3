@@ -568,3 +568,7 @@ func openFiles(t *testing.T) int {
 	}
 	return len(entries)
 }
+
+func TestHostHoldClockRunsWhileLeafStillCloses(t *testing.T) {
+	hostHoldEndsWhileLeafCloses(t, xnuHostSockets())
+}

@@ -262,7 +262,7 @@ func (h *exitHarness) run(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.runStarted = cancel, true
 	go func() { h.runErr <- h.exit.Run(ctx) }()
-	h.waitFor(t, "a family ready", func() bool { return len(h.readyCalls()) != 0 })
+	waitFor(t, "a family ready", func() bool { return len(h.readyCalls()) != 0 })
 }
 
 // stopRun ends Run and waits for it to return
@@ -295,7 +295,8 @@ func (h *exitHarness) readyCalls() []readyCall {
 	return append([]readyCall(nil), h.ready...)
 }
 
-func (h *exitHarness) waitFor(t *testing.T, what string, done func() bool) {
+// waitFor waits for done within exitWait.
+func waitFor(t *testing.T, what string, done func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(exitWait)
 	for !done() {
@@ -396,7 +397,7 @@ func TestSegmentNoEndpointHoldsComesBackAsResetThroughALane(t *testing.T) {
 	for _, family := range []struct{ leaf, server netip.Addr }{{leaf4, server4}, {leaf6, server6}} {
 		leaf, server := netip.AddrPortFrom(family.leaf, 40000), netip.AddrPortFrom(family.server, 80)
 		h.exit.Egress(frames(tcpSegment(leaf, server, 1000, 1, tcpACK, nil)), nil)
-		h.waitFor(t, "reset toward "+leaf.String(), func() bool {
+		waitFor(t, "reset toward "+leaf.String(), func() bool {
 			for _, raw := range mesh.laidPackets() {
 				if p, ok := parse(raw); ok && p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == leaf && netip.AddrPortFrom(p.src, p.srcPort) == server {
 					return true
@@ -429,7 +430,7 @@ func TestLaneAnswersWhatItsJudgmentRefuses(t *testing.T) {
 		tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), 22), 1000, 0, tcpSYN, nil),
 	}
 	h.exit.Egress(frames(refused...), nil)
-	h.waitFor(t, "an answer to each", func() bool { return len(mesh.answered()) == len(refused) })
+	waitFor(t, "an answer to each", func() bool { return len(mesh.answered()) == len(refused) })
 	kinds := map[netstack.ExitAnswer]int{}
 	for _, a := range mesh.answered() {
 		kinds[a.kind]++
@@ -656,9 +657,9 @@ func TestMeshClosingUnderARunningExitEndsItsLanes(t *testing.T) {
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
 	h.run(t)
 	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)), nil)
-	h.waitFor(t, "the pump's batch", func() bool { return len(mesh.laidPackets()) != 0 })
+	waitFor(t, "the pump's batch", func() bool { return len(mesh.laidPackets()) != 0 })
 	mesh.closeMesh()
-	h.waitFor(t, "every lane given back", func() bool { return mesh.openLanes() == 0 })
+	waitFor(t, "every lane given back", func() bool { return mesh.openLanes() == 0 })
 	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40001), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)), nil)
 	h.stopRun(t)
 }
@@ -670,7 +671,7 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
 	h.run(t)
 	h.exit.SetEnabled(false)
-	h.waitFor(t, "both families withdrawn", func() bool {
+	waitFor(t, "both families withdrawn", func() bool {
 		calls := h.readyCalls()
 		return calls[len(calls)-1] == readyCall{}
 	})
@@ -688,12 +689,12 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 		t.Errorf("dropped %d of the one packet taken while withdrawn", got-dropped)
 	}
 	h.exit.SetEnabled(true)
-	h.waitFor(t, "both families ready again", func() bool {
+	waitFor(t, "both families ready again", func() bool {
 		calls := h.readyCalls()
 		return calls[len(calls)-1] == readyCall{true, true, true}
 	})
 	h.exit.Egress(frames(segment), nil)
-	h.waitFor(t, "the reset once enabled again", func() bool { return len(mesh.laidPackets()) != 0 })
+	waitFor(t, "the reset once enabled again", func() bool { return len(mesh.laidPackets()) != 0 })
 }
 
 // A stop and `ranet3 down` log each family not ready and the advertisement's
@@ -705,12 +706,12 @@ func TestExitLogsItsStopAtInfo(t *testing.T) {
 	for name, stop := range map[string]func(*testing.T, *exitHarness){
 		"shutdown": func(t *testing.T, h *exitHarness) { h.stopRun(t) },
 		"ranet3 down": func(t *testing.T, h *exitHarness) {
-			h.waitFor(t, "the first announcement", func() bool { return h.republishes() != 0 })
+			waitFor(t, "the first announcement", func() bool { return h.republishes() != 0 })
 			republished := h.republishes()
 			h.exit.SetEnabled(false)
 			// the empty announcement is published after its log line, so its
 			// republish orders the line before the read
-			h.waitFor(t, "the empty announcement", func() bool { return h.republishes() > republished })
+			waitFor(t, "the empty announcement", func() bool { return h.republishes() > republished })
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

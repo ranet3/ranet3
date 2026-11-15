@@ -76,7 +76,7 @@ func TestLeafConnectionIsRelayedBothWaysThroughPrepare(t *testing.T) {
 			if _, err := io.ReadFull(conn, reply); err != nil || string(reply) != "pong\n" {
 				t.Fatalf("read %q: %v, want pong", reply, err)
 			}
-			r.waitFor(t, "every copy buffer back while the connection idles", func() bool { return r.exit.tcp.copies.out.Load() == 0 })
+			waitFor(t, "every copy buffer back while the connection idles", func() bool { return r.exit.tcp.copies.out.Load() == 0 })
 			if _, err := conn.Write(payload); err != nil {
 				t.Fatal(err)
 			}
@@ -98,8 +98,8 @@ func TestLeafConnectionIsRelayedBothWaysThroughPrepare(t *testing.T) {
 			if !bytes.Equal(echoed, payload) {
 				t.Errorf("the leaf received %d bytes after its half close, want the server's %d whole", len(echoed), len(payload))
 			}
-			r.waitFor(t, "the connection's counts given back", func() bool { return r.exit.tcp.held() == [3]int{} })
-			r.waitFor(t, "the connection's mapping ended", func() bool {
+			waitFor(t, "the connection's counts given back", func() bool { return r.exit.tcp.held() == [3]int{} })
+			waitFor(t, "the connection's mapping ended", func() bool {
 				r.exit.tcp.mappings.mu.Lock()
 				defer r.exit.tcp.mappings.mu.Unlock()
 				return len(r.exit.tcp.mappings.byInside) == 0 && len(r.exit.tcp.mappings.byOutside) == 0
@@ -156,9 +156,9 @@ func TestWithdrawalResetsEachRelayedConnection(t *testing.T) {
 	case <-time.After(exitWait):
 		t.Fatal("the server's connection outlived the withdrawal")
 	}
-	r.waitFor(t, "the connection's counts given back", func() bool { return r.exit.tcp.held() == [3]int{} })
+	waitFor(t, "the connection's counts given back", func() bool { return r.exit.tcp.held() == [3]int{} })
 	r.exit.SetEnabled(true)
-	r.waitFor(t, "the exit taking again", r.exit.taking.Load)
+	waitFor(t, "the exit taking again", r.exit.taking.Load)
 	again, err := r.dial(leaf, server, rigSettle)
 	if err != nil {
 		t.Fatalf("dial %s once enabled again: %v", server, err)
@@ -167,18 +167,6 @@ func TestWithdrawalResetsEachRelayedConnection(t *testing.T) {
 	_ = again.SetDeadline(time.Now().Add(exitWait))
 	if _, err := io.ReadFull(again, ready); err != nil {
 		t.Errorf("read once enabled again: %v", err)
-	}
-}
-
-// waitFor waits for done within exitWait
-func (r *leafRig) waitFor(t *testing.T, what string, done func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(exitWait)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("no %s within %s", what, exitWait)
-		}
-		time.Sleep(time.Millisecond)
 	}
 }
 

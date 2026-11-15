@@ -181,10 +181,12 @@ func (r *rows) timerHalfClosed(t *testing.T) {
 	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Established, floor: establishedFloor, held: r.class != None})
 }
 
-// timerClosing has the leaf close its sending side, then the server, and the
-// leaf's path lose its acknowledgment of the server's FIN, which the
-// connection then waits for. A backend that terminates has ended its own
-// connection with the server's FIN, so it holds no flow for it.
+// timerClosing closes the leaf's write side and withholds its acknowledgment
+// of the server's FIN, then checks the closing flow. The userspace adapter
+// supplies untimed, so its four-minute floor is not checked here. In
+// userspace/closing_test.go, TestLastAckEndsWithoutAcknowledgments and
+// TestClosingEndsWithoutAcknowledgments check silent expiry, and
+// TestClosingEndsDespiteAcknowledgedProbes checks the user timeout's boundary.
 func (r *rows) timerClosing(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, closingPort)
 	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, netip.AddrPort{})
@@ -198,10 +200,6 @@ func (r *rows) timerClosing(t *testing.T) {
 		t.Fatal(err)
 	}
 	readToEnd(t, leaf, nil)
-	if r.terminates {
-		r.keepsNone(t, syscall.IPPROTO_TCP, r.family.Leaf, to)
-		return
-	}
 	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Closing, floor: transitoryFloor, held: r.class != None})
 }
 

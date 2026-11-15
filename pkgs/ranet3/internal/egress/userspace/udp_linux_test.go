@@ -92,7 +92,7 @@ func TestLeafDatagramsAreRelayedThroughPrepare(t *testing.T) {
 			if _, err := stranger.WriteToUDPAddrPort([]byte("unasked"), outside[a]); err != nil {
 				t.Fatal(err)
 			}
-			r.waitFor(t, "the stranger's datagram dropped as filtered", func() bool { return countOf(r.exit, false, reasonFiltered) > filtered })
+			waitFor(t, "the stranger's datagram dropped as filtered", func() bool { return countOf(r.exit, false, reasonFiltered) > filtered })
 			if _, err := a.WriteToUDPAddrPort([]byte("after"), outside[a]); err != nil {
 				t.Fatal(err)
 			}
@@ -153,7 +153,7 @@ func TestDatagramWithDFIsAnsweredTooBigPastThePath(t *testing.T) {
 			if _, err := whole.WriteToUDPAddrPort(payload, serverAt(server)); err != nil {
 				t.Fatal(err)
 			}
-			r.waitFor(t, "an answer to the datagram past the path", func() bool { return len(r.mesh.answered()) > answered })
+			waitFor(t, "an answer to the datagram past the path", func() bool { return len(r.mesh.answered()) > answered })
 			if answer := r.mesh.answered()[answered]; answer.kind != netstack.ExitTooBig || answer.mtu != pathMTU {
 				t.Errorf("answered %v at %d, want too big at the path's %d", answer.kind, answer.mtu, pathMTU)
 			}
@@ -232,7 +232,7 @@ func TestWithdrawalEndsEveryMapping(t *testing.T) {
 	}
 	readDatagramFrom(t, server, []byte("before"))
 	r.exit.SetEnabled(false)
-	r.waitFor(t, "every mapping ended", func() bool {
+	waitFor(t, "every mapping ended", func() bool {
 		r.exit.udp.mu.RLock()
 		defer r.exit.udp.mu.RUnlock()
 		return len(r.exit.udp.mappings) == 0 && len(r.exit.udp.ports) == 0
@@ -244,7 +244,7 @@ func TestWithdrawalEndsEveryMapping(t *testing.T) {
 		t.Errorf("%d flows held once the exit withdrew", open)
 	}
 	r.exit.SetEnabled(true)
-	r.waitFor(t, "the exit taking again", r.exit.taking.Load)
+	waitFor(t, "the exit taking again", r.exit.taking.Load)
 	if _, err := leaf.WriteToUDPAddrPort([]byte("after"), serverAt(server)); err != nil {
 		t.Fatal(err)
 	}

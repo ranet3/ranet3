@@ -31,7 +31,7 @@ const (
 	stackWindow = 64 << 10
 )
 
-// stackHarness is a stack as newStack builds it, with what its default
+// stackHarness is a stack as newStackOn builds it, with what its default
 // handlers took and what it sent
 type stackHarness struct {
 	stack *stack.Stack
@@ -55,14 +55,7 @@ func newStackHarnessOn(t *testing.T, clock tcpip.Clock) *stackHarness {
 	h := &stackHarness{link: newLink(1 << 20)}
 	// the link's clock stays at zero, so its controlled delay drops no packet the test waits for
 	fakeClock(h.link)
-	// with no clock the stack is built as the exit builds it, its timers on the host's clock
-	build := newStack
-	if clock != nil {
-		build = func(l *link, window int, handlers stackHandlers) (*stack.Stack, error) {
-			return newStackOn(clock, l, window, handlers)
-		}
-	}
-	s, err := build(h.link, stackWindow, stackHandlers{
+	s, err := newStackOn(clock, h.link, stackWindow, stackHandlers{
 		udp:  func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) { h.took(&h.udp, protoUDP, id, pkt) },
 		icmp: func(id stack.TransportEndpointID, pkt *stack.PacketBuffer) { h.took(&h.icmp, 0, id, pkt) },
 	})

@@ -32,10 +32,10 @@ const (
 )
 
 // flowsStatus is the exit's detail as Status reports it: the flows open by
-// family, the dials and the endpoints in TIME_WAIT, where the platform bounds
-// the host ports the connections held for their host sockets and the host
-// ports taken, the limits and the bytes the TCP buffers hold, the refusals and
-// drops by why, and the sources holding the most flows
+// family, TCP through closing, the dials and the endpoints in TIME_WAIT, where
+// the platform bounds the host ports the connections held for their host sockets
+// and the host ports taken, the limits and the reported TCP buffer bytes, the
+// refusals and drops by why, and the sources holding the most flows
 func (x *Exit) flowsStatus() *egress.Flows {
 	l := x.rt.Limits
 	from := egress.BudgetHost
@@ -56,12 +56,12 @@ func (x *Exit) flowsStatus() *egress.Flows {
 		f.TCP[family(flow.ipv6)]++
 		f.Buffered += queued(flow.ep)
 	}
-	connections := x.tcp.connections
+	hosts := x.tcp.hosts
 	x.tcp.mu.Unlock()
 	f.TimeWait = x.tcp.closed.waiting()
 	if x.tcp.holds != nil {
 		held := x.flows.heldCount()
-		f.Host = &egress.HostHold{Held: held, Ports: connections + held, Bound: x.tcp.holds.limit()}
+		f.Host = &egress.HostHold{Held: held, Ports: hosts + held, Bound: x.tcp.holds.limit()}
 	}
 	x.udp.mu.RLock()
 	for leaf, mappings := range x.udp.mappings {

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/tcpip"
+
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -54,6 +56,11 @@ var unheard = egress.Hooks{Ready: func(bool, bool, bool) {}, Republish: func() {
 
 func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relayHarness {
 	t.Helper()
+	return newRelayHarnessOn(t, nil, change)
+}
+
+func newRelayHarnessOn(t *testing.T, clock tcpip.Clock, change func(*Runtime, *egress.Egress)) *relayHarness {
+	t.Helper()
 	h := &relayHarness{mesh: newFakeMesh(), clock: time.Unix(1_000_000, 0)}
 	p := &fakePlatform{routes4: true, routes6: true}
 	rt := Runtime{Mesh: h.mesh, Platform: p.platform(), Limits: testLimits(), Hooks: unheard}
@@ -70,7 +77,7 @@ func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relay
 	if change != nil {
 		change(&rt, &cfg)
 	}
-	x, err := New(cfg, rt)
+	x, err := newOn(clock, cfg, rt)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -310,7 +310,7 @@ func TestEndStepSweepAndStopActOnTheHostSocketsState(t *testing.T) {
 			aborts := countingAborts(h)
 			conn, _ := hostPair(t)
 			h.flows.admit(source)
-			if kept := h.keep(source, conn); kept != c.kept {
+			if kept := h.keep(source, conn, nil); kept != c.kept {
 				t.Fatalf("the end step kept the slot: %t, want %t", kept, c.kept)
 			}
 			if got := phases(h); !slices.Equal(got, c.atKeep) || aborts.Load() != c.abortedAtKeep {
@@ -325,7 +325,7 @@ func TestEndStepSweepAndStopActOnTheHostSocketsState(t *testing.T) {
 			aborts = countingAborts(stopped)
 			conn, server := hostPair(t)
 			stopped.flows.admit(source)
-			if !stopped.keep(source, conn) {
+			if !stopped.keep(source, conn, nil) {
 				stopped.flows.release(source)
 			}
 			stopped.close()
@@ -359,7 +359,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, newFakeHostSockets(hostTimeWait))
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		if !h.keep(source, conn) {
+		if !h.keep(source, conn, nil) {
 			t.Fatal("the end step released a socket in TIME_WAIT")
 		}
 		sweepAt(h, clock, start.Add(2*fakeMSL-time.Nanosecond))
@@ -388,7 +388,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		}
 		conn, _ := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		sweepAt(h, clock, start.Add(2*fakeMSL))
 		returned := start.Add(2*fakeMSL + aborting)
 		sweepAt(h, clock, returned.Add(fakeMargin-time.Nanosecond))
@@ -404,7 +404,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, _, _ := holdOn(t, newFakeHostSockets(hostClosed))
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		if h.keep(source, conn) {
+		if h.keep(source, conn, nil) {
 			t.Fatal("the end step kept a closed socket")
 		}
 		h.flows.release(source)
@@ -420,7 +420,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, fake)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		if !h.keep(source, conn) {
+		if !h.keep(source, conn, nil) {
 			t.Fatal("the end step released a socket in LAST_ACK")
 		}
 		for _, at := range []time.Duration{2 * fakeMSL, 2*fakeMSL + fakeMargin, later} {
@@ -446,7 +446,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, fake)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		found := clock.set(start.Add(later))
 		h.pass()
 		if err := peerSaw(server, peerWait); !timedOut(err) {
@@ -467,7 +467,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, newFakeHostSockets(hostFinWait))
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		sweepAt(h, clock, start.Add(2*fakeMSL-time.Nanosecond))
 		if err := peerSaw(server, peerWait); !timedOut(err) {
 			t.Fatalf("short of the hold's end a socket in FIN_WAIT drew %v", err)
@@ -485,7 +485,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, fake)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		fake.set(conn, hostTimeWait)
 		found := clock.set(start.Add(2*fakeMSL + mappingSweep))
 		h.pass()
@@ -509,7 +509,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, fake)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		fake.set(conn, hostClosing)
 		sweepAt(h, clock, start.Add(2*fakeMSL+mappingSweep))
 		sweepAt(h, clock, start.Add(later))
@@ -524,7 +524,7 @@ func TestHoldKeepsEachSocketItsTimeOnTheExitsClock(t *testing.T) {
 		h, clock, start := holdOn(t, newFakeHostSockets(hostOther))
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		if err := peerSaw(server, exitWait); !reset(err) {
 			t.Errorf("a socket in no closing state drew %v, want a reset at once", err)
 		}
@@ -563,7 +563,7 @@ func TestRefusedAbortKeepsTheSocketForTheNextSweep(t *testing.T) {
 		refusing := refusingAbort(h)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		sweepAt(h, clock, start.Add(2*fakeMSL))
 		sweepAt(h, clock, start.Add(2*fakeMSL+fakeMargin))
 		if err := peerSaw(server, peerWait); !timedOut(err) {
@@ -592,7 +592,7 @@ func TestRefusedAbortKeepsTheSocketForTheNextSweep(t *testing.T) {
 		refusing := refusingAbort(h)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		sweepAt(h, clock, start.Add(fakeMargin))
 		if err := peerSaw(server, peerWait); !timedOut(err) {
 			t.Fatalf("after a refused abort the server read %v, want nothing", err)
@@ -614,7 +614,7 @@ func TestRefusedAbortKeepsTheSocketForTheNextSweep(t *testing.T) {
 		refusingAbort(h)
 		conn, server := hostPair(t)
 		h.flows.admit(source)
-		h.keep(source, conn)
+		h.keep(source, conn, nil)
 		sweepAt(h, clock, start.Add(2*fakeMSL))
 		h.close()
 		if err := peerSaw(server, exitWait); !errors.Is(err, io.EOF) {
@@ -725,14 +725,24 @@ func tcpServer(t *testing.T, address netip.Addr, serve func(*net.TCPConn)) netip
 	if err != nil {
 		t.Skipf("no loopback to serve on: %v", err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
+	var workers sync.WaitGroup
+	workers.Add(1)
+	t.Cleanup(func() {
+		_ = listener.Close()
+		workers.Wait()
+	})
 	go func() {
+		defer workers.Done()
 		for {
 			conn, err := listener.AcceptTCP()
 			if err != nil {
 				return
 			}
-			go serve(conn)
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				serve(conn)
+			}()
 		}
 	}()
 	return listener.Addr().(*net.TCPAddr).AddrPort()
@@ -1107,6 +1117,7 @@ func TestFailedLeafEndpointKeepsTheSlotOfItsHalfClosedSocket(t *testing.T) {
 	r.dialing[id] = nil
 	r.dials++
 	r.connections++
+	r.hosts++
 	r.mu.Unlock()
 	if reason, ok := h.x.flows.admit(leaf4); !ok {
 		t.Fatalf("refused past %s", reason)
@@ -1120,19 +1131,19 @@ func TestFailedLeafEndpointKeepsTheSlotOfItsHalfClosedSocket(t *testing.T) {
 	}
 }
 
-// The ended mark and the flow's leaving the list before its end step keep the
-// host socket the end step owns from a withdraw: a withdraw that runs while
-// the end step reads the socket's state leaves the socket the hold keeps
-// open, and so does the reset of a withdraw that listed the flow before its
-// end. The end step reads TIME_WAIT, and each reset after it a state it would
-// abort in.
+// TestWithdrawLeavesTheSocketTheEndStepKeeps leaves the last leaf ACK pending,
+// then blocks the host state read after the end step takes ownership. Withdrawal
+// finds the still-closing flow but must leave that host socket to the end step.
 func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	fake := newFakeHostSockets(hostTimeWait)
 	h, _, _ := holdHarness(t, fake.platform())
 	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), readsToTheEnd)
 	c := h.open(t, netip.AddrPortFrom(leaf4, 42700), server)
 	flow := listedFlow(t, h)
-	block, reading := make(chan struct{}), make(chan struct{})
+	t.Cleanup(flow.ep.Abort)
+	block, reading := make(chan struct{}), make(chan struct{}, 1)
+	release := sync.OnceFunc(func() { close(block) })
+	t.Cleanup(release)
 	fake.mu.Lock()
 	fake.block, fake.reading = block, reading
 	fake.mu.Unlock()
@@ -1144,7 +1155,7 @@ func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	}
 	fake.set(flow.conn, hostOther)
 	h.x.tcp.withdraw()
-	close(block)
+	release()
 	h.waitConnections(t, 0)
 	kept := heldConns(h.x.tcp.holds)
 	if len(kept) != 1 {

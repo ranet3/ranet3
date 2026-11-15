@@ -32,18 +32,13 @@ type stackHandlers struct {
 	icmp func(stack.TransportEndpointID, *stack.PacketBuffer)
 }
 
-// newStack is the stack the exit ends each leaf's TCP connection in: TCP,
+// newStackOn is the stack the exit ends each leaf's TCP connection in: TCP,
 // UDP, ICMP and ICMPv6, one NIC on l that passes only the TCP segments the
 // stack sends, promiscuous and spoofing so a flow runs whole from the
 // destination it was sent to while the stack holds no address, and a default
 // route of each family to it. Each TCP buffer starts at window and grows no
-// larger. handlers takes what reaches no endpoint.
-func newStack(l *link, window int, handlers stackHandlers) (*stack.Stack, error) {
-	return newStackOn(nil, l, window, handlers)
-}
-
-// newStackOn is newStack on clock, the host's where nil, which a test moves
-// to run the stack's timers
+// larger. handlers takes what reaches no endpoint. clock drives the stack's
+// timers, the host's clock where nil.
 func newStackOn(clock tcpip.Clock, l *link, window int, handlers stackHandlers) (*stack.Stack, error) {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},

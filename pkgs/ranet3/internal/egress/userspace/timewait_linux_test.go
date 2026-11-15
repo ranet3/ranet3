@@ -191,7 +191,7 @@ func TestReconnectInTimeWaitCompletesBeforeItsSynTimesOut(t *testing.T) {
 					t.Fatalf("first connection from %s: %v", leaf, err)
 				}
 				closed := time.Now()
-				r.waitFor(t, "the endpoint in TIME_WAIT", func() bool { return timeWaitOf(r.exit.stack, leaf, server) == tcp.StateTimeWait })
+				waitFor(t, "the endpoint in TIME_WAIT", func() bool { return timeWaitOf(r.exit.stack, leaf, server) == tcp.StateTimeWait })
 				waited := time.Since(closed)
 				start := time.Now()
 				second, err := r.dial(leaf, server, leafDial)
@@ -219,7 +219,7 @@ func TestReconnectInTimeWaitCompletesBeforeItsSynTimesOut(t *testing.T) {
 	// each second connection's endpoint still waits, and all but
 	// Limits.TimeWait of them were closed early, the reused ones freed
 	want := uint64(2*reconnects - testLimits().TimeWait)
-	r.waitFor(t, "the endpoints past the limit closed", func() bool { return r.exit.counts.closed.Load() == want })
+	waitFor(t, "the endpoints past the limit closed", func() bool { return r.exit.counts.closed.Load() == want })
 }
 
 // timeWaitOf is the state of the stack's endpoint for leaf toward server

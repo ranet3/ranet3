@@ -44,8 +44,8 @@ import (
 // toward the leaf as it does for an exit beside it.
 
 const (
-	// untimed is Flow.Left for a flow the exit keeps with no idle timer,
-	// until an end closes or resets it
+	// untimed is the adapter's placeholder for a TCP lifetime it does not read.
+	// It passes a lifetime floor without measuring the stack's remaining time.
 	untimed = time.Duration(1 << 62)
 	// wireHeader is a message's kind, the id its reply carries back and the
 	// length of its bytes, and wireMost the most bytes one message carries
@@ -742,8 +742,10 @@ func serverEnd(id stack.TransportEndpointID) netip.AddrPort {
 	return netip.AddrPortFrom(addrOf(id.LocalAddress), id.LocalPort)
 }
 
-// tcpPhase is RFC 5382 section 5's phase of a leaf's endpoint, which the
-// exit keeps with no idle timer until an end closes or resets it
+// tcpPhase gives RFC 5382 section 5's phase of a leaf's endpoint and untimed
+// rather than a reading of the stack's remaining lifetime. The TCP phase
+// floors are unchecked. egresstest.timerClosing names the tests of the closing
+// user timeout.
 func tcpPhase(state tcp.EndpointState) (egresstest.Phase, time.Duration) {
 	switch state {
 	case tcp.StateSynRecv:

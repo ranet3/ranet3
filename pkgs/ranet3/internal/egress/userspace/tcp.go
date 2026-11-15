@@ -45,6 +45,9 @@ type tcpRelay struct {
 	// dials and connections count the connections being dialed and those
 	// admitted and not yet ended, dials among them
 	dials, connections int
+	// hosts counts admissions whose host end step has yet to run.
+	// Together with held host slots it counts the host ports taken.
+	hosts int
 	// ctx ends each dial and flows holds each connection relayed, both
 	// withdrawn at once, and resume makes ctx again
 	ctx    context.Context
@@ -94,7 +97,7 @@ func (r *tcpRelay) handle(id stack.TransportEndpointID, pkt *stack.PacketBuffer)
 	case r.connections >= r.x.rt.Limits.Connections:
 		reason = reasonConnections
 	default:
-		reason, _ = r.x.flows.admitTCP(source, r.connections, r.holds.limit())
+		reason, _ = r.x.flows.admitTCP(source, r.hosts, r.holds.limit())
 	}
 	if reason != "" {
 		r.mu.Unlock()
@@ -106,20 +109,21 @@ func (r *tcpRelay) handle(id stack.TransportEndpointID, pkt *stack.PacketBuffer)
 	view.Release()
 	r.dials++
 	r.connections++
+	r.hosts++
 	r.running.Add(1)
 	r.mu.Unlock()
 	if !r.forwarder.HandlePacket(id, pkt) {
-		r.end(id, source, true, false)
+		r.finish(source, nil, false, nil)
+		r.end(id, source, true, false, nil)
 		r.running.Done()
 		return false
 	}
 	return true
 }
 
-// end gives back what an admitted connection held: its dial where dialing,
-// its count among the connections and its flow unless held, which the hold
-// gives back
-func (r *tcpRelay) end(id stack.TransportEndpointID, source netip.Addr, dialing, held bool) {
+// end returns the connection and its dial where applicable. A host hold and a
+// closing leaf share one flow, which the last of them to end gives back.
+func (r *tcpRelay) end(id stack.TransportEndpointID, source netip.Addr, dialing, held bool, leaf *tcpFlow) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if dialing {
@@ -127,21 +131,36 @@ func (r *tcpRelay) end(id stack.TransportEndpointID, source netip.Addr, dialing,
 		r.dials--
 	}
 	r.connections--
+	if leaf != nil {
+		delete(r.flows, leaf)
+	}
+	flows := r.x.flows
+	flows.mu.Lock()
+	defer flows.mu.Unlock()
+	if leaf != nil && leaf.hold != nil {
+		leaf.hold.leaf = nil
+		leaf.hold = nil
+		held = true
+	}
 	if !held {
-		r.x.flows.release(source)
+		flows.releaseLocked(source)
 	}
 }
 
-// finish hands conn, the host's connection of source, to the hold's end step
-// once nothing more is relayed on it, and ends it. A conn reset closed with a
-// linger of 0 keeps no slot. The hold takes its slot before end gives back the
-// connection's count, so the two never sum short.
-func (r *tcpRelay) finish(id stack.TransportEndpointID, source netip.Addr, conn *net.TCPConn, reset bool, dialing bool) {
+// finish releases the host admission, passing a socket not already reset to
+// its platform's end step. For a relayed connection it runs when copying ends,
+// before waiting for the leaf. A hold takes its slot before the host admission
+// is returned, so the handoff never counts short. It reports whether the hold
+// kept the host's slot.
+func (r *tcpRelay) finish(source netip.Addr, conn *net.TCPConn, reset bool, leaf *tcpFlow) bool {
 	held := false
-	if !reset {
-		held = r.holds.keep(source, conn)
+	if conn != nil && !reset {
+		held = r.holds.keep(source, conn, leaf)
 	}
-	r.end(id, source, dialing, held)
+	r.mu.Lock()
+	r.hosts--
+	r.mu.Unlock()
+	return held
 }
 
 // endpointFailed ends a connection whose leaf endpoint failed after its dial.
@@ -151,7 +170,8 @@ func (r *tcpRelay) endpointFailed(id stack.TransportEndpointID, source netip.Add
 	if r.holds != nil {
 		_ = conn.CloseWrite()
 	}
-	r.finish(id, source, conn, false, true)
+	held := r.finish(source, conn, false, nil)
+	r.end(id, source, true, held, nil)
 }
 
 // accept dials the server a SYN asked for, and once the dial is up completes
@@ -165,10 +185,10 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	syn, ctx := r.dialing[id], r.ctx
 	r.mu.Unlock()
 	conn, mapping, failure := r.dial(ctx, leaf, server)
-	defer r.mappings.release(mapping)
 	if conn == nil {
 		r.x.answerDialFailure(req, syn, failure)
-		r.end(id, leaf.Addr(), true, false)
+		r.finish(leaf.Addr(), nil, false, nil)
+		r.end(id, leaf.Addr(), true, false, nil)
 		return
 	}
 	var queue waiter.Queue
@@ -176,6 +196,7 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	if err != nil {
 		req.Complete(true)
 		r.endpointFailed(id, leaf.Addr(), conn)
+		r.mappings.release(mapping)
 		return
 	}
 	req.Complete(false)
@@ -194,23 +215,21 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	} else {
 		f.relay()
 	}
-	r.closeFlow(id, leaf.Addr(), f)
+	r.closeFlow(id, leaf.Addr(), f, mapping)
 }
 
-// closeFlow ends f, a connection of source whose relay is over. f leaves the
-// list withdraw resets, and is marked ended against a withdraw that listed it
-// before, ahead of finish, so no withdraw closes a host socket the end step
-// keeps.
-func (r *tcpRelay) closeFlow(id stack.TransportEndpointID, source netip.Addr, f *tcpFlow) {
-	r.mu.Lock()
-	delete(r.flows, f)
-	r.mu.Unlock()
-	wasReset := f.end()
-	f.ep.Close()
-	r.finish(id, source, f.conn, wasReset, false)
+// closeFlow decides the host socket and returns its mapping when copying ends.
+// The leaf's connection and flow stay charged through closing, until TIME_WAIT,
+// closed or error. A host hold can keep that flow longer. Only TIME_WAIT enters
+// closedEndpoints.
+func (r *tcpRelay) closeFlow(id stack.TransportEndpointID, source netip.Addr, f *tcpFlow, mapping *tcpMapping) {
+	r.finish(source, f.conn, f.end(), f)
+	r.mappings.release(mapping)
+	f.drain()
 	if e, ok := f.ep.(*tcp.Endpoint); ok {
 		r.x.counts.closed.Add(uint64(r.closed.add(e)))
 	}
+	r.end(id, source, false, false, f)
 }
 
 // dial opens the host's connection from the outside endpoint of the leaf's
@@ -495,6 +514,9 @@ type tcpFlow struct {
 	payload payload
 	// holds is the relay's hold, nil on a platform that bounds no host ports
 	holds *hostHolds
+	// hold shares the flow charge with a held host socket, under flows.mu
+	// once the hold is published
+	hold *heldSocket
 	// ipv6 is the flow's family, which the status counts it under
 	ipv6 bool
 	// ending orders reset against the flow's end step
@@ -506,19 +528,18 @@ type tcpFlow struct {
 	wasReset bool
 }
 
-// reset resets both ends: the leaf's from the stack and the server's from
-// the host, in any state before TIME_WAIT. A flow whose end step owns its host
-// socket is left to it. So is a host socket the hold reads in TIME_WAIT, where
-// both FINs have passed and a reset has nothing left to tell the server, and
-// one that refuses the linger of 0: the reads and writes of each end at once
-// instead, and the end step keeps it as any other.
+// reset aborts the leaf even after copying ends, but resets the host only while
+// copying still owns it. In TIME_WAIT both FINs have passed and a reset has
+// nothing left to tell the server, so the socket stays with the host's end
+// step. A socket that refuses a linger of 0 stays there too. Both have their
+// I/O interrupted so copying can end.
 func (f *tcpFlow) reset() {
 	f.ending.Lock()
 	defer f.ending.Unlock()
+	f.ep.Abort()
 	if f.ended {
 		return
 	}
-	f.ep.Abort()
 	if f.holds.timeWait(f.conn) || abortSocket(f.conn) != nil {
 		_ = f.conn.SetDeadline(time.Unix(1, 0))
 		return
@@ -526,13 +547,36 @@ func (f *tcpFlow) reset() {
 	f.wasReset = true
 }
 
-// end reports whether reset closed the flow's host socket, and on a platform
-// whose end step keeps host sockets hands the socket to it
+// end gives the host socket to the end step on every platform and reports
+// whether reset already closed it. A reset after end leaves the host socket
+// to that step.
 func (f *tcpFlow) end() bool {
 	f.ending.Lock()
 	defer f.ending.Unlock()
-	f.ended = f.holds != nil
+	f.ended = true
 	return f.wasReset
+}
+
+// drain closes the leaf endpoint and waits for TIME_WAIT, closed or error,
+// applying closingTimeout while it waits. The Closing TCP section of
+// pkgs/raweb3/pages/docs/design/limits.md gives the timeout's clock and expiry.
+func (f *tcpFlow) drain() {
+	f.ep.Close()
+	finished := func() bool {
+		state := tcp.EndpointState(f.ep.State())
+		return state == tcp.StateTimeWait || state == tcp.StateClose || state == tcp.StateError
+	}
+	if finished() {
+		return
+	}
+	timeout := tcpip.TCPUserTimeoutOption(closingTimeout)
+	f.ep.SetSockOpt(&timeout)
+	entry, changed := waiter.NewChannelEntry(waiter.EventHUp | waiter.EventErr)
+	f.queue.EventRegister(&entry)
+	defer f.queue.EventUnregister(&entry)
+	for !finished() {
+		<-changed
+	}
 }
 
 // relay copies both ways until both ends have closed. A half close is passed

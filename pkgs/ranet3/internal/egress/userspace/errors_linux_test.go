@@ -145,7 +145,7 @@ func waitTold(t *testing.T, r *leafRig, conn *net.UDPConn) (icmpError, []byte) {
 	t.Helper()
 	var told []icmpError
 	var quoted [][]byte
-	r.waitFor(t, "an error queued on "+serverAt(conn).String(), func() bool {
+	waitFor(t, "an error queued on "+serverAt(conn).String(), func() bool {
 		_ = onSocket(conn, func(fd int) error {
 			drainErrors(fd, make([]byte, 2048), func(e icmpError, prefix []byte) {
 				told, quoted = append(told, e), append(quoted, bytes.Clone(prefix))

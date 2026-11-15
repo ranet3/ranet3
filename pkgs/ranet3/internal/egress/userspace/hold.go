@@ -98,6 +98,9 @@ type heldSocket struct {
 	source netip.Addr
 	conn   *net.TCPConn
 	phase  holdPhase
+	// leaf shares the flow charge until it ends, under flows.mu once
+	// this socket is published by add
+	leaf *tcpFlow
 	// until is the phase's deadline, zero for a socket watched with none
 	until time.Time
 }
@@ -179,14 +182,14 @@ func (h *hostHolds) timeWait(conn *net.TCPConn) bool {
 	return err == nil && state == hostTimeWait
 }
 
-// keep is the end step for conn, a connection of source whose relay is over,
-// and reports whether its slot stays. A socket read closed is closed and
-// released. One in TIME_WAIT is held twice the MSL. One in CLOSING or LAST_ACK
-// is watched with no deadline, and one in a FIN_WAIT state with a deadline
-// twice the MSL on. One in any other state, or whose state does not read, is
-// aborted at once and its slot kept the margin. Where nothing holds, conn is
-// closed and released.
-func (h *hostHolds) keep(source netip.Addr, conn *net.TCPConn) bool {
+// keep decides conn, a connection of source whose relay is over, and reports
+// whether its host slot stays. A socket read closed is closed without a hold.
+// One in TIME_WAIT is held twice the MSL. One in CLOSING or LAST_ACK is watched
+// with no deadline, and one in a FIN_WAIT state with a deadline twice the MSL
+// on. One in any other state, or whose state does not read, is aborted at once
+// and its slot kept the margin. Where nothing holds, conn is closed. A nonnil
+// leaf and this host hold share one flow until both have ended.
+func (h *hostHolds) keep(source netip.Addr, conn *net.TCPConn, leaf *tcpFlow) bool {
 	if h == nil {
 		_ = conn.Close()
 		return false
@@ -201,7 +204,10 @@ func (h *hostHolds) keep(source netip.Addr, conn *net.TCPConn) bool {
 	}
 	h.flows.hold(source)
 	msl := time.Duration(h.msl.Load())
-	s := &heldSocket{source: source, conn: conn}
+	s := &heldSocket{source: source, conn: conn, leaf: leaf}
+	if leaf != nil {
+		leaf.hold = s
+	}
 	switch state {
 	case hostTimeWait:
 		s.phase, s.until = holdTimeWait, h.now().Add(2*msl)
@@ -266,7 +272,7 @@ func (h *hostHolds) pass() {
 		if !h.step(s, now, msl) {
 			return false
 		}
-		h.flows.unhold(s.source)
+		h.release(s)
 		return true
 	})
 	h.mu.Lock()
@@ -304,6 +310,24 @@ func (h *hostHolds) step(s *heldSocket, now time.Time, msl time.Duration) bool {
 	return false
 }
 
+// release ends the host slot, leaving the flow charged to a leaf still closing.
+// Where the leaf has ended, or none shares the slot, it returns the flow too.
+func (h *hostHolds) release(s *heldSocket) {
+	f := h.flows
+	f.mu.Lock()
+	if s.leaf == nil {
+		f.mu.Unlock()
+		f.unhold(s.source)
+		return
+	}
+	s.leaf.hold = nil
+	if f.heldBy[s.source]--; f.heldBy[s.source] == 0 {
+		delete(f.heldBy, s.source)
+	}
+	f.held--
+	f.mu.Unlock()
+}
+
 // close ends every hold as the exit stops, and gives every slot back. It
 // aborts every socket, one in CLOSING or LAST_ACK too, at the cost of the last
 // unacknowledged bytes of a connection closing at the stop: a stopped exit
@@ -328,7 +352,7 @@ func (h *hostHolds) close() {
 				refused, refusal = refused+1, err
 			}
 		}
-		h.flows.unhold(s.source)
+		h.release(s)
 	}
 	if refused > 0 {
 		slog.Warn("egress userspace exit closed host sockets the host refused to abort, and left them to the host", "sockets", refused, "err", refusal)

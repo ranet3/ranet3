@@ -114,22 +114,26 @@ func (w *timeWait) record(id stack.TransportEndpointID, fin uint32) {
 // condition (1) asks of.
 func reuses(fin, syn uint32) bool { return int32(syn-(fin+1)) > 0 }
 
-// closedEndpoints holds the leaf-side endpoints the exit closed, oldest
-// first, until the stack frees them, aborting the oldest past limit, so the
-// endpoints in TIME_WAIT never number more than limit
+// closedEndpoints keeps endpoints admitted in TIME_WAIT, oldest first.
+// Only endpoints still read in TIME_WAIT may give way to the cap.
 type closedEndpoints struct {
 	mu    sync.Mutex
 	queue []*tcp.Endpoint
 	limit int
 }
 
-// add holds ep, which the exit just closed, and reports the endpoints it
-// aborted to stay within the limit
+// add admits only endpoints read in TIME_WAIT and counts those read there
+// before calls to Abort for room. An endpoint can end before Abort takes its
+// lock, so the count can include one that has already ended.
 func (c *closedEndpoints) add(ep *tcp.Endpoint) int {
 	c.mu.Lock()
+	if !inTimeWait(ep) {
+		c.mu.Unlock()
+		return 0
+	}
 	c.queue = append(c.queue, ep)
 	if len(c.queue) > c.limit {
-		c.queue = slices.DeleteFunc(c.queue, freed)
+		c.queue = slices.DeleteFunc(c.queue, func(ep *tcp.Endpoint) bool { return !inTimeWait(ep) })
 	}
 	var aborted []*tcp.Endpoint
 	if over := len(c.queue) - c.limit; over > 0 {
@@ -137,17 +141,17 @@ func (c *closedEndpoints) add(ep *tcp.Endpoint) int {
 		c.queue = slices.Delete(c.queue, 0, over)
 	}
 	c.mu.Unlock()
+	count := 0
 	for _, ep := range aborted {
-		ep.Abort()
+		if inTimeWait(ep) {
+			ep.Abort()
+			count++
+		}
 	}
-	return len(aborted)
+	return count
 }
 
-// freed is an endpoint the stack holds no more
-func freed(ep *tcp.Endpoint) bool {
-	switch ep.EndpointState() {
-	case tcp.StateClose, tcp.StateError:
-		return true
-	}
-	return false
+// inTimeWait reports whether ep still holds TIME_WAIT
+func inTimeWait(ep *tcp.Endpoint) bool {
+	return ep.EndpointState() == tcp.StateTimeWait
 }
