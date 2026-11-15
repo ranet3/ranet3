@@ -5,6 +5,7 @@ package ike
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"net"
@@ -416,7 +417,9 @@ func answerExchange(t testing.TB, x payloadExchange, events Recorder, cleanup fu
 	if err := peer.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	accepted, _, authErr := s.completeResponderAuth(r, goldenMessage1, goldenMessage2, goldenNi, goldenNr, time.Now().Add(answerBudget))
+	handshakeCtx, cancel := context.WithTimeout(t.Context(), answerBudget)
+	defer cancel()
+	accepted, _, authErr := s.completeResponderAuth(handshakeCtx, r, goldenMessage1, goldenMessage2, goldenNi, goldenNr, func() bool { return true })
 	raw, err := recvIKEUntil(peer, time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("the responder sent no answer: %v", err)

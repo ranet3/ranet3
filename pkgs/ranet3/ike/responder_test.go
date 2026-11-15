@@ -38,7 +38,9 @@ type responderHarness struct {
 	// aliases holds the table the responder's Aliases gives the next handshake, none until a test stores some
 	aliases *atomic.Pointer[Aliases]
 	// lists holds the cap.crypto lists the responder and each session it answers read
-	lists *atomic.Pointer[Suites]
+	lists  *atomic.Pointer[Suites]
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // newResponderHarness runs a Responder on one hub and hands back everything
@@ -165,17 +167,17 @@ func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Fam
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	// Serve turns delivery on when its goroutine first runs
-	// and the hub drops an unclaimed datagram until then
-	// several tests here send one request and wait for its answer without retransmitting
-	// and on a loaded machine that goroutine can start after the request has arrived
-	// so delivery is on before the harness is returned
-	// and Serve's own call gets the same queue
+	h.cancel = cancel
+	h.done = make(chan struct{})
+	// the first request must be queued even if Serve has not been scheduled yet
 	responderHub.Listen()
-	go responder.Serve(ctx, func(s *Session, accepted Accepted) {
-		h.sessions <- s
-		h.identities <- accepted
-	})
+	go func() {
+		defer close(h.done)
+		_ = responder.Serve(ctx, func(s *Session, accepted Accepted) {
+			h.sessions <- s
+			h.identities <- accepted
+		})
+	}()
 	return h
 }
 
@@ -2587,7 +2589,7 @@ func TestResponderRefusingIKEAuthSendsNoDelete(t *testing.T) {
 			refused := &recorder{}
 			h := childRefusedHarness(t, refused.record)
 			mux := childRefusedMux(t, h)
-			held, _ := dialSignedBy(t, h, mux, refusal.key(h), refusal.idi, refusal.idr)
+			held, _ := dialSignedBy(t, h, mux, refusal.key(h), refusal.idi, refusal.idr, nil)
 
 			header, inner, _ := responderMessage(t, mux, held)
 			if header.ExchangeType != IKE_AUTH || !header.IsResponse() || len(inner) != 1 || inner[0].Type != PayloadN {
@@ -2624,15 +2626,18 @@ func childRefusedMux(t *testing.T, h *responderHarness) *transport.Mux {
 // dialRefusedChild signs IKE_AUTH as the trust expects, so the bundled Child SA is all the responder refuses
 func dialRefusedChild(t *testing.T, h *responderHarness, mux *transport.Mux) (*ikeContext, []byte) {
 	t.Helper()
-	return dialSignedBy(t, h, mux, h.private, "testorg/client:2", "testorg/server:1")
+	return dialSignedBy(t, h, mux, h.private, "testorg/client:2", "testorg/server:1", nil)
 }
 
-// the IKE_AUTH request names idi and idr, and its Child SA offer names a DH group, which a Child SA in IKE_AUTH cannot negotiate
-func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed25519.PrivateKey, idi, idr string) (*ikeContext, []byte) {
+// dialSignedBy signs IKE_AUTH for idi and idr, with a refused Child SA offer unless shape changes it
+func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed25519.PrivateKey, idi, idr string, shape func(*Proposal)) (*ikeContext, []byte) {
 	t.Helper()
 	held, message1, nr := initHalfOpen(t, mux, nil)
 	child := espProposal([]byte{0, 0, 0, 9})
 	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
+	if shape != nil {
+		shape(&child)
+	}
 	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
 	request, err := EncryptMessage(held.suite, held.skei, header, nil, ikeAuthPayloads(key, held, message1, nr, child, idi, idr))
 	if err != nil {

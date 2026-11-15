@@ -6,6 +6,7 @@ package ike
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -959,7 +960,9 @@ func answerIKEAuth(t testing.TB, h *responderHarness, lists Suites, children ...
 	if err := peer.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	_, created, authErr := s.completeResponderAuth(h.responder, message1, message2, ni, nr, time.Now().Add(answerBudget))
+	handshakeCtx, cancel := context.WithTimeout(t.Context(), answerBudget)
+	defer cancel()
+	_, created, authErr := s.completeResponderAuth(handshakeCtx, h.responder, message1, message2, ni, nr, func() bool { return true })
 	if !created {
 		t.Errorf("an IKE_AUTH that authenticates left the IKE SA uncreated, with %v", authErr)
 	}
@@ -1038,7 +1041,9 @@ func TestRefusedIKEAuthWhoseAnswerCannotGoEndsWithTheAnswersError(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			_, created, err := s.completeResponderAuth(h.responder, message1, message2, ni, nr, time.Now().Add(answerBudget))
+			handshakeCtx, cancel := context.WithTimeout(t.Context(), answerBudget)
+			defer cancel()
+			_, created, err := s.completeResponderAuth(handshakeCtx, h.responder, message1, message2, ni, nr, func() bool { return true })
 			if created || err == nil || !strings.Contains(err.Error(), "IV space exhausted") {
 				t.Errorf("an IKE_AUTH in %d datagrams whose refusal could not go ended with %v and created %v, want the IV space's error and no IKE SA", len(request), err, created)
 			}

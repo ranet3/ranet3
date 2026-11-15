@@ -240,7 +240,6 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	deadline, _ := ctx.Deadline()
 
 	if header, err := decodeHeader(datagram.Raw); err == nil {
 		if higherVersion(r.cfg.Hub.SendIKETo, header, datagram.Endpoint) {
@@ -394,7 +393,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	session := newSession(mux, current, r.cfg.RekeyTiming, r.cfg.Suites, fragments, r.cfg.pathMTU)
 	session.started = started
 
-	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
+	accepted, created, err := session.completeResponderAuth(ctx, r, datagram.Raw, response, ni, nr, stopCancel)
 	if err != nil {
 		if created {
 			// RFC 7296 section 1.2: "If creating the Child SA during the IKE_AUTH exchange fails for some reason, the IKE SA is still created as usual."
@@ -447,11 +446,11 @@ func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, su
 	return (&Message{Header: header, Payloads: payloads}).Encode(), nil
 }
 
-// completeResponderAuth waits for IKE_AUTH, authenticates the initiator and answers with this end's AUTH and the selected Child SA
-// the IKE_INTERMEDIATE exchanges the suite runs come first, and awaitAuthRequest answers the repeats of each exchange before IKE_AUTH
-// created, with an error, reports an answer carrying this end's AUTH and the Child SA's error, which leaves the IKE SA established
-func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2, ni, nr []byte, deadline time.Time) (_ Accepted, created bool, _ error) {
+// completeResponderAuth returns created after committing an authenticated IKE_AUTH answer, even if its Child SA is refused
+// stopCancel must disarm handshakeCtx's mux closure before commitment, or the returned error wraps handshakeCtx.Err()
+func (s *Session) completeResponderAuth(handshakeCtx context.Context, r *Responder, realMessage1, realMessage2, ni, nr []byte, stopCancel func() bool) (_ Accepted, created bool, _ error) {
 	ctx := s.current
+	deadline, _ := handshakeCtx.Deadline()
 	got, chain, err := s.awaitAuthRequest(realMessage1, realMessage2, ni, nr, deadline)
 	if err != nil {
 		return Accepted{}, false, err
@@ -523,6 +522,10 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	// RFC 7296 section 2.21.2: "If authentication has succeeded in the IKE_AUTH exchange, the IKE SA is established"
 	// and: "Specifically, a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	child, err := s.selectResponderChild(request, ni, nr)
+	// once the peer can hold the IKE SA, this handshake's cancellation must no longer close its mux
+	if !stopCancel() {
+		return Accepted{}, false, fmt.Errorf("ike: authenticated handshake ended: %w", handshakeCtx.Err())
+	}
 	if err != nil {
 		// no KE payload follows in IKE_AUTH, so no INVALID_KE_PAYLOAD could be acted on
 		refusal := N_NO_PROPOSAL_CHOSEN
