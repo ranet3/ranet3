@@ -18,7 +18,11 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/sadr"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // BorderClass names the packets one rule of the filter matches
@@ -240,6 +244,21 @@ func (s borderSets) changed(was borderSets) borderSets {
 	return out
 }
 
+// none is the ranges of the none sets, the IPv4 ranges ahead of the IPv6 ones
+func (s borderSets) none() []egress.Range {
+	return append(slices.Clone(s[noneSet+"4"]), s[noneSet+"6"]...)
+}
+
+// byFamily is ranges, sorted as egress.Union leaves them, as its IPv4 and its
+// IPv6 ranges
+func byFamily(ranges []egress.Range) (v4, v6 []egress.Range) {
+	i := slices.IndexFunc(ranges, func(r egress.Range) bool { return r.First.Is6() })
+	if i < 0 {
+		i = len(ranges)
+	}
+	return ranges[:i:i], ranges[i:]
+}
+
 // borderBackend is the kernel surface the filter drives
 type borderBackend interface {
 	// Rules reads the filter's own chains and sets back: both chains' rules
@@ -322,23 +341,64 @@ type BorderFilter struct {
 	// finish withdraws what the filter writes and closes the backend once, at
 	// the end of Run or at Close where the first pass made it
 	finish func() error
+	// noneMu guards the fields below it up to kernel. A pass leaves out of its
+	// sets the addresses reported and promised keep out, and a Snapshot holds
+	// back what none meets and promises the rest, each in one hold of noneMu,
+	// so either the Snapshot sees the pass's none or the pass sees the
+	// Snapshot's promise.
+	noneMu sync.Mutex
+	// none is the ranges the entry chain's none sets may hold, in Union form:
+	// every address until a pass reads them back as written, and nothing once
+	// a withdrawal took them. A pass joins its own sets in before it writes,
+	// since a write can land and still fail, and leaves only its own once it
+	// read them back as written. A stop that leaves the chains leaves none,
+	// since the sets stay with them.
+	none []egress.Range
+	// reported is the routes the reconciler's last report says the kernel may
+	// hold
+	reported []meshkernel.Route
+	// promised is the route the reconciler may install for each entry the
+	// source handed since that report, which the next report accounts for
+	promised []meshkernel.Route
+	// derived is the last pass's none sets as derived from the configuration
+	derived []egress.Range
+	// left is the part of derived the last pass asked the none sets to hold,
+	// the addresses of reported and promised taken out
+	left []egress.Range
+	// src is the route source Routes built, nil before
+	src *routeSource
+	// kernel carries a move of what the reconciler's report leaves of the
+	// last pass's none sets to the run goroutine
+	kernel chan struct{}
+	// ended is closed once the filter stops, by end
+	ended chan struct{}
+	end   func()
 
 	// the rest belong to the run goroutine, and to NewBorderFilter before it
-	// starts. held is the sets the last write or clean read found, nil where
-	// none is known, last is the rules
-	// of the last pass that read the filter back as written, made is whether
-	// the first pass's read found nothing the filter writes, so whatever is
-	// there is this start's, and found whether that read found any of it.
+	// starts. written is the sets the last write or clean read found, nil where
+	// the kernel's sets are not known. last is the rules of the last pass that
+	// read the filter back as written, made is whether the first pass's read
+	// found nothing the filter writes, so whatever is there is this start's,
+	// and found whether that read found any of it.
 	made      bool
 	found     bool
 	trigger   string
 	ready     bool
 	unready   string
 	dropped   egress.BorderDrops
-	held      borderSets
+	written   borderSets
 	carveOuts []egress.CarveOut
 	conflicts []egress.ExemptConflict
 	last      []BorderRule
+	// heldOnFault is whether the last pass ended on a readback fault with the
+	// source holding a route back. Run then retries the pass on its own timer,
+	// since no change of the table or the configuration may come to wake it.
+	heldOnFault bool
+	// heldRoutes reports each route the source holds back as a pass ends
+	heldRoutes routeReport
+	// keptRoutes reports each route whose addresses a pass kept out of the
+	// sets
+	keptRoutes routeReport
 }
 
 // NewBorderFilter validates the configuration, nil where overlay is not
@@ -386,7 +446,9 @@ func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBac
 // leaves the rest for the next start: what the first read found, adopted or
 // rewritten, and whatever is there where that read failed, which it names
 // nothing of. Either way the backend's close gives back what opening it took
-// beyond what it writes, where no earlier run left it so.
+// beyond what it writes, where no earlier run left it so. The route source
+// holds back what the none sets it leaves may hold, as after a withdrawal
+// that fails.
 func (f *BorderFilter) Close() error {
 	if f.made {
 		return f.finish()
@@ -400,8 +462,16 @@ func (f *BorderFilter) Close() error {
 
 // newBorderFilter is a filter over a backend that is already open, before its first pass
 func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) *BorderFilter {
-	f := &BorderFilter{rt: rt, be: be, sweep: cmp.Or(be.sweep(), egress.DefaultSweep), wake: make(chan struct{}, 1), trigger: "start"}
+	f := &BorderFilter{rt: rt, be: be, sweep: cmp.Or(be.sweep(), egress.DefaultSweep), wake: make(chan struct{}, 1), trigger: "start", ended: make(chan struct{}), kernel: make(chan struct{}, 1)}
+	f.heldRoutes = routeReport{what: "held",
+		warn:    "antispoof holds learned routes back from the kernel, handing the reconciler a hold at each, until a pass writes the none sets without them",
+		release: "antispoof no longer holds learned routes back from the kernel"}
+	f.keptRoutes = routeReport{what: "kept",
+		warn:    "antispoof keeps out of the none sets the addresses of routes the kernel may hold that no learned entry asks for",
+		release: "antispoof no longer keeps out of the none sets the addresses of these routes, each one neither the reconciler's report nor the source's promise names, or one with none of its addresses outside the overlay in the sets as derived, as when a learned entry asks for them again, a reload brings them inside the overlay or no none class covers them"}
+	f.none = everyAddress
 	f.config.Store(cfg)
+	f.end = sync.OnceFunc(func() { close(f.ended) })
 	f.finish = sync.OnceValue(func() error {
 		f.stopping()
 		removed, err := f.be.Withdraw()
@@ -411,9 +481,296 @@ func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBacke
 		case removed:
 			slog.Info("antispoof filter withdrawn", "where", f.Where())
 		}
+		if err == nil {
+			f.setNone(nil)
+		}
 		return errors.Join(err, f.be.Close())
 	})
 	return f
+}
+
+// Routes is the mesh's table as the route reconciler reads it. Where the entry
+// chain runs, it is the table with a hold in place of each learned entry
+// whose destination meets the ranges the none sets may hold, as
+// internal/kernel's Unentered holds them back, it wakes on a change of the
+// table, of those ranges and of the overlay, and it is told what the
+// reconciler's passes may have left in the kernel. Before a pass has read the
+// sets back it holds back each learned entry outside the overlay, and after a
+// stop that leaves the chains what their sets may still hold. A nil filter,
+// which a platform with no backend builds, and a platform with no entry chain
+// hand the table itself. The filter builds one source, at the first call, and
+// a later call hands that one, the first call's table standing. Its watch of
+// the table ends with the filter.
+func (f *BorderFilter) Routes(table *netstack.RouteTable) meshkernel.RouteSource {
+	if f == nil || !EntryRuns {
+		return table
+	}
+	f.noneMu.Lock()
+	defer f.noneMu.Unlock()
+	if f.src == nil {
+		r := &routeSource{filter: f, table: table, wake: make(chan struct{}, 1)}
+		f.src = r
+		changes := table.Changes()
+		go func() {
+			for {
+				select {
+				case <-f.ended:
+					return
+				case <-changes:
+					r.notify()
+				}
+			}
+		}()
+	}
+	return f.src
+}
+
+// source is the route source Routes built, nil before
+func (f *BorderFilter) source() *routeSource {
+	f.noneMu.Lock()
+	defer f.noneMu.Unlock()
+	return f.src
+}
+
+// routeSource is the route source Routes builds
+type routeSource struct {
+	filter *BorderFilter
+	table  *netstack.RouteTable
+	wake   chan struct{}
+}
+
+func (r *routeSource) notify() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (r *routeSource) Changes() <-chan struct{} { return r.wake }
+
+// Snapshot is the entries split hands over, and promises the route the
+// reconciler may install for each that takes a packet into the tun, in the
+// hold of noneMu that read none
+func (r *routeSource) Snapshot() []sadr.Route[*netstack.Peer] {
+	f := r.filter
+	snapshot, overlay := r.table.Snapshot(), f.overlay()
+	f.noneMu.Lock()
+	defer f.noneMu.Unlock()
+	handed, _ := meshkernel.Unentered(snapshot, f.none, overlay)
+	f.promised = append(f.promised, meshkernel.Promised(handed, overlay)...)
+	return handed
+}
+
+func (r *routeSource) Resolve(src, dst netip.Addr) (*netstack.Peer, netstack.Verdict, netstack.Match) {
+	return r.table.Resolve(src, dst)
+}
+
+// Installed records the reconciler's report and forgets the routes promised
+// before it, which the report accounts for. It wakes the filter's run only
+// where what the report and the promise leave of the last pass's derived sets
+// moved, since a pass costs a derivation of the sets on top of this walk.
+func (r *routeSource) Installed(routes []meshkernel.Route) {
+	f := r.filter
+	var overlays [][]schema.Prefix
+	if cfg := f.config.Load(); cfg != nil {
+		overlays = append(overlays, cfg.Overlay)
+	}
+	f.noneMu.Lock()
+	f.reported, f.promised = routes, nil
+	left, _ := f.leftOf(f.derived, overlays)
+	moved := !slices.Equal(left, f.left)
+	f.noneMu.Unlock()
+	if moved {
+		select {
+		case f.kernel <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// split reads the table now and returns it as Unentered does: handed, with a
+// hold in place of each entry the source holds back, and held, those entries
+func (r *routeSource) split() (handed, held []sadr.Route[*netstack.Peer]) {
+	f := r.filter
+	snapshot, overlay := r.table.Snapshot(), f.overlay()
+	f.noneMu.Lock()
+	defer f.noneMu.Unlock()
+	return meshkernel.Unentered(snapshot, f.none, overlay)
+}
+
+// overlay is the overlay of the configuration now, nil where overlay is not written
+func (f *BorderFilter) overlay() []schema.Prefix {
+	if cfg := f.config.Load(); cfg != nil {
+		return cfg.Overlay
+	}
+	return nil
+}
+
+// everyAddress is each IPv4 and IPv6 address, the ranges the none sets may
+// hold until a pass reads them back
+var everyAddress = []egress.Range{
+	{First: netip.IPv4Unspecified(), Last: netip.MustParseAddr("255.255.255.255")},
+	{First: netip.IPv6Unspecified(), Last: netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")},
+}
+
+// setNone records the ranges the none sets may hold
+func (f *BorderFilter) setNone(none []egress.Range) {
+	f.noneMu.Lock()
+	defer f.noneMu.Unlock()
+	f.putNone(none)
+}
+
+// putNone records the ranges the none sets may hold, with noneMu held, waking
+// the route source's reader where they moved
+func (f *BorderFilter) putNone(none []egress.Range) {
+	if slices.Equal(f.none, none) {
+		return
+	}
+	f.none = none
+	if f.src != nil {
+		f.src.notify()
+	}
+}
+
+// leaveOut takes out of the none sets of sets the addresses the reconciler's
+// report and the source's promise keep out, and joins what it leaves into
+// none in the same hold of noneMu. It returns sets so changed, what it left
+// of the none sets in Union form, and the routes whose addresses it took
+// out. overlays is each overlay the pass read, an address counting as inside
+// only where every one holds it.
+func (f *BorderFilter) leaveOut(sets borderSets, overlays ...[]schema.Prefix) (borderSets, []egress.Range, []meshkernel.Route) {
+	derived := sets.none()
+	f.noneMu.Lock()
+	defer f.noneMu.Unlock()
+	left, kept := f.leftOf(derived, overlays)
+	f.derived, f.left = derived, left
+	out := maps.Clone(sets)
+	if _, ok := sets[noneSet+"4"]; ok {
+		out[noneSet+"4"], out[noneSet+"6"] = byFamily(left)
+	}
+	f.putNone(egress.Union(slices.Concat(f.none, left)))
+	return out, left, kept
+}
+
+// leftOf returns what is left of derived once the reconciler's report and
+// the source's promise keep their addresses out under overlays, and the
+// routes that keep any out, each once. noneMu is held.
+func (f *BorderFilter) leftOf(derived []egress.Range, overlays [][]schema.Prefix) ([]egress.Range, []meshkernel.Route) {
+	routes := slices.Concat(f.reported, f.promised)
+	var taken []egress.Range
+	var kept []meshkernel.Route
+	seen := make(map[meshkernel.Route]bool)
+	for _, overlay := range overlays {
+		by, ranges := meshkernel.Kept(routes, derived, overlay)
+		taken = append(taken, ranges...)
+		for _, route := range by {
+			if !seen[route] {
+				seen[route] = true
+				kept = append(kept, route)
+			}
+		}
+	}
+	return meshkernel.Without(derived, taken), kept
+}
+
+// report records the routes the route source holds back and the routes whose
+// addresses the pass kept out of the sets as the pass ends, and reports
+// whether the source holds any back
+func (f *BorderFilter) report(kept []meshkernel.Route) bool {
+	r := f.source()
+	if r == nil {
+		return false
+	}
+	_, held := r.split()
+	heldNames := make([]string, 0, len(held))
+	for _, entry := range held {
+		route := entry.Destination.String()
+		if entry.Source.IsValid() {
+			route += " from " + entry.Source.String()
+		}
+		heldNames = append(heldNames, route)
+	}
+	keptNames := make([]string, 0, len(kept))
+	for _, route := range kept {
+		keptNames = append(keptNames, route.String())
+	}
+	now := time.Now()
+	f.heldRoutes.pass(heldNames, f.rt.Events, now)
+	f.keptRoutes.pass(keptNames, f.rt.Events, now)
+	return len(held) > 0
+}
+
+// routeReport turns the routes of one kind that each pass ends with into
+// events and lines
+type routeReport struct {
+	// what is the event's kind after "antispoof." and the name of its bool
+	what string
+	// warn is the warning line that names routes an event named true
+	warn string
+	// release is the info line that names routes an event named false
+	release string
+	// atEnd is each route the last pass ended with, true once an event named
+	// it
+	atEnd map[string]bool
+	// came is each route an event named true since the last warning that the
+	// last pass ended with
+	came map[string]bool
+	// went is each route an event named false since the last release line
+	// that the last pass did not end with
+	went map[string]bool
+	// warnedAt and releasedAt are when the last warning and the last release
+	// line were logged
+	warnedAt, releasedAt time.Time
+}
+
+// pass records the routes a pass ended with. It emits an event naming a route
+// true when the route was there at two pass ends in a row, once, and one
+// naming it false at the first pass end without it after that. It logs the
+// warning where came holds a route and routeReportInterval has passed since
+// the last one, and the release line likewise for went, so no warning names a
+// route named true and gone again before the next warning is due.
+func (r *routeReport) pass(now []string, bus *events.Bus, at time.Time) {
+	next := make(map[string]bool, len(now))
+	if r.came == nil {
+		r.came, r.went = map[string]bool{}, map[string]bool{}
+	}
+	for _, route := range now {
+		named, there := r.atEnd[route]
+		if there && !named {
+			bus.Emit("antispoof."+r.what, "", slog.String("route", route), slog.Bool(r.what, true))
+			r.came[route] = true
+			named = true
+		}
+		next[route] = named
+	}
+	for _, route := range slices.Sorted(maps.Keys(r.atEnd)) {
+		if _, stays := next[route]; !stays && r.atEnd[route] {
+			bus.Emit("antispoof."+r.what, "", slog.String("route", route), slog.Bool(r.what, false))
+			r.went[route] = true
+		}
+	}
+	r.atEnd = next
+	maps.DeleteFunc(r.came, func(route string, _ bool) bool { _, stays := next[route]; return !stays })
+	maps.DeleteFunc(r.went, func(route string, _ bool) bool { _, back := next[route]; return back })
+	if len(r.came) > 0 && at.Sub(r.warnedAt) >= routeReportInterval {
+		slog.Warn(r.warn, "routes", reportedRoutes(r.came), "count", len(r.came))
+		clear(r.came)
+		r.warnedAt = at
+	}
+	if len(r.went) > 0 && at.Sub(r.releasedAt) >= routeReportInterval {
+		slog.Info(r.release, "routes", reportedRoutes(r.went), "count", len(r.went))
+		clear(r.went)
+		r.releasedAt = at
+	}
+}
+
+// reportedRoutes names the first routes of a line in order, the count naming the rest
+func reportedRoutes(routes map[string]bool) string {
+	names := slices.Sorted(maps.Keys(routes))
+	if len(names) > reportedRouteNames {
+		return strings.Join(names[:reportedRouteNames], ", ") + ", ..."
+	}
+	return strings.Join(names, ", ")
 }
 
 // SetConfig hands the filter the configuration a reload carries, the overlay,
@@ -428,6 +785,10 @@ func (f *BorderFilter) SetConfig(cfg egress.Border) error {
 	select {
 	case f.wake <- struct{}{}:
 	default:
+	}
+	// the source weighs each entry against the overlay, so what it hands may have moved
+	if r := f.source(); r != nil {
+		r.notify()
 	}
 	return nil
 }
@@ -469,6 +830,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			if errors.Is(context.Cause(ctx), meshkernel.ErrMeshFailed) {
+				// the sets stay with the chains, so the route source holds back what they may hold
 				f.stopping()
 				slog.Warn("antispoof filter is leaving its chains after the mesh failed", "where", f.Where())
 				return f.be.Leave()
@@ -482,6 +844,8 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 			f.trigger = "reload"
 		case <-f.rt.Routes:
 			f.trigger = "routes"
+		case <-f.kernel:
+			f.trigger = "kernel"
 		case <-f.rt.Network:
 			f.trigger = "network"
 		case <-f.be.Changed():
@@ -492,9 +856,13 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 			// another table's large transaction overflows the socket as readily as a flush of this one, so only the pass's readback decides
 			f.trigger = "missed"
 		}
-		if err := f.reconcile(); err != nil {
+		switch err := f.reconcile(); {
+		case err != nil:
 			slog.Warn("antispoof filter pass failed, retrying", "err", err, "retry_in", retry.Failed(f.sweep))
-		} else {
+		case f.heldOnFault:
+			// the route source holds routes back until a pass reads the sets back
+			retry.Failed(f.sweep)
+		default:
 			retry.Passed()
 		}
 	}
@@ -564,13 +932,7 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 		if !f.be.holds(one.name) {
 			continue
 		}
-		// the union orders every IPv4 range ahead of every IPv6 one
-		ranges := egress.Union(one.ranges)
-		v6 := slices.IndexFunc(ranges, func(r egress.Range) bool { return r.First.Is6() })
-		if v6 < 0 {
-			v6 = len(ranges)
-		}
-		sets[one.name+"4"], sets[one.name+"6"] = ranges[:v6:v6], ranges[v6:]
+		sets[one.name+"4"], sets[one.name+"6"] = byFamily(egress.Union(one.ranges))
 	}
 	return rules, sets, reported
 }
@@ -624,14 +986,24 @@ func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
 // pass read back reads nothing.
 func (f *BorderFilter) reconcile() error {
 	started := time.Now()
+	before := f.config.Load()
 	rules, sets, reported := f.desired()
+	// a reload between the two reads leaves out what either overlay keeps out
+	var overlays [][]schema.Prefix
+	if before != nil {
+		overlays = append(overlays, before.Overlay)
+	}
+	if after := f.config.Load(); after != before && after != nil {
+		overlays = append(overlays, after.Overlay)
+	}
+	sets, none, kept := f.leaveOut(sets, overlays...)
 	carveOuts := reported.CarveOuts
 	f.reportCarveOuts(carveOuts)
 	f.reportConflicts(reported.Conflicts)
-	if (f.trigger == "routes" || f.trigger == "network") && f.ready && slices.Equal(rules, f.last) && sets.changed(f.held) == nil {
+	if (f.trigger == "routes" || f.trigger == "network" || f.trigger == "kernel") && f.ready && slices.Equal(rules, f.last) && sets.changed(f.written) == nil {
 		return nil
 	}
-	want := f.held
+	want := f.written
 	if want == nil {
 		want = sets
 	}
@@ -642,7 +1014,7 @@ func (f *BorderFilter) reconcile() error {
 		f.made, f.found = err == nil && !read.held, err == nil && read.held
 	}
 	if err == nil && read.fault == "" {
-		f.held = want
+		f.written = want
 	}
 	changed := sets.changed(want)
 	switch {
@@ -651,19 +1023,19 @@ func (f *BorderFilter) reconcile() error {
 	case read.fault != "":
 		// a rewrite makes what the filter writes again whole, and touches nothing beside it
 		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
-			f.held = nil
+			f.written = nil
 			err = fmt.Errorf("%s, and the write failed: %w", read.fault, applyErr)
 		} else {
-			wrote, f.held = "table", sets
+			wrote, f.written = "table", sets
 			slog.Info("antispoof filter installed", "rules", len(rules), "replaced", len(read.rules), "where", f.Where())
 		}
 	case changed != nil:
 		// the readback found the filter holding want, so the fill sends what differs from it
 		if fillErr := f.be.Fill(rules, want, changed); fillErr != nil {
-			f.held = nil
+			f.written = nil
 			err = fmt.Errorf("fill sets: %w", fillErr)
 		} else {
-			wrote, f.held = "sets", sets
+			wrote, f.written = "sets", sets
 		}
 	}
 	if err == nil && wrote != "" {
@@ -682,6 +1054,11 @@ func (f *BorderFilter) reconcile() error {
 	default:
 		f.setReady(true, "")
 	}
+	if err == nil && read.fault == "" {
+		f.setNone(none)
+	}
+	holding := f.report(kept)
+	f.heldOnFault = err == nil && read.fault != "" && holding
 	f.last = nil
 	if f.ready {
 		f.last = rules
@@ -770,13 +1147,13 @@ func (f *BorderFilter) reportConflicts(now []egress.ExemptConflict) {
 // countDrops reads the counters of the drops the filter holds and, at most
 // once per pass, records the packets each drop took since the last pass when
 // one moved
-func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress.BorderDrops {
+func (f *BorderFilter) countDrops(installed []Installed, desired []BorderRule) egress.BorderDrops {
 	rules := make(map[string]BorderRule, len(desired))
 	for _, rule := range desired {
 		rules[rule.String()] = rule
 	}
 	var now egress.BorderDrops
-	for _, reading := range held {
+	for _, reading := range installed {
 		if rule, ok := rules[reading.Spec]; ok {
 			addDrops(&now, rule, reading.Packets)
 		}
@@ -794,8 +1171,9 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 func (f *BorderFilter) setReady(ok bool, detail string) { f.setReadyAt(ok, detail, slog.LevelWarn) }
 
 // stopping records the filter not ready at a stop, which is no fault, so it
-// logs the transition at info
+// logs the transition at info, and ends the route source's watch
 func (f *BorderFilter) stopping() {
+	f.end()
 	f.setReadyAt(false, "the antispoof filter is stopping", slog.LevelInfo)
 }
 
@@ -834,27 +1212,27 @@ func (f *BorderFilter) Debug() egress.BorderDebug {
 		}
 		out.PF = &state
 	}
-	held := slices.Clone(read.rules)
+	listed := slices.Clone(read.rules)
 	for _, rule := range rules {
 		if len(out.Chains) == 0 || out.Chains[len(out.Chains)-1].Name != rule.Chain() {
 			out.Chains = append(out.Chains, f.be.chain(rule.Chain()))
 		}
 		spec := rule.String()
-		i := slices.IndexFunc(held, func(reading Installed) bool {
+		i := slices.IndexFunc(listed, func(reading Installed) bool {
 			// pf reads one anchor and leaves its chain name empty
 			return reading.Spec == spec && (reading.Chain == "" || reading.Chain == rule.Chain())
 		})
 		var reading Installed
 		if i >= 0 {
-			reading = held[i]
-			held = slices.Delete(held, i, i+1)
+			reading = listed[i]
+			listed = slices.Delete(listed, i, i+1)
 		}
 		chain := &out.Chains[len(out.Chains)-1]
 		chain.Rules = append(chain.Rules, egress.BorderReading{Spec: spec, Verdict: rule.Verdict(), Reason: rule.Reason(), Family: rule.Family(),
 			Held: i >= 0, Packets: reading.Packets, Bytes: reading.Bytes})
 	}
 	var extra egress.BorderChainReading
-	for _, reading := range held {
+	for _, reading := range listed {
 		spec := reading.Spec
 		verdict, _, _ := strings.Cut(spec, " ")
 		if spec == "" {

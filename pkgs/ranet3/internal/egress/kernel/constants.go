@@ -3,6 +3,18 @@
 
 package kernel
 
+import "time"
+
+// A peer's routes come and go as often as the filter's passes run, so the
+// lines that name the routes the route source holds back and the routes whose
+// addresses the none sets leave out are spaced. routeReportInterval is the
+// least time between two lines of one kind, and reportedRouteNames the most
+// routes one line names, its count giving the rest.
+const (
+	routeReportInterval = 10 * time.Second
+	reportedRouteNames  = 8
+)
+
 const (
 	// ChainName is the translator's nat postrouting base chain, which
 	// translates.

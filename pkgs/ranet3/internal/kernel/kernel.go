@@ -348,6 +348,16 @@ type RouteSource interface {
 	Resolve(src, dst netip.Addr) (*netstack.Peer, netstack.Verdict, netstack.Match)
 }
 
+// InstalledSink is told the reconciler's routes the kernel may hold. The
+// reconciler tells a route source that implements it, on the reconciler's
+// goroutine, after each pass and after each withdrawal that listed the routes.
+// A pass tells each route of the reconciler's record of what it installed and
+// each add the kernel answered with an error since the last listing, and a
+// withdrawal each route whose delete failed.
+type InstalledSink interface {
+	Installed(routes []Route)
+}
+
 // Route is one kernel route the reconciler manages, and simultaneously the
 // diff key: the table, the protocol and the next hop are the same for every
 // route it installs, so two routes with equal fields are the same route.
@@ -710,6 +720,11 @@ type Reconciler struct {
 	lookups    []Lookup
 	lookFailed bool
 	installed  map[Route]bool
+
+	// unanswered is each route add the kernel answered with an error since the
+	// last route listing that read the kernel, which may have landed. It
+	// belongs to the reconcile goroutine.
+	unanswered []Route
 
 	// liveness holds back the routes that would carry this machine's own
 	// traffic until the mesh has proved it can carry them. Only the reconcile
@@ -1320,6 +1335,13 @@ func (r *Reconciler) reconcile() error {
 		fallback, fallbackErr = r.applyFallback(sets, asked)
 	}
 	routesErr := r.applyRoutes(desired, r.coverFamilies(status), r.bare)
+	// a pass whose listing failed wrote nothing and tells the record the last pass
+	// left. A withdrawal leaves that record as it was, so after one such a pass
+	// tells the routes the withdrawal deleted too, and their addresses stay out
+	// of the antispoof filter's none sets until a listing reads the kernel.
+	if sink, ok := r.src.(InstalledSink); ok {
+		sink.Installed(append(slices.Collect(maps.Keys(r.installed)), r.unanswered...))
+	}
 	// after the route writes, so kernel.exit and kernel.forward follow the pass's kernel.path and kernel.cover
 	if judged {
 		r.reportExit(status)
@@ -1494,6 +1516,8 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
 	}
+	// the listing read whether each add answered with an error landed
+	r.unanswered = nil
 	// Whether this pass leaves the mesh carrying this machine's own traffic,
 	// which desired answers alone: it already holds only the capturing routes
 	// this pass may install.
@@ -1631,6 +1655,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 			}
 		} else {
 			errs = append(errs, fmt.Errorf("add route %s: %w", route, err))
+			r.unanswered = append(r.unanswered, route)
 		}
 		if err != nil && route.Cover {
 			broken[familyOf(route.Destination.Addr())] = true
@@ -2179,12 +2204,22 @@ func (r *Reconciler) withdraw(cause error) error {
 		errs = append(errs, fmt.Errorf("list routes: %w", err))
 	}
 	withdrawn := 0
+	var stayed []Route
 	for _, route := range routes {
 		if err := r.plat.DelRoute(route); err != nil {
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
 			r.capturing = r.capturing || r.captures(route)
+			stayed = append(stayed, route)
 		} else {
 			withdrawn++
+		}
+	}
+	// where the listing failed, what the last pass left stands as told. The
+	// routes whose delete failed stay, and the listing read every add.
+	if err == nil {
+		r.unanswered = nil
+		if sink, ok := r.src.(InstalledSink); ok {
+			sink.Installed(stayed)
 		}
 	}
 	// An address is removed only while the link still carries exactly what was
