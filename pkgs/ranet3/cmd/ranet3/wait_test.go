@@ -35,7 +35,7 @@ const daemonSettle = 10 * time.Second
 // waitHeld is how long a test keeps a file from a start that waits for it, two of the wait's looks
 const waitHeld = 2 * authPoll
 
-// controlBound is the node's bound on the control socket's connections open at once, which the wait holds to as well
+// controlBound repeats control.maxConnections, which a test outside that package cannot import
 const controlBound = 32
 
 // pendingTries is how many connections a test leaves at the handover as a turn ends, since a select that may take one picks

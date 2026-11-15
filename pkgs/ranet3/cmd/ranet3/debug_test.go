@@ -210,8 +210,9 @@ func TestDebugSocketReadsStandardInputBeforeItDials(t *testing.T) {
 	})}
 	go server.Serve(watch)
 	t.Cleanup(func() { server.Close() })
-	// the exchange may take the time left to the test binary, so go test's own -timeout ends a run and load does not, and a
-	// day where go test sets none
+	// where go test sets a deadline the exchange may take the time the test binary has left, so go test's -timeout and
+	// not load ends a hung run
+	// where go test sets no deadline the exchange may take a day
 	timeout := 24 * time.Hour
 	if deadline, ok := t.Deadline(); ok {
 		timeout = time.Until(deadline)

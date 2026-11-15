@@ -135,8 +135,7 @@ func (w *wait) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveWait serves w on h, under the node's bound on the connections open at once, until the stop it returns, which waits
-// for the answers under way
+// serveWait serves w on h until the stop it returns, which waits for the answers under way
 func serveWait(h *handover, w *wait) (stop func()) {
 	server := &http.Server{Handler: w, ReadTimeout: control.ReadTimeout, WriteTimeout: control.ReadTimeout,
 		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn)}
