@@ -82,7 +82,7 @@ type ikeContext struct {
 	spiR        uint64
 	responder   bool // local endpoint is the responder for this IKE SA
 	established time.Time
-	// ownDelete marks a replaced IKE SA whose Delete this end sends, and stateMu guards it
+	// ownDelete marks an IKE SA this end's rekey replaced or left over, whose Delete this end sends, and stateMu guards it
 	ownDelete bool
 	// kept marks a replaced IKE SA keepReplaced kept once this end's Delete of it went unanswered, and stateMu guards it
 	kept bool
@@ -457,7 +457,8 @@ func (s *Session) removeRetainedContext(ctx *ikeContext) bool {
 func (s *Session) adoptCollisionOnPeerDelete(ctx *ikeContext) bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if ctx != s.current || s.collision == nil || s.localRekey == nil {
+	// a collision this end's own rekey left over is the redundant SA it deletes, which the peer never made current, so the peer's Delete of the current SA then ends the session
+	if ctx != s.current || s.collision == nil || s.collision.ownDelete || s.localRekey == nil {
 		return false
 	}
 	s.current, s.collision, s.localRekey = s.collision, nil, nil

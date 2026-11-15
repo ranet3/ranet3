@@ -230,6 +230,39 @@ func TestUnansweredDeleteOfARedundantIKESAEndsItAlone(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
+// this end's rekey loses the collision, and while its Delete of the redundant IKE SA is out the peer deletes the IKE SA the session runs on, as a peer that closes does
+// the redundant SA is no collision the peer holds, so the session ends on the peer's Delete rather than take that SA
+func TestPeerDeleteOfTheCurrentIKESAWhileTheRedundantOneIsDeletedEndsTheSession(t *testing.T) {
+	bubble.Run(testPeerDeleteOfTheCurrentIKESAWhileTheRedundantOneIsDeletedEndsTheSession)(t)
+}
+
+func testPeerDeleteOfTheCurrentIKESAWhileTheRedundantOneIsDeletedEndsTheSession(t *testing.T) {
+	p := newCollisionPeer(t, time.Now())
+	s, suite := p.session, p.old.suite
+	p.play(func(p *collisionPeer) {
+		for {
+			request, _, ok := p.read("the Delete of the redundant candidate")
+			if !ok {
+				return
+			}
+			if p.rekeyResend(request) {
+				continue
+			}
+			if request.Header.SPIInitiator == p.localSPIi && request.Header.SPIResponder == collisionLoserSPIr && request.Header.ExchangeType == INFORMATIONAL {
+				raw, err := EncryptMessage(suite, p.winner.SKei, Header{SPIInitiator: collisionPeerSPIi, SPIResponder: p.winnerSPIr, ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 0}, nil, deleteIKEPayloads())
+				p.send("the peer's Delete of the IKE SA the session runs on", raw, err)
+				return
+			}
+		}
+	})
+	run := runSession(t, s)
+	go func() { _ = s.RekeyIKE() }()
+	if err := endedWithin(t, run, "collided"); !errors.Is(err, errPeerDeletedIKE) {
+		t.Errorf("the session ended with %v, want the peer's Delete", err)
+	}
+}
+
 // this end's rekey is answered before the peer's crossing rekey reaches it, so it wins with no collision, and the peer holds this end's SA as its collision
 // the path drops what this end sends on the old SA for the teardown's budget: the TEMPORARY_FAILURE to the peer's rekey and both sends of the Delete of the old SA
 // the rekey then returns with the old SA still held, so the peer's resend of its rekey draws the TEMPORARY_FAILURE again, until the old SA's deadline drops it
