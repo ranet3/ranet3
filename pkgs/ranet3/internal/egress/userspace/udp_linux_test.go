@@ -259,6 +259,35 @@ func TestIPv6DatagramIsFragmentedOnlyWhereItsLeafFragmentedIt(t *testing.T) {
 	}
 }
 
+// A destination's socket told of an ICMP error keeps reading whatever errno
+// the host hands the error as: after a destination unreachable of code 1
+// (EHOSTUNREACH), 5 (EOPNOTSUPP) or 8 (ENONET) about the leaf's datagram, the
+// server's reply still reaches the leaf (RFC 4787 REQ-12)
+func TestDestinationReadsOnPastEveryReceiveError(t *testing.T) {
+	onLoopback(t, rigServer4)
+	h := newRelayHarness(t, nil)
+	h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+	for _, code := range []byte{1, 5, 8} {
+		t.Run(fmt.Sprintf("code %d", code), func(t *testing.T) {
+			server := rigLoopbackServer(t, rigServer4.Addr())
+			leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+			payload := []byte("before the error")
+			h.x.udp.take(udpDatagram(leaf, serverAt(server), payload), false)
+			outside := readDatagramFrom(t, server, payload)
+			sendICMP(t, outside.Addr(), leafRefusal(serverAt(server).Addr(), outside.Addr(), 3, code, udpDatagram(outside, serverAt(server), payload))[20:])
+			h.waitLaid(t, "relayed error", func(raw []byte) bool {
+				p, ok := parse(raw)
+				return ok && p.protocol == 1 && p.kind == 3 && p.code == code
+			})
+			reply := []byte("after the error")
+			if _, err := server.WriteToUDPAddrPort(reply, outside); err != nil {
+				t.Fatal(err)
+			}
+			h.waitLaid(t, "reply after the error", func(raw []byte) bool { return isDatagram(raw, serverAt(server), leaf, reply) })
+		})
+	}
+}
+
 // The worst mix of flows, each a UDP mapping's first destination holding the
 // mapping's receiving socket and its own connected one, keeps the exit's
 // descriptors within the process's limit less the node's daemonFiles: Within
@@ -873,4 +902,27 @@ func TestMappingsAreTheModelsAcrossTwoRoutesAddresses(t *testing.T) {
 		holdOnly(rt, twoPrefixes[0].Addr(), twoPrefixes[1].Addr())
 		rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
 	})
+}
+
+// sendICMP sends message, an ICMP or ICMPv6 message, to to through a raw
+// socket of to's family, its checksum written here for ICMP and by the kernel
+// for ICMPv6
+func sendICMP(t *testing.T, to netip.Addr, message []byte) {
+	t.Helper()
+	family, protocol := unix.AF_INET6, unix.IPPROTO_ICMPV6
+	var at unix.Sockaddr = &unix.SockaddrInet6{Addr: to.As16()}
+	if to.Is4() {
+		family, protocol, at = unix.AF_INET, unix.IPPROTO_ICMP, &unix.SockaddrInet4{Addr: to.As4()}
+		message[2], message[3] = 0, 0
+		checksum := fold(sum(0, message))
+		message[2], message[3] = byte(checksum>>8), byte(checksum)
+	}
+	fd, err := unix.Socket(family, unix.SOCK_RAW|unix.SOCK_CLOEXEC, protocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Sendto(fd, message, 0, at); err != nil {
+		t.Fatalf("send an ICMP message toward %s: %v", to, err)
+	}
 }

@@ -751,10 +751,13 @@ func icmpErrno(err error) bool {
 // read hands m's leaf each datagram conn receives, conn being m's receiving
 // socket, dst nil, or dst's socket, until conn closes. The receiving socket
 // lets in only a datagram from an address m itself sent or hairpinned to
-// (admits), and drops the rest. A pooled buffer is held only while a datagram
-// moves, so a mapping at rest holds none. An ICMP error dst's socket was told
-// of is relayed to the leaf with the rest its socket queued, and ends no
-// mapping (RFC 4787 REQ-12).
+// (admits), and drops the rest. A reader holds a pooled buffer only while a
+// datagram it read moves or while it relays the errors its socket queued, so
+// a mapping at rest holds none, nor a reader waiting for dst.mu. A receive
+// error leaves the socket open and ends no read, since only conn's close ends
+// it, whatever errno the host hands for it: the ICMP errors dst's socket
+// queued are relayed as relayErrors gives, and end no mapping (RFC 4787
+// REQ-12).
 func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 	defer u.readers.Done()
 	raw, err := conn.SyscallConn()
@@ -775,16 +778,15 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 			var flags int
 			var sa unix.Sockaddr
 			n, _, flags, sa, readErr = unix.Recvmsg(int(fd), window, nil, unix.MSG_DONTWAIT)
-			if errors.Is(readErr, unix.EAGAIN) {
-				datagrams.Put(buf)
-				buf = nil
-				return false
-			}
 			if readErr == nil && flags&unix.MSG_TRUNC != 0 {
 				readErr = errTruncated
 			}
+			if readErr != nil {
+				datagrams.Put(buf)
+				buf = nil
+			}
 			from = sockaddrPort(sa)
-			return true
+			return !errors.Is(readErr, unix.EAGAIN)
 		}); err != nil {
 			return
 		}
@@ -792,11 +794,7 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 		case errors.Is(readErr, errTruncated):
 			u.x.counts.drop(reasonTruncated)
 		case readErr != nil:
-			if !icmpErrno(readErr) && !errors.Is(readErr, syscall.EINTR) {
-				datagrams.Put(buf)
-				return
-			}
-			if dst != nil && icmpErrno(readErr) {
+			if dst != nil {
 				dst.mu.Lock()
 				u.relayErrors(dst)
 				dst.mu.Unlock()
@@ -807,7 +805,9 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 			ident := u.x.ident.Add(1)
 			u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, m.leaf, uint16(ident), u.x.hops(m.leaf.Addr().Is6())), ident)
 		}
-		datagrams.Put(buf)
+		if buf != nil {
+			datagrams.Put(buf)
+		}
 	}
 }
 
