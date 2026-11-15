@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,23 +208,21 @@ func testRekeyRetirementAllowsQueuedESPToDrain(t *testing.T) {
 }
 
 func TestProactiveChildRekeyCoalescesWithRunningExchange(t *testing.T) {
-	s := new(Session)
+	bubble.Run(testProactiveChildRekeyCoalescesWithRunningExchange)(t)
+}
+
+// a closed mux fails at once an exchange that starts beside the running one
+func testProactiveChildRekeyCoalescesWithRunningExchange(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	mux.Close()
+	s := &Session{mux: mux}
 	s.childRekeying.Store(true)
 	if err := s.RekeyChildProactively(); err != nil {
 		t.Fatalf("proactive rekey did not coalesce: %v", err)
 	}
-	if err := s.RekeyChild(); err == nil {
-		t.Fatal("ordinary rekey did not report the running exchange")
-	}
-}
-
-func TestChildRekeyGuardSerializesAttempts(t *testing.T) {
-	s := &Session{}
-	if !s.childRekeying.CompareAndSwap(false, true) {
-		t.Fatal("failed to reserve Child rekey")
-	}
-	if s.childRekeying.CompareAndSwap(false, true) {
-		t.Fatal("reserved a second simultaneous Child rekey")
+	// the guard's refusal names the running rekey, where the closed mux would fail the exchange itself
+	if err := s.RekeyChild(); err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("ordinary rekey did not report the running exchange: %v", err)
 	}
 }
 
