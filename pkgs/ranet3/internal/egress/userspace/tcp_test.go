@@ -6,6 +6,8 @@ package userspace
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -178,6 +181,57 @@ func TestDialsConnectionsAndSharesComeBackAfterFailures(t *testing.T) {
 				t.Errorf("dials, connections and flows %v after every dial failed, want none", held)
 			}
 		})
+	}
+}
+
+// A dial that fails for want of a descriptor, the process's or the host's, at
+// the socket reading the route or at the connection's own, is refused as a
+// new flow past a limit is: answered past the limit with no reset, counted
+// and recorded as descriptors, and its dial, connection and flow given back
+func TestDialOutOfDescriptorsIsRefusedPastTheLimit(t *testing.T) {
+	for _, errno := range []syscall.Errno{syscall.EMFILE, syscall.ENFILE} {
+		for _, fromClass := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s from a class %t", errno, fromClass), func(t *testing.T) {
+				bus := events.New()
+				h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+					rt.Events = bus
+					rt.Platform.Prepare = func(_ string, to netip.AddrPort, _ syscall.RawConn) error {
+						if to.IsValid() {
+							return errno
+						}
+						return nil
+					}
+				})
+				if fromClass {
+					h.x.cfg.Translate = classed(netip.MustParseAddr("192.0.2.1")).Translate
+				}
+				leaf := netip.AddrPortFrom(leaf4, 41400)
+				if !h.x.link.deliver(tcpSegment(leaf, netip.AddrPortFrom(server4, 80), leafISN, 0, tcpSYN, nil)) {
+					t.Fatal("the link refused the leaf's SYN")
+				}
+				h.waitConnections(t, 0)
+				if held := h.x.tcp.held(); held != [3]int{} {
+					t.Errorf("the relay holds dials, connections and flows %v once the dial failed, want none", held)
+				}
+				if answers := h.mesh.answered(); len(answers) != 1 || answers[0].kind != netstack.ExitPastLimit {
+					t.Errorf("answered %v, want one past the limit", answers)
+				}
+				for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
+					view := pkt.ToView()
+					p, _ := parse(view.AsSlice())
+					view.Release()
+					h.x.link.release(pkt)
+					t.Errorf("the stack sent %s toward the leaf", p)
+				}
+				if refused := h.refusals(); len(refused) != 1 || refused[reasonDescriptors] != 1 {
+					t.Errorf("counted refusals %v, want one as descriptors", refused)
+				}
+				recorded := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.refused" }, 0)
+				if len(recorded) != 1 || recorded[0].Attrs["reason"] != reasonDescriptors || recorded[0].Attrs["source"] != leaf4.String() {
+					t.Errorf("recorded %v, want one egress.refused for %s as descriptors", recorded, leaf4)
+				}
+			})
+		}
 	}
 }
 

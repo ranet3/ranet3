@@ -443,11 +443,18 @@ type dialFailure struct {
 // completer is the stack's request a SYN made, which a failed dial completes
 type completer interface{ Complete(sendReset bool) }
 
-// answerDialFailure answers the leaf for a dial that failed: with the error
-// the dial met where a server or router raised a destination unreachable,
-// sent from it with its code and quoting the leaf's SYN, and with the reset
-// the stack sends otherwise, as for a refused connection
+// answerDialFailure answers the leaf for a dial that failed. A dial the
+// process or the host had no descriptor left for is refused as a new flow past
+// a limit is. Otherwise the leaf is sent the error the dial met where a server
+// or router raised a destination unreachable, from it with its code and
+// quoting the leaf's SYN, and the reset the stack sends where none was raised,
+// as for a refused connection.
 func (x *Exit) answerDialFailure(req completer, syn []byte, failure dialFailure) {
+	if socketReason(failure.err) == reasonDescriptors {
+		x.pastLimit(syn, reasonDescriptors)
+		req.Complete(false)
+		return
+	}
 	if failure.caused {
 		if relayed := unreachableFrom(syn, failure.cause, x.hops(syn[0]>>4 == 6)); relayed != nil && x.link.send(relayed) {
 			req.Complete(false)
@@ -477,8 +484,14 @@ func unreachableFrom(offending []byte, cause icmpError, hops uint8) []byte {
 func (x *Exit) refuse(pkt *stack.PacketBuffer, reason string) {
 	view := pkt.ToView()
 	defer view.Release()
-	x.refused(view.AsSlice(), reason)
-	x.answers.Answer(view.AsSlice(), netstack.ExitPastLimit, 0)
+	x.pastLimit(view.AsSlice(), reason)
+}
+
+// pastLimit answers raw, a new flow's packet past a limit, past the limit
+// through the answer lane, and counts it
+func (x *Exit) pastLimit(raw []byte, reason string) {
+	x.refused(raw, reason)
+	x.answers.Answer(raw, netstack.ExitPastLimit, 0)
 }
 
 func (r *tcpRelay) withdraw() {
