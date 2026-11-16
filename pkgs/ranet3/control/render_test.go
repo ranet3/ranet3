@@ -276,7 +276,7 @@ func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
 // first pass, and says what the route lookups left out and why: a family held
 // by a forward lookup that failed, its prefix withheld, one held by a reply
 // lookup leaving by the uplink, and one family or both with no member to read
-// from. It names the flows each family's limit refused where any were, against
+// from. It names the packets each family's limit refused where any were, against
 // the limit, and the host's connection table against its maximum, as far as
 // the pass read them.
 // the flows a class of none left untranslated only where there are any
@@ -365,10 +365,10 @@ func TestStatusEgressUserspaceRendersAsTheGoldenFile(t *testing.T) {
 
 // hostPortsFixture is the userspace fixture of an exit that bounds the host
 // ports its TCP connections pin: 16 TCP connections open, 2 of them closing,
-// 37 host sockets held, the 2 closing ones' among them, 61 flows counted, 54
-// of 5120 host ports taken, and its refusals past them and past a share of
-// held connections. Its two sources hold the 61 flows, the IPv4 one the held
-// sockets, the dials and the IPv4 flows, the IPv6 one the IPv6 flows.
+// 37 held slots, the 2 closing ones' among them, 61 flows counted, 54 of 5120
+// host ports taken, and its refusals past them and past a share of held
+// slots. Its two sources hold the 61 flows, the IPv4 one the held slots, the
+// dials and the IPv4 flows, the IPv6 one the IPv6 flows.
 func hostPortsFixture(from string) EgressStatus {
 	e := userspaceFixture(from)
 	u := *e.Userspace
@@ -381,8 +381,8 @@ func hostPortsFixture(from string) EgressStatus {
 	return e
 }
 
-// where the exit bounds the host ports, the flows line goes on with the
-// closed connections it holds and the host ports taken against the bound
+// where the exit bounds the host ports, the flows line goes on with the held
+// slots and the host ports taken against the bound
 func TestStatusEgressHostPortsRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	e := hostPortsFixture(EgressBudgetHost)
@@ -391,7 +391,7 @@ func TestStatusEgressHostPortsRendersAsTheGoldenFile(t *testing.T) {
 }
 
 // the flows line opens with the flows the exit counts as the status gives
-// them, whatever its parts add up to, names the held host sockets a closing
+// them, whatever its parts add up to, names the held slots a closing
 // connection shares its flow with where there are any, and lists the parts as
 // the status gives them
 func TestUserspaceFlowsLineOpensWithTheFlowsCounted(t *testing.T) {

@@ -173,8 +173,9 @@ type BorderTable struct {
 	Err     string        `json:"err,omitempty"`
 }
 
-// BorderEnabler is one reference on pf, by the process that took it, as the
-// wire carries pf's own: without its token, which only the filter reads
+// BorderEnabler is one reference pf lists, by the process that took it. pf
+// lists each with its token, which the daemon leaves out of this type as it
+// builds it. This daemon's own reference carries its token in BorderPF.
 type BorderEnabler struct {
 	PID  int    `json:"pid"`
 	Name string `json:"name"`

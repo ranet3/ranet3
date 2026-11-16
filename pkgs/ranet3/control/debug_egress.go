@@ -28,7 +28,7 @@ type EgressSource interface {
 }
 
 // EgressInfo is cap.egress as a debug read finds it, Enabled false and every
-// other part absent on a node that holds none, and the parts past Status
+// other part absent on a node that holds none, and the parts past Memory
 // absent for an exit whose backend holds no rules in the host's packet filter
 type EgressInfo struct {
 	Enabled bool `json:"enabled"`
@@ -221,10 +221,9 @@ func memoryLine(m EgressMemory) string {
 	return fmt.Sprintf("Go's limit %s, given, the node's own heap %s of the %s the budget leaves it", bytesText(uint64(m.Limit)), node, bytesText(uint64(max(m.Room, 0))))
 }
 
-// renderUserspace writes the userspace exit's new flows refused and packets
-// dropped by why, and the sources holding the most flows with those of each
-// that are TCP connections whose relay has ended and whose host sockets it
-// holds
+// renderUserspace writes the userspace exit's packets refused and packets
+// dropped by why, and the sources holding the most flows with the held slots
+// of each (exit-nodes.md, "Host ports")
 func renderUserspace(w io.Writer, u EgressUserspace) {
 	for _, counts := range []struct {
 		title string

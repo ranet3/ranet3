@@ -291,8 +291,8 @@ func egressLine(e EgressStatus) string {
 
 // userspaceFlowsLine is the flows the userspace exit counts against Flows, as
 // it counts them, then the parts: those open, which the egress line counts,
-// the dials and, where the platform bounds the host ports, the connections
-// whose host sockets it holds, naming those whose leaf's connection is still
+// the dials and, where the platform bounds the host ports, the held slots
+// (exit-nodes.md, "Host ports"), naming those whose leaf's connection is still
 // closing, which open names too. Then the TCP connections it counts against
 // Connections, the open ones and the dials, the open UDP and echo flows, the
 // endpoints in TIME_WAIT, which neither limit counts, and the host ports taken
@@ -312,8 +312,9 @@ func userspaceFlowsLine(u EgressUserspace) string {
 		u.Counted, u.Limits.Flows, kinds, tcp+u.Dialing, u.Limits.Connections, tcp, u.Dialing, udp, echo, u.TimeWait, host)
 }
 
-// userspaceBuffersLine is the bytes the userspace exit's TCP buffers hold
-// against its budget, and where the budget came from
+// userspaceBuffersLine is the bytes the userspace exit's TCP endpoints hold
+// received and not yet read, against its budget, and where the budget came
+// from
 func userspaceBuffersLine(u EgressUserspace) string {
 	return fmt.Sprintf("%s of %s, %s", bytesText(u.Buffered), bytesText(uint64(max(u.Limits.Budget, 0))), budgetText(u.Limits.From))
 }
@@ -780,9 +781,6 @@ func optionalDuration(d *Duration) string {
 	return shortDuration(time.Duration(*d))
 }
 
-// shortDuration rounds to something a person reads at a glance. Go's own
-// String gives "1h3m0.5762s" for an uptime, where the seconds carry no
-// information and the digits make two rows harder to compare.
 // sinceText is a duration inside a sentence, where the unit is written out. A
 // column keeps the compact form instead, to be scanned down rather than read,
 // and to match what birdc prints.

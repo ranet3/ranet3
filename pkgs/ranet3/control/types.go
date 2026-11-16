@@ -598,9 +598,13 @@ type EgressStatus struct {
 	// source's flows, it refuses the next new one (exit-nodes.md, "Each
 	// source's share of the flows"). Refused is the packets so refused, each
 	// retry of a refused flow counted.
-	// Dropped is the packets out of the mesh, and into it under return,
-	// dropped for want of a tracked flow, which a rule that translates would
-	// otherwise send on under their own source.
+	// Dropped is the packets dropped as belonging to no flow the exit
+	// carries: on an exit that
+	// installs rules those out of the mesh, and into it under return, for
+	// which no flow is tracked, which a rule that translates would otherwise
+	// send on under their own source, and on the userspace exit the leaves'
+	// ICMP messages its echo relay takes that are no echo request and their
+	// errors about no datagram of a live mapping.
 	FlowsPerSource int           `json:"flows_per_source"`
 	Refused        EgressPackets `json:"refused"`
 	Dropped        EgressPackets `json:"dropped"`
@@ -635,8 +639,11 @@ type EgressStatus struct {
 // EgressUserspace is the userspace exit's detail: the flows it holds in each
 // family, a UDP mapping and each of its destinations one flow each, the TCP
 // connections being dialed and the leaf-side endpoints in TIME_WAIT, what it
-// runs under and the bytes its TCP buffers hold now, the new flows refused
-// and the packets dropped by why, the TIME_WAIT endpoints a new SYN reused
+// runs under and the bytes its TCP endpoints toward the leaves hold now,
+// received and not yet read, the packets refused by why, those of new flows
+// past a limit, those a lane's judgment answered and those refused as
+// withdrawn among them, and the packets dropped by why, the TIME_WAIT
+// endpoints a new SYN reused
 // and those closed early past the limit, and the sources holding the most
 // flows, most first. Counted is the flows it counts against Limits.Flows,
 // read at one instant with TCP, Dialing and Host's Held, Ports and Shared.
@@ -659,10 +666,8 @@ type EgressUserspace struct {
 	Sources  []EgressSourceFlows `json:"sources,omitempty"`
 }
 
-// EgressHost is the userspace exit's bound on the host ports: the TCP
-// connections whose relay has ended and whose host sockets it holds while they
-// may pin their ports, the host ports taken (exit-nodes.md, "Host ports"), the
-// most they may take, which a bound of 0 refuses every new connection at, and
+// EgressHost is the userspace exit's bound on the host ports (exit-nodes.md,
+// "Host ports"): its held slots, the host ports taken, the most they may take, which a bound of 0 refuses every new connection at, and
 // those held whose leaf's connection is still closing, which tcp counts too,
 // one flow for the two
 type EgressHost struct {
@@ -703,8 +708,8 @@ const (
 )
 
 // EgressSourceFlows is the flows one source holds through the exit, and Held
-// those of them TCP connections whose relay has ended and whose host sockets
-// it holds, absent where none
+// those of them that are held slots (exit-nodes.md, "Host ports"), absent
+// where none
 type EgressSourceFlows struct {
 	Source netip.Addr `json:"source"`
 	Flows  int        `json:"flows"`

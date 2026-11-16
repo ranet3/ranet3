@@ -159,7 +159,8 @@ type TracePacket struct {
 	// From is the path of the session the packet arrived on
 	From     string `json:"from,omitempty"`
 	Decision string `json:"decision"`
-	// Reason names why a packet was answered or dropped, as the transit counters name it, or budget
+	// Reason names why a packet was answered or dropped, as the transit counters name it, budget for one its peer's budget refused,
+	// or ecn for one an End.DT46 of this node dropped for its ECN fields
 	Reason string `json:"reason,omitempty"`
 	// Next is the path of the session a forwarded packet goes to, or a packet its budget refused was to go to
 	Next string `json:"next,omitempty"`

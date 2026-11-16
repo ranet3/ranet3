@@ -26,7 +26,7 @@ type PMTUSource interface {
 	DebugPMTU(peer string) PMTUInfo
 }
 
-// PMTUInfo is the node's link.mtu and tun, what it did to packets past a session's budget, its router-ids and answer SID, and each session's search
+// PMTUInfo is the node's link.mtu and tun, its packet too big answers and its lowerings of an MSS, its router-ids and answer SID, and each session's search.
 // End's answers to a packet past its session and transit's errors come from the router-ids and the answer SID as netstack's AnswerSources says
 type PMTUInfo struct {
 	// LinkMTU is link.mtu, the largest inner packet a session carries
@@ -35,7 +35,8 @@ type PMTUInfo struct {
 	Steering int `json:"steering"`
 	// DeviceMTU is the tun's MTU as the kernel reported it for this answer, zero where the device could not answer
 	DeviceMTU int `json:"device_mtu"`
-	// TooBigSent counts the packet too big and fragmentation needed answers to packets past their session's budget
+	// TooBigSent counts the packet too big and fragmentation needed answers the node sent: to packets past their session's budget, and the userspace
+	// exit's to a leaf's datagram the path outside refused as too large
 	TooBigSent uint64 `json:"packet_too_big_sent"`
 	// MSSClamped counts the lowerings of a SYN or SYN-ACK's MSS to a session's budget, a forwarded SYN lowered at two sessions counting twice
 	MSSClamped uint64 `json:"mss_clamped"`
