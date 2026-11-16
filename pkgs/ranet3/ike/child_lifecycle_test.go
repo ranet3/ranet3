@@ -420,9 +420,8 @@ func newRekeyableSession(t *testing.T, old ChildSA) *Session {
 }
 
 // RFC 7296 section 1.4.1 requires a peer whose own Delete crossed ours to
-// answer with no Delete payload at all. Treating that as a failure used to
-// leave the replaced SA latched in s.retiring, which locks out every later
-// rekey in both directions for the life of the session.
+// answer with no Delete payload at all. Such an answer retires the replaced
+// SA, and the session can rekey again in both directions.
 func TestCrossedChildDeleteStillRetiresReplacedSA(t *testing.T) {
 	bubble.Run(testCrossedChildDeleteStillRetiresReplacedSA)(t)
 }
@@ -442,7 +441,7 @@ func testCrossedChildDeleteStillRetiresReplacedSA(t *testing.T) {
 		t.Fatalf("Child SA %08x is still awaiting retirement", got.LocalSPI)
 	}
 
-	// The session has to stay rekeyable, which is the part a latch broke.
+	// The session stays rekeyable.
 	next := s.Child()
 	if err := driveChildRekey(t, s, next, func(remove *localRequest) {
 		spi := make([]byte, 4)

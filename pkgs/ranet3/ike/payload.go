@@ -33,9 +33,9 @@ type Message struct {
 	skHeaderOffset int
 }
 
-// Encode serializes the message. It does not encrypt: [EncryptMessage] is the
-// path that does, and a caller assembling an SK payload itself passes it here
-// as the sole payload after the header's cleartext ones.
+// Encode serializes the message. It does not encrypt: a session seals its
+// messages through ikeContext.seal, and a caller assembling an SK payload
+// itself passes it here as the sole payload after the header's cleartext ones.
 func (m *Message) Encode() []byte {
 	return m.encode(0)
 }

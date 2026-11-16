@@ -13,7 +13,7 @@ import (
 
 // Crypto is the cap.crypto capability as the file writes it
 // it holds how long a key lives, how far out of order a packet may arrive and which transforms a session negotiates
-// every value reaches a session this package builds, the replay window included
+// every value but the replay window reaches a session this package builds, and the replay window reaches the ESP tunnel that internal/client builds for the Child SA
 // both ends capture the window when the Child SA is set up
 // an explicit zero turns a rekey off and an absent timing takes the default
 // so each timing is a pointer

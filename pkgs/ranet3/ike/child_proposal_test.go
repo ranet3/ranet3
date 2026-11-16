@@ -178,9 +178,9 @@ func TestAcceptSelectorsRefusesEachSideWithoutTheFullRanges(t *testing.T) {
 }
 
 // RFC 7296 section 2.10: a nonce "MUST be at least 128 bits in size, and MUST
-// be at least half the key size of the negotiated pseudorandom function". The
-// second half was missing, so a 16 byte nonce was taken under HMAC-SHA2-384,
-// whose preferred key size is 48.
+// be at least half the key size of the negotiated pseudorandom function". So a
+// nonce under HMAC-SHA2-384, whose preferred key size is 48, is refused below
+// 24 bytes.
 func TestNonceLengthFollowsTheNegotiatedPRF(t *testing.T) {
 	for _, test := range []struct {
 		prf    uint16

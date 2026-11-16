@@ -91,8 +91,9 @@ func prfHashFunc(prfID uint16) (func() hash.Hash, error) {
 	}
 }
 
-// PRFOutputLen returns the natural output size of the PRF, used as SK_d and
-// SK_pi/SK_pr length per RFC 5282 (AEAD ciphers derive no integrity keys).
+// PRFOutputLen returns the natural output size of the PRF, the length of SK_d,
+// SK_pi and SK_pr per RFC 7296 section 2.14. An AEAD cipher derives no
+// integrity key (RFC 5282).
 func PRFOutputLen(prfID uint16) int {
 	switch prfID {
 	case PRF_HMAC_SHA2_256:
@@ -189,14 +190,17 @@ type IKEKeys struct {
 	SKpr  []byte
 }
 
-// DeriveIKEKeys computes SKEYSEED and the SK_* keys for the IKE SA.
+// DeriveIKEKeys computes SKEYSEED and the SK_* keys for the IKE SA. suite's
+// PRF is one a negotiation chose, since prf runs before deriveIKEKeys checks
+// it and panics on any other.
 func DeriveIKEKeys(suite SASuite, sharedSecret, ni, nr []byte, spiI, spiR uint64) (*IKEKeys, error) {
 	skeyseed := prf(suite.PRFID, append(append([]byte{}, ni...), nr...), sharedSecret)
 	return deriveIKEKeys(suite, skeyseed, ni, nr, spiI, spiR)
 }
 
-// DeriveRekeyedIKEKeys derives keys for an IKE-SA rekey. RFC 7296 section
-// 2.18 uses the previous SA's PRF and SK_d to produce SKEYSEED.
+// DeriveRekeyedIKEKeys derives keys from the previous SA's PRF and SK_d, as
+// RFC 7296 section 2.18 produces SKEYSEED for an IKE SA rekey and RFC 9370
+// section 2.2.2 for each IKE_INTERMEDIATE key exchange.
 // added is the secret of the additional key exchange, nil where none ran
 // RFC 9370 section 2.2.4: "SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | ... SK(n))"
 func DeriveRekeyedIKEKeys(oldPRFID uint16, oldSKd []byte, suite SASuite, sharedSecret, ni, nr []byte, spiI, spiR uint64, added []byte) (*IKEKeys, error) {
@@ -238,8 +242,8 @@ func deriveIKEKeys(suite SASuite, skeyseed, ni, nr []byte, spiI, spiR uint64) (*
 }
 
 // ChildSAKeymat expands SK_d into the ESP keying material for a Child SA
-// with no PFS: KEYMAT = prf+(SK_d, Ni | Nr), RFC 7296 section 2.17. The returned
-// slice holds, in order, the initiator's key||salt then the responder's.
+// with no PFS: KEYMAT = prf+(SK_d, Ni | Nr), RFC 7296 section 2.17. It returns
+// the initiator's key||salt, then the responder's.
 func ChildSAKeymat(prfID uint16, skD, ni, nr []byte, encrID uint16, encrKeyBits uint16) (initiatorKey, responderKey []byte, err error) {
 	return childSAKeymat(prfID, skD, nil, ni, nr, encrID, encrKeyBits, nil)
 }

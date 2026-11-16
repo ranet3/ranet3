@@ -126,7 +126,7 @@ func (s *Session) retireChild(remoteSPI uint32) error {
 	defer s.childMu.Unlock()
 	retiring := s.retiring
 	if retiring.LocalSPI == 0 {
-		// the peer's Delete crossed this end's, and deleteChildren already cleared the SA
+		// the peer's Delete came before this end's went out, and deleteChildren already retired the SA
 		return nil
 	}
 	if retiring.RemoteSPI != remoteSPI {
