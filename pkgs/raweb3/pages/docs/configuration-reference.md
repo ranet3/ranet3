@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-12
+updated: 2026-11-16
 order: 35
 ---
 
@@ -397,7 +397,8 @@ configure.
   a neighbor offers for that host route never replaces it, as
   [routing](routing.md#what-a-node-announces) describes.
 - A default is announced and never assigned, even with `assign_announced`.
-- A negative `reconcile` is refused.
+- A `reconcile` of `0` takes the default. Any other value under 1 second is
+  refused.
 - A route that [counts as a default](routing.md#routes-that-count-as-a-default),
   such as a default or `2000::/3` a neighbor announces, is installed only after
   a session has been live, and its hold never. This node's own prefix that
@@ -762,9 +763,12 @@ needs.
 - On macOS the userspace exit's own limits, its host ports among them, also
   refuse a source's new flows, as
   [the userspace exit's limits](design/limits.md#the-userspace-exit) give.
-- The periodic pass reinstalls removed chains and reads the forwarding sysctls
-  again. `sweep` also caps the delay between retries of a failed pass. A
-  negative `sweep` is refused.
+- The exit runs its pass at least every `sweep`, on Linux and on macOS, and each
+  pass judges every family it translates again, as
+  [readiness](exit-nodes.md#readiness) describes for each platform. A `sweep` of
+  `0` takes the default. Any other value under 1 second is refused. On Linux the
+  kernel exit's pass also reinstalls removed chains and reads the forwarding
+  sysctls again, and `sweep` caps its delay between retries of a failed pass.
 - With `overlay` written, an `advertise` entry longer than 0 bits that overlaps
   an `overlay` entry is refused: the hosts behind this node would arrive on a
   link outside the mesh with a mesh source, and the antispoof filter would drop
