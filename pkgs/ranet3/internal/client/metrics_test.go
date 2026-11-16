@@ -297,7 +297,7 @@ func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
 // The advertised and announced prefix counts are separate series, because
 // their difference is the alert: announcing fewer than are advertised is this
 // node declining to attract traffic it would drop, and no peer can see that
-// from its own end. Beside them are the flows each family's limit refused, the
+// from its own end. Beside them are the packets each family's limit refused, the
 // packets it dropped with no tracked flow and the host's connection table, the
 // table's series left out where the pass could not read it.
 func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
@@ -402,7 +402,7 @@ func TestMetricsOfTheUserspaceExitWriteNoRulesSeries(t *testing.T) {
 }
 
 // A userspace exit that bounds the host ports its TCP connections pin writes
-// the closed connections it holds for them as a gauge, under a bound of 0 too
+// its held slots as a gauge, under a bound of 0 too
 func TestMetricsOfTheUserspaceExitBoundingHostPortsWriteTheConnectionsItHolds(t *testing.T) {
 	for _, test := range []struct {
 		held, bound int

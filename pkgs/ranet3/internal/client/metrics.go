@@ -165,7 +165,8 @@ func renderReassembly(w io.Writer, neighbors []babel.NeighborStat) {
 	}
 }
 
-// renderPathMTU writes what the node did to packets past a session's budget and how the sessions' probes of their path MTU ended
+// renderPathMTU writes the node's packet too big answers, the ICMP errors it withheld, its lowerings of a SYN or SYN-ACK's MSS and how the
+// sessions' probes of their path MTU ended
 func (c *Client) renderPathMTU(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_packet_too_big_sent_total Answers to packets past the budget of the session they were for: packet too big over IPv6 and fragmentation needed over IPv4 with DF.\n")
 	fmt.Fprint(w, "# TYPE ranet3_packet_too_big_sent_total counter\n")
