@@ -1206,7 +1206,9 @@ func (c *Conn) fitSendBuffer(size int) error {
 
 // Batch sends one transaction and waits for the kernel to acknowledge every
 // message in it. Everything between the batch markers commits together or not
-// at all, so a failure leaves the host holding exactly what it held before.
+// at all. An error the kernel acknowledges leaves the host holding what it
+// held before, while an error reading the acknowledgments after the send
+// leaves the commit unknown, which a later read tells.
 //
 // A failure inside the batch is reported against the message that caused it,
 // and a failure of the commit itself against the batch marker, so any nonzero
