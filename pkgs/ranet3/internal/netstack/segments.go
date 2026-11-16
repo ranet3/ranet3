@@ -791,7 +791,8 @@ func (m *Mesh) answerFrom(inner []byte, end bool, sid netip.Addr) (netip.Addr, b
 	return cmp.Or(sources.Router4, dst), false
 }
 
-// TooBigAnswered is how many answers with packet too big or fragmentation needed to packets past their session's budget this node sent
+// TooBigAnswered is how many answers with packet too big or fragmentation needed this node sent, to packets past their session's budget and from
+// an exit's lane (Lane.Answer)
 func (m *Mesh) TooBigAnswered() uint64 { return m.tooBigAnswered.Load() }
 
 // sendBack sends an ICMP error about a segment to the source of the packet it answers, as sendAnswer does, and counts it answered
