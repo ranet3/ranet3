@@ -20,13 +20,13 @@ import (
 // MTU, read when asked, so a provider's sandbox never needs the ioctl. held is
 // the addresses the network watch reads off the links outside the mesh, on
 // link, or on any where link is empty, and raw the root daemon's raw sockets,
-// nil where the process may open none. The TCP relay's closed connections are
-// held against the host ports their sockets pin (xnuHostSockets).
+// nil where the process may open none. The TCP relay keeps a held slot
+// (hostHolds) for each connection whose host socket may pin its port past the
+// relay's end (xnuHostSockets).
 //
 // Held asks an IPv4 address of the link a socket is scoped to, and an IPv6
-// address of any link: with its sockets scoped to a utun, an exit had every
-// IPv4 flow from an address on lo0 refused, while its IPv6 flows from an
-// address on lo0 carried.
+// address of any link, for the reason exit-nodes.md, "The exit on macOS",
+// gives.
 func Darwin(interfaceOf func(netip.Addr) (index int, generation uint64), held func(address netip.Addr, link string) bool, raw Raw) Platform {
 	return Platform{
 		Prepare: underlay.Bound(interfaceOf),

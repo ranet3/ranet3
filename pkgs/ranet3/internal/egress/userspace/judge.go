@@ -108,9 +108,9 @@ func unservable(destination netip.Addr) bool {
 }
 
 // The reasons a new flow is refused past a limit: its source's share, the
-// share where the source holds more closed TCP connections kept for their
-// host sockets than flows open, the total, and the host ports a new TCP
-// connection would take past hostPortsOf
+// share where the source holds more held slots (hostHolds) than flows open,
+// the total, and the host ports a new TCP connection would take past
+// hostPortsOf
 const (
 	reasonShare     = "share"
 	reasonShareHeld = "share held"
@@ -119,9 +119,9 @@ const (
 )
 
 // flows counts the flows through the exit, TCP connections, UDP mappings and
-// echo mappings alike, by the mesh source holding each and in all, a TCP
-// connection kept while its host socket may pin its port (hostHolds) among
-// them. A new flow is admitted while its source holds fewer than share and all
+// echo mappings alike, by the mesh source holding each and in all, each held
+// slot (hostHolds) among them, one flow with the connection whose leaf still
+// closes. A new flow is admitted while its source holds fewer than share and all
 // sources fewer than total, which cap.egress's share and Limits.Flows set.
 type flows struct {
 	share, total int

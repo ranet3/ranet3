@@ -37,7 +37,7 @@ const (
 )
 
 // hostSockets is the platform's part of the bound on the host ports the TCP
-// relay's closed connections pin
+// relay's held slots take (hostHolds)
 type hostSockets struct {
 	// state reads a host socket's TCP state
 	state func(raw syscall.RawConn) (hostState, error)
@@ -50,8 +50,8 @@ type hostSockets struct {
 	margin time.Duration
 }
 
-// hostPortsOf is the most host ports the relay's TCP connections dialing,
-// relaying or held for their host sockets take: half the automatic range, so
+// hostPortsOf is the most host ports the relay's TCP connections dialing or
+// relaying and its held slots take: half the automatic range, so
 // the host keeps the other half for its own connections, and half of flows, so
 // the UDP and echo mappings keep at least the other half of every flow
 func hostPortsOf(ports, flows int) int {
@@ -73,7 +73,7 @@ func abortSocket(conn *net.TCPConn) error {
 	return nil
 }
 
-// holdPhase names a sweep's act on a held socket
+// holdPhase names a sweep's act on a held slot
 type holdPhase uint8
 
 const (
@@ -106,9 +106,11 @@ type heldSocket struct {
 }
 
 // hostHolds keeps the slot of each TCP connection whose host socket may pin
-// its port past the relay's end, in flows and against hostPortsOf. A nil
-// hostHolds holds nothing and bounds nothing, as on a platform with no
-// hostSockets.
+// its port past the relay's end, in flows and against hostPortsOf. Such a held
+// slot stays while the hold keeps the socket. Where the hold aborts the socket
+// it stays the margin past that abort, and where a read finds the socket
+// closed it is given back at once. A nil hostHolds holds nothing and bounds
+// nothing, as on a platform with no hostSockets.
 type hostHolds struct {
 	platform *hostSockets
 	flows    *flows
@@ -155,8 +157,8 @@ func (h *hostHolds) read() error {
 	return nil
 }
 
-// limit is how many host ports the relay's TCP connections dialing, relaying
-// or held for their host sockets may take, with no bound where nothing holds
+// limit is how many host ports the relay's TCP connections dialing or
+// relaying and its held slots may take, with no bound where nothing holds
 func (h *hostHolds) limit() int {
 	if h == nil {
 		return math.MaxInt

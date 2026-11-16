@@ -248,16 +248,18 @@ func (r *tcpRelay) closeFlow(id stack.TransportEndpointID, source netip.Addr, f 
 // leaf's mapping on that address, and no connection leaves under another
 // route's source. A dial for the leaf's mapping that fails with an error
 // portTaken reads is made once more from a port the host gives on that address,
-// for that connection alone. A connection the host ended before Go's connect
-// read the socket's errno and its peer fails that connect on every platform,
-// the connect taking the end's errno, and the dial meets it as any connect's
-// error. On Linux one the host ended after that and before the close of the
-// dial's error queue read the connection's state fails the dial with the errno
-// its end wrote, which the close took, and is not dialed again from another
-// port, whatever that errno. Elsewhere the close returns nil, and such a
-// connection is handed over for the relay to meet its end. The protocol
-// deviations page gives the second try's cases and the answer to the leaf of an
-// ended connection under The userspace exit.
+// for that connection alone. The host can end the connection at three places
+// during the dial. An end before Go's connect reads the socket's errno and its
+// peer fails that connect on every platform with the end's errno, which the
+// dial meets as any connect's error. On Linux the dial then closes its error
+// queue, which takes the socket's errno and, only where it took one, reads
+// the connection's state after it (errorQueue.close). An end before the last
+// of those, the take where it found no errno, else the state's read, fails the
+// dial with the errno the end wrote, with no second try from another port,
+// whatever that errno. An end after it on Linux, or after the connect
+// elsewhere, where the close returns nil, leaves the dial to succeed, and the connection is handed over for the relay to meet
+// its end. The protocol deviations page gives the second try's cases and the
+// answer to the leaf of an ended connection under The userspace exit.
 func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.TCPConn, *tcpMapping, dialFailure) {
 	network := "tcp4"
 	if server.Addr().Is6() {
@@ -333,8 +335,8 @@ func (r *tcpRelay) control(server netip.AddrPort, bind func(fd int) error, queue
 }
 
 // tcpMappings keeps the outside endpoint of each inside endpoint, a leaf's
-// address and port, on each address its connections leave from, while a
-// socket of its connections is bound there, so its connections from one
+// address and port, on each address its connections leave from, while one of
+// its connections is dialed or relayed from there, so its connections from one
 // address leave from one address and port toward every server (RFC 5382
 // REQ-1), and the inside endpoint of each outside endpoint, so no two share
 // one (REQ-7). Every outside endpoint is the address and port its sockets
@@ -343,9 +345,10 @@ func (r *tcpRelay) control(server netip.AddrPort, bind func(fd int) error, queue
 // whose network or tunnel peer may drop another uplink's (RFC 2827), so under
 // auto an inside endpoint whose servers' routes pick two addresses keeps a
 // mapping on each rather than send one route's source by another. A mapping
-// ends with its last socket and never before it: RFC 5382 section 4.1 gives a
-// mapping to the connections it serves, and sections 5 and 7.1 ask nothing of
-// it past them.
+// ends with its last connection's dial or relay and never before it, though
+// on macOS the exit's hold may keep that connection's socket bound past it
+// (hostHolds): RFC 5382 section 4.1 gives a mapping to the connections it
+// serves, and sections 5 and 7.1 ask nothing of it past them.
 type tcpMappings struct {
 	mu        sync.Mutex
 	byInside  map[tcpInside]*tcpMapping
@@ -548,7 +551,7 @@ type tcpFlow struct {
 	payload payload
 	// holds is the relay's hold, nil on a platform that bounds no host ports
 	holds *hostHolds
-	// hold shares the flow charge with a held host socket, under flows.mu
+	// hold shares the flow charge with a held slot (hostHolds), under flows.mu
 	// once the hold is published
 	hold *heldSocket
 	// ipv6 is the flow's family, which the status counts it under

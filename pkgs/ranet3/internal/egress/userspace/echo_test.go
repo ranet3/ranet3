@@ -88,11 +88,11 @@ func (h *relayHarness) waitTimeWait(t *testing.T, n int) {
 	}
 }
 
-// The status's figures of the TCP connections open, dialing and held for
-// their host sockets, the UDP destinations and the echo mappings add up to
+// The status's figures of the TCP connections open and dialing, the held
+// slots, the UDP destinations and the echo mappings add up to
 // every flow the exit's admission holds against Flows where no closing
 // connection shares its flow with a hold, with one of each kind open and the
-// held connection's endpoint in TIME_WAIT, which no figure counts. The open
+// leaf-side endpoint of the connection holding a slot in TIME_WAIT, which no figure counts. The open
 // connection reads as dialing until its relay starts, which comes after the
 // handshake the leaf sees, so it is held to be one of the two connections the
 // open and the dialing figures share.

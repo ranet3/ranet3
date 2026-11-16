@@ -66,7 +66,7 @@ type Platform struct {
 	// through, nil where the process may open none
 	Raw Raw
 	// hostSockets is the platform's part of the bound on the host ports the
-	// TCP relay's closed connections pin, nil where the exit bounds none
+	// TCP relay's held slots take (hostHolds), nil where the exit bounds none
 	hostSockets *hostSockets
 }
 
@@ -151,14 +151,14 @@ type passStats struct {
 // counts holds the exit's counters by reason: the packets the lanes dropped
 // past their bound, those the pump could lay into no batch, the endpoints in
 // TIME_WAIT a new connection reused and those closed past Limits.TimeWait,
-// the packets a lane's judgment answered and the flows refused, and the
-// packets a judgment or a relay dropped
+// packets refused, a lane's judgment's answers among them, each retry again,
+// and the packets a judgment or a relay dropped
 type counts struct {
 	laneDropped, unlaid atomic.Uint64
 	reused, closed      atomic.Uint64
-	// share counts the flows refused past their source's share, as share or
-	// share held, by family, and untracked a leaf's packets dropped for want
-	// of a flow to take them
+	// share counts the packets refused past their source's share, as share or
+	// share held, by family, and untracked the leaves' packets dropped as
+	// belonging to no flow the exit carries
 	share, untracked [2]atomic.Uint64
 
 	mu               sync.Mutex
@@ -275,7 +275,7 @@ func (x *Exit) sourceFor(leaf netip.Addr) netip.Addr {
 	return x.cfg.ClassOf(leaf).To.Addr
 }
 
-// Status is the last pass, the capability the exit carries, the flows
+// Status is the last pass, the capability the exit carries, the packets
 // refused past a source's share in each family, and the exit's detail
 func (x *Exit) Status() egress.Status {
 	pass := x.lastPass()

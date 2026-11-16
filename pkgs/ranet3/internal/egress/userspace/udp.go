@@ -1268,16 +1268,9 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 // hairpinner is the address leaf's datagram to to, the host's address and
 // port a mapping of targets' leaf holds, hairpins from, mappings being leaf's
 // and targets the target leaf's as one reading took them, passing over the
-// mappings of passed (RFC 4787 REQ-9 (a)):
-//  1. the address leaf's class names, as every flow of leaf takes it
-//  2. else the address of leaf's mapping the target's leaf knows (known):
-//     one the target mapping hairpinned to by address and port, else one
-//     whose address the target mapping's filter lets in, else one another
-//     mapping of targets hairpinned to by address and port
-//  3. else to's address where leaf holds a mapping on it
-//  4. else under auto the oldest mapping's, which a hairpinned datagram
-//     carries off no uplink
-//  5. else to's address, as the route to the host's own address picks it
+// mappings of passed, in the order of the steps protocol-deviations.md, "The
+// userspace exit", lists (RFC 4787 REQ-9 (a)). known finds the mapping of the
+// list's second step, the one the target's leaf knows.
 func (u *udpRelay) hairpinner(mappings, targets, passed []*mapping, leaf netip.Addr, to netip.AddrPort) netip.Addr {
 	if source := u.x.sourceFor(leaf); source.IsValid() {
 		return source

@@ -38,7 +38,7 @@ const (
 // counted against Limits.Flows, the TCP connections and dials with the bytes
 // their buffers hold, the host part, the UDP and echo flows, the endpoints in
 // TIME_WAIT, the sources and the counters. The flows counted, the TCP
-// connections, dials and bytes, and the host part's held sockets, ports and
+// connections, dials and bytes, and the host part's held slots, ports and
 // shared holds are read under the relay's lock and the flows' lock at one
 // instant. The rest is read apart, the host part's bound among it, so in a
 // read during which a flow opens, ends or moves the parts need not add up to
@@ -115,8 +115,9 @@ func family(ipv6 bool) int {
 	return 0
 }
 
-// queued is the bytes ep's buffers hold now, received and not yet read, and
-// written and not yet acknowledged
+// queued is the bytes ep's buffers hold now, received and not yet read. The
+// pinned stack answers no SendQueueSizeOption, so the bytes written and not
+// yet acknowledged add nothing.
 func queued(ep tcpip.Endpoint) uint64 {
 	var total uint64
 	for _, option := range []tcpip.SockOptInt{tcpip.ReceiveQueueSizeOption, tcpip.SendQueueSizeOption} {
@@ -154,10 +155,12 @@ func (f *flows) most(n int) []egress.SourceFlows {
 	return sources[:min(n, len(sources))]
 }
 
-// refused counts a new flow refused for reason, raw its first packet, among
-// them each refused past its source's share in its family, held flows or
-// not, and records egress.refused naming the source and the reason, an
-// interval apart, with the refusals since the last record
+// refused counts raw, a packet refused for reason, the packets of new flows
+// past a limit, those a lane's judgment answered and those refused as
+// withdrawn among them, and in its family each refused past its source's
+// share, as share or as share held.
+// It records egress.refused naming the source and the reason, an interval
+// apart, with the packets refused since the last record.
 func (x *Exit) refused(raw []byte, reason string) {
 	x.counts.refuse(reason)
 	source := sourceOf(raw)

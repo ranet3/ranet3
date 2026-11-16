@@ -22,8 +22,7 @@ const (
 	// socket's TIME_WAIT, while the PCB collector may not yet have given back
 	// the port's reservation, which the namespace refuses to the host's
 	// Skywalk flows (skywalk/namespace/netns.c). The abort schedules the
-	// collector's fast pass (_inpcb_sched_timeout in bsd/netinet/in_pcb.c),
-	// and on one Mac in use the reservation is gone within 1 second of it.
+	// collector's fast pass (_inpcb_sched_timeout in bsd/netinet/in_pcb.c).
 	// The margin is two such passes and no ceiling: a pass that gives up on a
 	// PCB whose lock it cannot take (tcp_gc in bsd/netinet/tcp_timer.c)
 	// re-arms lazily, so the next pass is the one another socket's detach

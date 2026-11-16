@@ -21,7 +21,7 @@ const flowsStatusAt = "(*Exit).flowsStatus("
 
 // Past each state at rest, which TestStatusCountsHeldSocketsSharingAFlow
 // reads, the status counts the flows the exit counts against Flows and the
-// hold of their instant while a sweep has the held sockets out of its list,
+// hold of their instant while a sweep has the held slots out of its list,
 // and once the hold's clock has given the holds back while their connections
 // still close, with no hold left shared
 func TestStatusCountsTheFlowsTheExitCounts(t *testing.T) {

@@ -142,7 +142,7 @@ func (state flowsState) reach(t *testing.T) *relayHarness {
 	return h
 }
 
-// The status counts each held socket a closing connection shares its flow
+// The status counts each held slot a closing connection shares its flow
 // with as shared, and its parts less those make the flows the exit counts
 func TestStatusCountsHeldSocketsSharingAFlow(t *testing.T) {
 	for _, state := range flowsStates() {

@@ -662,7 +662,7 @@ func TestRefusalForAShareHeldIsAnsweredPastTheLimit(t *testing.T) {
 	}
 }
 
-// The share held judgment of a source whose held connections fill its share
+// The share held judgment of a source whose held slots fill its share
 // reaches the answer from the lane on the UDP and the echo path alike, the
 // flows' state set directly so nothing is opened
 func TestShareHeldFromTheLaneIsAnsweredPastTheLimit(t *testing.T) {

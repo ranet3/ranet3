@@ -1034,7 +1034,7 @@ func TestHostPortsCountOpenAndHeldConnectionsAcrossFamilies(t *testing.T) {
 
 // On a platform that bounds no host ports, as Linux's, a leaf-first close
 // closes its host socket and gives its slot back at the relay's end, nothing
-// is held, and the status reports no bound and no held connection
+// is held, and the status reports no bound and no held slot
 func TestExitWithNoBoundOnHostPortsHoldsNothing(t *testing.T) {
 	h := newRelayHarness(t, func(_ *Runtime, cfg *egress.Egress) { cfg.FlowsPerSource = 1 })
 	allowLoopback(t, h.x.stack)
