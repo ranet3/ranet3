@@ -320,9 +320,9 @@ var scopeLookupSockets = []string{"unbound", "address", "boundif"}
 // and not, under a hold left whole, over a live host route, which the cut
 // leaves alone, beside a live route the platform skips, which the cut does
 // not leave out, and beside the same route from a source holding the utun's
-// address, which the cut keeps clear of pieces. In a family the platform
-// holds as addressless the hold and the live route are skipped and the cut
-// leaves the hold whole. A hold over the parts the endpoint cut leaves of a
+// address, which the platform writes scoped and a lookup at aside meets. In a
+// family the platform holds as addressless the platform skips both the hold
+// and the live route. A hold over the parts the endpoint cut leaves of a
 // live route around it stays whole. A cell at aside is at an address of the
 // hold outside the live route.
 // Each cell is logged as `cell <family> <setting> <socket>: ...` for a script
@@ -418,8 +418,8 @@ func TestDarwinScopedHoldBesideRoutesOfTheSameUTUN(t *testing.T) {
 				lab.check(t, "skipped.aside", family.aside, &piece, nil, scopeLookupSockets...)
 			})
 			// the same live route from a source holding the utun's address, which
-			// the platform writes scoped, as setting asserts, and which the cut
-			// keeps clear of pieces
+			// the platform writes scoped, as setting asserts, and which a lookup
+			// at aside meets
 			sourced := Route{Destination: skipped.Destination, Source: family.mesh.Masked()}
 			routes = []Route{heldWide, liveNarrow, sourced}
 			lab.setting(t, routes, routes, func(installed []Route) {
@@ -429,8 +429,7 @@ func TestDarwinScopedHoldBesideRoutesOfTheSameUTUN(t *testing.T) {
 				lab.check(t, "sourced.aside", family.aside, &routeWant{prefix: sourced.Destination, device: meshName, flags: unix.RTF_IFSCOPE}, nil)
 			})
 			// the hold and the live route in a family the platform holds as
-			// addressless, which the platform skips and the cut leaves whole, as
-			// setting asserts
+			// addressless, both of which the platform skips, as setting asserts
 			func() {
 				lab.mesh.bare = []Family{familyOf(family.target)}
 				defer func() { lab.mesh.bare = nil }()

@@ -304,7 +304,7 @@ func (t Table) Validate() error {
 	for i, prefix := range t.Addresses {
 		// An entry left at zero, or an address under a length it cannot
 		// carry, has no spelling, so a capability built with one renders to a
-		// file nothing loads. Assigned skipped it without a word.
+		// file nothing loads.
 		if !prefix.IsValid() {
 			return fmt.Errorf("kernel: cap.table addresses entry %d is not a prefix", i+1)
 		}
