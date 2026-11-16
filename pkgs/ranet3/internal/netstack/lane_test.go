@@ -131,6 +131,7 @@ func TestLaneAnswersEachKindAsItsFamilyAnswersIt(t *testing.T) {
 		{"prohibited", ExitProhibited, map[int]want{4: {3, 13}, 6: {1, 1}}, 0},
 		{"too big", ExitTooBig, map[int]want{4: {3, 4}, 6: {2, 0}}, 1280},
 		{"past the limit", ExitPastLimit, map[int]want{4: {3, 1}, 6: {1, 1}}, 0},
+		{"no route", ExitNoRoute, map[int]want{4: {3, 0}, 6: {1, 0}}, 0},
 	} {
 		for _, family := range []int{4, 6} {
 			t.Run(fmt.Sprintf("%s IPv%d", c.name, family), func(t *testing.T) {
@@ -151,6 +152,44 @@ func TestLaneAnswersEachKindAsItsFamilyAnswersIt(t *testing.T) {
 				}
 				if got.from != transitOwn[family] || got.to != transitSender[family] {
 					t.Errorf("answered from %s to %s, want from the router-id %s to the leaf %s", got.from, got.to, transitOwn[family], transitSender[family])
+				}
+			})
+		}
+	}
+}
+
+// Each kind of an exit's answer but a too big, which no limit holds back,
+// draws on its source's ICMP bucket as the mesh's own answers do, so past the
+// bucket's burst none goes out and Answer reports false
+func TestLaneAnswersWithinTheSourcesICMPLimit(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		kind ExitAnswer
+	}{
+		{"expired", ExitExpired}, {"prohibited", ExitProhibited}, {"too big", ExitTooBig},
+		{"past the limit", ExitPastLimit}, {"no route", ExitNoRoute},
+	} {
+		for _, family := range []int{4, 6} {
+			t.Run(fmt.Sprintf("%s IPv%d", c.name, family), func(t *testing.T) {
+				n := newLaneNode(t)
+				lane := n.m.OpenLane()
+				defer lane.Close()
+				offending := udpPacket(transitSender[family], transitNowhere[family], 1400, true)
+				for i := range icmpSourceBurst {
+					if !lane.Answer(offending, c.kind, 1280) {
+						t.Fatalf("answer %d of the %d the bucket holds did not go out", i+1, icmpSourceBurst)
+					}
+				}
+				limited := c.kind != ExitTooBig
+				if past := lane.Answer(offending, c.kind, 1280); past == limited {
+					t.Errorf("the answer past the bucket went out %t, want %t", past, !limited)
+				}
+				want := icmpSourceBurst + 1
+				if limited {
+					want = icmpSourceBurst
+				}
+				if sent := n.from.packets(t); len(sent) != want {
+					t.Errorf("the leaf's session was sent %d packets, want %d", len(sent), want)
 				}
 			})
 		}

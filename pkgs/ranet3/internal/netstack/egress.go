@@ -177,6 +177,11 @@ const (
 	// total: host unreachable over IPv4 and administratively prohibited over
 	// IPv6, as RFC 6888 REQ-11 has a translator answer it
 	ExitPastLimit
+	// ExitNoRoute is destination unreachable for a packet refused for want of
+	// a route or a way to its destination: network unreachable over IPv4 and
+	// no route to destination over IPv6, code 0 in each, as the mesh answers a
+	// packet no route reaches
+	ExitNoRoute
 )
 
 // answerKind is the decision's kind an exit's answer is built as over version
@@ -186,6 +191,8 @@ func (a ExitAnswer) answerKind(version byte) answerKind {
 		return answerExpired
 	case ExitTooBig:
 		return answerTooBig
+	case ExitNoRoute:
+		return answerNoRoute
 	case ExitPastLimit:
 		if version == 4 {
 			return answerHostUnreachable

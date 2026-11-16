@@ -24,7 +24,7 @@ import (
 // toward its leaf
 const reasonEchoQueue = "echo queue full"
 
-// errEchoClosed is a read of an echo socket that closed
+// errEchoClosed is a read or a send of an echo socket that closed
 var errEchoClosed = errors.New("userspace: echo socket closed")
 
 // icmpSockets is the ICMP datagram sockets the exit shares among its echo
@@ -271,10 +271,11 @@ func (s *icmpSockets) routeMTU(address netip.Addr) int {
 }
 
 // reply hands message, an echo reply from from that socket read, to the
-// mapping whose identifier it carries where that mapping sent to from, and
-// reports whether it was one of the exit's. A mapping takes its replies from
-// the socket it sends through alone, since a reply to a class's address
-// reaches the socket bound to it and the one bound to none.
+// mapping whose identifier it carries where from is among that mapping's
+// latest destinations, and reports whether it was one of the exit's. A
+// mapping takes its replies from the socket it sends through alone, since a
+// reply to a class's address reaches the socket bound to it and the one bound
+// to none.
 func (s *icmpSockets) reply(socket *icmpSocket, message []byte, from netip.Addr) bool {
 	s.mu.Lock()
 	e := s.families[family(socket.ipv6)].ids[binary.BigEndian.Uint16(message[4:6])]
@@ -414,8 +415,11 @@ func (s *icmpSocket) send(prepare underlay.Prepare, message []byte, to netip.Add
 }
 
 // echoSocket is one echo mapping's share of its family's socket: the
-// identifier it holds, the replies taken for it, and the latest destinations
-// it sent to, from which alone it takes a reply
+// identifier it holds, the replies taken for it, and the latest destinations,
+// the echoDestinations its requests were last sent toward, from which alone
+// it takes a reply. Each destination is recorded before its request's send,
+// since the reply can come in before the send returns, so a request the exit
+// or the host refused records its destination too.
 type echoSocket struct {
 	sockets *icmpSockets
 	socket  *icmpSocket
@@ -425,10 +429,16 @@ type echoSocket struct {
 	queued atomic.Int64
 	done   chan struct{}
 	once   sync.Once
+	// closing is held to read by each send across its look at done and its
+	// write, and to write by close before it closes done. So close waits for a
+	// send already past that look, which leaves, and no request leaves once
+	// close returned.
+	closing sync.RWMutex
 
-	mu   sync.Mutex
+	mu sync.Mutex
+	// sent is the latest destinations, the one its requests went toward
+	// longest ago first and an unset address in each place none has filled
 	sent [echoDestinations]netip.Addr
-	next int
 }
 
 // echoReply is an echo reply's ICMP message and where it came from
@@ -439,7 +449,8 @@ type echoReply struct {
 
 // send sends message, an echo request, to to, with the mapping's identifier
 // written in and, over IPv4, the checksum computed again, which XNU computes
-// itself for ICMPv6
+// itself for ICMPv6, and reports errEchoClosed once e closed, whether or not
+// the socket it shares closed with it
 func (e *echoSocket) send(message []byte, to netip.Addr) error {
 	request := slices.Clone(message)
 	binary.BigEndian.PutUint16(request[4:6], e.id)
@@ -447,16 +458,32 @@ func (e *echoSocket) send(message []byte, to netip.Addr) error {
 	if !e.socket.ipv6 {
 		binary.BigEndian.PutUint16(request[2:4], ^uint16(packet.Sum(0, request)))
 	}
-	e.mu.Lock()
-	if !slices.Contains(e.sent[:], to) {
-		e.sent[e.next] = to
-		e.next = (e.next + 1) % len(e.sent)
+	e.record(to)
+	e.closing.RLock()
+	defer e.closing.RUnlock()
+	select {
+	case <-e.done:
+		return errEchoClosed
+	default:
 	}
-	e.mu.Unlock()
 	return e.socket.send(e.sockets.x.rt.Platform.Prepare, request, to)
 }
 
-// sentTo is whether to is among the latest destinations e sent to
+// record makes to the latest of e's destinations, dropping the one its
+// requests went toward longest ago where to was not among them
+func (e *echoSocket) record(to netip.Addr) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	i := slices.Index(e.sent[:], to)
+	if i < 0 {
+		i = 0
+	}
+	copy(e.sent[i:], e.sent[i+1:])
+	e.sent[len(e.sent)-1] = to
+}
+
+// sentTo is whether to is among the latest destinations e's requests were
+// sent toward
 func (e *echoSocket) sentTo(to netip.Addr) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -488,7 +515,9 @@ func (e *echoSocket) identifier() (uint16, error) { return e.id, nil }
 // closes where it is bound to an address no other mapping sends from
 func (e *echoSocket) close() error {
 	e.once.Do(func() {
+		e.closing.Lock()
 		close(e.done)
+		e.closing.Unlock()
 		s := e.sockets
 		s.mu.Lock()
 		defer s.mu.Unlock()

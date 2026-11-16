@@ -4,6 +4,7 @@
 package userspace
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
@@ -150,20 +152,12 @@ func TestEchoTakesOnlyItsOwnReplies(t *testing.T) {
 			}
 			// a reply on the leaf's identifier from an address its mapping never
 			// sent to, read by the socket bound to no address
-			elsewhere, index, message := netip.MustParseAddr("192.0.2.9"), 0, append(make([]byte, 20), 0, 0, 0, 0, id>>8, id&0xff, 0, 9)
-			message[0] = 0x45
+			elsewhere := netip.MustParseAddr("192.0.2.9")
 			if family.server.Is6() {
-				elsewhere, index, message = netip.MustParseAddr("2001:db8:4::9"), 1, message[20:]
-				message[0] = 129
-			}
-			h.x.icmp.mu.Lock()
-			unbound := h.x.icmp.families[index].sockets[netip.Addr{}]
-			h.x.icmp.mu.Unlock()
-			if unbound == nil {
-				t.Fatal("no socket bound to no address")
+				elsewhere = netip.MustParseAddr("2001:db8:4::9")
 			}
 			before := h.count(false, reasonNotOurs)
-			h.x.icmp.take(unbound, message, elsewhere)
+			h.x.icmp.take(h.unboundICMP(t, family.server.Is6()), unboundReply(elsewhere, id, 9, nil), elsewhere)
 			if h.count(false, reasonNotOurs) == before {
 				t.Errorf("a reply on the leaf's identifier from %s, where its mapping never sent, was not counted", elsewhere)
 			}
@@ -172,6 +166,24 @@ func TestEchoTakesOnlyItsOwnReplies(t *testing.T) {
 				h.x.link.release(pkt)
 			}
 		})
+	}
+}
+
+// A mapping takes replies from the echoDestinations its requests were last
+// sent toward: a request toward one it holds makes that one the latest, so the
+// one a new destination drops is the one its requests went toward longest ago
+func TestEchoSocketKeepsTheDestinationsItsRequestsWentTowardLast(t *testing.T) {
+	at := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)}) }
+	e := &echoSocket{}
+	for i := range echoDestinations {
+		e.record(at(i))
+	}
+	e.record(at(0))
+	e.record(at(echoDestinations))
+	for i := range echoDestinations + 1 {
+		if want := i != 1; e.sentTo(at(i)) != want {
+			t.Errorf("a reply from %s taken %t, want %t: the requests went toward the first again before a new one, which drops the second", at(i), !want, want)
+		}
 	}
 }
 
@@ -292,6 +304,125 @@ func TestEchoSocketIsScopedTowardEachDestination(t *testing.T) {
 	}
 }
 
+// An echo request toward a destination the underlay names no link for is
+// refused by the exit itself, its Prepare failing with ENETUNREACH before
+// anything leaves: it is counted as echo unsent and answered as one no route
+// reaches, the request quoted, and the mapping it opened ends at the next
+// pass with its flow given back
+func TestEchoRequestToADestinationWithNoLinkIsAnsweredNoRoute(t *testing.T) {
+	bound := underlay.Bound(func(netip.Addr) (int, uint64) { return 0, 0 })
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Prepare = bound })
+	var requests [][]byte
+	for _, family := range echoFamilies {
+		raw := ipPacket(family.leaf, family.server, icmpProtocol(family.leaf), echoRequest(family.leaf, family.server, 0x6464, 1, []byte("no link")))
+		requests = append(requests, raw)
+		h.x.echo.take(raw)
+	}
+	if got := h.count(false, reasonEchoUnsent); got != uint64(len(echoFamilies)) {
+		t.Errorf("counted %d requests unsent, want 1 in each family", got)
+	}
+	answers := h.mesh.answered()
+	if len(answers) != len(requests) {
+		t.Fatalf("answered %d requests, want each of the %d", len(answers), len(requests))
+	}
+	for i, answer := range answers {
+		if answer.kind != netstack.ExitNoRoute || !bytes.Equal(answer.offending, requests[i]) {
+			t.Errorf("answer %d is kind %d or about another packet, want request %d answered as no route", i, answer.kind, i)
+		}
+	}
+	opened, _ := h.echoHeld()
+	h.advance(mappingSweep)
+	if left, open := h.echoHeld(); opened != len(echoFamilies) || left != 0 || open != 0 {
+		t.Errorf("%d mappings opened, %d left and %d flows held after the next pass, want 1 opened in each family and none left", opened, left, open)
+	}
+}
+
+// A reply from the destination of a request the exit refused, its underlay
+// naming no link toward it, goes to the leaf and keeps the mapping echoIdle
+// from it: the destination is recorded before the send, so a reply on the
+// mapping's identifier from there is the mapping's, read here as the socket
+// bound to no address reads it
+func TestEchoReplyFromTheDestinationOfARefusedRequestIsTaken(t *testing.T) {
+	bound := underlay.Bound(func(netip.Addr) (int, uint64) { return 0, 0 })
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Prepare = bound })
+	refused := map[bool]netip.Addr{false: netip.MustParseAddr("192.0.2.77"), true: netip.MustParseAddr("2001:db8:4::77")}
+	for _, family := range echoFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			ipv6 := family.server.Is6()
+			to := refused[ipv6]
+			const id = 0x6969
+			unsent := h.count(false, reasonEchoUnsent)
+			h.x.echo.take(ipPacket(family.leaf, to, icmpProtocol(family.leaf), echoRequest(family.leaf, to, id, 1, []byte("refused"))))
+			h.x.echo.mu.Lock()
+			m := h.x.echo.mappings[echoKey{family.leaf, id}]
+			h.x.echo.mu.Unlock()
+			if m == nil || h.count(false, reasonEchoUnsent) != unsent+1 {
+				t.Fatalf("the mapping is open %t and the request counted unsent %t, want both", m != nil, h.count(false, reasonEchoUnsent) == unsent+1)
+			}
+			h.x.icmp.take(h.unboundICMP(t, ipv6), unboundReply(to, m.outside.id, 9, []byte("a reply")), to)
+			h.waitLaid(t, "the reply toward the leaf", func(raw []byte) bool { return isEchoReply(raw, to, family.leaf, id, 9, []byte("a reply")) })
+			h.endsAt(t, h.now().Add(echoIdle))
+		})
+	}
+}
+
+// An echo request scoped to a link that holds no route to its destination is
+// answered over IPv6 alone: the selection names lo0 for every destination,
+// and lo0 holds no route to a documentation address. Over IPv6 XNU refuses
+// the send with EHOSTUNREACH, and the request is counted and answered as one
+// no route reaches, quoted. Over IPv4 XNU sends it, so the exit counts
+// nothing and the leaf hears nothing. What XNU gives each family is read
+// first on a send of the test's own, and named where it is another.
+func TestEchoRequestOnALinkWithNoRouteIsAnsweredNoRouteOverIPv6Alone(t *testing.T) {
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Skipf("no lo0: %v", err)
+	}
+	bound := underlay.Bound(func(netip.Addr) (int, uint64) { return loopback.Index, 1 })
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Prepare = bound })
+	unrouted := map[bool]netip.Addr{false: netip.MustParseAddr("192.0.2.77"), true: netip.MustParseAddr("2001:db8:4::77")}
+	refusal := map[bool]error{false: nil, true: unix.EHOSTUNREACH}
+	for _, family := range echoFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			ipv6 := family.server.Is6()
+			to := unrouted[ipv6]
+			message := echoRequest(family.leaf, to, 0x6767, 1, []byte("routed nowhere"))
+			e, err := h.x.icmp.openEcho(ipv6, netip.Addr{}, 0x6868, to)
+			if err != nil {
+				t.Fatal(err)
+			}
+			met := e.send(message, to)
+			_ = e.close()
+			if errors.Is(met, unix.EPERM) {
+				t.Skipf("the host refuses this process a send off the loopback with %v, as the nix build's sandbox refuses it, so what XNU does with a send scoped to lo0 toward %s is not read here", met, to)
+			}
+			t.Logf("XNU met a send scoped to lo0 toward %s with %v", to, met)
+			if want := refusal[ipv6]; !errors.Is(met, want) {
+				t.Fatalf("XNU met a send scoped to lo0 toward %s with %v, want %v", to, met, want)
+			}
+			raw := ipPacket(family.leaf, to, icmpProtocol(family.leaf), message)
+			answered, unsent := len(h.mesh.answered()), h.count(false, reasonEchoUnsent)
+			h.x.echo.take(raw)
+			answers, counted := h.mesh.answered()[answered:], h.count(false, reasonEchoUnsent)-unsent
+			if met == nil {
+				if len(answers) != 0 || counted != 0 {
+					t.Errorf("answered %v and counted %d unsent where XNU sent the request, want neither", answers, counted)
+				}
+				return
+			}
+			if len(answers) != 1 || answers[0].kind != netstack.ExitNoRoute || !bytes.Equal(answers[0].offending, raw) || counted != 1 {
+				t.Errorf("answered %v and counted %d unsent after XNU refused the send with %v, want the request counted once and answered as no route", answers, counted, met)
+			}
+		})
+	}
+}
+
+// onEchoHost is a function that runs another where this process's echo
+// sockets open, which on darwin is anywhere
+func onEchoHost(*testing.T) func(func()) {
+	return func(f func()) { f() }
+}
+
 // stranger is another program's ICMP datagram socket, whose echo the exit
 // sees the replies to
 type stranger struct {
@@ -354,4 +485,30 @@ func (s *stranger) ping(t *testing.T, id, seq uint16) {
 			return
 		}
 	}
+}
+
+// unboundICMP is the socket of h's exit bound to no address in the family
+// ipv6 names, which reads every echo reply of the family
+func (h *relayHarness) unboundICMP(t *testing.T, ipv6 bool) *icmpSocket {
+	t.Helper()
+	h.x.icmp.mu.Lock()
+	defer h.x.icmp.mu.Unlock()
+	socket := h.x.icmp.families[family(ipv6)].sockets[netip.Addr{}]
+	if socket == nil {
+		t.Fatal("no socket bound to no address")
+	}
+	return socket
+}
+
+// unboundReply is an echo reply from from on id as an ICMP socket of from's
+// family reads it: over IPv4 behind an IP header of 20 bytes, which XNU hands
+// the socket, and over IPv6 alone. Its checksum is left 0, which the exit
+// computes again.
+func unboundReply(from netip.Addr, id, seq uint16, payload []byte) []byte {
+	reply := append(binary.BigEndian.AppendUint16(binary.BigEndian.AppendUint16([]byte{0, 0, 0, 0}, id), seq), payload...)
+	if from.Is6() {
+		reply[0] = 129
+		return reply
+	}
+	return append([]byte{0x45, 19: 0}, reply...)
 }

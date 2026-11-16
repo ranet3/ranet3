@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -188,17 +189,313 @@ func TestRefusedEchoSocketIsAnsweredProhibited(t *testing.T) {
 			if got := h.count(true, reasonEchoSocket); got != 1 {
 				t.Errorf("refused %d for the echo socket, want 1", got)
 			}
-			h.x.echo.mu.Lock()
-			n := len(h.x.echo.mappings)
-			h.x.echo.mu.Unlock()
-			h.x.flows.mu.Lock()
-			open := h.x.flows.open
-			h.x.flows.mu.Unlock()
-			if n != 0 || open != 0 {
+			if n, open := h.echoHeld(); n != 0 || open != 0 {
 				t.Errorf("%d mappings and %d flows after the refusal, want none", n, open)
 			}
 		})
 	}
+}
+
+// An echo request the host refuses to send for a reason no destination
+// unreachable names is dropped and counted as echo unsent and answered
+// nothing, and the mapping it opened ends at the next pass with its flow
+// given back: over IPv4 the loopback network's broadcast address, whose route
+// the up loopback holds in any namespace and which the host refuses with
+// EACCES to a socket without SO_BROADCAST, and over IPv6 a link-local
+// multicast one, which it refuses with EINVAL to a socket that names no
+// interface
+func TestEchoRequestTheHostRefusesIsCounted(t *testing.T) {
+	host := onEchoHost(t)
+	for _, c := range []struct {
+		name     string
+		leaf, to netip.Addr
+	}{
+		{"ipv4 broadcast", leaf4, netip.MustParseAddr("127.255.255.255")},
+		{"ipv6 link-local multicast", leaf6, netip.MustParseAddr("ff02::1")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+				rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+			})
+			host(func() {
+				h.x.echo.take(ipPacket(c.leaf, c.to, icmpProtocol(c.leaf), echoRequest(c.leaf, c.to, 7, 1, []byte("refused"))))
+			})
+			if got := h.count(false, reasonEchoUnsent); got != 1 {
+				t.Errorf("counted %d requests unsent, want 1", got)
+			}
+			if answers := h.mesh.answered(); len(answers) != 0 {
+				t.Errorf("answered %v, want nothing", answers)
+			}
+			opened, _ := h.echoHeld()
+			h.advance(mappingSweep)
+			if left, open := h.echoHeld(); opened != 1 || left != 0 || open != 0 {
+				t.Errorf("%d mappings opened, %d left and %d flows held after the next pass, want 1 opened and none left", opened, left, open)
+			}
+		})
+	}
+}
+
+// An echo request the host refuses to send since no route leads to its
+// destination, ENETUNREACH, or since the route that matches it cannot deliver
+// to its host, EHOSTUNREACH, is counted as echo unsent and answered as one no
+// route reaches, in each family, quoting the request as the leaf sent it
+// though another leaf's mapping holds its identifier and its own sends with
+// another: the mappings' sockets open in echoSpace's namespace, whose one
+// route past the loopback's is an unreachable one
+func TestEchoRequestTheHostFindsNoWayForIsAnswered(t *testing.T) {
+	space := echoSpace(t)
+	unreachable := map[bool]netip.Prefix{false: netip.MustParsePrefix("198.51.100.0/24"), true: netip.MustParsePrefix("2001:db8:5::/48")}
+	err := space.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		for _, to := range unreachable {
+			family := byte(unix.AF_INET6)
+			if to.Addr().Is4() {
+				family = unix.AF_INET
+			}
+			header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNREACHABLE, 0, 0, 0, 0}
+			if err := netlink.Request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(header, netnstest.Attr(unix.RTA_DST, to.Addr().AsSlice()))); err != nil {
+				return fmt.Errorf("route %s unreachable: %w", to, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("make the namespace: %v", err)
+	}
+	for _, c := range []struct {
+		name            string
+		leaf, other, to netip.Addr
+	}{
+		{"ipv4 no route", leaf4, other4, netip.MustParseAddr("192.0.2.77")},
+		{"ipv6 no route", leaf6, other6, netip.MustParseAddr("2001:db8:4::77")},
+		{"ipv4 unreachable route", leaf4, other4, unreachable[false].Addr().Next()},
+		{"ipv6 unreachable route", leaf6, other6, unreachable[true].Addr().Next()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+				rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+			})
+			const id = 7
+			holder := ipPacket(c.other, c.to, icmpProtocol(c.other), echoRequest(c.other, c.to, id, 1, []byte("holds the identifier")))
+			raw := ipPacket(c.leaf, c.to, icmpProtocol(c.leaf), echoRequest(c.leaf, c.to, id, 1, []byte("no way")))
+			sent := bytes.Clone(raw)
+			// a mapping's socket opens on the thread that takes its request, so in
+			// the namespace
+			_ = space.Do(func() error {
+				h.x.echo.take(holder)
+				h.x.echo.take(raw)
+				return nil
+			})
+			if refused := h.count(true, reasonEchoSocket); refused != 0 {
+				t.Fatalf("refused %d for the echo socket, want the namespace to give one", refused)
+			}
+			h.x.echo.mu.Lock()
+			m := h.x.echo.mappings[echoKey{c.leaf, id}]
+			h.x.echo.mu.Unlock()
+			if m == nil || m.outside.id == id {
+				t.Fatalf("the leaf's mapping is open %t, want it open sending with another identifier than the other leaf's %d", m != nil, id)
+			}
+			if got := h.count(false, reasonEchoUnsent); got != 2 {
+				t.Errorf("counted %d requests unsent, want both leaves' 2", got)
+			}
+			if answers := h.mesh.answered(); len(answers) != 2 || answers[1].kind != netstack.ExitNoRoute || !bytes.Equal(answers[1].offending, sent) {
+				t.Errorf("answered %v, want the leaf's request answered as no route, quoted as the leaf sent it", answers)
+			}
+		})
+	}
+}
+
+// Two requests of one leaf and identifier in flight together, as a leaf that
+// pings two destinations with one identifier has them on two workers, leave
+// the mapping the time of the one that left, whatever the host refused beside
+// it and whichever send ends first, and a mapping neither left from ends at
+// the first pass once both ended. No pass ends a mapping while a send on it
+// is in flight. The host refuses 127.255.255.255 with EACCES and sends to
+// 127.0.0.1, which echoSpace leaves unanswered.
+func TestEchoMappingLastsFromTheRequestThatLeft(t *testing.T) {
+	space := echoSpace(t)
+	refused, sent := netip.MustParseAddr("127.255.255.255"), netip.MustParseAddr("127.0.0.1")
+	for _, c := range []struct {
+		name string
+		to   [2]netip.Addr
+		// ends is the order the two sends end in
+		ends [2]int
+	}{
+		{"opener refused, its refusal ending first", [2]netip.Addr{refused, sent}, [2]int{0, 1}},
+		{"opener refused, the other send ending first", [2]netip.Addr{refused, sent}, [2]int{1, 0}},
+		{"both refused", [2]netip.Addr{refused, refused}, [2]int{0, 1}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, nil)
+			var raws [2][]byte
+			var requests [2]echoQuery
+			var mappings [2]*echoMapping
+			for i, to := range c.to {
+				raws[i] = ipPacket(leaf4, to, protoICMP, echoRequest(leaf4, to, 7, uint16(i+1), []byte("in flight")))
+				requests[i], _ = readEcho(raws[i])
+				var reason string
+				_ = space.Do(func() error {
+					mappings[i], reason = h.x.echo.mapping(requests[i])
+					return nil
+				})
+				if mappings[i] == nil {
+					t.Fatalf("request %d's mapping was refused for %s", i+1, reason)
+				}
+			}
+			h.advance(0)
+			left := h.now()
+			for _, i := range c.ends {
+				h.x.echo.send(raws[i], requests[i], mappings[i])
+			}
+			unsent := uint64(2)
+			if c.to[1] == sent {
+				unsent = 1
+			}
+			if mappings[0] != mappings[1] || h.count(false, reasonEchoUnsent) != unsent || h.count(true, reasonWithdrawn) != 0 {
+				t.Fatalf("one mapping %t, %d counted unsent and %d refused as withdrawn, want one mapping and %d unsent alone", mappings[0] == mappings[1], h.count(false, reasonEchoUnsent), h.count(true, reasonWithdrawn), unsent)
+			}
+			if c.to[1] == sent {
+				h.endsAt(t, left.Add(echoIdle))
+				return
+			}
+			h.advance(mappingSweep)
+			if live, open := h.echoHeld(); live != 0 || open != 0 {
+				t.Errorf("%d mappings and %d flows after the first pass once both were refused, want none", live, open)
+			}
+		})
+	}
+}
+
+// A mapping a request left on keeps that request's time through a later
+// request the host refuses, and ends echoIdle after the one that left with
+// its flow given back
+func TestEchoMappingKeepsTheTimeOfARequestThatLeftPastARefusal(t *testing.T) {
+	space := echoSpace(t)
+	h := newRelayHarness(t, nil)
+	take := func(to netip.Addr, seq uint16) {
+		raw := ipPacket(leaf4, to, protoICMP, echoRequest(leaf4, to, 7, seq, []byte("kept")))
+		_ = space.Do(func() error {
+			h.x.echo.take(raw)
+			return nil
+		})
+	}
+	left := h.now()
+	take(netip.MustParseAddr("127.0.0.1"), 1)
+	h.advance(10 * time.Second)
+	take(netip.MustParseAddr("127.255.255.255"), 2)
+	if got := h.count(false, reasonEchoUnsent); got != 1 {
+		t.Fatalf("counted %d requests unsent, want the second alone", got)
+	}
+	h.endsAt(t, left.Add(echoIdle))
+}
+
+// A mapping's time moves only on: a request that read the clock before
+// another left and stores its time after that one's keeps the later time, so
+// the mapping lasts echoIdle from the later request. The first request's
+// read of the clock sends the second whole, ten seconds on, before it returns.
+func TestEchoMappingTimeMovesOnlyOn(t *testing.T) {
+	space := echoSpace(t)
+	h := newRelayHarness(t, nil)
+	to := netip.MustParseAddr("127.0.0.1")
+	var raws [2][]byte
+	var requests [2]echoQuery
+	var m *echoMapping
+	for i := range raws {
+		raws[i] = ipPacket(leaf4, to, protoICMP, echoRequest(leaf4, to, 7, uint16(i+1), []byte("on")))
+		requests[i], _ = readEcho(raws[i])
+		_ = space.Do(func() error {
+			m, _ = h.x.echo.mapping(requests[i])
+			return nil
+		})
+	}
+	if m == nil {
+		t.Fatal("the mapping was refused")
+	}
+	armed := true
+	h.x.echo.now = func() time.Time {
+		read := h.now()
+		if armed {
+			armed = false
+			h.advance(10 * time.Second)
+			h.x.echo.send(raws[1], requests[1], m)
+		}
+		return read
+	}
+	h.x.echo.send(raws[0], requests[0], m)
+	if got := h.count(false, reasonEchoUnsent); got != 0 {
+		t.Fatalf("counted %d requests unsent, want both to leave", got)
+	}
+	h.endsAt(t, h.now().Add(echoIdle))
+}
+
+// A pass as a request leaves ends no mapping: send moves the mapping's time
+// before it lowers its count of the sends in flight, so a pass run from the
+// clock send reads that time from finds the request still in flight
+func TestEchoMappingOutlivesAPassAsItsRequestLeaves(t *testing.T) {
+	space := echoSpace(t)
+	h := newRelayHarness(t, nil)
+	to := netip.MustParseAddr("127.0.0.1")
+	armed := true
+	h.x.echo.now = func() time.Time {
+		now := h.now()
+		if armed {
+			armed = false
+			h.x.echo.expire(now.Add(2 * echoIdle))
+		}
+		return now
+	}
+	left := h.now()
+	_ = space.Do(func() error {
+		h.x.echo.take(ipPacket(leaf4, to, protoICMP, echoRequest(leaf4, to, 7, 1, []byte("leaving"))))
+		return nil
+	})
+	if unsent, refused := h.count(false, reasonEchoUnsent), h.count(true, reasonEchoSocket); unsent != 0 || refused != 0 {
+		t.Fatalf("counted %d unsent and refused %d for the echo socket, want the request to leave", unsent, refused)
+	}
+	h.endsAt(t, left.Add(echoIdle))
+}
+
+// A reply that comes in to a mapping no request left from goes to the leaf
+// and keeps the mapping echoIdle from it, as a request that left would: the
+// host refuses the leaf's request to 127.255.255.255, and a raw socket of the
+// namespace sends an echo reply on the mapping's identifier from 127.0.0.1,
+// which the kernel hands the mapping's socket whatever its source
+func TestEchoReplyKeepsAMappingNoRequestLeftFrom(t *testing.T) {
+	space := echoSpace(t)
+	h := newRelayHarness(t, nil)
+	refused, from := netip.MustParseAddr("127.255.255.255"), netip.MustParseAddr("127.0.0.1")
+	const id = 7
+	_ = space.Do(func() error {
+		h.x.echo.take(ipPacket(leaf4, refused, protoICMP, echoRequest(leaf4, refused, id, 1, []byte("refused"))))
+		return nil
+	})
+	h.x.echo.mu.Lock()
+	m := h.x.echo.mappings[echoKey{leaf4, id}]
+	h.x.echo.mu.Unlock()
+	if unsent := h.count(false, reasonEchoUnsent); m == nil || unsent != 1 {
+		t.Fatalf("the mapping is open %t and %d requests counted unsent, want it open and its request refused", m != nil, unsent)
+	}
+	reply := echoRequest(from, from, m.outside.id, 9, []byte("a reply"))
+	reply[0] = 0
+	binary.BigEndian.PutUint16(reply[2:4], 0)
+	binary.BigEndian.PutUint16(reply[2:4], fold(sum(0, reply)))
+	err := space.Do(func() error {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_ICMP)
+		if err != nil {
+			return err
+		}
+		defer unix.Close(fd)
+		return unix.Sendto(fd, reply, 0, &unix.SockaddrInet4{Addr: from.As4()})
+	})
+	if err != nil {
+		t.Fatalf("send the reply: %v", err)
+	}
+	h.waitLaid(t, "the reply toward the leaf", func(raw []byte) bool { return isEchoReply(raw, from, leaf4, id, 9, []byte("a reply")) })
+	h.endsAt(t, h.now().Add(echoIdle))
 }
 
 // An ICMP message from a leaf that is neither an echo request nor an error,
@@ -397,20 +694,71 @@ func TestFragmentedEchoWithATCPFlowOpenReachesTheRelayOnce(t *testing.T) {
 }
 
 // allowEcho lets this process's group open an ICMP datagram socket in this
-// namespace and the leaf's, which a new namespace lets no group open. The
-// range names only groups the user namespace maps.
+// namespace and the leaf's
 func (r *leafRig) allowEcho(t *testing.T) {
 	t.Helper()
-	group := os.Getegid()
-	allow := func() error {
-		return os.WriteFile("/proc/sys/net/ipv4/ping_group_range", fmt.Appendf(nil, "%d %d\n", group, group), 0o644)
-	}
-	if err := allow(); err != nil {
+	if err := allowEchoSockets(); err != nil {
 		t.Fatalf("allow echo sockets here: %v", err)
 	}
-	if err := r.leaf.Do(allow); err != nil {
+	if err := r.leaf.Do(allowEchoSockets); err != nil {
 		t.Fatalf("allow echo sockets in the leaf's namespace: %v", err)
 	}
+}
+
+// allowEchoSockets lets this process's group open an ICMP datagram socket in
+// the network namespace of the calling thread, which a new namespace lets no
+// group open. The range names only groups the user namespace maps.
+func allowEchoSockets() error {
+	group := os.Getegid()
+	return os.WriteFile("/proc/sys/net/ipv4/ping_group_range", fmt.Appendf(nil, "%d %d\n", group, group), 0o644)
+}
+
+// echoSpace is a network namespace of the test's own on a thread of its own,
+// its loopback up, where this process's echo sockets open and the host
+// answers no echo request, so a request that left draws no reply. It needs
+// root, as unshare -rn gives.
+func echoSpace(t *testing.T) *netnstest.Thread {
+	t.Helper()
+	if os.Getuid() != 0 {
+		t.Skip("a network namespace of its own needs root on linux, as unshare -rn gives")
+	}
+	space := netnstest.StartThread(t)
+	err := space.Do(func() error {
+		if err := allowEchoSockets(); err != nil {
+			return err
+		}
+		for _, ignore := range []string{"/proc/sys/net/ipv4/icmp_echo_ignore_all", "/proc/sys/net/ipv6/icmp/echo_ignore_all"} {
+			if err := os.WriteFile(ignore, []byte("1\n"), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("make the namespace: %v", err)
+	}
+	return space
+}
+
+// onEchoHost is a function that runs another where this process's echo
+// sockets open: in echoSpace's namespace where the process is root, as the
+// root suite runs it, and in the test's own otherwise, the test skipping
+// where that gives none
+func onEchoHost(t *testing.T) func(func()) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		space := echoSpace(t)
+		return func(f func()) {
+			_ = space.Do(func() error {
+				f()
+				return nil
+			})
+		}
+	}
+	if echoRefused(false) || echoRefused(true) {
+		t.Skip("no echo socket for this process")
+	}
+	return func(f func()) { f() }
 }
 
 // leafEcho is an ICMP datagram socket of the leaf's, opened in its namespace,

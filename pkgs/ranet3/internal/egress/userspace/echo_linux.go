@@ -23,7 +23,7 @@ type echoSocket struct {
 	ipv6 bool
 }
 
-// errEchoClosed is a read of an echo socket that closed
+// errEchoClosed is a read or a send of an echo socket that closed
 var errEchoClosed = errors.New("userspace: echo socket closed")
 
 // icmpSockets opens a socket of its own for each echo mapping on Linux, and
@@ -96,7 +96,7 @@ func (s *echoSocket) bind(source netip.Addr, id uint16) error {
 }
 
 // send sends message, an echo request, to to, the kernel writing its
-// identifier and checksum
+// identifier and checksum, and reports errEchoClosed once the socket closes
 func (s *echoSocket) send(message []byte, to netip.Addr) error {
 	var sa unix.Sockaddr
 	if s.ipv6 {
@@ -109,7 +109,7 @@ func (s *echoSocket) send(message []byte, to netip.Addr) error {
 		err = unix.Sendto(int(fd), message, 0, sa)
 		return !errors.Is(err, unix.EAGAIN)
 	}); writeErr != nil {
-		return writeErr
+		return errEchoClosed
 	}
 	return err
 }

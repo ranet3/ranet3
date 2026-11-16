@@ -22,6 +22,7 @@ const (
 	reasonNotEcho      = "icmp not echo"
 	reasonEchoSocket   = "echo socket"
 	reasonEchoTooLarge = "echo too large"
+	reasonEchoUnsent   = "echo unsent"
 )
 
 // errEchoTooLarge is a reply longer than the buffer it is read into, which is
@@ -32,9 +33,14 @@ var errEchoTooLarge = errors.New("userspace: echo reply too large for its buffer
 // a NAT carry them: one mapping per leaf address and identifier (REQ-1), each
 // with one ICMP datagram socket that sends to every destination and holds the
 // leaf's identifier where no other mapping holds it, so every server reads
-// one identifier (REQ-1a), and that is the mapping's reverse key. A mapping
-// ends echoIdle after its last request out or reply in (REQ-2). Every socket
-// passes the platform's Prepare.
+// one identifier (REQ-1a), and that is the mapping's reverse key. Each reply
+// the mapping's socket takes goes to the leaf: on macOS one on the mapping's
+// identifier from one of the echoDestinations its requests were last sent
+// toward, a refused request's among them, and on Linux any the kernel hands
+// the socket. A mapping ends echoIdle after the last request that left on it
+// or reply that came in (REQ-2), one that carried neither at the first pass
+// of expire after its sends ended, and every mapping at once at a withdrawal
+// or the stop. Every socket passes the platform's Prepare.
 type echoRelay struct {
 	x   *Exit
 	now func() time.Time
@@ -73,8 +79,23 @@ type echoMapping struct {
 	key     echoKey
 	socket  *echoSocket
 	outside echoOutside
-	// last is the mapping's last request out or reply in, in unix nanoseconds
+	// last is when the last request left on the mapping or the last reply came
+	// in, in unix nanoseconds, zero until one of them, and touch alone moves it
 	last atomic.Int64
+	// sending counts the requests mapping handed send whose send has not
+	// ended, and expire ends no mapping while it is above zero
+	sending atomic.Int32
+}
+
+// touch moves m's time on to at, and leaves it where a request or reply that
+// read the clock later stored its time first
+func (m *echoMapping) touch(at time.Time) {
+	t := at.UnixNano()
+	for last := m.last.Load(); last < t; last = m.last.Load() {
+		if m.last.CompareAndSwap(last, t) {
+			return
+		}
+	}
 }
 
 func newEchoRelay(x *Exit) *echoRelay {
@@ -172,12 +193,38 @@ func (e *echoRelay) take(raw []byte) {
 		e.refuse(raw, reason)
 		return
 	}
-	m.last.Store(e.now().UnixNano())
-	_ = m.socket.send(request.message, request.to)
+	e.send(raw, request, m)
+}
+
+// send sends request, which raw holds, on m, and moves m's time on to when it
+// left. A request whose mapping a withdrawal or the stop closed meanwhile is
+// refused as withdrawn, and one the exit or the host refused to send is
+// dropped and counted. A refusal with ENETUNREACH or EHOSTUNREACH says no
+// route or no way leads to the destination's host, and is told to the leaf as
+// no route (RFC 4443 section 3.1, RFC 1812 section 4.3.3.1), since on macOS,
+// where the exit runs, the two errnos do not tell those causes apart. Any
+// other refusal is answered nothing.
+func (e *echoRelay) send(raw []byte, request echoQuery, m *echoMapping) {
+	defer m.sending.Add(-1)
+	err := m.socket.send(request.message, request.to)
+	switch {
+	case err == nil:
+		m.touch(e.now())
+		return
+	case errors.Is(err, errEchoClosed):
+		e.refuse(raw, reasonWithdrawn)
+		return
+	}
+	e.x.counts.drop(reasonEchoUnsent)
+	if errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
+		e.x.answers.Answer(raw, netstack.ExitNoRoute, 0)
+	}
 }
 
 // mapping is the mapping of the request's leaf address and identifier, opened
-// where it has none, and why it refused
+// where it has none, or why it refused. It counts the request among the
+// mapping's sends under e.mu, so no pass of expire ends the mapping until
+// send is done with the request.
 func (e *echoRelay) mapping(request echoQuery) (*echoMapping, string) {
 	key := echoKey{request.from, request.id}
 	e.mu.Lock()
@@ -186,6 +233,7 @@ func (e *echoRelay) mapping(request echoQuery) (*echoMapping, string) {
 	case e.withdrawn:
 		return nil, reasonWithdrawn
 	case m != nil:
+		m.sending.Add(1)
 		return m, ""
 	}
 	if reason, ok := e.x.flows.admit(key.leaf); !ok {
@@ -207,7 +255,7 @@ func (e *echoRelay) mapping(request echoQuery) (*echoMapping, string) {
 		return nil, echoReason(err)
 	}
 	m := &echoMapping{key: key, socket: socket, outside: echoOutside{key.leaf.Is6(), id}}
-	m.last.Store(e.now().UnixNano())
+	m.sending.Store(1)
 	e.mappings[key] = m
 	e.held[m.outside] = true
 	e.readers.Add(1)
@@ -263,7 +311,7 @@ func (e *echoRelay) read(m *echoMapping) {
 		case n < 8 || (*b.buf)[:headroom+n][headroom] != reply:
 			e.x.counts.drop(reasonNotEcho)
 		default:
-			m.last.Store(e.now().UnixNano())
+			m.touch(e.now())
 			ident := e.x.ident.Add(1)
 			e.x.toLeaf(echoPacket((*b.buf)[:headroom+n], from, m.key, uint16(ident), e.x.hops(m.key.leaf.Is6())), ident)
 		}
@@ -320,13 +368,16 @@ func echoPacket(buf []byte, from netip.Addr, key echoKey, ident uint16, hops uin
 	return buf
 }
 
-// expire ends each mapping with no request or reply for echoIdle at now
+// expire ends each mapping that has no send in flight and has carried no
+// request out and no reply in within echoIdle before now, one that never
+// carried either among them. It reads sending before last, since send moves
+// last before it lowers sending.
 func (e *echoRelay) expire(now time.Time) {
 	idle := now.Add(-echoIdle).UnixNano()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for key, m := range e.mappings {
-		if m.last.Load() <= idle {
+		if m.sending.Load() == 0 && m.last.Load() <= idle {
 			delete(e.mappings, key)
 			e.close(m)
 		}
