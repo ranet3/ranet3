@@ -64,8 +64,7 @@ type icmpFamily struct {
 	next uint16
 }
 
-// icmpSocket is one ICMP datagram socket, the mappings sending through it,
-// and the destination its last send was scoped toward
+// icmpSocket is one ICMP datagram socket and the mappings sending through it
 type icmpSocket struct {
 	ipv6   bool
 	source netip.Addr
@@ -75,8 +74,8 @@ type icmpSocket struct {
 	// address closes with its last
 	users int
 
+	// sendMu keeps each request's scope on the socket until its send is out
 	sendMu sync.Mutex
-	scoped netip.Addr
 }
 
 // openICMP opens each family's socket bound to no address, a failure logged
@@ -379,24 +378,21 @@ func (s *icmpSockets) close() {
 	s.readers.Wait()
 }
 
-// send sends message to to, the socket scoped by prepare toward to first where
-// its last send was scoped elsewhere, so each request leaves by the link the
-// platform names for its own destination: XNU follows IP_BOUND_IF and
-// IPV6_BOUND_IF set before each send, and not IP_PKTINFO's interface over
-// IPv4
+// send sends message to to, the socket scoped by prepare toward to before
+// each request, so each leaves by the link the platform names for its
+// destination at that send: XNU follows IP_BOUND_IF and IPV6_BOUND_IF set
+// before each send, and not IP_PKTINFO's interface over IPv4. The socket is
+// not blocking and the send does not wait for it to have room, so a send ends
+// after one Prepare and one sendto, failing with EAGAIN where it had none.
 func (s *icmpSocket) send(prepare underlay.Prepare, message []byte, to netip.Addr) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-	if to != s.scoped {
-		network := "ip4:icmp"
-		if s.ipv6 {
-			network = "ip6:ipv6-icmp"
-		}
-		if err := prepare(network, netip.AddrPortFrom(to, 0), s.raw); err != nil {
-			s.scoped = netip.Addr{}
-			return err
-		}
-		s.scoped = to
+	network := "ip4:icmp"
+	if s.ipv6 {
+		network = "ip6:ipv6-icmp"
+	}
+	if err := prepare(network, netip.AddrPortFrom(to, 0), s.raw); err != nil {
+		return err
 	}
 	var sa unix.Sockaddr
 	if s.ipv6 {
@@ -405,11 +401,10 @@ func (s *icmpSocket) send(prepare underlay.Prepare, message []byte, to netip.Add
 		sa = &unix.SockaddrInet4{Addr: to.As4()}
 	}
 	var err error
-	if writeErr := s.raw.Write(func(fd uintptr) bool {
+	if controlErr := s.raw.Control(func(fd uintptr) {
 		err = unix.Sendto(int(fd), message, 0, sa)
-		return !errors.Is(err, unix.EAGAIN)
-	}); writeErr != nil {
-		return writeErr
+	}); controlErr != nil {
+		return controlErr
 	}
 	return err
 }
@@ -430,9 +425,11 @@ type echoSocket struct {
 	done   chan struct{}
 	once   sync.Once
 	// closing is held to read by each send across its look at done and its
-	// write, and to write by close before it closes done. So close waits for a
-	// send already past that look, which leaves, and no request leaves once
-	// close returned.
+	// write, and to write by close before it closes done. So no request leaves
+	// once close returned, and close waits for a send already past that look
+	// to end its Prepare and sendto, whatever they return, behind the sends
+	// ahead of it on the shared socket, since icmpSocket.send waits for no
+	// room.
 	closing sync.RWMutex
 
 	mu sync.Mutex

@@ -244,21 +244,33 @@ func TestICMPv6SocketReadsOnlyEchoRepliesAndErrors(t *testing.T) {
 	}
 }
 
-// An echo socket is scoped by Prepare toward each destination it sends to,
-// again only where the destination changes, so each request leaves by the
-// link the platform names for its own destination, and a destination the
-// platform routes by no link is refused before anything is sent. The scope is
-// the one underlay.Bound sets, read back.
+// An echo socket is scoped by Prepare toward each request's destination
+// before each send, so each request leaves by the link the platform names for
+// its destination at that send: a selection that moves to another link at one
+// destination moves the next request's scope with it, and a destination the
+// platform names no link for, from the start or since, is refused before
+// anything is sent. The scope is the one underlay.Bound sets, read back.
 func TestEchoSocketIsScopedTowardEachDestination(t *testing.T) {
 	loopback, err := net.InterfaceByName("lo0")
 	if err != nil {
 		t.Skipf("no lo0: %v", err)
 	}
-	// the test's goroutine alone opens and sends, so Prepare runs on it alone
+	other := 0
+	if ifs, err := net.Interfaces(); err == nil {
+		for _, ifi := range ifs {
+			if ifi.Index != loopback.Index && ifi.Flags&net.FlagUp != 0 {
+				other = ifi.Index
+				break
+			}
+		}
+	}
+	// the test's goroutine alone opens and sends, so Prepare runs on it alone,
+	// and selected is the link the selection names for a loopback address
 	var scoped []netip.AddrPort
+	selected := loopback.Index
 	bound := underlay.Bound(func(address netip.Addr) (int, uint64) {
 		if address.IsLoopback() {
-			return loopback.Index, 1
+			return selected, 1
 		}
 		return 0, 0
 	})
@@ -271,34 +283,91 @@ func TestEchoSocketIsScopedTowardEachDestination(t *testing.T) {
 	unrouted := map[bool]netip.Addr{false: netip.MustParseAddr("192.0.2.77"), true: netip.MustParseAddr("2001:db8:4::77")}
 	for _, family := range echoFamilies {
 		t.Run(family.name, func(t *testing.T) {
+			selected = loopback.Index
 			ipv6 := family.server.Is6()
 			e, err := h.x.icmp.openEcho(ipv6, netip.Addr{}, 0x6161, family.server)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer e.close()
+			scope := func() int {
+				level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
+				if ipv6 {
+					level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+				}
+				var index int
+				var err error
+				if controlErr := e.socket.raw.Control(func(fd uintptr) { index, err = unix.GetsockoptInt(int(fd), level, option) }); controlErr != nil || err != nil {
+					t.Fatalf("read the scope: %v %v", controlErr, err)
+				}
+				return index
+			}
 			request := echoRequest(family.leaf, family.server, 0x6161, 1, []byte("scoped"))
 			scoped = scoped[:0]
-			for _, to := range []netip.Addr{family.server, family.server, unrouted[ipv6], family.server} {
+			sends := []netip.Addr{family.server, family.server, unrouted[ipv6], family.server}
+			for _, to := range sends {
 				err := e.send(request, to)
 				if routed := to.IsLoopback(); routed != (err == nil) {
 					t.Errorf("send toward %s: %v, want it sent %t", to, err, routed)
 				}
 			}
-			want := []netip.AddrPort{netip.AddrPortFrom(family.server, 0), netip.AddrPortFrom(unrouted[ipv6], 0), netip.AddrPortFrom(family.server, 0)}
+			var want []netip.AddrPort
+			for _, to := range sends {
+				want = append(want, netip.AddrPortFrom(to, 0))
+			}
 			if !slices.Equal(scoped, want) {
-				t.Errorf("Prepare scoped the socket toward %v, want %v", scoped, want)
+				t.Errorf("Prepare scoped the socket toward %v, want %v, one for each send", scoped, want)
 			}
-			level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
-			if ipv6 {
-				level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+			if got := scope(); got != loopback.Index {
+				t.Errorf("the socket is scoped to interface %d, want lo0's %d", got, loopback.Index)
 			}
-			var index int
-			if controlErr := e.socket.raw.Control(func(fd uintptr) { index, err = unix.GetsockoptInt(int(fd), level, option) }); controlErr != nil || err != nil {
-				t.Fatalf("read the scope: %v %v", controlErr, err)
+			if other != 0 {
+				// the loopback by another link may be refused, and the scope
+				// is set before the send either way
+				selected = other
+				_ = e.send(request, family.server)
+				if got := scope(); got != other {
+					t.Errorf("the socket is scoped to interface %d after the selection moved to %d at %s, want the new one", got, other, family.server)
+				}
 			}
-			if index != loopback.Index {
-				t.Errorf("the socket is scoped to interface %d, want lo0's %d", index, loopback.Index)
+			selected = 0
+			if err := e.send(request, family.server); !errors.Is(err, unix.ENETUNREACH) {
+				t.Errorf("a request to %s after the selection named no link for it: %v, want ENETUNREACH", family.server, err)
+			}
+		})
+	}
+}
+
+// A mapping whose earlier request left keeps that request's time through the
+// next one, refused once the selection stopped naming a link for their
+// destination
+func TestEchoMappingKeepsItsTimePastARequestAfterTheSelectionWent(t *testing.T) {
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Skipf("no lo0: %v", err)
+	}
+	var selected atomic.Int64
+	bound := underlay.Bound(func(netip.Addr) (int, uint64) { return int(selected.Load()), 1 })
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Platform.Prepare = bound })
+	for _, family := range echoFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			selected.Store(int64(loopback.Index))
+			const id = 0x6565
+			payload := []byte("selection")
+			h.x.echo.take(ipPacket(family.leaf, family.server, icmpProtocol(family.leaf), echoRequest(family.leaf, family.server, id, 1, payload)))
+			h.waitLaid(t, "the reply to the first request", func(raw []byte) bool { return isEchoReply(raw, family.server, family.leaf, id, 1, payload) })
+			selected.Store(0)
+			before := h.count(false, reasonEchoUnsent)
+			h.x.echo.take(ipPacket(family.leaf, family.server, icmpProtocol(family.leaf), echoRequest(family.leaf, family.server, id, 2, payload)))
+			if got := h.count(false, reasonEchoUnsent) - before; got != 1 {
+				t.Fatalf("counted %d requests unsent after the selection went, want 1", got)
+			}
+			h.advance(mappingSweep)
+			h.x.echo.mu.Lock()
+			live := h.x.echo.mappings[echoKey{family.leaf, id}] != nil
+			h.x.echo.mu.Unlock()
+			if !live {
+				t.Error("the mapping ended at the next pass, want it kept by the request that left")
 			}
 		})
 	}
