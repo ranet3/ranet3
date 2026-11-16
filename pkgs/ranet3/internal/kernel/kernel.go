@@ -126,7 +126,8 @@ type Table struct {
 	// hand. A default is announced and never assigned, so it is skipped.
 	AssignAnnounced bool `yaml:"assign_announced,omitempty" json:"assign_announced,omitempty" toml:"assign_announced,omitempty"`
 	// Reconcile is the periodic sweep correcting drift nothing announced.
-	// Zero uses DefaultReconcileInterval.
+	// Zero uses DefaultReconcileInterval, and any other value under
+	// schema.MinPassInterval is refused.
 	Reconcile schema.Duration `yaml:"reconcile,omitempty" json:"reconcile,omitempty" toml:"reconcile,omitempty"`
 	// CaptureGrace is how long a route that would carry this machine's own
 	// traffic, an announced default above all, stays installed after the last
@@ -322,6 +323,9 @@ func (t Table) Validate() error {
 	}
 	if t.Reconcile < 0 {
 		return fmt.Errorf("kernel: cap.table reconcile %s is not an interval", t.Reconcile)
+	}
+	if t.Reconcile > 0 && t.Reconcile.Duration() < schema.MinPassInterval {
+		return fmt.Errorf("kernel: cap.table reconcile %s is shorter than %s", t.Reconcile, schema.MinPassInterval)
 	}
 	if t.CaptureGrace < 0 {
 		return fmt.Errorf("kernel: cap.table capture_grace %s is not an interval", t.CaptureGrace)

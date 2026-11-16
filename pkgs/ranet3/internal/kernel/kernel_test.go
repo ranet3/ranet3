@@ -859,6 +859,21 @@ func TestValidateRefusesAPrefixThatIsNotOne(t *testing.T) {
 	}
 }
 
+// A reconcile at the floor, 1 second as the configuration reference states
+// it, is taken and runs at it, and one left at zero is taken and runs at the
+// default.
+func TestReconcileAtTheFloorRunsAtItAndZeroAtTheDefault(t *testing.T) {
+	for every, want := range map[time.Duration]time.Duration{0: DefaultReconcileInterval, time.Second: time.Second} {
+		table := Table{Reconcile: schema.Duration(every)}
+		if err := table.Validate(); err != nil {
+			t.Errorf("a reconcile of %s was refused: %v", every, err)
+		}
+		if got := table.Normalized().Reconcile.Duration(); got != want {
+			t.Errorf("a reconcile of %s runs every %s, want %s", every, got, want)
+		}
+	}
+}
+
 // An announced default is installed unscoped on linux, so a reconciler given
 // the main table would put the whole machine's default out of the tun and take
 // the ESP underlay with it. Nothing else refuses a route in main, and the one

@@ -844,7 +844,7 @@ cap:
       - %q
   table:
     assign_announced: true
-    reconcile: 50ms
+    reconcile: 1s
     capture_grace: 1s
 `, f.keyPath, f.trustPath, f.port, mode, announcedAddress.String(), announcedAddress4.String())
 	if err := os.WriteFile(f.path, []byte(body), 0o600); err != nil {

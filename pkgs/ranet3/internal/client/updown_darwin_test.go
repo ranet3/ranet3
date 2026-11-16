@@ -33,8 +33,9 @@ import (
 // the last three run one on a real utun, as root with RANET3_DARWIN_NETTEST=1, and name documentation prefixes alone
 
 const (
-	// quietFor is how long a node starting down is watched for a write to its mesh device, ten of its 50 millisecond reconcile intervals
-	quietFor = 500 * time.Millisecond
+	// quietFor is how long a node starting down is watched for a write to its mesh device, longer than its reconcile interval
+	// so the window holds a turn of the periodic pass, since a stopped reconciler's turns record nothing a wait could end on
+	quietFor = 2 * time.Second
 	// utunBudget bounds every wait on the real kernel
 	utunBudget = 10 * time.Second
 	// utunPoll is how often a wait on the real kernel reads the utun again
@@ -239,7 +240,7 @@ cap:
       - %q
   table:
     assign_announced: true
-    reconcile: 50ms
+    reconcile: 1s
 `, keyPath, trustPath, port, utunAddress.String())
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

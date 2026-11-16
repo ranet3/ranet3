@@ -361,7 +361,7 @@ func reconcilers() hegel.Generator[kernel.Table] {
 			Proto:           hegel.Draw(tc, unset(edges[uint8](5, math.MaxUint8))),
 			Addresses:       hegel.Draw(tc, hegel.Lists(eitherFamily(false)).MaxSize(3)),
 			AssignAnnounced: hegel.Draw(tc, hegel.Booleans()),
-			Reconcile:       hegel.Draw(tc, unset(between(time.Millisecond, time.Hour))),
+			Reconcile:       hegel.Draw(tc, unset(between(schema.MinPassInterval, time.Hour))),
 			CaptureGrace:    hegel.Draw(tc, unset(between(kernel.MinCaptureGrace, time.Hour))),
 		}
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {

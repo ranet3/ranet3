@@ -174,7 +174,7 @@ func TestReloadSweepsAtTheNewInterval(t *testing.T) {
 	table.Set(netip.Prefix{}, ordinary.Destination, nil)
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the first pass", "start", func() bool { return fake.has(ordinary) })
-	if err := r.SetTable(Table{Reconcile: schema.Duration(sweepEvery)}, nil, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(schema.MinPassInterval)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// a route deleted before the reload pass reads the kernel is put back by that pass rather than by a sweep
@@ -250,11 +250,12 @@ func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
 		next   Table
 		naming string
 	}{
-		"another id":         {Table{ID: 201}, "cap.table id changed"},
-		"another proto":      {Table{Proto: DefaultProtocol + 1}, "cap.table proto changed"},
-		"a reserved proto":   {Table{Proto: protocolStatic}, "is reserved"},
-		"a negative sweep":   {Table{Reconcile: -1}, "not an interval"},
-		"an address at zero": {Table{Addresses: []schema.Prefix{{}}}, "not a prefix"},
+		"another id":              {Table{ID: 201}, "cap.table id changed"},
+		"another proto":           {Table{Proto: DefaultProtocol + 1}, "cap.table proto changed"},
+		"a reserved proto":        {Table{Proto: protocolStatic}, "is reserved"},
+		"a negative sweep":        {Table{Reconcile: -1}, "not an interval"},
+		"a sweep under the floor": {Table{Reconcile: schema.Duration(time.Second - time.Nanosecond)}, "kernel: cap.table reconcile 999.999999ms is shorter than 1s"},
+		"an address at zero":      {Table{Addresses: []schema.Prefix{{}}}, "not a prefix"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, table, fake := harness(t, start)
