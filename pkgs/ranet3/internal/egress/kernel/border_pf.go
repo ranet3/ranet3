@@ -123,10 +123,11 @@ func (b *borderPF) readings(sets borderSets) []egress.BorderSetReading {
 // daemon's reference again where pf no longer lists it, then reads the anchor
 // back against rules and sets. The renewal comes first, so a pass that fails
 // on the anchor still turns pf back on. An anchor holding what the filter
-// never writes, a line the parsers cannot read or a translation rule, is a
-// fault, which the pass rewrites whole like any other, cut past pfFaultMax
-// bytes, and logged where that text differs from the last one found or a
-// readback read the whole anchor since.
+// never writes, a line the parsers cannot read, a translation rule or a
+// dummynet rule, is a fault, which the pass rewrites whole like any other, cut
+// past pfFaultMax bytes, and logged unless the last readback of this method
+// that read the anchor found the same text. The readbacks of Read and
+// Withdraw leave that record as it was.
 func (b *borderPF) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	state, unready, err := b.hold()
 	if err != nil {

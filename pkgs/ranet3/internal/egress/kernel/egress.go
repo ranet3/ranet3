@@ -45,10 +45,9 @@
 // An exit whose rule will not install, or whose kernel will not forward, would
 // therefore attract traffic and drop it with nothing to tell the sender. So the
 // advertisement is published by this package rather than by the configuration:
-// Announce answers the prefixes of each family that is ready, whose chains
-// read back as written, which the kernel forwards and whose route lookups
-// take a translated packet's path, and nothing at all while no family is, and
-// Republish says when that answer moves.
+// Announce answers the prefixes of each family that is ready (exit-nodes.md,
+// "Readiness"), and nothing at all while no family is, and Republish says when
+// that answer moves.
 //
 // # The antispoof filter
 //
@@ -60,9 +59,9 @@
 // Linux node: chain antispoof, written wherever overlay is, drops a source in
 // the overlay or a carved one arriving from outside the mesh that no exemption
 // passes, before conntrack, and chain mesh_entry, written with or without an
-// overlay, lets into the tun from another device only a reply, a source this
-// node owns, an IPv6 link-local or multicast destination, or a destination a
-// none class takes. desired lists each chain's rules in order. On macOS, where
+// overlay, lets into the tun from another device only the packets it lists
+// (antispoof.md, "The entry chain"). desired lists each chain's rules in
+// order. On macOS, where
 // overlay is written, chain antispoof is the one chain, kept in a pf anchor
 // under com.apple, and the filter keeps pf enabled while it runs (antispoof.md,
 // "The pf anchor on macOS").
@@ -105,9 +104,9 @@ import (
 // write.
 type Runtime struct {
 	// Interface is the mesh device, named as the kernel named it. A packet
-	// arriving on it and leaving by another link is translated in each
-	// advertised family, while one arriving on it and leaving by it again is
-	// mesh transit and is left alone.
+	// arriving on it and leaving by another link is translated in each family
+	// egress.Egress.Translated gives, while one arriving on it and leaving by it
+	// again is mesh transit and is left alone.
 	Interface string
 	// Steered is whether a local segment delivers to egress, writing its inner
 	// packets to the mesh device. Both families are then translated, since
@@ -139,11 +138,8 @@ type Runtime struct {
 	// the tun delivers, with the hold on their storage Egress was handed
 	Write func(frames [][]byte, hold netstack.Hold)
 	// Hooks report what every exit reports. Republish is called once per pass
-	// whose announcement differs from the last. A family is ready while this
-	// node translates it, its chains, set and timeout objects read back exactly
-	// as written, the host forwards it, the host holds every address its
-	// classes translate to, and the kernel's lookups route a translated packet
-	// and its reply the way the translation needs (see judge). The SIDs are
+	// whose announcement differs from the last. A family is ready as Linux's
+	// readiness gives (exit-nodes.md, "Readiness", and judge). The SIDs are
 	// served while at least one family is ready and every family the host
 	// forwards is.
 	egress.Hooks
@@ -511,8 +507,8 @@ type chainReadback struct {
 	// read it, nil on every other backend
 	pf *egress.BorderPF
 	// held is whether any chain, set or object of the owner's that the family
-	// reads is there, which the antispoof filter's readback and the
-	// translator's set
+	// reads is there, set by the antispoof filter's readback and by the
+	// translator's
 	held bool
 }
 

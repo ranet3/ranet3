@@ -26,9 +26,8 @@ const (
 	NoneChain = "none_"
 	// BorderChain is the antispoof filter's chain at prerouting
 	BorderChain = "antispoof"
-	// EntryChain is the chain beside it that lets a packet into the mesh's
-	// tun only as a reply, toward an IPv6 link-local or multicast destination,
-	// from a source this node owns or toward a destination a none class takes
+	// EntryChain is the chain beside it that lets into the mesh's tun only
+	// the packets it lists (antispoof.md, "The entry chain")
 	EntryChain = "mesh_entry"
 	// carvedSet, ownedSet and noneSet start the names of the filter's sets,
 	// the family's digit ending each

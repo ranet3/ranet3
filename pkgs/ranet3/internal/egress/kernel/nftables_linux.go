@@ -760,7 +760,7 @@ func translatorLine(rule Rule, id uint32) (nftables.Line, error) {
 }
 
 // protocolRule is, for a rule taking a packet by its protocol, the expressions
-// newRule puts ahead of the interfaces and the prefix it matches, those it puts
+// translatorLine puts ahead of the interfaces and the prefix it matches, those it puts
 // after them, and the verdict that ends the rule, past the counter its kind
 // keeps
 func protocolRule(rule Rule) (head, match [][]byte, action []byte) {
