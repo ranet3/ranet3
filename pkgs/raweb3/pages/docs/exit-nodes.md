@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-15
+updated: 2026-11-16
 order: 50
 ---
 
@@ -677,9 +677,34 @@ which reassembles or parses it first:
   ends it as
   [the userspace exit](design/protocol-deviations.md#the-userspace-exit) gives.
 - **Echo** leaves through an ICMP socket of each family, with the leaf's
-  identifier where no other mapping holds it, and an idle echo mapping ends
-  after 60 seconds. The exit takes only a reply on an identifier a mapping holds
-  from a destination that mapping sent to, and counts the rest.
+  identifier where no other mapping holds it. The exit takes a reply on an
+  identifier a mapping holds from one of the 16 destinations that mapping's
+  requests went toward last, a refused request's among them, and counts the
+  rest: a request toward one of the 16 makes it the latest, and one toward a
+  seventeenth drops the one its requests went toward longest ago. A mapping is
+  kept 60 seconds past the last request that left on it or reply it took. One
+  that carried neither ends at the first sweep, every 5 seconds, after its
+  requests' sends end, so a send still in flight holds it until that send ends.
+  A withdrawal or the stop ends every mapping at once, and a request whose
+  mapping it closed meanwhile is refused and counted as `withdrawn`. A request
+  the exit or the host refuses to send once its mapping is open is dropped and
+  counted as `echo unsent`: the exit refuses one toward a destination its
+  underlay names no link for, and the host refuses one on the send. The exit's
+  refusal, and the host's with `ENETUNREACH` or `EHOSTUNREACH`, which say no
+  route or no way leads to the destination's host, are answered with network
+  unreachable over IPv4 and no route over IPv6, within the node's ICMP limits,
+  since macOS's errnos do not tell those causes apart. Scoped to lo0 toward a
+  destination lo0 holds no route for, macOS was seen to refuse the IPv6 send
+  with `EHOSTUNREACH` and to send the IPv4 one, whose leaf then hears nothing.
+  Over IPv6 XNU also gives `EHOSTUNREACH` for a host route flagged reject or
+  blackhole and for a socket restricted from sending on the link, and
+  `ENETUNREACH` for such a network route
+  ([`in6_src.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c)),
+  each answered alike, a departure
+  [protocol deviations](design/protocol-deviations.md) declares. What it gives a
+  send its pf blocks, or one toward a neighbor that never answers, is not known
+  here. Any other refusal is answered nothing, a departure the same page
+  declares.
 - **Errors** a server or a router raises about a dial that fails reach the leaf
   from the address that raised them, and so do those about a mapping's datagram
   that [the userspace exit](design/protocol-deviations.md#the-userspace-exit)
@@ -1167,13 +1192,17 @@ budget, such as:
 
 ```
 Egress   userspace, 21 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
-Flows    14 TCP of 985, 6 UDP, 1 echo of 10240, 3 dialing, 210 in TIME_WAIT, 37 held for host sockets, 54 host ports of 5120
+Flows    61 of 10240 allowed: 21 open, 3 dialing and 37 held for host sockets, 17 TCP of 985 allowed: 14 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
 Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
 ```
 
 The 210 in TIME_WAIT are the leaf-side endpoints in the exit's own stack, and
 the 37 held the closed connections whose host sockets may pin a port. The 54
-host ports are the 14 TCP connections open, the 3 dialing and the 37 held.
+host ports are the 14 TCP connections open, the 3 dialing and the 37 held. The
+61 are the flows held against `Flows`,
+[the exit's bound](design/limits.md#the-userspace-exit): the 21 open, the egress
+line's figure, the 3 dialing and the 37 held. The 17 are the TCP connections
+held against `Connections`: the 14 open and the 3 dialing.
 
 The userspace exit writes the lines of the first table. Of the second, both
 exits write `egress translating for N prefixes in <where>`, `egress ready`,
