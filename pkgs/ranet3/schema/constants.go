@@ -26,8 +26,8 @@ const (
 
 // MinPassInterval is the least interval cap.egress sweep and cap.table
 // reconcile take. Each paces a pass that reads the host's tables again at
-// every turn, changed or not, so a shorter one would read them more than once
-// a second on a quiet host. Each also caps the backoff on which
+// every turn, changed or not, so the floor bounds how often a quiet host's
+// tables are read. Each also caps the backoff on which
 // internal/kernel's RetryTimer retries a failed pass of the kernel exit or the
 // reconciler, and one under the timer's first delay holds every retry at the
 // period. The refusal names the value, so a unit written wrong, "30ns" for
