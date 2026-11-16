@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 // Package pf writes and reads the rules ranet3 keeps in an anchor of macOS's
-// packet filter. pfctl is the one writer and reader: the package renders a
-// ruleset as pf.conf text in the form pfctl prints it back, loads it into an
-// anchor in one transaction, and parses pfctl's readback into the same model,
-// so a readback compares with what was written as values. No struct of
-// pfvar.h is laid out here.
+// packet filter. pfctl is the anchor's one writer and reader: the package
+// renders a ruleset as pf.conf text in the form pfctl prints it back, loads it
+// into an anchor in one transaction, and parses pfctl's readback into the same
+// model, so a readback compares with what was written as values. No struct of
+// pfvar.h is laid out here. The package also holds this daemon's reference on
+// pf, which enables pf for the whole host, taken through its own ioctl on
+// /dev/pf, and the record of its token (Reference).
 package pf
 
 import "net/netip"

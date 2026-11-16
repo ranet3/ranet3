@@ -12,8 +12,9 @@ import (
 )
 
 // Render writes rs as pfctl -f reads it, each rule in the form pfctl -sr prints
-// it back and each table's prefixes in the order and form pfctl -T show prints
-// them. It refuses a ruleset that would not read back as itself.
+// it back and each table's prefixes in the form pfctl -T show prints them,
+// sorted by comparePrefixes. It refuses a ruleset that would not read back as
+// itself.
 func (rs Ruleset) Render() (string, error) {
 	if err := rs.check(); err != nil {
 		return "", err
@@ -30,7 +31,7 @@ func (rs Ruleset) Render() (string, error) {
 	return b.String(), nil
 }
 
-// String is the table's definition, its prefixes sorted as pfctl prints them
+// String is the table's definition, its prefixes sorted by comparePrefixes
 func (t Table) String() string {
 	var b strings.Builder
 	b.WriteString("table <" + t.Name + ">")
@@ -94,8 +95,9 @@ func (a Address) String() string {
 	return "any"
 }
 
-// comparePrefixes orders IPv4 before IPv6, then by address, which is the
-// order pfctl -T show walks a table in
+// comparePrefixes orders IPv4 before IPv6, then by address, a shorter prefix
+// of one address first. A readback compares a table's prefixes in any order
+// (Ruleset.Equal).
 func comparePrefixes(a, b netip.Prefix) int {
 	if c := a.Addr().Compare(b.Addr()); c != 0 {
 		return c
