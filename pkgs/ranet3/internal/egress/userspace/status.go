@@ -34,11 +34,15 @@ const (
 	reasonStackOther = "stack other"
 )
 
-// flowsStatus is the exit's detail as Status reports it: the flows open by
-// family, TCP through closing, the dials and the endpoints in TIME_WAIT, where
-// the platform bounds the host ports the connections held for their host sockets
-// and the host ports taken, the limits and the reported TCP buffer bytes, the
-// refusals and drops by why, and the sources holding the most flows
+// flowsStatus is the exit's detail as Status reports it: the limits, the flows
+// counted against Limits.Flows, the TCP connections and dials with the bytes
+// their buffers hold, the host part, the UDP and echo flows, the endpoints in
+// TIME_WAIT, the sources and the counters. The flows counted, the TCP
+// connections, dials and bytes, and the host part's held sockets, ports and
+// shared holds are read under the relay's lock and the flows' lock at one
+// instant. The rest is read apart, the host part's bound among it, so in a
+// read during which a flow opens, ends or moves the parts need not add up to
+// the flows counted.
 func (x *Exit) flowsStatus() *egress.Flows {
 	l := x.rt.Limits
 	from := egress.BudgetHost
@@ -60,11 +64,14 @@ func (x *Exit) flowsStatus() *egress.Flows {
 		f.Buffered += queued(flow.ep)
 	}
 	hosts := x.tcp.hosts
+	x.flows.mu.Lock()
+	f.Counted = x.flows.open
+	held, shared := x.flows.held, x.flows.shared
+	x.flows.mu.Unlock()
 	x.tcp.mu.Unlock()
 	f.TimeWait = x.tcp.closed.waiting()
 	if x.tcp.holds != nil {
-		held := x.flows.heldCount()
-		f.Host = &egress.HostHold{Held: held, Ports: hosts + held, Bound: x.tcp.holds.limit()}
+		f.Host = &egress.HostHold{Held: held, Ports: hosts + held, Bound: x.tcp.holds.limit(), Shared: shared}
 	}
 	x.udp.mu.RLock()
 	for leaf, mappings := range x.udp.mappings {

@@ -50,10 +50,10 @@ type hostSockets struct {
 	margin time.Duration
 }
 
-// hostPortsOf is the most host ports the relay's open TCP connections and its
-// held slots take together: half the automatic range, so the host keeps the
-// other half for its own connections, and half of flows, so the UDP and echo
-// mappings keep at least the other half of every flow
+// hostPortsOf is the most host ports the relay's TCP connections dialing,
+// relaying or held for their host sockets take: half the automatic range, so
+// the host keeps the other half for its own connections, and half of flows, so
+// the UDP and echo mappings keep at least the other half of every flow
 func hostPortsOf(ports, flows int) int {
 	return min(ports/2, flows/2)
 }
@@ -155,8 +155,8 @@ func (h *hostHolds) read() error {
 	return nil
 }
 
-// limit is how many host ports the relay's open and held TCP connections may
-// take together, with no bound where nothing holds
+// limit is how many host ports the relay's TCP connections dialing, relaying
+// or held for their host sockets may take, with no bound where nothing holds
 func (h *hostHolds) limit() int {
 	if h == nil {
 		return math.MaxInt
@@ -202,7 +202,7 @@ func (h *hostHolds) keep(source netip.Addr, conn *net.TCPConn, leaf *tcpFlow) bo
 		_ = conn.Close()
 		return false
 	}
-	h.flows.hold(source)
+	h.flows.hold(source, leaf != nil)
 	msl := time.Duration(h.msl.Load())
 	s := &heldSocket{source: source, conn: conn, leaf: leaf}
 	if leaf != nil {
@@ -325,6 +325,7 @@ func (h *hostHolds) release(s *heldSocket) {
 		delete(f.heldBy, s.source)
 	}
 	f.held--
+	f.shared--
 	f.mu.Unlock()
 }
 

@@ -35,6 +35,13 @@ func (r *tcpRelay) held() [3]int {
 	return [3]int{dials, connections, r.x.flows.open}
 }
 
+// heldCount is the flows hold keeps
+func (f *flows) heldCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.held
+}
+
 // fakeRequest records how a failed dial completed the stack's request
 type fakeRequest struct {
 	completed, reset bool

@@ -336,7 +336,8 @@ func userspaceFixture(from string) EgressStatus {
 		Enabled: true, Ready: []string{"ipv4", "ipv6"}, FlowsPerSource: 4096,
 		Refused: EgressPackets{IPv4: 2},
 		Userspace: &EgressUserspace{
-			TCP: EgressFlows{IPv4: 11, IPv6: 3}, UDP: EgressFlows{IPv4: 4, IPv6: 2}, Echo: EgressFlows{IPv6: 1},
+			Counted: 24,
+			TCP:     EgressFlows{IPv4: 11, IPv6: 3}, UDP: EgressFlows{IPv4: 4, IPv6: 2}, Echo: EgressFlows{IPv6: 1},
 			Dialing: 3, TimeWait: 210, Buffered: 3250586,
 			Limits: EgressLimits{
 				Budget: budget, From: from, Flows: 10240, Connections: 985, Dials: 985, TimeWait: 985,

@@ -144,6 +144,7 @@ func (r *tcpRelay) end(id stack.TransportEndpointID, source netip.Addr, dialing,
 	if leaf != nil && leaf.hold != nil {
 		leaf.hold.leaf = nil
 		leaf.hold = nil
+		flows.shared--
 		held = true
 	}
 	if !held {

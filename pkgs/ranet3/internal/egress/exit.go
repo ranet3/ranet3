@@ -104,6 +104,9 @@ type Status struct {
 // Flows is a userspace exit's detail: the flows it holds, what it runs under,
 // and what it refused and dropped
 type Flows struct {
+	// Counted is the flows the exit counts against Limits.Flows, read at one
+	// instant with TCP, Dialing and Host's Held, Ports and Shared
+	Counted int
 	// TCP, UDP and Echo are the flows open in IPv4 and IPv6, a UDP mapping and
 	// each of its destinations one flow each
 	TCP, UDP, Echo [2]int
@@ -137,12 +140,14 @@ type FlowLimits struct {
 	Lanes, Link                                 int64
 }
 
-// HostHold is a userspace exit's hold on the host ports: Held the closed TCP
-// connections held while their host sockets may pin their ports, Ports those
-// and the TCP connections open together, and Bound the most they may take, a
-// bound of 0 refusing every new connection
+// HostHold is a userspace exit's hold on the host ports: Held the TCP
+// connections whose relay has ended and whose host sockets it holds while they
+// may pin their ports, Ports the host ports taken, Bound the most they may
+// take, a bound of 0 refusing every new connection, and Shared those of Held
+// whose leaf's connection is still closing, which TCP counts too, one flow for
+// the two
 type HostHold struct {
-	Held, Ports, Bound int
+	Held, Ports, Bound, Shared int
 }
 
 // The shares of memory a userspace exit's budget is: half of Go's memory

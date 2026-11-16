@@ -21,6 +21,7 @@
     "bytes": 0,
     "untranslated": 0,
     "userspace": {
+      "counted": 24,
       "tcp": {
         "ipv4": 11,
         "ipv6": 3

@@ -240,6 +240,7 @@ func userspaceStatus(f egress.Flows) *control.EgressUserspace {
 		from = control.EgressBudgetGoLimit
 	}
 	out := &control.EgressUserspace{
+		Counted: f.Counted,
 		TCP:     control.EgressFlows{IPv4: f.TCP[0], IPv6: f.TCP[1]},
 		UDP:     control.EgressFlows{IPv4: f.UDP[0], IPv6: f.UDP[1]},
 		Echo:    control.EgressFlows{IPv4: f.Echo[0], IPv6: f.Echo[1]},

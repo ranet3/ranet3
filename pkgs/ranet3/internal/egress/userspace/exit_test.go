@@ -749,9 +749,9 @@ func TestEgressCountsTheFramesOfACallItTakesNothingOfAtOnce(t *testing.T) {
 	// the test holds
 	until := func(what string, n int) {
 		t.Helper()
-		for deadline := time.Now().Add(exitWait); lockWaiters(t.Name()) != n; runtime.Gosched() {
+		for deadline := time.Now().Add(exitWait); len(lockWaiters(t.Name(), "sync.Mutex.Lock")) != n; runtime.Gosched() {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: %d of the test's goroutines wait on the counts' lock, want %d", what, lockWaiters(t.Name()), n)
+				t.Fatalf("%s: %d of the test's goroutines wait on the counts' lock, want %d", what, len(lockWaiters(t.Name(), "sync.Mutex.Lock")), n)
 			}
 		}
 	}
@@ -789,24 +789,29 @@ func TestEgressCountsTheFramesOfACallItTakesNothingOfAtOnce(t *testing.T) {
 	}
 }
 
-// lockWaiters is the count of goroutines whose stack holds a frame whose
-// name holds name and whose wait reason is a sync.Mutex's Lock, as a dump of
-// every goroutine's stack gives them
-func lockWaiters(name string) int {
+// lockWaiters is, for each goroutine whose stack holds a frame whose name
+// holds name and whose wait reason is reason, such as sync.Mutex.Lock, the
+// place in that frame it waits at, as a dump of every goroutine's stack gives
+// them
+func lockWaiters(name, reason string) []string {
 	buf := make([]byte, 1<<16)
 	n := runtime.Stack(buf, true)
 	for n == len(buf) {
 		buf = make([]byte, 2*len(buf))
 		n = runtime.Stack(buf, true)
 	}
-	waiting := 0
+	var places []string
 	for _, g := range bytes.Split(buf[:n], []byte("\n\n")) {
 		header, stack, _ := bytes.Cut(g, []byte("\n"))
-		if bytes.Contains(header, []byte("[sync.Mutex.Lock")) && bytes.Contains(stack, []byte(name)) {
-			waiting++
+		_, frame, held := bytes.Cut(stack, []byte(name))
+		if !held || !bytes.Contains(header, []byte("["+reason+"]")) && !bytes.Contains(header, []byte("["+reason+",")) {
+			continue
 		}
+		_, place, _ := bytes.Cut(frame, []byte("\n\t"))
+		at, _, _ := bytes.Cut(place, []byte(" "))
+		places = append(places, string(bytes.TrimSpace(at)))
 	}
-	return waiting
+	return places
 }
 
 // A stop and `ranet3 down` log each family not ready and the advertisement's

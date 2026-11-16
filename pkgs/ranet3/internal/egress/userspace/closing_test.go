@@ -81,7 +81,6 @@ func closingConnection(t *testing.T, h *relayHarness, state tcp.EndpointState, w
 	t.Cleanup(release)
 	c := h.open(t, netip.AddrPortFrom(leaf4, 41100), server)
 	f := listedFlow(t, h)
-	t.Cleanup(f.ep.Abort)
 	if state == tcp.StateLastAck {
 		h.x.link.deliver(leafSegment(c.leaf, c.server, c.seq, c.ack, tcpACK|tcpFIN, window, nil))
 		c.seq++
@@ -393,7 +392,6 @@ func TestRelayEndDecidesHostBeforeLeaf(t *testing.T) {
 				server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), readsToTheEnd)
 				c := h.open(t, netip.AddrPortFrom(leaf4, 41500), server)
 				f := listedFlow(t, h)
-				t.Cleanup(f.ep.Abort)
 				mappings := &h.x.tcp.mappings
 				mappings.mu.Lock()
 				inside, outside := len(mappings.byInside), len(mappings.byOutside)
@@ -457,7 +455,6 @@ func TestHostPortAdmissionCountsSharedClosingSocketOnce(t *testing.T) {
 	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), readsToTheEnd)
 	a := h.open(t, netip.AddrPortFrom(leaf4, 41502), server)
 	f := listedFlow(t, h)
-	t.Cleanup(f.ep.Abort)
 	fake.set(f.conn, hostTimeWait)
 	h.x.link.deliver(tcpSegment(a.leaf, a.server, a.seq, a.ack, tcpACK|tcpFIN, nil))
 	a.seq++
@@ -471,8 +468,8 @@ func TestHostPortAdmissionCountsSharedClosingSocketOnce(t *testing.T) {
 	t.Cleanup(func() {
 		h.x.link.deliver(tcpSegment(b.leaf, b.server, b.seq, b.ack, tcpACK|tcpRST, nil))
 	})
-	if got := h.x.Status().Flows.Host; got == nil || *got != (egress.HostHold{Held: 1, Ports: 2, Bound: 2}) {
-		t.Fatalf("one held socket and one new connection count %+v, want 2 host ports of 2", got)
+	if got := h.x.Status().Flows.Host; got == nil || *got != (egress.HostHold{Held: 1, Ports: 2, Bound: 2, Shared: 1}) {
+		t.Fatalf("one held socket and one new connection count %+v, want 2 host ports of 2 and the held one shared", got)
 	}
 }
 
@@ -490,7 +487,6 @@ func hostHoldEndsWhileLeafCloses(t *testing.T, platform *hostSockets) {
 	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), readsToTheEnd)
 	c := h.open(t, netip.AddrPortFrom(leaf4, 41501), server)
 	f := listedFlow(t, h)
-	t.Cleanup(f.ep.Abort)
 	h.x.link.deliver(tcpSegment(c.leaf, c.server, c.seq, c.ack, tcpACK|tcpFIN, nil))
 	c.seq++
 	c.ack = h.stackFIN(t, c)
@@ -498,6 +494,9 @@ func hostHoldEndsWhileLeafCloses(t *testing.T, platform *hostSockets) {
 		host := h.x.Status().Flows.Host
 		return host.Held == 1 && host.Ports == 1
 	})
+	if s := h.x.Status().Flows; s.Host.Shared != 1 || s.Counted != h.x.counted() {
+		t.Fatalf("the hold the closing leaf shares its flow with counts %+v and the status %d flows, the exit %d, want it shared", *s.Host, s.Counted, h.x.counted())
+	}
 	if state, err := h.x.tcp.holds.state(f.conn); err != nil || state != hostTimeWait {
 		t.Fatalf("held host state %v: %v, want TIME_WAIT", state, err)
 	}
@@ -511,8 +510,8 @@ func hostHoldEndsWhileLeafCloses(t *testing.T, platform *hostSockets) {
 		t.Fatal("host socket did not close with its slot kept through the margin")
 	}
 	h.advance(time.Nanosecond)
-	if host := h.x.Status().Flows.Host; host.Held != 0 || host.Ports != 0 {
-		t.Fatalf("host's clock left a charge: %+v", host)
+	if s := h.x.Status().Flows; s.Host.Held != 0 || s.Host.Ports != 0 || s.Host.Shared != 0 || s.Counted != h.x.counted() {
+		t.Fatalf("host's clock left a charge: %+v with %d flows counted, the exit %d", *s.Host, s.Counted, h.x.counted())
 	}
 	if got := h.x.tcp.held(); got != [3]int{0, 1, 1} {
 		t.Fatalf("host's clock released the leaf's charge: %v", got)

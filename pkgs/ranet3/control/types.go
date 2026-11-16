@@ -638,9 +638,12 @@ type EgressStatus struct {
 // runs under and the bytes its TCP buffers hold now, the new flows refused
 // and the packets dropped by why, the TIME_WAIT endpoints a new SYN reused
 // and those closed early past the limit, and the sources holding the most
-// flows, most first. Host is the bound on the host ports its TCP connections
-// pin (exit-nodes.md, "Host ports"), absent where it bounds none.
+// flows, most first. Counted is the flows it counts against Limits.Flows,
+// read at one instant with TCP, Dialing and Host's Held, Ports and Shared.
+// Host is the bound on the host ports its TCP connections pin (exit-nodes.md,
+// "Host ports"), absent where it bounds none.
 type EgressUserspace struct {
+	Counted  int                 `json:"counted"`
 	TCP      EgressFlows         `json:"tcp"`
 	UDP      EgressFlows         `json:"udp"`
 	Echo     EgressFlows         `json:"echo"`
@@ -656,14 +659,17 @@ type EgressUserspace struct {
 	Sources  []EgressSourceFlows `json:"sources,omitempty"`
 }
 
-// EgressHost is the userspace exit's bound on the host ports: the closed TCP
-// connections it holds for their host sockets, those and the connections open
-// together, and the most they may take, which a bound of 0 refuses every new
-// connection at
+// EgressHost is the userspace exit's bound on the host ports: the TCP
+// connections whose relay has ended and whose host sockets it holds while they
+// may pin their ports, the host ports taken (exit-nodes.md, "Host ports"), the
+// most they may take, which a bound of 0 refuses every new connection at, and
+// those held whose leaf's connection is still closing, which tcp counts too,
+// one flow for the two
 type EgressHost struct {
-	Held  int `json:"held"`
-	Ports int `json:"ports"`
-	Bound int `json:"bound"`
+	Held   int `json:"held"`
+	Ports  int `json:"ports"`
+	Bound  int `json:"bound"`
+	Shared int `json:"shared"`
 }
 
 // EgressFlows is a count of flows open in each family
@@ -697,7 +703,8 @@ const (
 )
 
 // EgressSourceFlows is the flows one source holds through the exit, and Held
-// those of them closed and held for their host sockets, absent where none
+// those of them TCP connections whose relay has ended and whose host sockets
+// it holds, absent where none
 type EgressSourceFlows struct {
 	Source netip.Addr `json:"source"`
 	Flows  int        `json:"flows"`

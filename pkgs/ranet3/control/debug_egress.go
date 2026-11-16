@@ -222,8 +222,9 @@ func memoryLine(m EgressMemory) string {
 }
 
 // renderUserspace writes the userspace exit's new flows refused and packets
-// dropped by why, and the sources holding the most flows with the flows each
-// holds closed for its host sockets
+// dropped by why, and the sources holding the most flows with those of each
+// that are TCP connections whose relay has ended and whose host sockets it
+// holds
 func renderUserspace(w io.Writer, u EgressUserspace) {
 	for _, counts := range []struct {
 		title string

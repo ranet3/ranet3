@@ -4,6 +4,7 @@
 package control
 
 import (
+	"encoding/json"
 	"net/netip"
 	"strings"
 	"testing"
@@ -95,5 +96,21 @@ func TestEgressRendersAsTheGoldenFiles(t *testing.T) {
 	}
 	for _, name := range []string{"egress", "egress-userspace", "egress-userspace-given", "egress-userspace-host-ports", "egress-userspace-host-ports-0"} {
 		goldenJSON(t, name+".json", egressFixtures(time.Date(2026, 10, 28, 19, 0, 0, 0, time.UTC))[name])
+	}
+}
+
+// The userspace status of an exit that counts no flow carries its counted
+// key at 0, as every other status carries it
+func TestUserspaceStatusCarriesCountedAtNone(t *testing.T) {
+	body, err := json.Marshal(EgressUserspace{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(body, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if counted, ok := keys["counted"]; !ok || string(counted) != "0" {
+		t.Errorf("an exit counting no flow writes %s, want counted at 0", body)
 	}
 }

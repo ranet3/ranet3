@@ -48,7 +48,7 @@ func TestReaderWaitingPastAReceiveErrorHoldsNoBuffer(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	before := collected().HeapAlloc
 	sendICMP(t, outside.Addr(), append([]byte{3, 3, 0, 0, 0, 0, 0, 0}, udpDatagram(outside, to, payload)...))
-	for deadline := time.Now().Add(exitWait); lockWaiters("userspace.(*udpRelay).read(") == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(exitWait); len(lockWaiters("userspace.(*udpRelay).read(", "sync.Mutex.Lock")) == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the destination's reader never waited on dst.mu past the failed receive")
 		}

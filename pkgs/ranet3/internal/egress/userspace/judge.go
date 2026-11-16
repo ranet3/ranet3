@@ -133,6 +133,9 @@ type flows struct {
 	// socket's port
 	held   int
 	heldBy map[netip.Addr]int
+	// shared is the flows of held whose leaf's connection is still closing,
+	// one flow for the two
+	shared int
 }
 
 func newFlows(share, total int) *flows {
@@ -190,19 +193,16 @@ func (f *flows) releaseLocked(source netip.Addr) {
 }
 
 // hold keeps a TCP connection's flow for source past its relay's end, while
-// its host socket may pin its port
-func (f *flows) hold(source netip.Addr) {
+// its host socket may pin its port, shared where its leaf's connection is
+// still closing
+func (f *flows) hold(source netip.Addr, shared bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.held++
 	f.heldBy[source]++
-}
-
-// heldCount is the flows hold keeps
-func (f *flows) heldCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.held
+	if shared {
+		f.shared++
+	}
 }
 
 // unhold closes a flow hold kept for source

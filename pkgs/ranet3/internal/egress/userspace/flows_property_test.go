@@ -20,7 +20,7 @@ import (
 // not and TIME_WAIT ends over a few sources of both families, a new flow is
 // admitted exactly where its source's open and held flows are below the
 // share and all of them below the total, and a TCP connection also where the
-// open connections and the held ones are below the bound, and a refusal
+// connections not yet ended and the held ones are below the bound, and a refusal
 // names the host ports, then the share, as share held where the source
 // holds more held than open, then the total: the exit's limits on what a
 // source can make it hold, a security check, against a model that counts
@@ -58,7 +58,7 @@ func TestFlowsAdmitExactlyWithinTheShareAndTheTotal(t *testing.T) {
 				}
 			case 2:
 				if tcp[source] > 0 {
-					f.hold(source)
+					f.hold(source, false)
 					tcp[source]--
 					held[source]++
 				}

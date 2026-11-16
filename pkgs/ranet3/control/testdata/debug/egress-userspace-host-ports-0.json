@@ -21,6 +21,7 @@
     "bytes": 0,
     "untranslated": 0,
     "userspace": {
+      "counted": 24,
       "tcp": {
         "ipv4": 11,
         "ipv6": 3
@@ -38,7 +39,8 @@
       "host": {
         "held": 0,
         "ports": 17,
-        "bound": 0
+        "bound": 0,
+        "shared": 0
       },
       "limits": {
         "budget": 4294967296,

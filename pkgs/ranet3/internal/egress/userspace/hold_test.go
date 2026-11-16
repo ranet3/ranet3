@@ -855,11 +855,11 @@ func sourceHeld(f *egress.Flows, source netip.Addr) (flows, held int) {
 	return 0, 0
 }
 
-// The relay's open TCP connections and its held slots count together against
-// HostPorts, across families: with three IPv4 connections open and three
-// IPv6 ones dialing a seventh is refused past the host ports, still once the
-// IPv4 ones closed first and are held, which the status reports with the
-// source's held count, and admitted once the dials have failed. A source
+// The relay's TCP connections relaying or dialing and its held slots count
+// together against HostPorts, across families: with three IPv4 connections
+// open and three IPv6 ones dialing a seventh is refused past the host ports,
+// still once the IPv4 ones closed first and are held, which the status reports
+// with the source's held count, and admitted once the dials have failed. A source
 // whose slots held outnumber its open ones is refused past its share as share
 // held, counted among the share's refusals, one holding fewer as share. A
 // server-first close read closed and a server's reset give the slot back at
@@ -1149,6 +1149,9 @@ func TestFailedLeafEndpointKeepsTheSlotOfItsHalfClosedSocket(t *testing.T) {
 	if held := r.held(); held != [3]int{0, 0, 1} || h.x.flows.heldCount() != 1 {
 		t.Errorf("the relay holds dials, connections and flows %v with %d held, want the one flow held", held, h.x.flows.heldCount())
 	}
+	if host := h.x.Status().Flows.Host; host.Shared != 0 {
+		t.Errorf("the status counts %d of the hold no leaf shares as shared, want none", host.Shared)
+	}
 }
 
 // TestWithdrawLeavesTheSocketTheEndStepKeeps leaves the last leaf ACK pending,
@@ -1160,7 +1163,6 @@ func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	server := tcpServer(t, netip.MustParseAddr("127.0.0.1"), readsToTheEnd)
 	c := h.open(t, netip.AddrPortFrom(leaf4, 42700), server)
 	flow := listedFlow(t, h)
-	t.Cleanup(flow.ep.Abort)
 	block, reading := make(chan struct{}), make(chan struct{}, 1)
 	release := sync.OnceFunc(func() { close(block) })
 	t.Cleanup(release)
@@ -1190,22 +1192,11 @@ func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	}
 }
 
-// listedFlow waits for the relay to list its one flow, and returns it
+// listedFlow waits for the relay to list its one flow, and returns it, its
+// leaf's endpoint aborted at the test's end
 func listedFlow(t *testing.T, h *relayHarness) *tcpFlow {
 	t.Helper()
-	deadline := time.Now().Add(exitWait)
-	for {
-		h.x.tcp.mu.Lock()
-		for f := range h.x.tcp.flows {
-			h.x.tcp.mu.Unlock()
-			return f
-		}
-		h.x.tcp.mu.Unlock()
-		if time.Now().After(deadline) {
-			t.Fatal("the relay lists no flow")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return nextFlow(t, h, map[*tcpFlow]bool{})
 }
 
 // stillOpen is nil where conn's descriptor is open
