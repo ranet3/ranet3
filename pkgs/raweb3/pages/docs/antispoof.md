@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-15
+updated: 2026-11-16
 order: 55
 ---
 
@@ -651,8 +651,10 @@ The anchor's and the reference's lifetime:
 
 - The start takes a new reference, records it, then gives back the one an
   earlier run recorded, where pf still lists it under that run's pid, so pf
-  stays enabled throughout where that reference kept it so. Its first pass takes
-  the anchor over as Linux's takes its chains.
+  stays enabled throughout where that reference kept it so. Where pfctl refuses
+  to give the earlier one back, the start fails naming the refusal, with both
+  references held and recorded for the next start. Its first pass takes the
+  anchor over as Linux's takes its chains.
 - A start refused after it took its reference, its first pass not ready or a
   later step of the start failing, gives that reference back and empties the
   record, and empties the anchor where its own pass wrote it, as a refused Linux

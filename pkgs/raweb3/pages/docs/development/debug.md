@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-15
+updated: 2026-11-16
 order: 30
 ---
 
@@ -71,30 +71,30 @@ Every command in the tree takes these 2 flags:
 
 These commands take flags of their own:
 
-| Command        | Flag             | Default              | What it sets                                                                  |
-| -------------- | ---------------- | -------------------- | ----------------------------------------------------------------------------- |
-| `debug socket` | `--timeout`      | 10 seconds           | how long the exchange with the daemon may take, a stream included             |
-| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                                     |
-| `debug events` | `-f`, `--follow` | off                  | print later events as they come                                               |
-| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                                         |
-| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times                 |
-| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                                         |
-| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                                           |
-| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own                      |
-| `debug route`  | `--peer`         | none                 | the node whose session the packet arrives through                             |
-| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times                      |
-| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait                     |
-| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                                         |
-| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                                              |
-| `debug trace`  | `--src`          | every source         | a prefix or an address the source lies in, given up to 16 times               |
-| `debug trace`  | `--dst`          | every destination    | a prefix or an address the destination lies in, up to 16 times                |
-| `debug trace`  | `--proto`        | every protocol       | a protocol by name, such as `udp` or `icmpv6`, or by number                   |
-| `debug trace`  | `--decision`     | every decision       | `deliver`, `forward`, `egress`, `answer` or `drop`                            |
-| `debug trace`  | `--peer`         | every peer           | one peer, named as `redial` names one                                         |
-| `debug trace`  | `--rate`         | 1000                 | the most records a second, from 1 to 10000                                    |
-| `debug trace`  | `--payload`      | 0                    | the bytes of each packet a record carries, up to 65535                        |
-| `debug trace`  | `--pcap`         | none                 | a pcapng file the records go to, created anew at mode 0600, or `-` for stdout |
-| `debug trace`  | `--for`          | 30 seconds           | how long to trace                                                             |
+| Command        | Flag             | Default              | What it sets                                                                            |
+| -------------- | ---------------- | -------------------- | --------------------------------------------------------------------------------------- |
+| `debug socket` | `--timeout`      | 10 seconds           | how long the exchange with the daemon may take, a stream included                       |
+| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                                               |
+| `debug events` | `-f`, `--follow` | off                  | print later events as they come                                                         |
+| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                                                   |
+| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times                           |
+| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                                                   |
+| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                                                     |
+| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own                                |
+| `debug route`  | `--peer`         | none                 | the node whose session the packet arrives through                                       |
+| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times                                |
+| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait                               |
+| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                                                   |
+| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                                                        |
+| `debug trace`  | `--src`          | every source         | a prefix or an address the source lies in, given up to 16 times                         |
+| `debug trace`  | `--dst`          | every destination    | a prefix or an address the destination lies in, up to 16 times                          |
+| `debug trace`  | `--proto`        | every protocol       | a protocol by name, such as `udp` or `icmpv6`, or by number, 0 selecting every protocol |
+| `debug trace`  | `--decision`     | every decision       | `deliver`, `forward`, `egress`, `answer` or `drop`                                      |
+| `debug trace`  | `--peer`         | every peer           | one peer, named as `redial` names one                                                   |
+| `debug trace`  | `--rate`         | 1000                 | the most records a second, from 1 to 10000                                              |
+| `debug trace`  | `--payload`      | 0                    | the bytes of each packet a record carries, up to 65535                                  |
+| `debug trace`  | `--pcap`         | none                 | a pcapng file the records go to, created anew at mode 0600, or `-` for stdout           |
+| `debug trace`  | `--for`          | 30 seconds           | how long to trace                                                                       |
 
 - `debug socket [METHOD] PATH [BODY|-]` sends 1 request as written and prints
   the answer's body as it arrives, with the status line on standard error, and
@@ -323,9 +323,18 @@ These commands take flags of their own:
   host ports among them on macOS, the TIME_WAIT endpoints a new SYN reused and
   those closed early past the limit, a `Memory` row with Go's memory limit,
   whether the daemon was given it, the node's own heap and what the budget
-  leaves it, then each refusal and drop by its reason and the sources holding
-  the most flows, with the closed connections each holds for
-  [its host sockets](../exit-nodes.md#host-ports).
+  leaves it, then each refusal, by the reasons
+  [watching it](../exit-nodes.md#watching-it) lists, and each drop by its
+  reason, and the sources holding the most flows, with the
+  [held slots](../exit-nodes.md#host-ports) of each. Of the drop reasons no
+  other page gives, `unlaid` is a packet of the exit's stack toward a leaf that
+  the pump could lay into no batch, `icmp checksum` an echo request or a leaf's
+  ICMP error whose ICMP checksum fails, `icmp not echo` a leaf's ICMP message
+  the echo relay takes that is no echo request, or a reply on an echo socket
+  that is no echo reply, `echo too large` a reply longer than its buffer,
+  dropped whole, `echo queue full` a reply on macOS past those its mapping holds
+  toward its leaf, and `leaf error unsent` a leaf's error about a mapping's
+  datagram that no raw socket sends or whose send failed.
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
@@ -334,31 +343,31 @@ These commands take flags of their own:
   selector, source, path and overhead, then the segment counters `ranet3 status`
   reports. A node with neither says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
-  `link.mtu`, the steering header and the tun's MTU, with the answers sent to
-  packets past a session's budget and the lowerings of a SYN or SYN-ACK's MSS,
-  counted as `ranet3_mss_clamped_total` counts them in
-  [metrics](../metrics.md#series), both for the node as a whole.
-  `Answer sources` is the router-id of each family, an address rather than the
-  16 hex digits of Babel's router id that `debug updown` shows, and `Answer SID`
-  the answer SID, each `none` where the node holds none, as
-  [path MTU](../path-mtu.md#where-answers-come-from) describes. Then for each
-  session its path, the peer node it is with, its endpoint and whether its
-  datagrams leave with DF, the state of its search, which is `confirming`,
-  `searching up`, `searching down`, `confirmed` or `under the floor`, its budget
-  and the MSS it clamps to, the route's MTU when last read and the target it
-  sets, the probe out and how the last one ended, its probes sent, acked and
-  lost, the reports the search took of sends the host refused as too large for
-  the path, a burst of such sends counting once for each report the search takes
-  during it, far fewer than its sends, and the budget's last change with its
-  reason. A probe whose target the search moves while it is out counts as sent,
-  and as neither acked nor lost. A refusal, the route read lower after a move of
-  the host's default or one of its addresses or `debug probe`, a change of
-  `link.mtu` and a move to another endpoint can each move the target. A probe
-  answered after its wait ran out counts as both acked and lost, so the 3 counts
-  need not add up. `ranet3_pmtu_probes_total` counts acked and lost probes the
-  same way and has no series for probes sent. The peer is named as `rekey` names
-  one, and completes to the nodes of the sessions the daemon holds. The command
-  fails for a peer the node holds no session with.
+  `link.mtu`, the steering header and the tun's MTU, with the Packet Too Big and
+  fragmentation needed answers the node sent and the lowerings of a SYN or
+  SYN-ACK's MSS, counted as `ranet3_packet_too_big_sent_total` and
+  `ranet3_mss_clamped_total` count them in [metrics](../metrics.md#path-mtu),
+  both for the node as a whole. `Answer sources` is the router-id of each
+  family, an address rather than the 16 hex digits of Babel's router id that
+  `debug updown` shows, and `Answer SID` the answer SID, each `none` where the
+  node holds none, as [path MTU](../path-mtu.md#where-answers-come-from)
+  describes. Then for each session its path, the peer node it is with, its
+  endpoint and whether its datagrams leave with DF, the state of its search,
+  which is `confirming`, `searching up`, `searching down`, `confirmed` or
+  `under the floor`, its budget and the MSS it clamps to, the route's MTU when
+  last read and the target it sets, the probe out and how the last one ended,
+  its probes sent, acked and lost, the reports the search took of sends the host
+  refused as too large for the path, a burst of such sends counting once for
+  each report the search takes during it, far fewer than its sends, and the
+  budget's last change with its reason. A probe whose target the search moves
+  while it is out counts as sent, and as neither acked nor lost. A refusal, the
+  route read lower after a move of the host's default or one of its addresses or
+  `debug probe`, a change of `link.mtu` and a move to another endpoint can each
+  move the target. A probe answered after its wait ran out counts as both acked
+  and lost, so the 3 counts need not add up. `ranet3_pmtu_probes_total` counts
+  acked and lost probes the same way and has no series for probes sent. The peer
+  is named as `rekey` names one, and completes to the nodes of the sessions the
+  daemon holds. The command fails for a peer the node holds no session with.
 - `debug sender [peer]` is the sender of every session, or of one peer's: for
   each session its path and peer node, the bytes of the data budget and the
   places of the control budget its batches hold of their limits, then 3
@@ -563,89 +572,89 @@ whose daemon is stopping ends with a `stream.closed` line saying so. A daemon
 holds 4 streams at once and refuses a 5th with 503, which leaves the rest of its
 connections to the reads.
 
-| Kind                                  | When                                                                                                                               |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                                                                         |
-| `daemon.reload`                       | the file and trust document were read again, with what applied or the error                                                        |
-| `daemon.ttl`                          | a reload could not read the host's default TTL, or the exit could not read its hop limit at its start or a reload                  |
-| `daemon.memory`                       | a reload weighed the node's heap past what a given Go memory limit leaves the userspace exit                                       |
-| `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag                                                             |
-| `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed                                                         |
-| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed                                                         |
-| `control.trace.started`, `.ended`     | a trace of the forwarding decision opened, and closed                                                                              |
-| `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                                                                             |
-| `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                                                          |
-| `ike.handshake.failed`                | the responder refused a handshake, as often as it warns of one                                                                     |
-| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                                                                      |
-| `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                                                            |
-| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                                                          |
-| `ike.session.established`, `.ended`   | a session started serving, and stopped                                                                                             |
-| `ike.session.resolved`                | the preferred rule resolved 2 sessions for 1 path to 1                                                                             |
-| `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete                                                            |
-| `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                                                                         |
-| `ike.rekey.failed`                    | the same rekey failing, with its error                                                                                             |
-| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane                                                                   |
-| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                                                                                    |
-| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement                                                            |
-| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request or answer                                                      |
-| `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                                                                |
-| `ike.probe`                           | asked to prove its path, a session started a check or resent its request                                                           |
-| `ike.notify.invalid_spi`              | a session told its peer of ESP on an SPI this node does not hold                                                                   |
-| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                                                                        |
-| `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                                                              |
-| `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size                                                         |
-| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table, or a selected route's neighbor for that route before it expires       |
-| `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                                                              |
-| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals, cost and margin                                                       |
-| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved                                                        |
-| `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged                                                        |
-| `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                                                                           |
-| `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request                                                             |
-| `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start                                                              |
-| `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                                                              |
-| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                                                              |
-| `kernel.underlay`                     | a cut endpoint or a route scoped beneath the host's came or went, on macOS                                                         |
-| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on macOS the overlay's alone                           |
-| `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode                                                      |
-| `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended                                          |
-| `kernel.fallback`                     | the kill switch, on macOS its rejects, began holding, passing or not holding, or ended                                             |
-| `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed                                          |
-| `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family                                                 |
-| `egress.pass`                         | an exit's pass that moved its prefixes, and on Linux also one that rewrote its rules or failed, or a `ranet3 down`                 |
-| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved, or the exit's first pass judged them                                  |
-| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move, or the userspace exit refused a flow, 30 seconds apart |
-| `antispoof.pass`                      | an antispoof filter pass that rewrote its chains or a set, or failed                                                               |
-| `antispoof.ready`                     | the antispoof filter's chains went ready or not ready, with `ready`                                                                |
-| `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                                                                       |
-| `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                                                                 |
-| `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption                                                       |
-| `antispoof.held`                      | the route source held a learned route back, a hold in its place, as two passes in a row ended, or released it                      |
-| `antispoof.kept`                      | the sets left out the addresses of a route no learned entry asks for as two passes ended, or no longer left them out for it        |
-| `antispoof.pf`                        | on macOS, a pass took a new reference on pf where pf no longer listed the daemon's, turning pf back on where it was off            |
-| `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two                                               |
-| `network.read`                        | the network watch's reads of the host began failing, or succeeded again                                                            |
-| `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                                                                     |
-| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                                                          |
-| `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                                                              |
-| `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why                                                          |
-| `transport.pair.failed`               | a socket for a busy peer failed to connect, its pairs left on the shared socket                                                    |
-| `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason                                                             |
-| `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                                                               |
-| `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back                                                           |
-| `esp.ecn.unused`                      | a session's packets came in ECN pairs no tunnel sends, at most every 10 seconds                                                    |
-| `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                                                                  |
-| `netstack.codel.drained`              | that peer's queue emptied, its delay fell back below the target, or less than its MTU stayed queued behind a batch                 |
-| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                                                                      |
-| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                                                         |
-| `netstack.transit.dropped`            | a drop the transit counters count, but the reads they count alone, with why                                                        |
-| `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit                                                       |
-| `netstack.ecn.unused`                 | an `End.DT46` took packets out of ECN pairs no tunnel sends, at most every 30 seconds                                              |
-| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                                                             |
+| Kind                                  | When                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                                                                           |
+| `daemon.reload`                       | the file and trust document were read again, with what applied or the error                                                          |
+| `daemon.ttl`                          | a reload could not read the host's default TTL, or the exit could not read its hop limit at its start or a reload                    |
+| `daemon.memory`                       | a reload weighed the node's heap past what a given Go memory limit leaves the userspace exit                                         |
+| `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag                                                               |
+| `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed                                                           |
+| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed                                                           |
+| `control.trace.started`, `.ended`     | a trace of the forwarding decision opened, and closed                                                                                |
+| `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                                                                               |
+| `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                                                            |
+| `ike.handshake.failed`                | the responder refused a handshake, as often as it warns of one                                                                       |
+| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                                                                        |
+| `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                                                              |
+| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                                                            |
+| `ike.session.established`, `.ended`   | a session started serving, and stopped                                                                                               |
+| `ike.session.resolved`                | the preferred rule resolved 2 sessions for 1 path to 1                                                                               |
+| `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete                                                              |
+| `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                                                                           |
+| `ike.rekey.failed`                    | the same rekey failing, with its error                                                                                               |
+| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane                                                                     |
+| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                                                                                      |
+| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement                                                              |
+| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request or answer                                                        |
+| `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                                                                  |
+| `ike.probe`                           | asked to prove its path, a session started a check or resent its request                                                             |
+| `ike.notify.invalid_spi`              | a session told its peer of ESP on an SPI this node does not hold                                                                     |
+| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                                                                          |
+| `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                                                                |
+| `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size                                                           |
+| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table, or a selected route's neighbor for that route before it expires         |
+| `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                                                                |
+| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals, cost and margin                                                         |
+| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved                                                          |
+| `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged                                                          |
+| `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                                                                             |
+| `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request                                                               |
+| `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start                                                                |
+| `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                                                                |
+| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                                                                |
+| `kernel.underlay`                     | a cut endpoint or a route scoped beneath the host's came or went, on macOS                                                           |
+| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on macOS the overlay's alone                             |
+| `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode                                                        |
+| `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended                                            |
+| `kernel.fallback`                     | the kill switch, on macOS its rejects, began holding, passing or not holding, or ended                                               |
+| `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed                                            |
+| `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family                                                   |
+| `egress.pass`                         | an exit's pass that moved its prefixes, and on Linux also one that rewrote its rules or failed, or a `ranet3 down`                   |
+| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved, or the exit's first pass judged them                                    |
+| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move, or the userspace exit refused a packet, 30 seconds apart |
+| `antispoof.pass`                      | an antispoof filter pass that rewrote its chains or a set, or failed                                                                 |
+| `antispoof.ready`                     | the antispoof filter's chains went ready or not ready, with `ready`                                                                  |
+| `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                                                                         |
+| `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                                                                   |
+| `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption                                                         |
+| `antispoof.held`                      | the route source held a learned route back, a hold in its place, as two passes in a row ended, or released it                        |
+| `antispoof.kept`                      | the sets left out the addresses of a route no learned entry asks for as two passes ended, or no longer left them out for it          |
+| `antispoof.pf`                        | on macOS, a pass took a new reference on pf where pf no longer listed the daemon's, turning pf back on where it was off              |
+| `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two                                                 |
+| `network.read`                        | the network watch's reads of the host began failing, or succeeded again                                                              |
+| `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                                                                       |
+| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                                                            |
+| `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                                                                |
+| `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why                                                            |
+| `transport.pair.failed`               | a socket for a busy peer failed to connect, its pairs left on the shared socket                                                      |
+| `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason                                                               |
+| `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                                                                 |
+| `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back                                                             |
+| `esp.ecn.unused`                      | a session's packets came in ECN pairs no tunnel sends, at most every 10 seconds                                                      |
+| `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                                                                    |
+| `netstack.codel.drained`              | that peer's queue emptied, its delay fell back below the target, or less than its MTU stayed queued behind a batch                   |
+| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                                                                        |
+| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                                                           |
+| `netstack.transit.dropped`            | a drop the transit counters count, but the reads they count alone, with why                                                          |
+| `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit                                                         |
+| `netstack.ecn.unused`                 | an `End.DT46` took packets out of ECN pairs no tunnel sends, at most every 30 seconds                                                |
+| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                                                               |
 
 `egress.pass`, `egress.ready` and `egress.refused` are recorded on Linux by the
 kernel exit and on macOS by the userspace exit, whose `egress.pass` carries
 `trigger` and `announced` alone and whose `egress.refused` names a refused
-flow's `source` and `reason`, an interval apart. The `antispoof` kinds are
+packet's `source` and `reason`, an interval apart. The `antispoof` kinds are
 recorded on Linux and, where `overlay` is written, on macOS, but `antispoof.pf`,
 which is macOS's alone. `transport.endpoint.unsegmented` is recorded on Linux
 and Android, which build the Linux sockets. `transport.underlay.selected` is
@@ -724,7 +733,7 @@ Each kind carries these attributes:
 | `exit.forwarding`                             | `family`, one event for each family the host forwards                                                                                                                                                                                                                                                      |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`, or from the userspace exit `trigger` and `announced`                                                                                                                                                                                                   |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                                                                                                                                      |
-| `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains), or from the userspace exit `source`, `reason` (such as `share`, `total` or `descriptors`) and `refused` (the flows refused since the last record)                                         |
+| `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains), or from the userspace exit `source`, `reason` (such as `share`, `total` or `descriptors`) and `refused` (the packets refused since the last record)                                       |
 | `antispoof.pass`                              | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                                                                                                                                   |
 | `antispoof.ready`                             | `ready`                                                                                                                                                                                                                                                                                                    |
 | `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, `mapped_source_ipv6`, each the packets since the pass before, present where a rule of the pass writes it, not the last 3 on macOS                                          |
@@ -972,8 +981,9 @@ such as `dst=192.0.2.3/32 decision=forward`, or `all`, its `rate` and the
 `payload` bytes it asked for, and the caller's `uid` and `pid`. The second
 carries in `reason` why the trace closed, `the reader left`,
 `the reader stopped reading` or `the daemon is stopping`, in `recorded` the
-records its queue took, and in `refused_rate` and `refused_queue` the records
-the rate and the queue refused.
+records its queue took before it closed, and in `refused_rate` and
+`refused_queue` the records the rate and the queue refused. A record a packet
+adds as the trace closes reaches no reader and may be left out of that count.
 
 A `babel.own.changed` is recorded once for each change to the routes this node
 owns, at the start, on a reload and when `cap.egress` moves what the node
@@ -1136,7 +1146,12 @@ left out where the node holds no such address.
 
 ## Adding a view
 
-A view is 3 new files, and no file of the tree needs an edit for it:
+A view is 3 new files and 4 edits: the daemon path map in
+`control/debug_test.go`, whose walk in
+`TestEveryDebugPathAnswersACallerOtherThanRoot` fails for a registered path it
+does not list, the tables of this page and of
+[the control socket](../control-socket.md) that list the paths, and the table of
+commands in [the CLI](../cli.md). The 3 files:
 
 - `control/debug_<view>.go` holds the wire types, the interface the daemon
   implements, the path registered from `init`, the text renderer and the client
@@ -1150,8 +1165,10 @@ A view is 3 new files, and no file of the tree needs an edit for it:
 Each renderer and wire form has a golden file under `control/testdata/debug`,
 which `go test ./control -update` rewrites. A renderer prints the ages the
 daemon computed rather than reading the clock, so its output is the same on
-every run. The check that no debug answer has room for key material, and the
-property that every wire type survives a trip through JSON, walk each registered
-path's type without being told about a new one. The check passes one field by
-name, a trace record's `payload`, the packet's bytes `--payload` asks for, which
-hold none of the node's keys. Any other field of bytes fails it.
+every run, but for the egress and kernel lines, which read the time since
+`PassAt`, so their tests hand a `PassAt` relative to now. The check that no
+debug answer has room for key material, and the property that every wire type
+survives a trip through JSON, walk each registered path's type without being
+told about a new one. The check passes one field by name, a trace record's
+`payload`, the packet's bytes `--payload` asks for, which hold none of the
+node's keys. Any other field of bytes fails it.

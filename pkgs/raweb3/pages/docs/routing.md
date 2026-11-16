@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-15
+updated: 2026-11-16
 order: 45
 ---
 
@@ -1296,14 +1296,20 @@ since a scoped one answers by its own length.
 
 An unscoped live route then takes every send from each socket to an address it
 goes in with that no longer hold of the mesh inside it holds, unless another
-hold around it goes in whole. A longer hold inside it refuses at its addresses,
-whole or as its pieces around its own live routes, as Linux's does where the
-mesh's longest match is a hold (rows L4 and L9), and the rest of the cut hold
-refuses as the whole hold did. Two kinds of address of a live route lie under
-neither the route nor a piece. One is an address the underlay sends to, which
-the route goes in without, as the paragraph before row D1 gives. The other is
-each address of a live route the platform refuses, at a key another program
-holds or by a write that fails. Rows D1 to D3 give where a send to either ends.
+hold around it goes in whole. A longer hold inside it that the platform writes
+is the route that answers at its addresses, whole or as its pieces around its
+own live routes, as Linux's hold is where the mesh's longest match is one (rows
+L4 and L9). Row D2 gives that answer, and the paragraph below table D what it
+does with a UDP datagram: it refuses an IPv6 one from a socket bound to no
+address, and an IPv4 one enters the utun, where the mesh takes it. What it does
+with an IPv6 datagram from a socket bound to an address of another interface is
+not known here. The rest of the cut hold answers as the whole hold did. A longer
+hold the platform does not write refuses nothing there. Two kinds of address of
+a live route lie under neither the route nor a piece. One is an address the
+underlay sends to, which the route goes in without, as the paragraph before row
+D1 gives. The other is each address of a live route the platform refuses, at a
+key another program holds or by a write that fails. Rows D1 to D3 give where a
+send to either ends.
 
 A hold cut around one live route goes in as at most one piece for each bit
 between their lengths. A pass takes its IPv6 holds first, since only IPv6

@@ -195,7 +195,10 @@ works only where all 3 of these hold:
    through any exit announcing the prefix. Each such exit routes the overlay
    into the mesh, and no stateful filter on it drops a reply whose outbound half
    it never saw, as a host firewall with `ct state invalid drop` in its forward
-   chain would. This node under [`return`](#the-return-path) drops such a reply
+   chain would. On Linux each such exit's own
+   [entry chain](antispoof.md#the-entry-chain) also drops the reply unless that
+   exit's own `cap.egress` holds a class of `none` taking the reply's
+   destination. This node under [`return`](#the-return-path) drops such a reply
    from inside a prefix it advertises, as it drops any packet no flow is tracked
    for, and where conntrack opens a flow for the reply instead, it translates
    the reply's source, so the reply no longer matches the leaf's flow.
@@ -342,9 +345,8 @@ into the mesh holds its own.
   A source no class takes leaves under `auto` and holds a share.
 - **What it does not count.** A TCP connection in TIME_WAIT or closed. The share
   bounds a source's open flows, and its closed ones are bounded by their
-  timeouts and by how fast it closes them. The userspace exit on macOS counts a
-  closed connection while its host socket may hold a port, as
-  [host ports](#host-ports) gives.
+  timeouts and by how fast it closes them. The userspace exit on macOS counts
+  each [held slot](#host-ports) of a TCP connection whose relay has ended.
 - **A full set admits.** Each family's set, `flows4` or `flows6`, keeps a count
   for each source holding flows, up to 65535 sources. Past that a new source is
   not counted and its flows are not limited, until every flow of some source has
@@ -494,35 +496,27 @@ advertisement is all a peer learns. An exit whose rule will not install would
 attract traffic and drop it without telling the sender.
 
 The capability publishes the advertisement per family on every pass. A prefix is
-announced only while its family is ready, as [readiness](#readiness) describes
-for each platform: on Linux while the translator's chains read back exactly as
-the node wrote them, `forward6` for IPv6 alone and every other one for both
-families, since `forward` holds IPv6's goto ahead of IPv4's lines, with every
-rule in order, each by its comment and by what it does, and no other writer's
-among them, each at its hook, priority and policy, the family's set and timeout
-objects read back as written, in a table with no flags, the host forwards that
-family, the host holds every address its classes name and, where its lookups
-run, the kernel routes a translated packet of it and its reply. A pass reads the
-translator's chains, the family's set and timeout objects, and the elements of
-each set a screen of a class of `none`'s chain takes its sources from. Every
-chain whose name starts `none_` is the exit's: one no class writes is read as a
-fault and deleted. So is `forward4`, the chain an earlier version held IPv4's
-lines in. Another chain in the table is neither read nor removed, and a nat
-chain at the source translation hook at priority 99 or below is named as a
-[conflict](#watching-it). Each pass first rewrites a chain that reads back
-otherwise, such as one missing a rule, holding another writer's, a rule edited
-under the comment it was written with or in a dormant table, writes a class of
-`none`'s chain that is missing and deletes a `none_` chain no class writes and a
-`forward4`. Where a rule of another writer's chain goes to that chain, by a
-goto, a jump or its vmap, or an element of a named map does, nf_tables will not
-delete it, so the pass empties it and writes the rest, and both families stay
-not ready with that chain or map named until the rule or the element goes.
-nf_tables clears no table flag in place but dormant, and changes no chain's
-type, hook or priority, no set's key, flags or comment and no timeout object's
-values, so when a chain, set or object of the translator's differs in one of
-those the pass deletes that one and makes it again in the same transaction,
-leaving everything else in the table as it is. Another table flag holds both
-families not ready, with the reason
+announced only while its family is ready, as [readiness](#readiness) gives for
+each platform. A pass reads the translator's chains, the family's set and
+timeout objects, and the elements of each set a screen of a class of `none`'s
+chain takes its sources from. Every chain whose name runs past `none_` is the
+exit's: one no class writes is read as a fault and deleted. So is `forward4`,
+the chain an earlier version held IPv4's lines in. Another chain in the table is
+neither read nor removed, and a nat chain at the source translation hook at
+priority 99 or below is named as a [conflict](#watching-it). Each pass first
+rewrites a chain that reads back otherwise, such as one missing a rule, holding
+another writer's, a rule edited under the comment it was written with or in a
+dormant table, writes a class of `none`'s chain that is missing and deletes a
+`none_` chain no class writes and a `forward4`. Where a rule of another writer's
+chain goes to that chain, by a goto, a jump or its vmap, or an element of a
+named map does, nf_tables will not delete it, so the pass empties it and writes
+the rest, and both families stay not ready with that chain or map named until
+the rule or the element goes. nf_tables clears no table flag in place but
+dormant, and changes no chain's type, hook or priority, no set's key, flags or
+comment and no timeout object's values, so when a chain, set or object of the
+translator's differs in one of those the pass deletes that one and makes it
+again in the same transaction, leaving everything else in the table as it is.
+Another table flag holds both families not ready, with the reason
 [sharing a host](coexistence.md#the-nftables-table) gives. When the chains still
 do not read back as written, the host stops forwarding the family or a lookup
 fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
@@ -540,14 +534,19 @@ carries the advertised and the announced counts as `ranet3_egress_prefixes`.
 
 ## Readiness
 
-On Linux a family is ready while its chains, its set and its timeout objects
-read back as written, the host forwards it, the host holds every address its
-classes name, and, where its lookups run, the kernel routes a translated packet
-of the family and its reply the way the translation needs. Every node with
-`cap.egress` judges each family it translates on every pass, and both modes wait
-for the judgment: a packet through an advertised prefix waits for the families
-ready that the node announces, and an egress segment's packet for the families
-ready, as [what an exit carries out](#what-an-exit-carries-out) and
+On Linux a family is ready while the translator's chains read back exactly as
+the node wrote them, `forward6` for IPv6 alone and every other one for both
+families, since `forward` holds IPv6's goto ahead of IPv4's lines, with every
+rule in order, each by its comment and by what it does, and no other writer's
+among them, each at its hook, priority and policy, the family's set and timeout
+objects read back as written, in a table with no flags, the host forwards the
+family, the host holds every address its classes name, and, where its lookups
+run, the kernel routes a translated packet of the family and its reply the way
+the translation needs. Every node with `cap.egress` judges each family it
+translates on every pass, and both modes wait for the judgment: a packet through
+an advertised prefix waits for the families ready that the node announces, and
+an egress segment's packet for the families ready, as
+[what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
 translate is not ready. On Linux `ranet3 debug egress` shows each family's
 judgment condition by condition with the lookups the last pass read, as
@@ -592,7 +591,7 @@ ready when it fails, finds a route of a type other than `unicast`, finds no live
 next hop, or leaves by the wrong device, a forward lookup with any live hop on
 the tun and a reply lookup with any live hop off it. A hop the kernel marks dead
 or link-down is not live, and a route naming a nexthop object that holds no hop
-counts as a failed lookup.
+counts as a route with no live next hop.
 
 **The source** of the forward and reply lookups is a member's address: the read
 address of a prefix the mesh routes by the tun to another node, inside
@@ -642,20 +641,21 @@ elements in it, such as a `nftables.service` reload that flushes the ruleset, a
 rule put in one of the translator's chains or a table set dormant, holds both
 families not ready until the pass it wakes restores them, rather than until the
 next sweep. A chain another writer adds to the table is not read unless its name
-starts `none_`. That pass reads the family ready with the chain still in place.
-The translator's own writes wake no pass of its own, and the antispoof filter's
-and the kill switch's writes of their chains, rules and sets in the same table
-wake none either. A flush of the ruleset deletes the table and another program
-setting it dormant sets a flag on it, so each wakes every writer once. The first
-writer's pass after it makes the table again or clears the flag, which wakes no
-other: the table it makes holds none of their chains, and with the flag cleared
-it bypasses none. Notifications the daemon lost, which another table's large
-transaction can overflow its socket with, wake a pass too and leave readiness as
-it was, since that pass reads the rules back. A pass that reads another writer's
-change back and cannot undo it holds the family the change is in not ready, IPv6
-alone for a change to `forward6`, and both families for a change to another
-chain, `forward` among them, since it holds IPv6's goto ahead of IPv4's lines,
-with the change named, and withholds its prefixes until a later pass does.
+runs past `none_`. That pass reads the family ready with the chain still in
+place. The translator's own writes wake no pass of its own, and the antispoof
+filter's and the kill switch's writes of their chains, rules and sets in the
+same table wake none either. A flush of the ruleset deletes the table and
+another program setting it dormant sets a flag on it, so each wakes every writer
+once. The first writer's pass after it makes the table again or clears the flag,
+which wakes no other: the table it makes holds none of their chains, and with
+the flag cleared it bypasses none. Notifications the daemon lost, which another
+table's large transaction can overflow its socket with, wake a pass too and
+leave readiness as it was, since that pass reads the rules back. A pass that
+reads another writer's change back and cannot undo it holds the family the
+change is in not ready, IPv6 alone for a change to `forward6`, and both families
+for a change to another chain, `forward` among them, since it holds IPv6's goto
+ahead of IPv4's lines, with the change named, and withholds its prefixes until a
+later pass does.
 
 ## The exit on macOS
 
@@ -681,43 +681,51 @@ which reassembles or parses it first:
   identifier a mapping holds from one of the 16 destinations that mapping's
   requests went toward last, a refused request's among them, and counts the
   rest: a request toward one of the 16 makes it the latest, and one toward a
-  seventeenth drops the one its requests went toward longest ago. A mapping is
-  kept 60 seconds past the last request that left on it or reply it took. One
-  that carried neither ends at the first sweep, every 5 seconds, after its
-  requests' sends end, so a send still in flight holds it until that send ends.
-  A withdrawal or the stop ends every mapping at once, and a request whose
-  mapping it closed meanwhile is refused and counted as `withdrawn`. A request
-  the exit or the host refuses to send once its mapping is open is dropped and
-  counted as `echo unsent`: the exit refuses one toward a destination its
-  underlay names no link for, and the host refuses one on the send. The exit's
-  refusal, and the host's with `ENETUNREACH` or `EHOSTUNREACH`, which say no
-  route or no way leads to the destination's host, are answered with network
-  unreachable over IPv4 and no route over IPv6, within the node's ICMP limits,
-  since macOS's errnos do not tell those causes apart. Scoped to lo0 toward a
-  destination lo0 holds no route for, macOS was seen to refuse the IPv6 send
-  with `EHOSTUNREACH` and to send the IPv4 one, whose leaf then hears nothing.
-  Over IPv6 XNU also gives `EHOSTUNREACH` for a host route flagged reject or
-  blackhole and for a socket restricted from sending on the link, and
-  `ENETUNREACH` for such a network route
+  seventeenth drops the one its requests went toward longest ago. A mapping ends
+  at the first sweep, every 5 seconds, that finds no send of it in flight and 60
+  seconds past the last request that left on it or reply it took, so one that
+  carried neither ends at the first sweep after its sends end. Replies from
+  those destinations keep a mapping and its flow, with no request from the leaf,
+  for as long as they come 60 seconds apart or closer. A withdrawal or the stop
+  ends every mapping at once, and a request whose mapping it closed meanwhile is
+  refused and counted as `withdrawn`. A request the exit or the host refuses to
+  send once its mapping is open is dropped and counted as `echo unsent`: the
+  exit refuses one toward a destination its underlay names no link for, and the
+  host refuses one on the send. The exit's refusal, and the host's with
+  `ENETUNREACH` or `EHOSTUNREACH`, which say no route or no way leads to the
+  destination's host, are answered with network unreachable over IPv4 and no
+  route over IPv6, within the node's ICMP limits, since macOS's errnos do not
+  tell those causes apart. Scoped to lo0 toward a destination lo0 holds no route
+  for, macOS was seen to refuse the IPv6 send with `EHOSTUNREACH` and to send
+  the IPv4 one, whose leaf then hears nothing. Over IPv6 XNU also gives
+  `EHOSTUNREACH` for a host route flagged reject or blackhole and for a socket
+  restricted from sending on the link, and `ENETUNREACH` for such a network
+  route
   ([`in6_src.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c)),
   each answered alike, a departure
   [protocol deviations](design/protocol-deviations.md) declares. What it gives a
   send its pf blocks, or one toward a neighbor that never answers, is not known
   here. Any other refusal is answered nothing, a departure the same page
   declares.
-- **Errors** a server or a router raises about a dial that fails reach the leaf
-  from the address that raised them, and so do those about a mapping's datagram
-  that [the userspace exit](design/protocol-deviations.md#the-userspace-exit)
-  relays, quoting the fields of the datagram the exit kept. A leaf's own error
-  about a reply leaves from a mapping of the leaf's port that sent to the
-  reply's server, the one that section says the exit picks. Toward a server the
-  leaf's error goes through a raw socket, which only root opens, and toward a
-  leaf whose datagram the exit hairpinned it goes back to that leaf with no raw
-  socket. Where the exit finds no mapping, or an error toward a server finds no
-  raw socket or fails to send, the error is dropped and counted. Any other error
-  a leaf sends reaches the exit's stack only where the exit reads its quote down
-  to a TCP header, or is dropped and counted as `leaf error quote`. An error in
-  fragments is counted as `leaf error fragment`.
+- **Errors.** A destination unreachable a server or a router raises about a dial
+  that fails reaches the leaf from the address that raised it where the exit
+  catches it: on Linux from the dial's error queue, and on macOS from the exit's
+  ICMP socket of the family, where that socket is open and hands the error over
+  within a short wait past the dial's failure. A dial whose error the exit does
+  not catch has its leaf reset, as for a refused connection. The errors about a
+  mapping's datagram that
+  [the userspace exit](design/protocol-deviations.md#the-userspace-exit) relays
+  reach the leaf from the address that raised them too, quoting the fields of
+  the datagram the exit kept. A leaf's own error about a reply leaves from a
+  mapping of the leaf's port that sent to the reply's server, the one that
+  section says the exit picks. Toward a server the leaf's error goes through a
+  raw socket, which only root opens, and toward a leaf whose datagram the exit
+  hairpinned it goes back to that leaf with no raw socket. Where the exit finds
+  no mapping, or an error toward a server finds no raw socket or fails to send,
+  the error is dropped and counted. Any other error a leaf sends reaches the
+  exit's stack only where the exit reads its quote down to a TCP header, or is
+  dropped and counted as `leaf error quote`. An error in fragments is counted as
+  `leaf error fragment`.
   - A Packet Too Big below 1280 bytes or a Fragmentation Needed below 552 is
     counted as `leaf error mtu`. One at or above that floor reaches the stack
     from any session, since one from a waypoint or a later hop comes from an
@@ -764,10 +772,16 @@ socket before its first send. Under `auto` a TCP connection leaves from the
 address the route to its server picks, as on Linux, and a UDP datagram from the
 address the route to its destination picked as that destination opened. Under an
 address class a flow leaves from that address, which the host has to hold: an
-IPv6 address on any link or `lo0`, and an IPv4 address on the link itself, since
-macOS refused every IPv4 flow from an address on `lo0` of a socket scoped to
-another link, where the IPv6 ones carried. A family whose IPv4 class address
-that link does not hold is not ready.
+IPv6 address on any link or `lo0`, and an IPv4 address on the link itself. That
+rests on a measurement alone: with its sockets scoped to a utun, an exit had
+every IPv4 flow from an address on `lo0` refused, where the IPv6 ones carried. A
+socket scoped to a link of another kind was not measured. XNU's receive check is
+not what refused them: by default it drops a packet that arrived on another
+interface only where its destination address belongs to a utun or ipsec
+interface
+([ip_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_input.c#L1377-L1387)),
+and `lo0` is neither. A family whose IPv4 class address that link does not hold
+is not ready.
 
 The exit refuses at startup what it cannot carry:
 
@@ -805,6 +819,12 @@ The exit on macOS keeps a slot for each such socket. The terms:
 - A **slot** is a place in the source's share, in `Flows` and in `HostPorts`,
   which a connection takes at its SYN and keeps past its relay's end while its
   host socket may pin the port.
+- A **held slot** is the slot of a TCP connection whose relay has ended and
+  whose host socket did not read closed at that end. It stays while the exit
+  holds the socket, until a read finds the socket closed or the margin after the
+  exit closes it with a linger of 0 has passed, as the table and the slot's end
+  below give. A connection still closing toward the leaf is open and holds its
+  slot at once, and counts as one flow.
 - The **MSL** is the maximum segment lifetime the host reads from
   `net.inet.tcp.msl`, and a TIME_WAIT lasts twice it, 30 seconds at its default
   of 15.
@@ -896,16 +916,16 @@ What the exit does:
 - **The bound.** `HostPorts` is the least of half the ports from
   `net.inet.ip.portrange.first` to `net.inet.ip.portrange.last` and half of
   `Flows`. The exit counts as `host ports` each TCP connection from its SYN
-  until its relay ends, its dial included, and each host socket it holds past
-  that, so a connection still closing toward the leaf takes one where its socket
-  is held and none where it is not. At a relay's end the hold is counted before
-  the connection's own count is given back, so for that moment the connection
-  takes two and the count stands one above. A new TCP connection is refused
-  while they reach `HostPorts`, so a range of 1 port refuses every one. Since
-  the dials and the relayed connections count, where `Flows` is under twice
-  `Connections` fewer TCP connections are admitted than `Connections`.
-  Leaf-first closes fill `HostPorts` at `HostPorts` / 40 a second across
-  sources, about 205 a second at its most of 8192.
+  until its relay ends, its dial included, and each held slot past that, so a
+  connection still closing toward the leaf takes one where it holds a slot and
+  none where it does not. At a relay's end the hold is counted before the
+  connection's own count is given back, so for that moment the connection takes
+  two and the count stands one above. A new TCP connection is refused while they
+  reach `HostPorts`, so a range of 1 port refuses every one. Since the dials and
+  the relayed connections count, where `Flows` is under twice `Connections`
+  fewer TCP connections are admitted than `Connections`. Leaf-first closes fill
+  `HostPorts` at `HostPorts` / 40 a second across sources, about 205 a second at
+  its most of 8192.
 - **The share.** A slot held counts in its source's share. A source at its share
   that holds more slots than open flows is refused as `share held`, else as
   `share`, both counted in `ranet3_egress_refused_total`. At the default share
@@ -942,9 +962,9 @@ What it leaves open:
   host server that binds it without `SO_REUSEADDR` or `SO_REUSEPORT`, within the
   source's share.
 - The userspace exit on Linux holds nothing and sets no bound on the host ports
-  its closed connections pin. That is a limit of the exit, not of Linux, whose
-  hold would be built apart. The userspace exit runs on Linux in tests alone
-  today.
+  the host sockets of its connections pin past their relay's end. That is a
+  limit of the exit, not of Linux, whose hold would be built apart. The
+  userspace exit runs on Linux in tests alone today.
 
 ## The nftables chains
 
@@ -1188,12 +1208,12 @@ drop a packet no flow is tracked for. All of them start from zero when a pass
 rewrites the chains.
 
 On macOS the line names the userspace exit and its flows in place of where it
-writes and its rules, with the refused counts, the leaves' packets it dropped
-with no flow to take them where there were any, what it announces and withholds,
-and the families it is ready for, and 2 lines under it give its flows against
-its limits, the connections whose host sockets it holds and the
-[host ports](#host-ports) its TCP connections take against `HostPorts`, and its
-buffers against its budget, such as:
+writes and its rules, with the refused counts, the leaves' packets it dropped as
+belonging to no flow it carries where there were any, what it announces and
+withholds, and the families it is ready for, and 2 lines under it give its flows
+against its limits, its [held slots](#host-ports) and the host ports its TCP
+connections take against `HostPorts`, and the bytes its TCP endpoints toward the
+leaves hold received and not yet read against its budget, such as:
 
 ```
 Egress   userspace, 23 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
@@ -1205,13 +1225,13 @@ The 61 are the flows the exit counts against `Flows`,
 [the exit's bound](design/limits.md#the-userspace-exit). The 23 open are the
 egress line's figure, the 3 dialing the TCP connections from their SYN until the
 exit's stack has completed the leaf's handshake or given it up, so through the
-dial toward the server and then the leaf's answer to the stack, and the 37 held
-the connections whose relay has ended and whose host sockets the exit holds
-while they may pin a port. A connection whose leaf's handshake fails after its
-dial stays dialing until the exit has ended it, and where its host socket is
-held it counts as held in that time as well. The 2 of the 37 are still closing
+dial toward the server and then the leaf's answer to the stack. The 37 are the
+[held slots](#host-ports), and the slots waiting out their margin after the exit
+closed their sockets are among them. A connection whose leaf's handshake fails
+after its dial stays dialing until the exit has ended it, and where it holds a
+slot it counts as held in that time as well. The 2 of the 37 are still closing
 toward the leaf, so they are among the 23 open as well, each
-[one flow with its held socket](design/limits.md#the-userspace-exit), and the 61
+[one flow with its held slot](design/limits.md#the-userspace-exit), and the 61
 are the 23, the 3 and the 37 less the 2. The 19 are the TCP connections counted
 against `Connections`: the 16 open and the 3 dialing. The 210 in TIME_WAIT are
 the leaf-side endpoints in the exit's own stack, and the 54 the host ports the
@@ -1225,15 +1245,15 @@ exits write `egress translating for N prefixes in <where>`, `egress ready`,
 `egress not ready` and `egress advertisement changed`, and the rest are the
 kernel exit's on Linux:
 
-| Log line                                                                                                                        | Level | When                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `egress userspace exit started`                                                                                                 | info  | the exit starts, with `steered`, the prefixes it advertises as `advertise`, its `lanes`, the `window` of a TCP flow and its `flows` |
-| `egress userspace exit started again`                                                                                           | info  | the first pass after `ranet3 up`                                                                                                    |
-| `egress userspace exit opened no ICMP socket, so it refuses echo in this family and relays no router's error about its sockets` | warn  | an ICMP socket of a family would not open, with `ipv6` and `err`, at startup                                                        |
-| `egress: the userspace exit opened no raw socket, so a leaf's own ICMP error about a datagram reaches no server`                | warn  | the daemon could not open a raw socket, as one not running as root cannot, with `err`, at startup                                   |
-| `egress userspace exit keeps its last bound on host ports`                                                                      | warn  | a sweep could not read the automatic range or the MSL, with `err`, once until a sweep reads them again                              |
-| `egress userspace exit keeps a host socket the host refused to abort, and its slot, and tries again at each sweep`              | warn  | on macOS the host refused the linger of 0 that ends a held socket, with `err`, once for the exit's run                              |
-| `egress userspace exit closed host sockets the host refused to abort, and left them to the host`                                | warn  | on macOS the exit's stop closed held sockets whose linger of 0 the host refused, with `sockets` and `err`                           |
+| Log line                                                                                                                        | Level | When                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `egress userspace exit started`                                                                                                 | info  | the exit starts, with `steered`, the count of prefixes it advertises as `advertise`, its `lanes`, the `window` of a TCP flow and its `flows` |
+| `egress userspace exit started again`                                                                                           | info  | the first pass after `ranet3 up`                                                                                                             |
+| `egress userspace exit opened no ICMP socket, so it refuses echo in this family and relays no router's error about its sockets` | warn  | an ICMP socket of a family would not open, with `ipv6` and `err`, at startup                                                                 |
+| `egress: the userspace exit opened no raw socket, so a leaf's own ICMP error about a datagram reaches no server`                | warn  | the daemon could not open a raw socket, as one not running as root cannot, with `err`, at startup                                            |
+| `egress userspace exit keeps its last bound on host ports`                                                                      | warn  | a sweep could not read the automatic range or the MSL, with `err`, once until a sweep reads them again                                       |
+| `egress userspace exit keeps a host socket the host refused to abort, and its slot, and tries again at each sweep`              | warn  | on macOS the host refused the linger of 0 that ends a held socket, with `err`, once for the exit's run                                       |
+| `egress userspace exit closed host sockets the host refused to abort, and left them to the host`                                | warn  | on macOS the exit's stop closed held sockets whose linger of 0 the host refused, with `sockets` and `err`                                    |
 
 | Log line                                                            | Level | When                                                                                                                                     |
 | ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1269,29 +1289,54 @@ from zero after a pass that wrote the chains. A pass that cannot read the
 counters back keeps the last pass's counts, the dropped ones among them, unless
 it rewrote the chains, whose counters start from zero whether or not it read
 them back. The userspace exit records `egress.refused` itself when it refuses a
-flow, past a share, a total, the descriptors or, on macOS, the host ports or a
-share of held connections among the reasons, at most once every 30 seconds, with
-the `source` and the `reason` of the refusal that falls due and every flow
-refused since the last record as `refused`, so a source retrying does not flood
-the log.
+packet, at most once every 30 seconds, with the `source` and the `reason` of the
+refusal that falls due and every packet refused since the last record as
+`refused`, so a source retrying does not flood the log.
 
-| Metric                                   | Meaning                                                                                                                                              |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                                                       |
-| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                                           |
-| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                                                |
-| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                                       |
-| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                                      |
-| `ranet3_egress_host_held`                | TCP connections whose relay has ended and whose host sockets the macOS userspace exit holds while they may pin a port, see [host ports](#host-ports) |
-| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them                       |
-| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                                                    |
-| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                                           |
-| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them                                   |
-| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                                          |
-| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                                              |
-| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                                               |
+The packets the userspace exit refuses, each counted by its reason in
+`ranet3 debug egress` and in the `refused` of its status, are these, each retry
+counted again:
+
+- The packets of a new flow past a limit: its source's share (`share`, or
+  `share held` where the source holds more [held slots](#host-ports) than open
+  flows) and the total (`total`) for any flow, and for a TCP connection also
+  `Dials` (`dials`), `Connections` (`connections`) and, on macOS, the host ports
+  (`host ports`).
+- The packets of a new flow whose socket would not open: `descriptors` where the
+  process or the host had no descriptor left, for a TCP, UDP or echo flow, and
+  for a UDP or echo flow otherwise `echo socket` where the host refused an echo
+  mapping's ICMP socket as not permitted or not supported, else `socket`.
+- The packets the exit answers as each arrives, before any flow takes it: one
+  whose TTL or hop limit ran out (`expired`), one of a protocol it does not
+  carry (`protocol`), and as `held destination` one toward an address no router
+  forwards or toward a group, one toward an address the host or the mesh holds,
+  and a UDP datagram toward such an address at a port no UDP mapping of the
+  exit's holds. Toward an address the host or the mesh holds, the address alone
+  refuses neither a UDP datagram, which only the port refuses, nor an
+  unfragmented ICMP Destination Unreachable, Time Exceeded, Parameter Problem
+  or, for IPv6, Packet Too Big that has no IPv6 extension header and quotes a
+  UDP datagram.
+- A UDP datagram or an echo request that arrives once the exit is withdrawn, and
+  an echo request whose mapping a withdrawal closed while it was sent
+  (`withdrawn`).
+
+| Metric                                   | Meaning                                                                                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                                 |
+| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                     |
+| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                          |
+| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                 |
+| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                |
+| `ranet3_egress_host_held`                | the macOS userspace exit's [held slots](#host-ports)                                                                           |
+| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them |
+| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                              |
+| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                     |
+| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them             |
+| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                    |
+| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                        |
+| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |
 
 The userspace exit writes the prefix counts, the refused counts, the pass's 2
-series, readiness and, on macOS, the connections held alone, and none of the
-rules', the translation's, the dropped counts', connection tracking's or the
-conflicts' series. [Metrics](metrics.md) describes the scrape.
+series, readiness and, on macOS, the held slots alone, and none of the rules',
+the translation's, the dropped counts', connection tracking's or the conflicts'
+series. [Metrics](metrics.md) describes the scrape.

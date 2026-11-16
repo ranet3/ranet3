@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-15
+updated: 2026-11-16
 order: 110
 ---
 
@@ -588,7 +588,7 @@ lists, so a rule another writer puts in one of its chains or edits there, or a
 table it sets dormant, which changes what the chain does to a packet, is undone
 by the next pass. It does not read back the sets' counts, so a count another
 writer changes or removes stays as that writer left it. Every chain in the table
-whose name starts `none_` is its own, as
+whose name runs past `none_` is its own, as
 [refusing to advertise](exit-nodes.md#refusing-to-advertise) describes. Another
 chain in the table is neither read nor removed. It reads other writers' tables,
 chains and rules to find its own and to report conflicts, and writes, replaces
@@ -786,13 +786,16 @@ table outlived the socket that set its `persist` flag, the refusal is
 which alone clears the flag and deletes every writer's chains with the table.
 Where another program's open socket owns the table, the refusal is
 `operation not permitted` and the reason says that delete works only once that
-program closes the socket or stops. No writer deletes the table or makes it
-again over the flag. The translator's nat chain needs Linux 5.2 or later, as
-[Linux](platforms.md#linux) gives. An `inet` nat chain hooks NAT in both
-families, so on an exit that translates one family a flow of the other that no
-chain translates gets the kernel's null binding, which changes no address, and
-its port only where 2 flows would share a tuple, as on any host with a NAT chain
-in that family.
+program closes the socket or stops. The kernel then deletes the table with the
+socket, or, where the owner set `persist`, leaves it as in the case before, as
+the table flags of
+[nft(8)](https://www.netfilter.org/projects/nftables/manpage.html) give. No
+writer deletes the table or makes it again over the flag. The translator's nat
+chain needs Linux 5.2 or later, as [Linux](platforms.md#linux) gives. An `inet`
+nat chain hooks NAT in both families, so on an exit that translates one family a
+flow of the other that no chain translates gets the kernel's null binding, which
+changes no address, and its port only where 2 flows would share a tuple, as on
+any host with a NAT chain in that family.
 
 An older ranet3 wrote the translator's chains in the tables `ip ranet3` and
 `ip6 ranet3`, and the kill switch's in `inet ranet3_fallback`. Its clean stop
@@ -913,7 +916,9 @@ mesh routes as well, and counts them `unowned_source`.
 On Linux replies to the mesh's overlay and to subnets the mesh routes are
 untouched by the owned-source rule: an exit's egress replies, translated back by
 the kernel, carry the internet's sources and are bound for a leaf's overlay
-address, out of that rule's reach. No other platform runs an exit. A host
+address, out of that rule's reach. On macOS the read's owned-source rule passes
+every packet [the userspace exit](exit-nodes.md#the-exit-on-macos) lays toward
+its leaves, since the exit built it from a destination its leaf sent to. A host
 tunneling its LAN through the mesh announces the LAN's prefix, which makes its
 sources this node's own, or carries the tunnel in UDP.
 [The limits](design/limits.md#transit) say so.

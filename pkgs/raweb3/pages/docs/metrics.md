@@ -46,14 +46,12 @@ and the chains of the classes of `none`, so they lag by up to 1 pass, and a
 rewrite of the chains starts them from 0, which a scrape reads as a counter
 reset. A pass that cannot read them back keeps the last pass's, unless it
 rewrote the chains, whose counts start from 0 whether or not it read them back.
-The userspace exit on macOS installs no rules, so it writes the prefix counts,
-the refused counts, the pass and each family's readiness alone, and none of the
-rules', the translation's, the dropped counts, connection tracking's or the
-conflicts' series. Its refused counts are the flows it refused past their
-source's share, read at each scrape. The flows it holds and its buffers are in
-`ranet3 status`, as [exit nodes](exit-nodes.md#watching-it) describes, and its
-limits and what it refused or dropped by reason are in
-[`ranet3 debug egress`](development/debug.md).
+The userspace exit on macOS installs no rules, so it writes only some of the
+egress series, which [watching it](exit-nodes.md#watching-it) names. Its refused
+counts are the packets it refused past their source's share, read at each
+scrape. The flows it holds and its buffers are in `ranet3 status`, as that
+section describes, and its limits and what it refused or dropped by reason are
+in [`ranet3 debug egress`](development/debug.md).
 
 [The antispoof filter](antispoof.md) is reported as whether its chains and every
 set read back, and as the packets each of its drops counted, by `reason` and
@@ -81,13 +79,13 @@ routing writes its series on every node, zeros included.
 
 The reconciler's, the egress and the antispoof filter's series hold their last
 pass as it read them, as the paragraphs above say, but the userspace exit's
-refused counts. Every other series is read from live state at scrape time. The
-`forwarded`, `delivered` and `dropped` counts of `ranet3_transit_packets_total`,
-`ranet3_steered_total` and `ranet3_steer_dropped_total{reason="no_route"}` take
-each read off the tun and each batch a session delivered once it is decided, so
-a scrape leaves out the ones being decided as it runs. A counter cannot carry
-the route table. `ranet3 routes` reads it, with each prefix's next hop, from the
-control socket.
+refused counts and its `ranet3_egress_host_held`. Every other series is read
+from live state at scrape time. The `forwarded`, `delivered` and `dropped`
+counts of `ranet3_transit_packets_total`, `ranet3_steered_total` and
+`ranet3_steer_dropped_total{reason="no_route"}` take each read off the tun and
+each batch a session delivered once it is decided, so a scrape leaves out the
+ones being decided as it runs. A counter cannot carry the route table.
+`ranet3 routes` reads it, with each prefix's next hop, from the control socket.
 
 ## Series
 
@@ -155,7 +153,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_egress_flows_total`                    | counter   | none                 | Connections the translation rules rewrote                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | on Linux with `cap.egress`                                                                                                                                                       |
 | `ranet3_egress_untranslated_flows_total`       | counter   | none                 | Connections a class of `none` left under the source they carry                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | on Linux with `cap.egress`                                                                                                                                                       |
 | `ranet3_egress_refused_total`                  | counter   | `family`             | Packets refused past their source's share, as [its section](exit-nodes.md#each-sources-share-of-the-flows) gives, each retry of a refused flow counted, answered Host Unreachable over IPv4 and administratively prohibited over IPv6                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | with `cap.egress`                                                                                                                                                                |
-| `ranet3_egress_host_held`                      | gauge     | none                 | TCP connections whose relay has ended and whose host sockets the userspace exit holds while they may pin a port, each in its source's share and against `HostPorts`, as [host ports](exit-nodes.md#host-ports) gives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | on macOS with the userspace exit, under a bound of 0 too                                                                                                                         |
+| `ranet3_egress_host_held`                      | gauge     | none                 | the userspace exit's [held slots](exit-nodes.md#host-ports), each in its source's share and against `HostPorts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | on macOS with the userspace exit, under a bound of 0 too                                                                                                                         |
 | `ranet3_egress_dropped_total`                  | counter   | `family`             | Packets out of the mesh, and into it under `return`, dropped because no flow is tracked for them, which a rule that translates would otherwise send on under their own source                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | on Linux with `cap.egress`                                                                                                                                                       |
 | `ranet3_egress_conntrack_entries`              | gauge     | none                 | Entries the host's connection tracking table holds, which each source's share comes out of                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | on Linux with `cap.egress`, once the pass reads the table                                                                                                                        |
 | `ranet3_egress_conntrack_max`                  | gauge     | none                 | The most entries the host's connection tracking table takes, `net.netfilter.nf_conntrack_max`, read on each pass and never written. [What connection tracking evicts from a full table](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1663) is the kernel's                                                                                                                                                                                                                                                                                                                                                  | on Linux with `cap.egress`, once the pass reads the table                                                                                                                        |
@@ -204,7 +202,7 @@ refuses.
 | `dropped`    | `martian`           | packets the [mapped-source or other martian check](routing.md#transit) refuses, including an egress segment's admitted mapped inner packets                                                                                                                                                                                                                                    |
 | `dropped`    | `source_route`      | IPv4 packets carrying a loose or strict source route                                                                                                                                                                                                                                                                                                                           |
 | `dropped`    | `unrouted_source`   | packets an exit would egress, through a route that counts as a default, whose source the mesh routes no reply to                                                                                                                                                                                                                                                               |
-| `dropped`    | `not_ready`         | packets an exit would egress through a prefix `cap.egress` advertises, while it announces no prefix of that family, not an egress segment's inner packets, which `ranet3_segments_not_ready_total` counts                                                                                                                                                                      |
+| `dropped`    | `not_ready`         | packets an exit would egress through a prefix `cap.egress` advertises, while that family is not [ready](exit-nodes.md#readiness) or the exit announces no prefix of it, not an egress segment's inner packets, which `ranet3_segments_not_ready_total` counts                                                                                                                  |
 | `dropped`    | `too_big`           | packets and reads off the tun larger than the session to their next hop, answered or past cutting, and reads a steering policy claimed that are too large to encapsulate                                                                                                                                                                                                       |
 | `dropped`    | `session_multicast` | packets from non-mapped sources to multicast or the limited broadcast, including an egress segment's admitted inner packets except Not-ECT under outer CE. [Transit](routing.md#transit) gives the check order                                                                                                                                                                 |
 | `dropped`    | `multicast`         | reads off the tun to a multicast destination or the limited broadcast, which the mesh forwards none of                                                                                                                                                                                                                                                                         |
@@ -352,9 +350,10 @@ releases with no head wait.
 
 ## Path MTU
 
-`ranet3_packet_too_big_sent_total` counts the answers this node sent to packets
-larger than their session carries, Packet Too Big over IPv6 and fragmentation
-needed over IPv4 with DF, read off the tun or carried to a waypoint, and
+`ranet3_packet_too_big_sent_total` counts the Packet Too Big over IPv6 and
+fragmentation needed over IPv4 with DF this node sent: to packets larger than
+their session carries, read off the tun or carried to a waypoint, and from the
+userspace exit to a leaf's datagram the path outside refused as too large, and
 `ranet3_mss_clamped_total` each time it lowered the MSS of a TCP SYN or SYN-ACK
 to what a session carries, twice for a forwarded one it lowered to the session
 it arrived on and again to its next. Both count for the node as a whole.
