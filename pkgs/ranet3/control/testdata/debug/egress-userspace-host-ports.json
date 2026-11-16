@@ -21,9 +21,9 @@
     "bytes": 0,
     "untranslated": 0,
     "userspace": {
-      "counted": 24,
+      "counted": 61,
       "tcp": {
-        "ipv4": 11,
+        "ipv4": 13,
         "ipv6": 3
       },
       "udp": {
@@ -40,7 +40,7 @@
         "held": 37,
         "ports": 54,
         "bound": 5120,
-        "shared": 0
+        "shared": 2
       },
       "limits": {
         "budget": 4294967296,
@@ -68,8 +68,8 @@
       "sources": [
         {
           "source": "192.0.2.65",
-          "flows": 40,
-          "held": 30
+          "flows": 55,
+          "held": 37
         },
         {
           "source": "3fff::41",

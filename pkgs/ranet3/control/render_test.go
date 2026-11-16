@@ -364,15 +364,19 @@ func TestStatusEgressUserspaceRendersAsTheGoldenFile(t *testing.T) {
 }
 
 // hostPortsFixture is the userspace fixture of an exit that bounds the host
-// ports its TCP connections pin: 37 closed connections held, which with the
-// 14 open and the 3 dialing take 54 of 5120 host ports, and its refusals
-// past them and past a share of held connections
+// ports its TCP connections pin: 16 TCP connections open, 2 of them closing,
+// 37 host sockets held, the 2 closing ones' among them, 61 flows counted, 54
+// of 5120 host ports taken, and its refusals past them and past a share of
+// held connections. Its two sources hold the 61 flows, the IPv4 one the held
+// sockets, the dials and the IPv4 flows, the IPv6 one the IPv6 flows.
 func hostPortsFixture(from string) EgressStatus {
 	e := userspaceFixture(from)
 	u := *e.Userspace
-	u.Host = &EgressHost{Held: 37, Ports: 54, Bound: 5120}
+	u.Counted = 61
+	u.TCP = EgressFlows{IPv4: 13, IPv6: 3}
+	u.Host = &EgressHost{Held: 37, Ports: 54, Bound: 5120, Shared: 2}
 	u.Refused = map[string]uint64{"share": 2, "share held": 3, "host ports": 9}
-	u.Sources = []EgressSourceFlows{{Source: netip.MustParseAddr("192.0.2.65"), Flows: 40, Held: 30}, {Source: netip.MustParseAddr("3fff::41"), Flows: 6}}
+	u.Sources = []EgressSourceFlows{{Source: netip.MustParseAddr("192.0.2.65"), Flows: 55, Held: 37}, {Source: netip.MustParseAddr("3fff::41"), Flows: 6}}
 	e.Userspace = &u
 	return e
 }
@@ -384,6 +388,37 @@ func TestStatusEgressHostPortsRendersAsTheGoldenFile(t *testing.T) {
 	e := hostPortsFixture(EgressBudgetHost)
 	pairs(&out, [][]string{{"Egress", egressLine(e)}, {"Flows", userspaceFlowsLine(*e.Userspace)}, {"Buffers", userspaceBuffersLine(*e.Userspace)}})
 	golden(t, "status-egress-userspace-host-ports.txt", []byte(out.String()))
+}
+
+// the flows line opens with the flows the exit counts as the status gives
+// them, whatever its parts add up to, names the held host sockets a closing
+// connection shares its flow with where there are any, and lists the parts as
+// the status gives them
+func TestUserspaceFlowsLineOpensWithTheFlowsCounted(t *testing.T) {
+	base := EgressUserspace{
+		TCP: EgressFlows{IPv4: 2, IPv6: 1}, UDP: EgressFlows{IPv4: 1}, Dialing: 1, TimeWait: 4,
+		Limits: EgressLimits{Flows: 10, Connections: 5},
+	}
+	for _, test := range []struct {
+		name    string
+		counted int
+		host    *EgressHost
+		want    string
+	}{
+		{"no host part", 5, nil, "5 of 10 allowed: 4 open and 1 dialing, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both"},
+		{"holds sharing nothing", 7, &EgressHost{Held: 2, Ports: 6, Bound: 8}, "7 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 6 host ports of 8"},
+		{"one closing connection sharing", 6, &EgressHost{Held: 2, Ports: 5, Bound: 8, Shared: 1}, "6 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 1 of them also open while closing and counted once, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 5 host ports of 8"},
+		{"two closing connections sharing", 5, &EgressHost{Held: 2, Ports: 4, Bound: 8, Shared: 2}, "5 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 2 of them also open while closing and counted once, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 4 host ports of 8"},
+		{"parts read as a flow moved", 6, &EgressHost{Held: 2, Ports: 6, Bound: 8}, "6 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 6 host ports of 8"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			u := base
+			u.Counted, u.Host = test.counted, test.host
+			if got := userspaceFlowsLine(u); got != test.want {
+				t.Errorf("the flows line reads\n%s\nwant\n%s", got, test.want)
+			}
+		})
+	}
 }
 
 // the flows and buffers rows sit right under the egress row, above the

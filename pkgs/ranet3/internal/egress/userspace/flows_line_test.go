@@ -4,12 +4,48 @@
 package userspace
 
 import (
+	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
+
+// flowsLine is the flows line the control socket renders from x's status, and
+// its first figure
+func flowsLine(t *testing.T, x *Exit) (string, int) {
+	t.Helper()
+	f := x.Status().Flows
+	u := control.EgressUserspace{
+		Counted: f.Counted,
+		TCP:     control.EgressFlows{IPv4: f.TCP[0], IPv6: f.TCP[1]},
+		UDP:     control.EgressFlows{IPv4: f.UDP[0], IPv6: f.UDP[1]},
+		Echo:    control.EgressFlows{IPv4: f.Echo[0], IPv6: f.Echo[1]},
+		Dialing: f.Dialing, TimeWait: f.TimeWait,
+		Limits: control.EgressLimits{Flows: f.Limits.Flows, Connections: f.Limits.Connections},
+	}
+	if f.Host != nil {
+		host := control.EgressHost(*f.Host)
+		u.Host = &host
+	}
+	var out strings.Builder
+	control.RenderEgress(&out, control.EgressInfo{Enabled: true, Status: control.EgressStatus{Enabled: true, Userspace: &u}})
+	for line := range strings.Lines(out.String()) {
+		if rest, ok := strings.CutPrefix(line, "Flows "); ok {
+			line = strings.TrimSpace(rest)
+			var figure int
+			if _, err := fmt.Sscanf(line, "%d of", &figure); err != nil {
+				t.Fatalf("the flows line %q opens with no figure: %v", line, err)
+			}
+			return line, figure
+		}
+	}
+	t.Fatalf("the egress view holds no flows line: %q", out.String())
+	return "", 0
+}
 
 // counted is the flows the exit counts against Flows
 func (x *Exit) counted() int {
@@ -131,6 +167,20 @@ func TestStatusCountsHeldSocketsSharingAFlow(t *testing.T) {
 			}
 			if want := h.x.counted(); parts != want {
 				t.Errorf("the status's parts make %d flows, the exit counts %d", parts, want)
+			}
+		})
+	}
+}
+
+// The flows line the control socket renders from the status opens with the
+// flows the exit counts against Flows
+func TestFlowsLineOpensWithTheFlowsTheExitCounts(t *testing.T) {
+	for _, state := range flowsStates() {
+		t.Run(state.name, func(t *testing.T) {
+			h := state.reach(t)
+			line, figure := flowsLine(t, h.x)
+			if want := h.x.counted(); figure != want {
+				t.Errorf("the flows line %q opens with %d, the exit counts %d flows against Flows", line, figure, want)
 			}
 		})
 	}

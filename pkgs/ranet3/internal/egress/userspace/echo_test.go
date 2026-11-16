@@ -88,13 +88,14 @@ func (h *relayHarness) waitTimeWait(t *testing.T, n int) {
 	}
 }
 
-// The status's figures the Flows line sums, the TCP connections open, dialing
-// and held for their host sockets with the UDP destinations and the echo
-// mappings, are every flow the exit's admission holds against Flows, with one
-// of each kind open and the held connection's endpoint in TIME_WAIT, which no
-// figure counts. The open connection reads as dialing until its relay starts,
-// which comes after the handshake the leaf sees, so it is held to be one of
-// the two connections the open and the dialing figures share.
+// The status's figures of the TCP connections open, dialing and held for
+// their host sockets, the UDP destinations and the echo mappings add up to
+// every flow the exit's admission holds against Flows where no closing
+// connection shares its flow with a hold, with one of each kind open and the
+// held connection's endpoint in TIME_WAIT, which no figure counts. The open
+// connection reads as dialing until its relay starts, which comes after the
+// handshake the leaf sees, so it is held to be one of the two connections the
+// open and the dialing figures share.
 func TestFlowsLineFiguresAreWhatAdmissionHolds(t *testing.T) {
 	readyLoopback(t)
 	loopback := netip.MustParseAddr("127.0.0.1")

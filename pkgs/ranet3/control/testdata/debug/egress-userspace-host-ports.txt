@@ -1,7 +1,7 @@
-Exit       userspace, 21 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, last pass 2 minutes ago
-Flows      61 of 10240 allowed: 21 open, 3 dialing and 37 held for host sockets, 17 TCP of 985 allowed: 14 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
+Exit       userspace, 23 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, last pass 2 minutes ago
+Flows      61 of 10240 allowed: 23 open, 3 dialing and 37 held for host sockets, 2 of them also open while closing and counted once, 19 TCP of 985 allowed: 16 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
 Buffers    3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
-TCP        11 ipv4, 3 ipv6
+TCP        13 ipv4, 3 ipv6
 UDP        4 ipv4, 2 ipv6
 Echo       0 ipv4, 1 ipv6
 Limits     10240 flows, 985 TCP connections, 985 dials, 985 in TIME_WAIT, a window of 1.0 MiB, lanes of 4.0 MiB, a link of 4.0 MiB, 5120 host ports
@@ -15,5 +15,5 @@ Dropped
   lane full     7
   udp checksum  1
 Sources
-  192.0.2.65  40 flows, 30 held for host sockets
+  192.0.2.65  55 flows, 37 held for host sockets
   3fff::41    6 flows

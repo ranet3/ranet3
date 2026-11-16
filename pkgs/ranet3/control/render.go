@@ -289,23 +289,27 @@ func egressLine(e EgressStatus) string {
 	return line
 }
 
-// userspaceFlowsLine is the flows the userspace exit counts against Flows:
-// those open, which the egress line counts, the dials and, where the platform
-// bounds the host ports, the closed connections held for their host sockets.
-// Then the TCP connections it counts against Connections, the open ones and
-// the dials, the open UDP and echo flows, the endpoints in TIME_WAIT, which
-// neither limit counts, and the host ports taken against theirs.
+// userspaceFlowsLine is the flows the userspace exit counts against Flows, as
+// it counts them, then the parts: those open, which the egress line counts,
+// the dials and, where the platform bounds the host ports, the connections
+// whose host sockets it holds, naming those whose leaf's connection is still
+// closing, which open names too. Then the TCP connections it counts against
+// Connections, the open ones and the dials, the open UDP and echo flows, the
+// endpoints in TIME_WAIT, which neither limit counts, and the host ports taken
+// against theirs.
 func userspaceFlowsLine(u EgressUserspace) string {
 	tcp, udp, echo := u.TCP.IPv4+u.TCP.IPv6, u.UDP.IPv4+u.UDP.IPv6, u.Echo.IPv4+u.Echo.IPv6
 	open := tcp + udp + echo
-	counted, kinds, host := open+u.Dialing, fmt.Sprintf("%d open and %d dialing", open, u.Dialing), ""
+	kinds, host := fmt.Sprintf("%d open and %d dialing", open, u.Dialing), ""
 	if h := u.Host; h != nil {
-		counted += h.Held
 		kinds = fmt.Sprintf("%d open, %d dialing and %d held for host sockets", open, u.Dialing, h.Held)
+		if h.Shared > 0 {
+			kinds += fmt.Sprintf(", %d of them also open while closing and counted once", h.Shared)
+		}
 		host = fmt.Sprintf(", %d host ports of %d", h.Ports, h.Bound)
 	}
 	return fmt.Sprintf("%d of %d allowed: %s, %d TCP of %d allowed: %d open and %d dialing, %d UDP, %d echo, %d in TIME_WAIT outside both%s",
-		counted, u.Limits.Flows, kinds, tcp+u.Dialing, u.Limits.Connections, tcp, u.Dialing, udp, echo, u.TimeWait, host)
+		u.Counted, u.Limits.Flows, kinds, tcp+u.Dialing, u.Limits.Connections, tcp, u.Dialing, udp, echo, u.TimeWait, host)
 }
 
 // userspaceBuffersLine is the bytes the userspace exit's TCP buffers hold
