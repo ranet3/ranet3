@@ -183,9 +183,8 @@ func (b Border) Validate() error {
 
 // BorderRuntime holds what the command resolves at startup for the filter
 type BorderRuntime struct {
-	// Tun is the mesh's device, which the entry chain lets a packet leave by
-	// only as a reply, toward an IPv6 link-local or multicast destination, from
-	// a source this node owns or toward a destination a none class takes
+	// Tun is the mesh's device, which the entry chain lets only the packets
+	// it lists leave by (antispoof.md, "The entry chain")
 	Tun string
 	// Inside names the devices whose traffic the antispoof chain accepts, after
 	// its drop of an IPv4-mapped source where it holds one: the mesh tun and the

@@ -85,10 +85,14 @@ type Status struct {
 	// counts them anew
 	FlowsPerSource     int
 	Refused4, Refused6 uint64
-	// Dropped4 and Dropped6 are the packets out of the mesh, and into it under
-	// return, dropped in each family for want of a tracked flow, which a rule
-	// that translates would otherwise send on under their own source, counted
-	// as Refused4 and Refused6 are
+	// Dropped4 and Dropped6 are the packets dropped in each family as
+	// belonging to no flow the exit carries. On a backend that installs rules they are the packets out of the
+	// mesh, and into it under return, for which no flow is tracked, which a
+	// rule that translates would otherwise send on under their own source,
+	// counted as Refused4 and Refused6 are. On the userspace exit they are the
+	// leaves' ICMP messages the echo relay takes that are no echo request, and
+	// their errors about no datagram of a live mapping, each counted by its
+	// reason in Flows.Dropped too.
 	Dropped4, Dropped6 uint64
 	// PassAt is the last pass, zero before the first, and Err its error
 	PassAt time.Time
@@ -116,12 +120,13 @@ type Flows struct {
 	// Host is the exit's hold on the host ports its TCP connections pin, nil
 	// where it holds none
 	Host *HostHold
-	// Limits holds the exit's bounds, and Buffered the bytes its TCP buffers
-	// hold now
+	// Limits holds the exit's bounds, and Buffered the bytes its TCP endpoints
+	// toward the leaves hold now, received and not yet read
 	Limits   FlowLimits
 	Buffered uint64
-	// Refused counts the new flows refused by why, and Dropped the packets
-	// dropped by why
+	// Refused counts the packets refused by why, the packets of new flows past
+	// a limit, those a lane's judgment answered and those refused as withdrawn
+	// among them, and Dropped the packets dropped by why
 	Refused, Dropped map[string]uint64
 	// Reused counts the TIME_WAIT endpoints a new SYN took, and Closed those
 	// closed early past Limits.TimeWait
@@ -140,12 +145,14 @@ type FlowLimits struct {
 	Lanes, Link                                 int64
 }
 
-// HostHold is a userspace exit's hold on the host ports: Held the TCP
-// connections whose relay has ended and whose host sockets it holds while they
-// may pin their ports, Ports the host ports taken, Bound the most they may
-// take, a bound of 0 refusing every new connection, and Shared those of Held
-// whose leaf's connection is still closing, which TCP counts too, one flow for
-// the two
+// HostHold is a userspace exit's hold on the host ports: Held its held slots,
+// each a TCP connection's slot kept past its relay's end while the exit holds
+// the host socket, then through the margin where the exit ends the socket
+// with a linger of 0, or given back at once where a read finds the socket
+// closed (exit-nodes.md, "Host ports"), Ports the host ports taken, Bound the
+// most they may take, a bound of 0 refusing every new connection, and Shared
+// those of Held whose leaf's connection is still closing, which TCP counts
+// too, one flow for the two
 type HostHold struct {
 	Held, Ports, Bound, Shared int
 }
@@ -158,7 +165,7 @@ const (
 )
 
 // SourceFlows is the flows one source holds through the exit, and Held those
-// of them closed and held while their host sockets may pin their ports
+// of them that are held slots, as HostHold.Held counts them
 type SourceFlows struct {
 	Source      netip.Addr
 	Flows, Held int

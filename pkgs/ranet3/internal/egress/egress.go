@@ -6,8 +6,9 @@
 // cap.egress sits behind, and the reports the node reads from the antispoof
 // filter. cap.egress is the one action behind an exit node and a subnet
 // router: an exit advertises a default and a subnet router the prefixes behind
-// it, and both end at the same translation. Nothing here makes a system call
-// or imports a backend.
+// it, and both end at the same translation. Nothing here makes a system call,
+// and of the backends it imports internal/pf alone, for the Enabler a pf
+// reading carries.
 package egress
 
 import (
@@ -21,9 +22,8 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// FamilyIPv4 and FamilyIPv6 are AF_INET and AF_INET6, spelled here rather than
-// taken from x/sys so that this file still builds where the capability is
-// refused rather than absent from the type.
+// FamilyIPv4 and FamilyIPv6 name the two families by Linux's AF_INET and
+// AF_INET6. darwin's AF_INET6 is 30, so on darwin they are labels alone.
 const (
 	FamilyIPv4 uint8 = 2
 	FamilyIPv6 uint8 = 10
@@ -35,9 +35,9 @@ const (
 type Egress struct {
 	// Advertise names the prefixes this node offers to carry: 0.0.0.0/0 and
 	// ::/0 for an exit node, the prefixes behind it for a subnet router. It
-	// decides which families the rules keyed on the mesh device cover as well
-	// as which are announced, because a family this node does not offer to
-	// carry is one it has no reason to translate out of the mesh.
+	// decides which prefixes are announced, and which families the rules keyed
+	// on the mesh device cover, which beside an egress segment are both
+	// (Translated).
 	Advertise []schema.Prefix `yaml:"advertise,omitempty" json:"advertise,omitempty" toml:"advertise,omitempty"`
 	// Translate is the classes the mesh's sources leave under: a source takes
 	// the class of the longest From covering it, and auto where none covers
@@ -77,9 +77,9 @@ type Egress struct {
 // so neither such a class nor the order either list was written in is a
 // change, and neither costs a restart.
 //
-// Neither order is meaningful. The advertised prefixes decide which families
-// the rules keyed on the mesh device cover and which prefixes are announced,
-// and both are sets. The classes are taken by the longest From covering a
+// Neither order is meaningful. The advertised prefixes decide which prefixes
+// are announced and which families the rules cover (Translated), and both are
+// sets. The classes are taken by the longest From covering a
 // source, which Classes orders them by.
 func (e Egress) Normalized() Egress {
 	if len(e.Advertise) == 0 {
@@ -176,8 +176,7 @@ func (e Egress) Translated(steered bool) []uint8 {
 }
 
 // families is the address families this configuration advertises, derived
-// from its prefixes. A family nothing is advertised for is one the mesh device
-// carries nothing out of here, so no rule keyed on it is created.
+// from its prefixes, which Translated widens to both beside an egress segment
 func (e Egress) families() []uint8 {
 	var out []uint8
 	for _, prefix := range e.Advertise {
