@@ -62,9 +62,10 @@ type Egress struct {
 	// serves takes a smaller one, and an exit serving a leaf that translates a
 	// LAN behind its one mesh address a larger.
 	FlowsPerSource uint32 `yaml:"flows_per_source,omitempty" json:"flows_per_source,omitempty" toml:"flows_per_source,omitempty"`
-	// Sweep is the periodic pass. It reinstalls chains somebody removed and
-	// reads the forwarding sysctls and the route lookups again, the parts of
-	// readiness that change under a running node. Zero uses DefaultSweep.
+	// Sweep is the period of the exit's pass, which reads again what each
+	// family's readiness rests on and announces the families ready, and on the
+	// kernel exit also reinstalls chains somebody removed. Zero uses
+	// DefaultSweep, and any other value under schema.MinPassInterval is refused.
 	Sweep schema.Duration `yaml:"sweep,omitempty" json:"sweep,omitempty" toml:"sweep,omitempty"`
 }
 
@@ -141,6 +142,9 @@ func (e Egress) Validate() error {
 	}
 	if e.Sweep < 0 {
 		return fmt.Errorf("egress: cap.egress sweep %s is negative", e.Sweep)
+	}
+	if e.Sweep > 0 && e.Sweep.Duration() < schema.MinPassInterval {
+		return fmt.Errorf("egress: cap.egress sweep %s is shorter than %s", e.Sweep, schema.MinPassInterval)
 	}
 	return nil
 }

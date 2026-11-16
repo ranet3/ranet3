@@ -3,6 +3,8 @@
 
 package schema
 
+import "time"
+
 // The shortest prefix a list of the mesh's own sources takes, per family, an
 // egress segment's allow list and the overlay alike. The floor
 // is the unit IANA delegates to a regional registry, so a shorter entry holds
@@ -21,6 +23,16 @@ const (
 	MinSubnetBits4 = 8
 	MinSubnetBits6 = 16
 )
+
+// MinPassInterval is the least interval cap.egress sweep and cap.table
+// reconcile take. Each paces a pass that reads the host's tables again at
+// every turn, changed or not, so a shorter one would read them more than once
+// a second on a quiet host. Each also caps the backoff on which
+// internal/kernel's RetryTimer retries a failed pass of the kernel exit or the
+// reconciler, and one under the timer's first delay holds every retry at the
+// period. The refusal names the value, so a unit written wrong, "30ns" for
+// "30s", shows at load.
+const MinPassInterval = time.Second
 
 // UnderlayMark is SO_MARK, on linux and wherever the process may set it, on
 // every socket carrying IKE and ESP and on a socket resolving an endpoint's

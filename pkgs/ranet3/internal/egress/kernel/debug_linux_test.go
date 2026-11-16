@@ -30,11 +30,10 @@ const (
 	// debugSweep is a sweep no test outlasts, so a counter that moves after the
 	// first pass moves without one
 	debugSweep = time.Hour
-	// debugBusySweep is a sweep short enough that one pass follows another
-	// while a test reads, and debugPasses the passes such a test reads across,
-	// each seen by a poll of heldPoll
-	debugBusySweep = time.Millisecond
-	debugPasses    = 20
+	// debugPasses is the passes a test reads across at the shortest sweep a
+	// configuration takes, each seen by a poll of heldPoll and all within
+	// heldWait
+	debugPasses = 3
 	// debugReaders is how many goroutines read at once
 	debugReaders = 2
 )
@@ -198,7 +197,7 @@ func TestDebugReadsARulesCounterWithoutAPass(t *testing.T) {
 // each read and each pass with no error: a read takes no socket a pass writes
 // through, and no reader the socket another reads through
 func TestDebugReadsBesidePassesAndAnotherReader(t *testing.T) {
-	exit, debug, host, _ := debugExit(t, debugBusySweep)
+	exit, debug, host, _ := debugExit(t, schema.MinPassInterval)
 	runDebugExit(t, exit)
 	stop := readDebug(t, host, debug)
 	awaitPasses(t, exit)
@@ -212,7 +211,7 @@ func TestDebugReadsBesidePassesAndAnotherReader(t *testing.T) {
 // removed between the read's look at the tables and its read of one, and a
 // read after the stop finds no rule held
 func TestDebugReadsAcrossTheExitsStop(t *testing.T) {
-	exit, debug, host, _ := debugExit(t, debugBusySweep)
+	exit, debug, host, _ := debugExit(t, schema.MinPassInterval)
 	stopExit := runDebugExit(t, exit)
 	stopReads := readDebug(t, host, debug)
 	awaitPasses(t, exit)

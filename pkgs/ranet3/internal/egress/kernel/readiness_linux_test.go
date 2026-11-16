@@ -21,13 +21,11 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// heldSweep is the sweep of an exit whose host a test changes under it, so the
-// pass that reads the change comes at once, heldWait how long the test waits
-// for that pass, generous for a loaded machine, and heldPoll how often it looks
+// heldWait is how long a test waits for an exit's pass, generous for a loaded
+// machine, and heldPoll how often it looks
 const (
-	heldSweep = 100 * time.Millisecond
-	heldWait  = 10 * time.Second
-	heldPoll  = 10 * time.Millisecond
+	heldWait = 10 * time.Second
+	heldPoll = 10 * time.Millisecond
 )
 
 // An address a class translates to, taken off lo, holds its family not ready
@@ -80,7 +78,7 @@ func TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady(t *testing.T) {
 			{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: classes[0].Addr()}},
 			{From: schema.MustPrefix("::/0"), To: egress.Translation{Addr: classes[1].Addr()}},
 		},
-		Sweep: schema.Duration(heldSweep),
+		Sweep: schema.Duration(schema.MinPassInterval),
 	}
 	exit := newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}}, cfg, unheard)
 	ctx, cancel := context.WithCancel(context.Background())

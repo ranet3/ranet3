@@ -182,6 +182,13 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(-time.Second)},
 			"is negative",
 		},
+		// the floor as the configuration reference states it, 1 second, so a
+		// floor moved from it fails here
+		{
+			"a sweep under the floor",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(time.Second - time.Nanosecond)},
+			"egress: cap.egress sweep 999.999999ms is shorter than 1s",
+		},
 		{
 			"a share past any connection table",
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), FlowsPerSource: MaxFlowsPerSource + 1},
@@ -194,6 +201,20 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 				t.Fatalf("refused with %v, want a message containing %q", err, one.want)
 			}
 		})
+	}
+}
+
+// A sweep at the floor is taken and runs at it, and one left at zero is taken
+// and runs at the default.
+func TestSweepAtTheFloorRunsAtItAndZeroAtTheDefault(t *testing.T) {
+	for sweep, want := range map[time.Duration]time.Duration{0: DefaultSweep, time.Second: time.Second} {
+		cfg := Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweep)}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("a sweep of %s was refused: %v", sweep, err)
+		}
+		if got := cfg.SweepInterval(); got != want {
+			t.Errorf("a sweep of %s runs every %s, want %s", sweep, got, want)
+		}
 	}
 }
 
