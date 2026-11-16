@@ -289,16 +289,23 @@ func egressLine(e EgressStatus) string {
 	return line
 }
 
-// userspaceFlowsLine is the flows the userspace exit holds against its limits,
-// the TCP connections against theirs and every flow against the whole, and
-// where it bounds them the host ports its TCP connections take against theirs
+// userspaceFlowsLine is the flows the userspace exit counts against Flows:
+// those open, which the egress line counts, the dials and, where the platform
+// bounds the host ports, the closed connections held for their host sockets.
+// Then the TCP connections it counts against Connections, the open ones and
+// the dials, the open UDP and echo flows, the endpoints in TIME_WAIT, which
+// neither limit counts, and the host ports taken against theirs.
 func userspaceFlowsLine(u EgressUserspace) string {
-	line := fmt.Sprintf("%d TCP of %d, %d UDP, %d echo of %d, %d dialing, %d in TIME_WAIT",
-		u.TCP.IPv4+u.TCP.IPv6, u.Limits.Connections, u.UDP.IPv4+u.UDP.IPv6, u.Echo.IPv4+u.Echo.IPv6, u.Limits.Flows, u.Dialing, u.TimeWait)
+	tcp, udp, echo := u.TCP.IPv4+u.TCP.IPv6, u.UDP.IPv4+u.UDP.IPv6, u.Echo.IPv4+u.Echo.IPv6
+	open := tcp + udp + echo
+	counted, kinds, host := open+u.Dialing, fmt.Sprintf("%d open and %d dialing", open, u.Dialing), ""
 	if h := u.Host; h != nil {
-		line += fmt.Sprintf(", %d held for host sockets, %d host ports of %d", h.Held, h.Ports, h.Bound)
+		counted += h.Held
+		kinds = fmt.Sprintf("%d open, %d dialing and %d held for host sockets", open, u.Dialing, h.Held)
+		host = fmt.Sprintf(", %d host ports of %d", h.Ports, h.Bound)
 	}
-	return line
+	return fmt.Sprintf("%d of %d allowed: %s, %d TCP of %d allowed: %d open and %d dialing, %d UDP, %d echo, %d in TIME_WAIT outside both%s",
+		counted, u.Limits.Flows, kinds, tcp+u.Dialing, u.Limits.Connections, tcp, u.Dialing, udp, echo, u.TimeWait, host)
 }
 
 // userspaceBuffersLine is the bytes the userspace exit's TCP buffers hold

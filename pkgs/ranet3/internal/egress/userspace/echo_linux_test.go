@@ -761,6 +761,21 @@ func onEchoHost(t *testing.T) func(func()) {
 	return func(f func()) { f() }
 }
 
+// readyLoopback readies this process's namespace for a test whose servers
+// listen on its loopback and whose echo sockets open in it: where the process
+// is root, as the root suite runs it, the namespace is claimed, which brings
+// its loopback up, and this process's group let open echo sockets in it
+func readyLoopback(t *testing.T) {
+	t.Helper()
+	if os.Getuid() != 0 {
+		return
+	}
+	claim(t)
+	if err := allowEchoSockets(); err != nil {
+		t.Fatalf("allow echo sockets here: %v", err)
+	}
+}
+
 // leafEcho is an ICMP datagram socket of the leaf's, opened in its namespace,
 // whose reads wait at most exitWait
 func (r *leafRig) leafEcho(t *testing.T, ipv6 bool) int {

@@ -492,6 +492,10 @@ func onEchoHost(*testing.T) func(func()) {
 	return func(f func()) { f() }
 }
 
+// readyLoopback readies nothing on darwin, where the host's loopback is up
+// and this process's echo sockets open
+func readyLoopback(*testing.T) {}
+
 // stranger is another program's ICMP datagram socket, whose echo the exit
 // sees the replies to
 type stranger struct {
