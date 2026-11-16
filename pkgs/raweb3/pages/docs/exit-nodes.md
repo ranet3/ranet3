@@ -895,9 +895,14 @@ What the exit does:
   ends keeps it until the next sweep.
 - **The bound.** `HostPorts` is the least of half the ports from
   `net.inet.ip.portrange.first` to `net.inet.ip.portrange.last` and half of
-  `Flows`. A new TCP connection is refused while the open TCP connections and
-  the slots held reach it, counted as `host ports`, so a range of 1 port refuses
-  every one. Since the open ones count, where `Flows` is under twice
+  `Flows`. The exit counts as `host ports` each TCP connection from its SYN
+  until its relay ends, its dial included, and each host socket it holds past
+  that, so a connection still closing toward the leaf takes one where its socket
+  is held and none where it is not. At a relay's end the hold is counted before
+  the connection's own count is given back, so for that moment the connection
+  takes two and the count stands one above. A new TCP connection is refused
+  while they reach `HostPorts`, so a range of 1 port refuses every one. Since
+  the dials and the relayed connections count, where `Flows` is under twice
   `Connections` fewer TCP connections are admitted than `Connections`.
   Leaf-first closes fill `HostPorts` at `HostPorts` / 40 a second across
   sources, about 205 a second at its most of 8192.
@@ -1186,23 +1191,34 @@ On macOS the line names the userspace exit and its flows in place of where it
 writes and its rules, with the refused counts, the leaves' packets it dropped
 with no flow to take them where there were any, what it announces and withholds,
 and the families it is ready for, and 2 lines under it give its flows against
-its limits, the closed connections it holds and the [host ports](#host-ports)
-its TCP connections take against `HostPorts`, and its buffers against its
-budget, such as:
+its limits, the connections whose host sockets it holds and the
+[host ports](#host-ports) its TCP connections take against `HostPorts`, and its
+buffers against its budget, such as:
 
 ```
-Egress   userspace, 21 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
-Flows    61 of 10240 allowed: 21 open, 3 dialing and 37 held for host sockets, 17 TCP of 985 allowed: 14 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
+Egress   userspace, 23 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
+Flows    61 of 10240 allowed: 23 open, 3 dialing and 37 held for host sockets, 2 of them also open while closing and counted once, 19 TCP of 985 allowed: 16 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
 Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
 ```
 
-The 210 in TIME_WAIT are the leaf-side endpoints in the exit's own stack, and
-the 37 held the closed connections whose host sockets may pin a port. The 54
-host ports are the 14 TCP connections open, the 3 dialing and the 37 held. The
-61 are the flows held against `Flows`,
-[the exit's bound](design/limits.md#the-userspace-exit): the 21 open, the egress
-line's figure, the 3 dialing and the 37 held. The 17 are the TCP connections
-held against `Connections`: the 14 open and the 3 dialing.
+The 61 are the flows the exit counts against `Flows`,
+[the exit's bound](design/limits.md#the-userspace-exit). The 23 open are the
+egress line's figure, the 3 dialing the TCP connections from their SYN until the
+exit's stack has completed the leaf's handshake or given it up, so through the
+dial toward the server and then the leaf's answer to the stack, and the 37 held
+the connections whose relay has ended and whose host sockets the exit holds
+while they may pin a port. A connection whose leaf's handshake fails after its
+dial stays dialing until the exit has ended it, and where its host socket is
+held it counts as held in that time as well. The 2 of the 37 are still closing
+toward the leaf, so they are among the 23 open as well, each
+[one flow with its held socket](design/limits.md#the-userspace-exit), and the 61
+are the 23, the 3 and the 37 less the 2. The 19 are the TCP connections counted
+against `Connections`: the 16 open and the 3 dialing. The 210 in TIME_WAIT are
+the leaf-side endpoints in the exit's own stack, and the 54 the host ports the
+exit counts against `HostPorts`, as [the bound](#host-ports) states them. The
+61, the TCP counts, the 37, the 2 and the 54 are read at one instant, and the
+5120 and the UDP and echo flows each a moment after it, so in a read during
+which a flow opens, ends or moves, the parts need not add up to the 61.
 
 The userspace exit writes the lines of the first table. Of the second, both
 exits write `egress translating for N prefixes in <where>`, `egress ready`,
@@ -1259,21 +1275,21 @@ the `source` and the `reason` of the refusal that falls due and every flow
 refused since the last record as `refused`, so a source retrying does not flood
 the log.
 
-| Metric                                   | Meaning                                                                                                                        |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                                 |
-| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                     |
-| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                          |
-| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                 |
-| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                |
-| `ranet3_egress_host_held`                | closed TCP connections the macOS userspace exit holds while their host sockets may pin a port, see [host ports](#host-ports)   |
-| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them |
-| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                              |
-| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                     |
-| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them             |
-| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                    |
-| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                        |
-| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |
+| Metric                                   | Meaning                                                                                                                                              |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                                                       |
+| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                                           |
+| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                                                |
+| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                                       |
+| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                                      |
+| `ranet3_egress_host_held`                | TCP connections whose relay has ended and whose host sockets the macOS userspace exit holds while they may pin a port, see [host ports](#host-ports) |
+| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them                       |
+| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                                                    |
+| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                                           |
+| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them                                   |
+| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                                          |
+| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                                              |
+| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                                               |
 
 The userspace exit writes the prefix counts, the refused counts, the pass's 2
 series, readiness and, on macOS, the connections held alone, and none of the
