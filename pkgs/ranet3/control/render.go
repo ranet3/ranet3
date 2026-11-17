@@ -265,7 +265,7 @@ func egressLine(e EgressStatus) string {
 		// to learn that.
 		line += ", withholding " + strings.Join(withheld, " ") + " until its family is ready"
 	}
-	// a node before its first pass reports no family ready and no reason
+	// a node before its first pass or stop reports no family ready and no reason
 	if len(e.Ready) != 0 || e.Unready != "" {
 		line += egressReadyText(e.Ready, e.Unready)
 	}
@@ -275,13 +275,15 @@ func egressLine(e EgressStatus) string {
 	if len(e.Conflicts) > 0 {
 		line += fmt.Sprintf(", sharing the hook with %s", strings.Join(e.Conflicts, "; "))
 	}
+	// the time and the error are the record's, which a stop stores as a pass
+	// does (exit-nodes.md, "Watching it")
 	switch since := time.Since(e.PassAt); {
 	case e.PassAt.IsZero():
-		line += ", no pass yet"
+		line += ", no pass or stop yet"
 	case since < 0:
-		line += ", last pass timestamped ahead of this clock"
+		line += ", last pass or stop timestamped ahead of this clock"
 	default:
-		line += fmt.Sprintf(", last pass %s ago", sinceText(since))
+		line += fmt.Sprintf(", last pass or stop %s ago", sinceText(since))
 	}
 	if e.Err != "" {
 		line += ", " + e.Err

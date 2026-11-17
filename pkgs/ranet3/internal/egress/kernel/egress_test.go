@@ -61,6 +61,15 @@ type fakeBackend struct {
 	failRead bool
 	// failConflicts makes a host whose other chains cannot be listed
 	failConflicts bool
+	// seen, where set, is read as a withdrawal begins and logged ahead of it
+	seen func() string
+}
+
+// see logs what seen reads, outside f.mu, where seen is set
+func (f *fakeBackend) see() {
+	if f.seen != nil {
+		f.record(f.seen())
+	}
 }
 
 func (f *fakeBackend) record(entry string) {
@@ -172,6 +181,7 @@ func (f *fakeBackend) Conflicts() ([]string, error) {
 }
 
 func (f *fakeBackend) Withdraw() error {
+	f.see()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "withdraw")
@@ -971,24 +981,32 @@ func readyLog(t *testing.T, cfg egress.Egress, bus *events.Bus) (*Translator, *f
 }
 
 // A translator beside an egress segment that stops, or is stopped, tells the
-// mesh to stop egressing before it retracts and before the rules go, since a
-// packet written after them leaves untranslated
+// mesh to stop egressing before it retracts, and records the stop's reason for
+// every family before the rules go, so Status says why from the moment a stop
+// begins
 func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
-	for name, stop := range map[string]func(*Translator) error{
-		"shutdown": func(tr *Translator) error {
+	for name, stop := range map[string]struct {
+		run func(*Translator) error
+		why string
+	}{
+		"shutdown": {func(tr *Translator) error {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			return tr.Run(ctx)
-		},
-		"ranet3 down": func(tr *Translator) error { return tr.stop() },
+		}, "the translator is stopping"},
+		"ranet3 down": {func(tr *Translator) error { return tr.stop() }, "the translator is stopped"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bus := events.New()
 			tr, be := readyLog(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, bus)
+			be.seen = func() string {
+				s := tr.Status()
+				return fmt.Sprintf("status %v %v %s", s.Ready4, s.Ready6, s.Unready)
+			}
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			if err := stop(tr); err != nil {
+			if err := stop.run(tr); err != nil {
 				t.Fatal(err)
 			}
 			var order []string
@@ -997,7 +1015,7 @@ func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
 					order = append(order, entry)
 				}
 			}
-			if want := []string{"ready true true sid true", "ready false false sid false", "retract", "withdraw"}; !slices.Equal(order, want) {
+			if want := []string{"ready true true sid true", "ready false false sid false", "retract", "status false false " + stop.why, "withdraw"}; !slices.Equal(order, want) {
 				t.Errorf("the translator went %q, want %q", order, want)
 			}
 			var recorded []string
