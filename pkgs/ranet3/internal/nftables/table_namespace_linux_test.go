@@ -288,8 +288,9 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 
 // A table a socket still open owns, with the persist flag or without it,
 // reads back for every owner as a fault saying what that socket's close will
-// leave of it, read from its flags, since nf_tables refuses another socket's delete of it with EPERM,
-// and at that socket's close it goes, or under persist keeps that flag alone
+// leave of it, read from its flags, since nf_tables refuses another socket's
+// delete of it with EPERM, and at that socket's close it goes, or under
+// persist keeps that flag alone
 func TestNftablesTableALiveSocketOwnsReadsAsThatSocketsOwn(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
