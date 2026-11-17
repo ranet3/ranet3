@@ -58,8 +58,11 @@ func (c *Controller) okToDrop(now, sojourn time.Duration, left, mtu int) bool {
 
 // Drop says whether the item the consumer takes at now, sojourn after it was
 // queued, loses its head packet, where left is the bytes the queue holds
-// behind the item and mtu the largest packet the queue's link sends. It
-// follows the dequeue of RFC 8289 section 5.5, one call for each item taken.
+// behind the item. At or over the target the item counts as below it while
+// left is under mtu, so a consumer passes the largest packet its link sends,
+// or any value no greater than left where left already reaches that packet.
+// Below the target mtu is not read. It follows the dequeue of RFC 8289
+// section 5.5, one call for each item taken.
 func (c *Controller) Drop(now, sojourn time.Duration, left, mtu int) bool {
 	ok := c.okToDrop(now, sojourn, left, mtu)
 	if c.dropping {

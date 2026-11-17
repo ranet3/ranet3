@@ -203,13 +203,16 @@ func (l *link) poll() *stack.PacketBuffer {
 func (l *link) take(q queuedPacket) *stack.PacketBuffer {
 	now := l.now()
 	sojourn := now - q.at
+	left := int(l.held.Load()) - q.pkt.Size()
 	mtu := 0
-	if sojourn >= codel.Target {
-		// below the target the delay drops nothing, so the session is looked up
-		// only where it may
+	if sojourn >= codel.Target && left < linkMTU {
+		// a session's MTU is netstack.DefaultMTU or a budget its path search
+		// set within the configuration's link MTU at the time, a 16 bit field,
+		// so none passes linkMTU, and with linkMTU or more left behind the
+		// packet no MTU keeps it, while below the target the delay drops nothing
 		mtu = l.sessionMTU(q.pkt)
 	}
-	dropped := l.delay.Drop(now, sojourn, int(l.held.Load())-q.pkt.Size(), mtu)
+	dropped := l.delay.Drop(now, sojourn, left, mtu)
 	if observe := l.observe.Load(); observe != nil {
 		(*observe)(q.pkt, sojourn, dropped)
 	}

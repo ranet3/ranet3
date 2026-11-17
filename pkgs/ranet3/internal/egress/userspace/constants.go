@@ -18,7 +18,9 @@ const (
 	// linkMTU is the largest packet the stack's link takes or sends whole,
 	// the largest IP packet, so the stack never cuts what a lane's session
 	// then cuts again: classify cuts an IPv4 packet past its session, and the
-	// exit an IPv6 one it built
+	// exit an IPv6 one it built. No session's MTU passes it either, since the
+	// configuration's link MTU is a 16 bit field too, so the link's delay
+	// looks no session up with linkMTU or more left behind a packet.
 	linkMTU = 1<<16 - 1
 	// linkGSOMaxSize is the largest segmentation offload frame the stack
 	// writes, which the pump cuts into its segments in a lane's batch, as a
