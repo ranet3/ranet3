@@ -34,7 +34,9 @@ func curveRefuses(y *big.Int, sign uint) bool {
 func TestValidatePublicKeyRefusesWhatTheCurveCallsNonCanonicalOrSmallOrder(t *testing.T) {
 	points := smallOrderPoints(t)
 	// ordinates from just below p through every non-canonical one, where the canonical test decides
+	// p - 1, p and p + 1 are drawn by name, since the canonical test branches at p
 	low := new(big.Int).Sub(curveP, big.NewInt(32))
+	boundary := hegel.OneOf(pbt.Spanning(0, 50), hegel.SampledFrom([]int{31, 32, 33}))
 	mask := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(1))
 	pbt.Check(t, func(ht *hegel.T) {
 		var y *big.Int
@@ -42,7 +44,7 @@ func TestValidatePublicKeyRefusesWhatTheCurveCallsNonCanonicalOrSmallOrder(t *te
 		case 0:
 			y = points[hegel.Draw(ht, pbt.Spanning(0, len(points)-1))].y
 		case 1:
-			y = new(big.Int).Add(low, big.NewInt(int64(hegel.Draw(ht, pbt.Spanning(0, 50)))))
+			y = new(big.Int).Add(low, big.NewInt(int64(hegel.Draw(ht, boundary))))
 		default:
 			digest := sha512.Sum512(fmt.Appendf(nil, "ordinate %d", hegel.Draw(ht, pbt.Spanning(0, 1<<30))))
 			y = fromLittleEndian(digest[:32])

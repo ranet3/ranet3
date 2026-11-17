@@ -266,10 +266,13 @@ func TestValidatePublicKeyAcceptsGeneratedKeys(t *testing.T) {
 	}
 }
 
+// the keys one octet short and one octet long are cut from and grown out of a generated key, so only their length refuses them
 func TestValidatePublicKeyRefusesAnotherLength(t *testing.T) {
-	for _, n := range []int{0, ed25519.PublicKeySize - 1, ed25519.PublicKeySize + 1} {
-		if err := ValidatePublicKey(make(ed25519.PublicKey, n)); err == nil {
-			t.Errorf("a key of %d octets was accepted", n)
+	key := honestKey("length", 0).Public().(ed25519.PublicKey)
+	for _, other := range []ed25519.PublicKey{nil, key[:ed25519.PublicKeySize-1], append(bytes.Clone(key), 0)} {
+		want := fmt.Sprintf("length is %d octets", len(other))
+		if err := ValidatePublicKey(other); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("a key of %d octets was refused as %v, want %q", len(other), err, want)
 		}
 	}
 }
@@ -283,7 +286,7 @@ func TestSmallOrderKeyVerifiesSignatureMadeWithoutPrivateKey(t *testing.T) {
 	// [k]O = O for every k, so every message verifies
 	for _, message := range []string{"first message", "second message"} {
 		if !ed25519.Verify(neutralEncoding[:], []byte(message), forged) {
-			t.Errorf("the neutral key refused the forged signature over %q", message)
+			t.Errorf("ed25519.Verify refused the forged signature over %q under the neutral key, so crypto/ed25519 now refuses small order keys itself and this demonstration of why ValidatePublicKey refuses them no longer holds", message)
 		}
 	}
 
@@ -297,9 +300,9 @@ func TestSmallOrderKeyVerifiesSignatureMadeWithoutPrivateKey(t *testing.T) {
 		}
 	}
 	if verified < 0 {
-		t.Fatal("the all-zero key refused the forged signature over 128 messages")
+		t.Fatal("ed25519.Verify refused the forged signature over 128 messages under the all-zero key, so crypto/ed25519 now refuses small order keys itself and this demonstration of why ValidatePublicKey refuses them no longer holds")
 	}
 	if ed25519.Verify(honest, fmt.Appendf(nil, "message %d", verified), forged) {
-		t.Errorf("a generated key accepted the forged signature")
+		t.Errorf("ed25519.Verify accepted the forged signature under a generated key, so crypto/ed25519 accepts a signature no private key made under any key and the demonstration above shows nothing about small order keys")
 	}
 }
