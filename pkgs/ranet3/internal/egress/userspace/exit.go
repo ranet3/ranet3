@@ -306,8 +306,8 @@ func (x *Exit) lastPass() passStats {
 }
 
 // Run starts the lanes, judges each family's readiness at the start, at each
-// sweep and on each wake, and once ctx ends withdraws the families, the
-// announcement and the flows and closes the stack. It is called once.
+// sweep and on each wake, and runs the exit's stop once for each down and once
+// when ctx ends, after which it closes the stack. It is called once.
 func (x *Exit) Run(ctx context.Context) error {
 	slog.Info("egress userspace exit started", "steered", x.rt.Steered, "advertise", len(x.cfg.Advertise),
 		"lanes", len(x.workers), "window", x.rt.Limits.Window, "flows", x.rt.Limits.Flows)

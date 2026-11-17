@@ -39,8 +39,8 @@ var errEchoTooLarge = errors.New("userspace: echo reply too large for its buffer
 // toward, a refused request's among them, and on Linux any the kernel hands
 // the socket. A mapping ends echoIdle after the last request that left on it
 // or reply that came in (REQ-2), one that carried neither at the first pass
-// of expire after its sends ended, and every mapping at once at a withdrawal
-// or the stop. Every socket passes the platform's Prepare.
+// of expire after its sends ended, and every mapping at once at the exit's
+// stop. Every socket passes the platform's Prepare.
 type echoRelay struct {
 	x   *Exit
 	now func() time.Time
@@ -51,7 +51,7 @@ type echoRelay struct {
 	// keeps it, since Linux binds a second socket of the process to an
 	// identifier one holds, which would split the replies between the two.
 	held map[echoOutside]bool
-	// withdrawn refuses every request from a withdrawal until resume
+	// withdrawn refuses every request from withdraw until resume
 	withdrawn bool
 
 	// readers counts the goroutines reading the mappings' sockets, and out the
@@ -197,13 +197,13 @@ func (e *echoRelay) take(raw []byte) {
 }
 
 // send sends request, which raw holds, on m, and moves m's time on to when it
-// left. A request whose mapping a withdrawal or the stop closed meanwhile is
-// refused as withdrawn, and one the exit or the host refused to send is
-// dropped and counted. A refusal with ENETUNREACH or EHOSTUNREACH says no
-// route or no way leads to the destination's host, and is told to the leaf as
-// no route (RFC 4443 section 3.1, RFC 1812 section 4.3.3.1), since on macOS,
-// where the exit runs, the two errnos do not tell those causes apart. Any
-// other refusal is answered nothing.
+// left. A request whose mapping the exit's stop closed meanwhile is refused as
+// withdrawn, and one the exit or the host refused to send is dropped and
+// counted. A refusal with ENETUNREACH or EHOSTUNREACH says no route or no way
+// leads to the destination's host, and is told to the leaf as no route
+// (RFC 4443 section 3.1, RFC 1812 section 4.3.3.1), since on macOS, where the
+// exit runs, the two errnos do not tell those causes apart. Any other refusal
+// is answered nothing.
 func (e *echoRelay) send(raw []byte, request echoQuery, m *echoMapping) {
 	defer m.sending.Add(-1)
 	err := m.socket.send(request.message, request.to)

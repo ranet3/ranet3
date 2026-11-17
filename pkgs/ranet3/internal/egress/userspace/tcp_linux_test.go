@@ -124,9 +124,9 @@ func TestLeafConnectionIsRelayedBothWaysThroughPrepare(t *testing.T) {
 	}
 }
 
-// Withdrawing the exit resets each connection it relays toward the leaf and
-// toward the server, and once the exit is enabled again a new connection is
-// dialed and relayed
+// The exit's stop resets each connection it relays toward the leaf and toward
+// the server, and once the exit is enabled again a new connection is dialed
+// and relayed
 func TestWithdrawalResetsEachRelayedConnection(t *testing.T) {
 	r := newLeafRig(t, func(rt Runtime) (*Exit, error) { return New(exitConfig(), rt) })
 	ended := make(chan error, 2)
@@ -153,15 +153,15 @@ func TestWithdrawalResetsEachRelayedConnection(t *testing.T) {
 	}
 	r.exit.SetEnabled(false)
 	if _, err := io.ReadAll(conn); !errors.Is(err, syscall.ECONNRESET) {
-		t.Errorf("the leaf read %v once the exit withdrew, want a reset", err)
+		t.Errorf("the leaf read %v once the exit stopped, want a reset", err)
 	}
 	select {
 	case err := <-ended:
 		if !errors.Is(err, syscall.ECONNRESET) {
-			t.Errorf("the server read %v once the exit withdrew, want a reset", err)
+			t.Errorf("the server read %v once the exit stopped, want a reset", err)
 		}
 	case <-time.After(exitWait):
-		t.Fatal("the server's connection outlived the withdrawal")
+		t.Fatal("the server's connection outlived the exit's stop")
 	}
 	waitFor(t, "the connection's counts given back", func() bool { return r.exit.tcp.held() == [3]int{} })
 	r.exit.SetEnabled(true)

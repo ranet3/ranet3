@@ -802,8 +802,8 @@ func TestWorstMixOfFlowsKeepsTheNodesDescriptors(t *testing.T) {
 	}
 }
 
-// Withdrawing the exit ends every mapping and gives back its flows, and once
-// the exit is enabled again a datagram opens a mapping anew
+// The exit's stop ends every mapping and gives back its flows, and once the
+// exit is enabled again a datagram opens a mapping anew
 func TestWithdrawalEndsEveryMapping(t *testing.T) {
 	r := newLeafRig(t, func(rt Runtime) (*Exit, error) { return New(exitConfig(), rt) })
 	server := r.server(t, rigServer4.Addr())
@@ -822,7 +822,7 @@ func TestWithdrawalEndsEveryMapping(t *testing.T) {
 	open := r.exit.flows.open
 	r.exit.flows.mu.Unlock()
 	if open != 0 {
-		t.Errorf("%d flows held once the exit withdrew", open)
+		t.Errorf("%d flows held once the exit stopped", open)
 	}
 	r.exit.SetEnabled(true)
 	waitFor(t, "the exit taking again", r.exit.taking.Load)

@@ -864,11 +864,12 @@ func sourceHeld(f *egress.Flows, source netip.Addr) (flows, held int) {
 // held, counted among the share's refusals, one holding fewer as share. A
 // server-first close read closed and a server's reset give the slot back at
 // the relay's end, and one read in LAST_ACK keeps it until a sweep reads it
-// closed. A withdraw's reset leaves a socket it reads in TIME_WAIT to the end
-// step, which holds it twice the MSL and its slot the margin past the abort,
-// and aborts one in any state before, CLOSING and LAST_ACK among them, keeping
-// none. On the exit's clock the held slots stay to twice the MSL and the
-// margin, and come back past them. Each refusal is recorded with its reason.
+// closed. The reset that withdraw sends leaves a socket it reads in TIME_WAIT
+// to the end step, which holds it twice the MSL and its slot the margin past
+// the abort, and aborts one in any state before, CLOSING and LAST_ACK among
+// them, keeping none. On the exit's clock the held slots stay to twice the MSL
+// and the margin, and come back past them. Each refusal is recorded with its
+// reason.
 func TestHostPortsCountOpenAndHeldConnectionsAcrossFamilies(t *testing.T) {
 	loopback := netip.MustParseAddr("127.0.0.1")
 	leafFirst := tcpServer(t, loopback, readsToTheEnd)
@@ -1158,7 +1159,7 @@ func TestFailedLeafEndpointKeepsTheSlotOfItsHalfClosedSocket(t *testing.T) {
 }
 
 // TestWithdrawLeavesTheSocketTheEndStepKeeps leaves the last leaf ACK pending,
-// then blocks the host state read after the end step takes ownership. Withdrawal
+// then blocks the host state read after the end step takes ownership. withdraw
 // finds the still-closing flow but must leave that host socket to the end step.
 func TestWithdrawLeavesTheSocketTheEndStepKeeps(t *testing.T) {
 	fake := newFakeHostSockets(hostTimeWait)

@@ -49,8 +49,8 @@ func TestSYNAgainWhileDialingIsAdmittedOnce(t *testing.T) {
 	}
 }
 
-// A dial that completes after the exit was withdrawn resets the leaf and the
-// server rather than relaying a connection the withdrawal did not list
+// A dial that completes after the relay's withdraw resets the leaf and the
+// server rather than relaying a connection withdraw did not list
 func TestDialDoneAfterWithdrawalResetsBothEnds(t *testing.T) {
 	h := newRelayHarness(t, nil)
 	allowLoopback(t, h.x.stack)

@@ -88,10 +88,10 @@ func bufferClass(size int) int {
 // queues it to the worker its addresses pick, dropping and counting it as
 // lane full where the lanes already hold Limits.Lanes bytes or the worker's
 // queue holds workerQueuePackets, so it never waits on a lane. Each frame
-// handed over while the exit takes nothing, before Run, withdrawn or
-// stopped, is dropped and counted as not taking, all of a call's frames in
-// one update. It reads no frame after it returns, so it retains nothing of
-// hold.
+// handed over while the exit takes nothing, before Run and from each of the
+// exit's stops until it takes again, is dropped and counted as not taking,
+// all of a call's frames in one update. It reads no frame after it returns, so
+// it retains nothing of hold.
 func (x *Exit) Egress(frames [][]byte, _ netstack.Hold) {
 	if !x.taking.Load() {
 		x.counts.dropFrames(reasonNotTaking, len(frames))

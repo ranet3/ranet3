@@ -696,28 +696,28 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
 	h.run(t)
 	h.exit.SetEnabled(false)
-	waitFor(t, "both families withdrawn", func() bool {
+	waitFor(t, "both families stopped", func() bool {
 		calls := h.readyCalls()
 		return calls[len(calls)-1] == readyCall{}
 	})
 	if got := h.exit.Announce(); len(got) != 0 {
-		t.Errorf("announced %v while withdrawn", got)
+		t.Errorf("announced %v while stopped", got)
 	}
 	segment := tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)
 	full, untaken := h.exit.counts.laneDropped.Load(), countOf(h.exit, false, reasonNotTaking)
 	h.exit.Egress(frames(segment, segment), nil)
 	time.Sleep(stackSettle)
 	if laid := mesh.laidPackets(); len(laid) != 0 {
-		t.Errorf("a withdrawn exit carried a segment, laying %d packets", len(laid))
+		t.Errorf("a stopped exit carried a segment, laying %d packets", len(laid))
 	}
 	if got := countOf(h.exit, false, reasonNotTaking); got != untaken+2 {
-		t.Errorf("counted %d of the two packets taken while withdrawn as not taking", got-untaken)
+		t.Errorf("counted %d of the two packets taken while stopped as not taking", got-untaken)
 	}
 	if got := countOf(h.exit, false, reasonWithdrawn); got != 0 {
-		t.Errorf("counted %d packets taken while withdrawn under the relays' withdrawn", got)
+		t.Errorf("counted %d packets taken while stopped under the relays' withdrawn", got)
 	}
 	if got := h.exit.counts.laneDropped.Load(); got != full {
-		t.Errorf("counted %d packets taken while withdrawn as lane full", got-full)
+		t.Errorf("counted %d packets taken while stopped as lane full", got-full)
 	}
 	h.exit.SetEnabled(true)
 	waitFor(t, "both families ready again", func() bool {
