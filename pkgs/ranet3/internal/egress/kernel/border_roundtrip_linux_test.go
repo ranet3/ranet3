@@ -592,16 +592,20 @@ func TestBorderRoundTripLeavesAnotherWritersChainInTheTable(t *testing.T) {
 	}
 }
 
-// liveOwner ends the readback's fault for table inet ranet3 where a socket
-// still open owns it
-const liveOwner = "another program's open socket owns it, so nft delete table inet " + nftables.Table + " works only once that program closes the socket or stops"
+// liveOwner and livePersistentOwner end the readback's fault for table inet
+// ranet3 where a socket still open owns it, without the persist flag and with
+// it
+const (
+	liveOwner           = "another program's open socket owns it until that program closes the socket or stops, which deletes the table"
+	livePersistentOwner = "another program's open socket owns it until that program closes the socket or stops, after which its persist flag keeps it until nft delete table inet " + nftables.Table
+)
 
 // A start over table inet ranet3 another socket flagged keeps the read's
 // diagnosis beside the rewrite's refusal in the error its pass returns and in
 // its readiness, and deletes nothing of the table: one that outlived its owner
 // under the persist flag refuses the rewrite with EOPNOTSUPP and names the
 // delete that clears it, and one a socket still open owns refuses it with
-// EPERM and says the delete waits for that socket
+// EPERM and says what that socket's close leaves of it
 func TestBorderRoundTripKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -616,7 +620,7 @@ func TestBorderRoundTripKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *
 	}{
 		{"an orphaned persistent table", owner | persist, false, unix.EOPNOTSUPP, orphanedFix},
 		{"a table a live socket owns", owner, true, unix.EPERM, liveOwner},
-		{"a persistent table a live socket owns", owner | persist, true, unix.EPERM, liveOwner},
+		{"a persistent table a live socket owns", owner | persist, true, unix.EPERM, livePersistentOwner},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			netnstest.EnterEmpty(t)

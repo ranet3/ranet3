@@ -217,12 +217,13 @@ func TestNftablesWithdrawalOfASetAnotherWriterUsesFails(t *testing.T) {
 // tableOwner and tablePersist are nf_tables' owner and persist flags of a table
 const tableOwner, tablePersist = 0x2, 0x4
 
-// orphanedFix and liveOwner end the fault a read notes for a table that
-// outlived its owner under the persist flag, and for one a socket still open
-// owns
+// orphanedFix, liveOwner and livePersistentOwner end the fault a read notes
+// for a table that outlived its owner under the persist flag, for one a socket
+// still open owns, and for one it owns under the persist flag
 const (
-	orphanedFix = "only nft delete table inet " + Table + " clears another"
-	liveOwner   = "another program's open socket owns it, so nft delete table inet " + Table + " works only once that program closes the socket or stops"
+	orphanedFix         = "only nft delete table inet " + Table + " clears another"
+	liveOwner           = "another program's open socket owns it until that program closes the socket or stops, which deletes the table"
+	livePersistentOwner = "another program's open socket owns it until that program closes the socket or stops, after which its persist flag keeps it until nft delete table inet " + Table
 )
 
 // flaggedTable makes the table with flags through a socket of its own, which
@@ -286,8 +287,8 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 }
 
 // A table a socket still open owns, with the persist flag or without it,
-// reads back for every owner as a fault saying the delete waits for that
-// socket, since nf_tables refuses another socket's delete of it with EPERM,
+// reads back for every owner as a fault saying what that socket's close will
+// leave of it, read from its flags, since nf_tables refuses another socket's delete of it with EPERM,
 // and at that socket's close it goes, or under persist keeps that flag alone
 func TestNftablesTableALiveSocketOwnsReadsAsThatSocketsOwn(t *testing.T) {
 	if os.Getuid() != 0 {
@@ -296,10 +297,11 @@ func TestNftablesTableALiveSocketOwnsReadsAsThatSocketsOwn(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		flags uint32
+		fault string
 		after map[uint8]uint32
 	}{
-		{"an owned table", tableOwner, nil},
-		{"an owned persistent table", tableOwner | tablePersist, map[uint8]uint32{unix.NFPROTO_INET: tablePersist}},
+		{"an owned table", tableOwner, liveOwner, nil},
+		{"an owned persistent table", tableOwner | tablePersist, livePersistentOwner, map[uint8]uint32{unix.NFPROTO_INET: tablePersist}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			netnstest.EnterEmptyLoopbackDown(t)
@@ -318,7 +320,7 @@ func TestNftablesTableALiveSocketOwnsReadsAsThatSocketsOwn(t *testing.T) {
 			for i, o := range owners {
 				chain := Chain{Table: Table, Name: o.chains[0], Type: "filter", Hook: unix.NF_INET_FORWARD}
 				read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
-				if err != nil || !strings.Contains(read.Fault, liveOwner) {
+				if err != nil || !strings.Contains(read.Fault, c.fault) {
 					t.Errorf("the %s reads the owned table back as %+v (%v), want a fault naming the socket that owns it", owners[i].name, read, err)
 				}
 			}

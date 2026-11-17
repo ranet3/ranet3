@@ -868,9 +868,12 @@ func TestFallbackDeleteRefusedWithEINVALIsTriedAgainOutsideATable(t *testing.T) 
 	}
 }
 
-// liveOwner ends the read's fault for table inet ranet3 where a socket still
-// open owns it
-const liveOwner = "another program's open socket owns it, so nft delete table inet " + nftables.Table + " works only once that program closes the socket or stops"
+// liveOwner and livePersistentOwner end the read's fault for table inet ranet3
+// where a socket still open owns it, without the persist flag and with it
+const (
+	liveOwner           = "another program's open socket owns it until that program closes the socket or stops, which deletes the table"
+	livePersistentOwner = "another program's open socket owns it until that program closes the socket or stops, after which its persist flag keeps it until nft delete table inet " + nftables.Table
+)
 
 // flaggedTable makes table inet ranet3 with flags through a socket of its own,
 // holding the switch's chains and sets of held where it is not nil, and closes
@@ -906,7 +909,7 @@ func flaggedTable(t *testing.T, flags uint32, live bool, held *fallbackSets) {
 // fault, and deletes nothing of the table: one that outlived its owner under
 // the persist flag, empty or holding the switch, refuses the rewrite with
 // EOPNOTSUPP and names the delete that clears it, and one a socket still open
-// owns refuses it with EPERM and says the delete waits for that socket
+// owns refuses it with EPERM and says what that socket's close leaves of it
 func TestNetlinkFallbackKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *testing.T) {
 	const owner, persist = 0x2, 0x4
 	for _, c := range []struct {
@@ -920,7 +923,7 @@ func TestNetlinkFallbackKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *
 		{"an empty orphaned persistent table", owner | persist, false, false, unix.EOPNOTSUPP, orphanedFix},
 		{"an orphaned persistent table holding the switch", owner | persist, false, true, unix.EOPNOTSUPP, orphanedFix},
 		{"a table a live socket owns", owner, true, false, unix.EPERM, liveOwner},
-		{"a persistent table a live socket owns", owner | persist, true, false, unix.EPERM, liveOwner},
+		{"a persistent table a live socket owns", owner | persist, true, false, unix.EPERM, livePersistentOwner},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			const device, uplink = "ranetsw0", "ranetup0"
