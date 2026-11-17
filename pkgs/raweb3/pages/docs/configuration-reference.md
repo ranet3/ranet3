@@ -776,7 +776,11 @@ needs.
   [readiness](exit-nodes.md#readiness) describes for each platform. A `sweep` of
   `0` takes the default. Any other value under 1 second is refused. On Linux the
   kernel exit's pass also reinstalls removed chains and reads the forwarding
-  sysctls again, and `sweep` caps its delay between retries of a failed pass.
+  sysctls again, and `sweep` caps its delay between retries of a failed pass. A
+  kernel exit that is down runs no pass: at least every `sweep` it reads
+  [the stopped rules](exit-nodes.md#reloads-down-and-up) back and writes them
+  again where they no longer read back as written, and `sweep` caps its delay
+  between retries of a stop that failed.
 - With `overlay` written, an `advertise` entry longer than 0 bits that overlaps
   an `overlay` entry is refused: the hosts behind this node would arrive on a
   link outside the mesh with a mesh source, and the antispoof filter would drop
