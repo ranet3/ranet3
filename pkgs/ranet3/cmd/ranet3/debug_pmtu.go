@@ -20,10 +20,12 @@ func (r *reader) pmtuCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "pmtu [peer]",
 		Short: "Show each session's path MTU",
-		Long: `The output covers link.mtu, the tun's MTU and the answers and MSS clamps
-for packets past a session's budget, then each session's search of the path
-to its endpoint: its state, its budget, the route's MTU, its probes and its
-last budget change. Name a peer to show its sessions alone.`,
+		Long: `The output covers link.mtu, the tun's MTU, the packet too big and
+fragmentation needed answers the node sent to packets too large to go on and
+its lowerings of a SYN or SYN-ACK's MSS to what a session carries, then each
+session's search of the path to its endpoint: its state, its budget, the
+route's MTU, its probes and its last budget change. Name a peer to show its
+sessions alone.`,
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: r.completeSessions,
 		RunE: func(cmd *cobra.Command, args []string) error {

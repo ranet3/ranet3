@@ -84,6 +84,28 @@ func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 	}
 }
 
+// --proto 0 asks the daemon for every protocol, as a trace naming none does
+func TestDebugTraceProtocolZeroAsksForEveryProtocol(t *testing.T) {
+	socket, asked := serveTrace(t, false)
+	if out, err := execute(t, "debug", "trace", "--for", waitLong.String(), "--control", socket, "--proto", "0"); err != nil {
+		t.Fatalf("debug trace --proto 0 printed %q and ended with %v", out, err)
+	}
+	if got := <-asked; got.Encode() != "rate=1000" {
+		t.Errorf("--proto 0 asked the daemon for %v, want every protocol", got)
+	}
+}
+
+// the usage of --proto says what 0 selects
+func TestDebugTraceProtocolUsageNamesZero(t *testing.T) {
+	usage, err := execute(t, "debug", "trace", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(usage, "0 selecting every protocol") {
+		t.Errorf("the usage reads %q, want it to name %q", usage, "0 selecting every protocol")
+	}
+}
+
 // --pcap writes the records to its file, made at mode 0600, and the stream's notes to stderr
 // under - the same bytes to stdout, and to a file of the caller's of mode 0600 the same bytes and nothing after
 func TestDebugTracePcapWritesItsFileOrStdout(t *testing.T) {

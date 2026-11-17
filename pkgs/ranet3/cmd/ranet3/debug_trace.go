@@ -126,7 +126,7 @@ of the caller's, and the stream's notes go to stderr.`,
 	f := cmd.Flags()
 	f.StringArrayVar(&sources, "src", nil, "Only show packets from this prefix or address")
 	f.StringArrayVar(&destinations, "dst", nil, "Only show packets to this prefix or address")
-	f.StringVar(&protocol, "proto", "", "Only show packets of this protocol, by name or number")
+	f.StringVar(&protocol, "proto", "", "Only show packets of this protocol, by name or number, 0 selecting every protocol")
 	f.StringVar(&query.Decision, "decision", "", "Only show packets the node decided this way")
 	f.StringVar(&query.Peer, "peer", "", "Only show packets from or to this peer")
 	f.IntVar(&query.Rate, "rate", control.TraceRateDefault, "Most records a second")
