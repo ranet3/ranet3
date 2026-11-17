@@ -168,7 +168,7 @@ func renderReassembly(w io.Writer, neighbors []babel.NeighborStat) {
 // renderPathMTU writes the node's packet too big answers, the ICMP errors it withheld, its lowerings of a SYN or SYN-ACK's MSS and how the
 // sessions' probes of their path MTU ended
 func (c *Client) renderPathMTU(w io.Writer) {
-	fmt.Fprint(w, "# HELP ranet3_packet_too_big_sent_total Answers to packets past the budget of the session they were for: packet too big over IPv6 and fragmentation needed over IPv4 with DF.\n")
+	fmt.Fprint(w, "# HELP ranet3_packet_too_big_sent_total Packet too big over IPv6 and fragmentation needed over IPv4 with DF this node sent: to packets past the budget of the session they were for, and the userspace exit's own to a leaf's datagram its host refused to send as larger than the path MTU it holds.\n")
 	fmt.Fprint(w, "# TYPE ranet3_packet_too_big_sent_total counter\n")
 	fmt.Fprintf(w, "ranet3_packet_too_big_sent_total %d\n", c.Mesh.TooBigAnswered())
 	source, node := c.Mesh.ICMPWithheld()
@@ -279,7 +279,7 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv4\"} %d\n", status.Refused.IPv4)
 	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv6\"} %d\n", status.Refused.IPv6)
 	if u := status.Userspace; u != nil && u.Host != nil {
-		fmt.Fprint(w, "# HELP ranet3_egress_host_held TCP connections whose relay has ended and whose host sockets the userspace exit holds while they may pin their ports, each in its source's share and against the host ports.\n")
+		fmt.Fprint(w, "# HELP ranet3_egress_host_held Held slots of the userspace exit, one for each TCP connection whose relay has ended and whose host socket did not read closed then, each counted in its source's share and against the host ports until the exit gives it back.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_host_held gauge\n")
 		fmt.Fprintf(w, "ranet3_egress_host_held %d\n", u.Host.Held)
 	}
@@ -343,7 +343,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the exit to leave the mesh.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
-	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay other than an IPv4-mapped IPv6 source at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet from a source other than an IPv4-mapped IPv6 one to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
 	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and dropped because their family was not ready.\n")

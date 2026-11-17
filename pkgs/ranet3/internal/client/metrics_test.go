@@ -189,6 +189,7 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 		"ranet3_segments_answered_total 0",
 		"# TYPE ranet3_segments_egressed_total counter",
 		"ranet3_segments_egressed_total 0",
+		"# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay other than an IPv4-mapped IPv6 source at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet from a source other than an IPv4-mapped IPv6 one to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n",
 		"ranet3_segments_refused_total 0",
 		"ranet3_segments_not_ready_total 0",
 		"ranet3_segments_ecn_unused_total 0",
@@ -414,7 +415,10 @@ func TestMetricsOfTheUserspaceExitBoundingHostPortsWriteTheConnectionsItHolds(t 
 		}})
 		var out strings.Builder
 		c.renderEgress(&out)
-		for _, want := range []string{"# TYPE ranet3_egress_host_held gauge", fmt.Sprintf("ranet3_egress_host_held %d\n", test.held)} {
+		for _, want := range []string{
+			"# HELP ranet3_egress_host_held Held slots of the userspace exit, one for each TCP connection whose relay has ended and whose host socket did not read closed then, each counted in its source's share and against the host ports until the exit gives it back.\n",
+			"# TYPE ranet3_egress_host_held gauge", fmt.Sprintf("ranet3_egress_host_held %d\n", test.held),
+		} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("under a bound of %d the scrape does not carry %q:\n%s", test.bound, want, out.String())
 			}

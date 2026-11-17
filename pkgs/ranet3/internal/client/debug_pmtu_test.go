@@ -223,7 +223,8 @@ func TestMetricsCountProbesAnswersAndClamps(t *testing.T) {
 	var out strings.Builder
 	c.renderPathMTU(&out)
 	for _, want := range []string{
-		"# TYPE ranet3_packet_too_big_sent_total counter\nranet3_packet_too_big_sent_total 0\n",
+		"# HELP ranet3_packet_too_big_sent_total Packet too big over IPv6 and fragmentation needed over IPv4 with DF this node sent: to packets past the budget of the session they were for, and the userspace exit's own to a leaf's datagram its host refused to send as larger than the path MTU it holds.\n" +
+			"# TYPE ranet3_packet_too_big_sent_total counter\nranet3_packet_too_big_sent_total 0\n",
 		"# TYPE ranet3_icmp_withheld_total counter\nranet3_icmp_withheld_total{limit=\"source\"} 0\nranet3_icmp_withheld_total{limit=\"node\"} 0\n",
 		"# TYPE ranet3_mss_clamped_total counter\nranet3_mss_clamped_total 0\n",
 		"# TYPE ranet3_pmtu_probes_total counter\n",
