@@ -374,13 +374,15 @@ func (p *pump) run(lane Lane, stop <-chan struct{}) {
 			p.link.release(p.held)
 		}
 	}()
+	// each evaluation of p.fill allocates its method value
+	fill := p.fill
 	for {
 		if p.held == nil && p.cut.next == p.cut.n {
 			if p.held = p.link.next(stop, lane.Done()); p.held == nil {
 				return
 			}
 		}
-		if !lane.Fill(p.fill) {
+		if !lane.Fill(fill) {
 			return
 		}
 	}
