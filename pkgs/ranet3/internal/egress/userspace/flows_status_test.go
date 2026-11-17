@@ -150,11 +150,11 @@ func TestStatusReadsTheFlowsUnderTheRelaysLock(t *testing.T) {
 	// status gives it up, each lock starved first so that it passes to its
 	// waiters in turn. This rests on the starvation mode of sync.Mutex, which
 	// its source states and its API does not promise: a waiter that wakes to
-	// find the lock held after waiting more than 1 ms puts the lock in that
-	// mode and queues again at the head, Unlock then hands the lock to the
-	// head waiter, a goroutine that calls Lock queues at the tail, and the
-	// mode ends once a waiter takes the lock that waited less than 1 ms or is
-	// the last in the queue.
+	// find the lock held after waiting more than mutexStarving puts the lock
+	// in that mode and queues again at the head, Unlock then hands the lock to
+	// the head waiter, a goroutine that calls Lock queues at the tail, and the
+	// mode ends once a waiter takes the lock that waited less than
+	// mutexStarving or is the last in the queue.
 	read = readAtTheRelaysLock()
 	free := make(chan struct{})
 	hold := func(mu *sync.Mutex, waiters int) chan struct{} {
@@ -168,12 +168,12 @@ func TestStatusReadsTheFlowsUnderTheRelaysLock(t *testing.T) {
 		waitFor(t, "a holder queued behind the status", func() bool { return len(lockWaiters(t.Name(), mutex)) == waiters })
 		return holding
 	}
-	// starve wakes the status at the head of mu's queue past 1 ms of waiting,
-	// takes mu back before the status runs, and waits until the status has
-	// run, found mu held and queued again at the place at, which leaves mu
-	// starving whichever goroutine the scheduler ran first
+	// starve wakes the status at the head of mu's queue past mutexStarving of
+	// waiting, takes mu back before the status runs, and waits until the
+	// status has run, found mu held and queued again at the place at, which
+	// leaves mu starving whichever goroutine the scheduler ran first
 	starve := func(mu *sync.Mutex, at string) {
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(starveWait)
 		mu.Unlock()
 		mu.Lock()
 		waitFor(t, "the status woken to the lock held and queued again", func() bool {

@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -30,6 +32,12 @@ const (
 	exitWait = 5 * time.Second
 	// fakeReads is the reads of a fake lane's batch, a tun's batch on linux
 	fakeReads = 64
+	// mutexStarving is how long a waiter of sync.Mutex waits before a wake
+	// to the lock held puts the lock in starvation mode, starvationThresholdNs
+	// in the source of internal/sync, which sync.Mutex is built on, in Go 1.27
+	mutexStarving = time.Millisecond
+	// starveWait is a wait past mutexStarving
+	starveWait = 2 * mutexStarving
 )
 
 // fakeMesh is the lanes a test hands the exit, recording what each lane laid
@@ -769,8 +777,8 @@ func TestEgressCountsTheFramesOfACallItTakesNothingOfAtOnce(t *testing.T) {
 		read <- h.exit.counts.dropped[reasonNotTaking]
 	}()
 	until("the reader waiting behind the call", 2)
-	// past sync.Mutex's 1 ms, a waiter that wakes to the lock held starves it
-	time.Sleep(2 * time.Millisecond)
+	// past mutexStarving, a waiter that wakes to the lock held starves it
+	time.Sleep(starveWait)
 	mu.Unlock()
 	// the one processor runs this goroutine on, ahead of the call it woke,
 	// which then finds the lock held, puts it in starvation mode and waits
@@ -789,10 +797,11 @@ func TestEgressCountsTheFramesOfACallItTakesNothingOfAtOnce(t *testing.T) {
 	}
 }
 
-// lockWaiters is, for each goroutine whose stack holds a frame whose name
-// holds name and whose wait reason is reason, such as sync.Mutex.Lock, the
-// place in that frame it waits at, as a dump of every goroutine's stack gives
-// them
+// lockWaiters is stackWaiters over a dump of every goroutine's stack. It
+// panics where stackWaiters refuses the dump, so a test waiting on it fails at
+// once with the form the dump left, where it would wait to its timeout. A
+// form stackWaiters neither reads nor refuses still leaves the wait to its
+// timeout.
 func lockWaiters(name, reason string) []string {
 	buf := make([]byte, 1<<16)
 	n := runtime.Stack(buf, true)
@@ -800,18 +809,94 @@ func lockWaiters(name, reason string) []string {
 		buf = make([]byte, 2*len(buf))
 		n = runtime.Stack(buf, true)
 	}
+	places, err := stackWaiters(buf[:n], name, reason)
+	if err != nil {
+		panic(err)
+	}
+	return places
+}
+
+var (
+	// stackHeader is the line runtime.Stack heads each goroutine with
+	stackHeader = regexp.MustCompile(`^goroutine \d+ .*\[[^]]+\]:$`)
+	// stackHeaderAt is a line that heads a goroutine, met inside another's stack
+	stackHeaderAt = regexp.MustCompile(`(?m)^goroutine \d+ `)
+	// stackPlace is the file and line runtime.Stack places each frame at
+	stackPlace = regexp.MustCompile(`^\S+:\d+$`)
+)
+
+// stackWaiters is, for each goroutine of dump whose stack holds a frame
+// whose name holds name and whose wait reason is reason, such as
+// sync.Mutex.Lock, the place in that frame it waits at. dump is in the form
+// runtime.Stack writes: goroutines apart by a blank line, each headed by
+// stackHeader with its wait reason in brackets, closed or followed by a comma
+// and a space, each frame its function on a line and then a tab and its place
+// as stackPlace reads it. A goroutine headed otherwise, a header met inside a
+// stack, a reason followed otherwise, or a frame of name placed otherwise, is
+// an error naming the form.
+func stackWaiters(dump []byte, name, reason string) ([]string, error) {
 	var places []string
-	for _, g := range bytes.Split(buf[:n], []byte("\n\n")) {
+	for _, g := range bytes.Split(dump, []byte("\n\n")) {
 		header, stack, _ := bytes.Cut(g, []byte("\n"))
+		if !stackHeader.Match(header) {
+			return nil, fmt.Errorf("a goroutine of the stack dump is headed %q, where runtime.Stack's form is goroutine <id> [<wait reason>]:", header)
+		}
+		if at := stackHeaderAt.Find(stack); at != nil {
+			return nil, fmt.Errorf("a goroutine of the stack dump is headed by %q inside the stack of %q, where runtime.Stack's form is goroutines apart by a blank line", at, header)
+		}
+		_, after, waits := bytes.Cut(header, []byte("["+reason))
+		if waits && !bytes.HasPrefix(after, []byte("]")) && !bytes.HasPrefix(after, []byte(", ")) {
+			return nil, fmt.Errorf("the wait reason %s in the stack dump's header %q is followed by %q, where runtime.Stack's form is [<wait reason>] or [<wait reason>, <time>]", reason, header, after)
+		}
 		_, frame, held := bytes.Cut(stack, []byte(name))
-		if !held || !bytes.Contains(header, []byte("["+reason+"]")) && !bytes.Contains(header, []byte("["+reason+",")) {
+		if !held || !waits {
 			continue
 		}
 		_, place, _ := bytes.Cut(frame, []byte("\n\t"))
 		at, _, _ := bytes.Cut(place, []byte(" "))
-		places = append(places, string(bytes.TrimSpace(at)))
+		at = bytes.TrimSpace(at)
+		if !stackPlace.Match(at) {
+			return nil, fmt.Errorf("a frame of %s in the stack dump is placed at %q, where runtime.Stack's form is a tab and <file>:<line>", name, at)
+		}
+		places = append(places, string(at))
 	}
-	return places
+	return places, nil
+}
+
+// A dump in runtime.Stack's form gives the place each waiter of a name waits
+// at, and a goroutine headed, goroutines apart, a wait reason followed or a
+// frame placed in another form is refused with the form that was wanted
+func TestStackWaitersReadsTheFormOfRuntimeStack(t *testing.T) {
+	const name, reason = "(*Exit).flowsStatus(", "sync.Mutex.Lock"
+	dump := strings.Join([]string{
+		"goroutine 7 [running]:",
+		"main.run()",
+		"\t/src/main.go:10 +0x1d",
+		"",
+		"goroutine 9 [sync.Mutex.Lock, 2 minutes]:",
+		"internal/sync.(*Mutex).lockSlow(0xc000010000)",
+		"\t/go/src/internal/sync/mutex.go:149 +0x15d",
+		"ranet3.com/pkgs/ranet3/internal/egress/userspace.(*Exit).flowsStatus(0xc000020000)",
+		"\t/src/status.go:88 +0x2c",
+		"",
+		"goroutine 11 [chan receive]:",
+		"ranet3.com/pkgs/ranet3/internal/egress/userspace.(*Exit).flowsStatus(0xc000030000)",
+		"\t/src/status.go:90 +0x40",
+		"",
+	}, "\n")
+	if got, err := stackWaiters([]byte(dump), name, reason); err != nil || !slices.Equal(got, []string{"/src/status.go:88"}) {
+		t.Errorf("a dump in runtime.Stack's form gives %q and %v, want the one waiter at /src/status.go:88", got, err)
+	}
+	for what, unread := range map[string]string{
+		"a goroutine headed otherwise":     strings.Replace(dump, "goroutine 11 [chan receive]:", "thread 11 waits on a channel", 1),
+		"goroutines apart by one newline":  strings.Replace(dump, "\n\ngoroutine 9 ", "\ngoroutine 9 ", 1),
+		"a wait reason followed otherwise": strings.Replace(dump, "[sync.Mutex.Lock, 2 minutes]", "[sync.Mutex.Lock 2 minutes]", 1),
+		"a frame placed otherwise":         strings.Replace(dump, "\t/src/status.go:88 +0x2c", "\tat /src/status.go line 88", 1),
+	} {
+		if _, err := stackWaiters([]byte(unread), name, reason); err == nil || !strings.Contains(err.Error(), "runtime.Stack's form") {
+			t.Errorf("%s is read with %v, want an error naming runtime.Stack's form", what, err)
+		}
+	}
 }
 
 // A stop and `ranet3 down` log each family not ready and the advertisement's
