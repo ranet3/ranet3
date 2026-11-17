@@ -316,13 +316,20 @@ func TestDialerSaysAChangeOfOutcomeAtInfoAndARepeatAtDebug(t *testing.T) {
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "alpha's third dial to fail", func() bool { return len(recorded(alpha.events, "dial.failed")) >= 3 })
 	bravo.client.storeIndex(trusting)
-	waitFor(t, convergeBudget, "alpha's session to come up", func() bool { return len(alpha.client.sessions.snapshot()) == 1 })
+	// bravo asks the trust in force again as it adopts the session it answered, which can come after alpha holds it
+	waitFor(t, convergeBudget, "the session at both ends", func() bool {
+		return len(alpha.client.sessions.snapshot()) == 1 && len(bravo.client.sessions.snapshot()) == 1
+	})
 	bravo.client.storeIndex(refusing)
 	failed := len(recorded(alpha.events, "dial.failed"))
 	// a dial's end is said after its dial.failed is recorded, at info or as a repeat at debug
 	ends := func() int { return written.count("reconnecting in") + written.count("peer dial failed again") }
 	said := ends()
-	alpha.client.sessions.snapshot()[0].session.Mux().Close()
+	held := alpha.client.sessions.snapshot()
+	if len(held) != 1 {
+		t.Fatalf("alpha holds %d sessions once both ends held the one it dialed, want 1", len(held))
+	}
+	held[0].session.Mux().Close()
 	waitFor(t, convergeBudget, "alpha's dial after the session to fail", func() bool { return len(recorded(alpha.events, "dial.failed")) > failed })
 	waitFor(t, convergeBudget, "alpha to say the session's end and the failure after it", func() bool { return ends() >= said+2 })
 
@@ -381,7 +388,10 @@ func TestDialerSaysItsDialAfterAStandingSessionAtInfo(t *testing.T) {
 	// bravo opens the session, and alpha's woken dialer stands down behind it
 	bravo.client.storeIndex(trusting)
 	go bravo.client.connectPeer(ctx, dialTo(t, bravo.cfg, bravo.cfg.Dial.To[0]), slog.LevelInfo)
-	waitFor(t, convergeBudget, "bravo's session to come up", func() bool { return len(alpha.client.sessions.snapshot()) == 1 })
+	// bravo asks the trust in force again as it adopts the session it dialed, which can come after alpha holds it
+	waitFor(t, convergeBudget, "bravo's session at both ends", func() bool {
+		return len(alpha.client.sessions.snapshot()) == 1 && len(bravo.client.sessions.snapshot()) == 1
+	})
 	woken := len(recorded(alpha.events, "dial.woken"))
 	wake()
 	waitFor(t, convergeBudget, "alpha's dialer to take the wake", func() bool { return len(recorded(alpha.events, "dial.woken")) > woken })
@@ -390,7 +400,11 @@ func TestDialerSaysItsDialAfterAStandingSessionAtInfo(t *testing.T) {
 	waitFor(t, convergeBudget, "alpha's dialer to stand down", func() bool { return len(recorded(alpha.events, "dial.woken")) > woken+1 })
 
 	bravo.client.storeIndex(refusing)
-	alpha.client.sessions.snapshot()[0].session.Mux().Close()
+	held := alpha.client.sessions.snapshot()
+	if len(held) != 1 {
+		t.Fatalf("alpha holds %d sessions once both ends held the one bravo dialed, want 1", len(held))
+	}
+	held[0].session.Mux().Close()
 	// the dialer stands down until the session has left the set, so it is woken until it dials
 	waitFor(t, convergeBudget, "alpha's dial after the session to fail", func() bool {
 		wake()
