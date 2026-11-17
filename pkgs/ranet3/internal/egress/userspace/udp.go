@@ -82,7 +82,7 @@ type udpRelay struct {
 	// leaf's error about it name
 	mappings map[netip.AddrPort][]*mapping
 	ports    map[netip.AddrPort]*mapping
-	// withdrawn refuses every datagram from a withdrawal until resume
+	// withdrawn refuses every datagram from withdraw until resume
 	withdrawn bool
 
 	// readers counts the goroutines reading the mappings' sockets

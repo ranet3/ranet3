@@ -42,11 +42,11 @@ func (h *relayHarness) endsAt(t *testing.T, end time.Time) {
 	}
 }
 
-// A request whose mapping a withdrawal closed while it was sent is refused as
-// withdrawn, as one after the withdrawal is, and neither sent nor counted
-// unsent: under auto, where darwin sends through the family's socket bound to
-// no address, which stays open, and under a class naming an address, whose
-// socket closes with its last mapping on darwin
+// A request whose mapping the relay's withdraw closed while it was sent is
+// refused as withdrawn, as one sent after withdraw is, and neither sent nor
+// counted unsent: under auto, where darwin sends through the family's socket
+// bound to no address, which stays open, and under a class naming an address,
+// whose socket closes with its last mapping on darwin
 func TestEchoRequestWhoseMappingClosedIsRefusedAsWithdrawn(t *testing.T) {
 	server := netip.MustParseAddr("127.0.0.1")
 	host := onEchoHost(t)

@@ -49,8 +49,8 @@ type tcpRelay struct {
 	// hosts counts admissions whose host end step has yet to run.
 	// Together with held host slots it counts the host ports taken.
 	hosts int
-	// ctx ends each dial and flows holds each connection relayed, both
-	// withdrawn at once, and resume makes ctx again
+	// ctx ends each dial and flows holds each connection relayed, both of
+	// which withdraw ends at once, and resume makes ctx again
 	ctx    context.Context
 	cancel context.CancelFunc
 	flows  map[*tcpFlow]struct{}
