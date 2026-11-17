@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-16
+updated: 2026-11-17
 order: 110
 ---
 
@@ -785,10 +785,10 @@ table outlived the socket that set its `persist` flag, the refusal is
 `operation not supported` and the reason names `nft delete table inet ranet3`,
 which alone clears the flag and deletes every writer's chains with the table.
 Where another program's open socket owns the table, the refusal is
-`operation not permitted` and the reason says that delete works only once that
-program closes the socket or stops. The kernel then deletes the table with the
-socket, or, where the owner set `persist`, leaves it as in the case before, as
-the table flags of
+`operation not permitted`, and the reason names, from the table's flags, what
+that program's close of the socket or its stop will leave. The kernel deletes
+the table with the socket, or, where the owner set `persist`, leaves it as in
+the case before, as the table flags of
 [nft(8)](https://www.netfilter.org/projects/nftables/manpage.html) give. No
 writer deletes the table or makes it again over the flag. The translator's nat
 chain needs Linux 5.2 or later, as [Linux](platforms.md#linux) gives. An `inet`

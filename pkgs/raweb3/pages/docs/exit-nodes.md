@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-16
+updated: 2026-11-17
 order: 50
 ---
 
@@ -1217,7 +1217,7 @@ leaves hold received and not yet read against its budget, such as:
 
 ```
 Egress   userspace, 23 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
-Flows    61 of 10240 allowed: 23 open, 3 dialing and 37 held for host sockets, 2 of them also open while closing and counted once, 19 TCP of 985 allowed: 16 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
+Flows    61 of 10240 allowed: 23 open, 3 dialing and 37 held slots, 2 of them also open while closing and counted once, 19 TCP of 985 allowed: 16 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
 Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
 ```
 

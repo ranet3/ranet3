@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-16
+updated: 2026-11-17
 order: 90
 ---
 
@@ -352,11 +352,14 @@ releases with no head wait.
 
 `ranet3_packet_too_big_sent_total` counts the Packet Too Big over IPv6 and
 fragmentation needed over IPv4 with DF this node sent: to packets larger than
-their session carries, read off the tun or carried to a waypoint, and from the
-userspace exit to a leaf's datagram the path outside refused as too large, and
-`ranet3_mss_clamped_total` each time it lowered the MSS of a TCP SYN or SYN-ACK
-to what a session carries, twice for a forwarded one it lowered to the session
-it arrived on and again to its next. Both count for the node as a whole.
+their session carries, read off the tun, forwarded from one session to the next
+or carried to a waypoint, and the userspace exit's own to a leaf's datagram its
+host refused to send as larger than the path MTU the host holds. A router's
+Packet Too Big or fragmentation needed about a datagram that did leave, which
+the exit relays to the leaf, is not counted. `ranet3_mss_clamped_total` counts
+each time the node lowered the MSS of a TCP SYN or SYN-ACK to what a session
+carries, twice for a forwarded one it lowered to the session it arrived on and
+again to its next. Both count for the node as a whole.
 `ranet3_pmtu_probes_total` counts the probes of the sessions' path MTU that
 left, by `result`: `acked`, or `lost` when no Ack came within the time a probe
 waits, and [debugging](development/debug.md) says which probes count in neither.
