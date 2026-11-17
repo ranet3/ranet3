@@ -2,10 +2,27 @@ Policy rules: this platform has no policy rules
 Lookups
   Lookup    Family  Prefix        Address       Source  Interface  Taken  Answer
   overlay   ipv4    192.0.2.0/24  192.0.2.2     -       -          no     192.0.2.0/24 via 127.0.0.1 on lo0 reject
-  overlay   ipv6    3fff::/20     3fff::2       -       -          yes    3fff::/21 on utun5
+  overlay   ipv6    3fff:10::/32  3fff:10::2    -       -          yes    3fff:10::/33 on utun5
   underlay  ipv4    0.0.0.0/0     203.0.113.70  -       -          no     dev en0
 
-Antispoof filter, not enforced on darwin
+Antispoof filter, pf anchor com.apple/ranet3, read 2 seconds ago, ready
+  chain antispoof, in
+    accept  via lo0
+    drop    ipv4 source @carved4  1 packets, 84 B
+    drop    ipv6 source @carved6  0 packets, 0 B
+    accept  via en0 source 192.0.2.128/25
+    accept  exempt source 192.0.2.32/27
+    accept  exempt via bridge100 source 3fff:10:2222:3333:4444:5555:6666:7777/128
+    accept  exempt via en0 source 3fff:10:1::/48
+    accept  exempt via en1 source 3fff:10:1::/48
+    accept  exempt via en1 source 192.0.2.64/26
+    drop    ipv4 source 192.0.2.0/24  2 packets, 168 B
+    drop    ipv6 source 3fff:10::/32  9 packets, 936 B
+  table ranet3_carved  192.0.2.200, 3fff:10::/48
+  pf reference         token 9223372036854775809 of pid 4242, listed
+  pf main ruleset      calls com.apple/*
+  pf enabler           pid 4242 ranet3
+  pf enabler           pid 377 othervpn
 
 Fallback, rejects on lo0, holding
   1.0.0.0/8 via 127.0.0.1 reject

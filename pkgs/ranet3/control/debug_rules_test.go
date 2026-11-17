@@ -116,13 +116,35 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules-darwin.txt", []byte(out.String()))
 	goldenJSON(t, "rules-darwin.json", darwin)
 
-	// where overlay is written darwin's filter runs over pf: the anchor's
-	// rules with their counters, an exemption under en* one rule per link and
-	// one whose label pf holds shortened by its whole text, its table, this
-	// daemon's reference and the main ruleset's call, and every reference pf
-	// lists
 	out.Reset()
-	darwin.Border = &BorderTable{
+	darwin.Border = darwinBorderFixture()
+	RenderRules(&out, darwin)
+	golden(t, "rules-darwin-pf.txt", []byte(out.String()))
+	goldenJSON(t, "rules-darwin-pf.json", darwin)
+
+	// a pass that asked nothing, and a dump that failed beside the lookups
+	out.Reset()
+	RenderRules(&out, RulesInfo{Policy: info.Policy[:1]})
+	golden(t, "rules-unasked.txt", []byte(out.String()))
+	out.Reset()
+	RenderRules(&out, RulesInfo{PolicyErr: "kernel: dump rules: permission denied", Lookups: info.Lookups})
+	golden(t, "rules-undumped.txt", []byte(out.String()))
+
+	// a platform that runs no filter, where overlay is written, says so in one line
+	out.Reset()
+	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules", Border: &BorderTable{UnenforcedOn: "android"}})
+	if want := "\nAntispoof filter, not enforced on android\n"; !strings.HasSuffix(out.String(), want) {
+		t.Errorf("a platform with no filter renders\n%s\nwant it to end %q", out.String(), want)
+	}
+}
+
+// darwinBorderFixture is darwin's filter where overlay is written, which runs
+// over pf: the anchor's rules with their counters, an exemption under en* one
+// rule per link and one whose label pf holds shortened by its whole text, its
+// table, this daemon's reference and the main ruleset's call, and every
+// reference pf lists
+func darwinBorderFixture() *BorderTable {
+	return &BorderTable{
 		Where:   "pf anchor com.apple/ranet3",
 		ReadAt:  time.Date(2026, 11, 3, 23, 40, 5, 0, time.UTC),
 		ReadAgo: Duration(2 * time.Second),
@@ -147,24 +169,6 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 		},
 		PF:       &BorderPF{Anchor: "com.apple/ranet3", Token: 9223372036854775809, PID: 4242, Listed: true, Called: true},
 		Enablers: []BorderEnabler{{PID: 4242, Name: "ranet3"}, {PID: 377, Name: "othervpn"}},
-	}
-	RenderRules(&out, darwin)
-	golden(t, "rules-darwin-pf.txt", []byte(out.String()))
-	goldenJSON(t, "rules-darwin-pf.json", darwin)
-
-	// a pass that asked nothing, and a dump that failed beside the lookups
-	out.Reset()
-	RenderRules(&out, RulesInfo{Policy: info.Policy[:1]})
-	golden(t, "rules-unasked.txt", []byte(out.String()))
-	out.Reset()
-	RenderRules(&out, RulesInfo{PolicyErr: "kernel: dump rules: permission denied", Lookups: info.Lookups})
-	golden(t, "rules-undumped.txt", []byte(out.String()))
-
-	// a platform that runs no filter, where overlay is written, says so in one line
-	out.Reset()
-	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules", Border: &BorderTable{UnenforcedOn: "android"}})
-	if want := "\nAntispoof filter, not enforced on android\n"; !strings.HasSuffix(out.String(), want) {
-		t.Errorf("a platform with no filter renders\n%s\nwant it to end %q", out.String(), want)
 	}
 }
 
@@ -235,8 +239,9 @@ func TestRulesRenderTheFallbackTable(t *testing.T) {
 }
 
 // On macOS the switch renders as its rejects on lo0 beside the platform's
-// lack of policy rules, with neither hook nor priority nor a count, and the
-// overlay's lookups name the route each ends at
+// lack of policy rules, with neither hook nor priority nor a count, after the
+// filter pf runs for the overlay the switch needs, and the overlay's lookups
+// name the route each ends at
 func TestRulesRenderTheDarwinSwitch(t *testing.T) {
 	var rejects []FallbackTableRule
 	for _, key := range []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1"} {
@@ -249,10 +254,10 @@ func TestRulesRenderTheDarwinSwitch(t *testing.T) {
 		Policy:    []PolicyRule{},
 		PolicyErr: "this platform has no policy rules",
 		Missing:   []PolicyRule{},
-		Border:    &BorderTable{UnenforcedOn: "darwin"},
+		Border:    darwinBorderFixture(),
 		Lookups: []RuleLookup{
 			{Lookup: "overlay", Family: "ipv4", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "192.0.2.0/24 via 127.0.0.1 on lo0 reject"},
-			{Lookup: "overlay", Family: "ipv6", Prefix: netip.MustParsePrefix("3fff::/20"), Address: netip.MustParseAddr("3fff::2"), Answer: "3fff::/21 on utun5", Taken: true},
+			{Lookup: "overlay", Family: "ipv6", Prefix: netip.MustParsePrefix("3fff:10::/32"), Address: netip.MustParseAddr("3fff:10::2"), Answer: "3fff:10::/33 on utun5", Taken: true},
 			{Lookup: "underlay", Family: "ipv4", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Address: netip.MustParseAddr("203.0.113.70"), Answer: "dev en0"},
 		},
 		Fallback: &FallbackTable{Where: "rejects on lo0", State: "holding", Held: true, Rules: rejects, Sets: []FallbackTableSet{}},
@@ -261,6 +266,24 @@ func TestRulesRenderTheDarwinSwitch(t *testing.T) {
 	RenderRules(&out, darwin)
 	golden(t, "rules-darwin-switch.txt", []byte(out.String()))
 	goldenJSON(t, "rules-darwin-switch.json", darwin)
+}
+
+// A rule the filter holds twice renders as its row in its chain and its copy
+// among the rules the filter does not ask for, as the kernel's reading lists a
+// copy: its spec, the verdict its spec opens with and its own counters, with
+// no reason and no family, an accept's copy with no counters shown and a
+// drop's with its count
+func TestRulesListACopyOfAFilterRuleAmongTheRulesNotAskedFor(t *testing.T) {
+	info := rulesFixture()
+	unasked := &info.Border.Chains[2]
+	unasked.Rules = append(unasked.Rules,
+		BorderChainRule{Spec: "accept via lo", Verdict: "accept", Held: true},
+		BorderChainRule{Spec: "drop ipv4 source 203.0.113.0/24", Verdict: "drop", Held: true, Packets: 3, Bytes: 180},
+	)
+	var out strings.Builder
+	RenderRules(&out, info)
+	golden(t, "rules-copies.txt", []byte(out.String()))
+	goldenJSON(t, "rules-copies.json", info.Border)
 }
 
 // in mode 3 the view lists the two steered defaults of the reconciler's table
