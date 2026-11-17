@@ -331,7 +331,7 @@ func (r *rows) leafError(t *testing.T) {
 func (r *rows) otherProtocol(t *testing.T) {
 	raw := r.serverIP(t, 253, r.family.Server)
 	data := []byte("protocol 253 over " + r.family.Name)
-	sent := ipPacket(r.family.Leaf, r.family.Server, 253, leafTTL, data)
+	sent := ipPacket(r.family.Leaf, r.family.Server, 253, leafTTL, nil, data)
 	if declared, limited := r.limits[RefusesOtherProtocols]; limited {
 		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
 		r.answered(t, "administratively prohibited from the exit", sent, prohibited, r.fromExit, 0)

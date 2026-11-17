@@ -20,6 +20,8 @@ func newExit(cfg *config.Config, node *client.Client, bus *events.Bus) (egress.E
 	exit, err := kernelexit.New(*cfg.Egress(), kernelexit.Runtime{
 		Interface:     mesh.Name,
 		Write:         mesh.WriteHost,
+		Done:          mesh.Done(),
+		Present:       kernelexit.DevicePresence(mesh.Name),
 		MeshAddresses: client.MeshAddresses(cfg),
 		Forwarding:    client.Forwarding,
 		Lookup:        client.RouteLookups,

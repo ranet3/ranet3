@@ -139,7 +139,19 @@ type Host struct {
 	// Lanes is the exit's mesh, whose lanes carry a backend's own packets
 	// toward the leaf into the mesh's outbound path
 	Lanes *netstack.Mesh
+	// Done is the done channel of Lanes for an arm that waits for it
+	// (Arm.Waits), which the suite's stop closes by closing Lanes, and nil for
+	// any other
+	Done <-chan struct{}
 }
+
+// Closed is the done channel of a mesh that has closed, which a backend built
+// on a host with no mesh writing to its tun reads
+var Closed = func() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}()
 
 // Network is a leaf, an exit's host and a server beyond the exit's uplink,
 // built anew for each class so that no class meets another's state. The
@@ -280,7 +292,9 @@ type Missed struct{ Reason, LimitsRow string }
 // flows its capability names, counted exactly or as its arm declares its count
 // misses, and an arm that reads its flows to the idle timers it keeps them to.
 // An arm that crosses is held to frames of new flows handed across its stops
-// and the starts after them leaving under their class's address or not at all.
+// and the starts after them leaving under their class's address or not at all,
+// and one that waits for the mesh to frames handed at its end before the mesh
+// closes leaving under their class's address, and to no withdrawal before.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
@@ -296,6 +310,11 @@ type Arm struct {
 	Terminates bool
 	// New builds the backend on host for cfg, reporting through hooks
 	New func(t testing.TB, host Host, cfg egress.Egress, hooks egress.Hooks) egress.Exit
+	// Waits is set for a backend whose Run, once its context ends, holds what
+	// carries it until Host.Done closes and withdraws only then, which the
+	// suite's stop holds it to with frames the dataplane judged before the
+	// stop
+	Waits bool
 	// Holds names what the backend holds on host, nothing once it has withdrawn
 	Holds func(host Host) ([]string, error)
 	// Stopped reads in Status whether the backend, held off by SetEnabled, has
@@ -316,6 +335,14 @@ type Arm struct {
 	// Untranslating has another writer hold a chain where the host translates
 	// sources, with no rule in it, and returns what takes it away again
 	Untranslating func(host Host) (undo func() error, err error)
+	// Forget ends every flow the backend tracks from source on host, which the
+	// step of frames across a stop calls for the leaf as it ends, since its
+	// flows outnumber the leaf's share, so each step after it finds that share
+	// free. It is set where Crossings is.
+	Forget func(host Host, source netip.Addr) error
+	// CrossingsSkipped is why the step of frames across a stop cannot run on
+	// this host, which the step reports as its skip, empty where it runs
+	CrossingsSkipped string
 	// Remove takes what carries the backend's translation of both families off
 	// host in one transaction, as another writer would, nil for a backend
 	// nothing else on the host can change
@@ -356,6 +383,9 @@ func (a Arm) check() error {
 	}
 	if a.Untranslating != nil && a.Crossings == 0 {
 		return errors.New("the arm names another writer's translation for the step of frames across a stop, which it leaves out")
+	}
+	if (a.Crossings == 0) != (a.Forget == nil) {
+		return errors.New("the arm crosses stops without ending the leaf's flows after, which leaves its share full for the steps after, or names that end without the step")
 	}
 	for limit, declared := range a.Limits {
 		if declared.Reason == "" || declared.Row == "" {
@@ -411,11 +441,12 @@ func every(prefix netip.Prefix) netip.Prefix {
 }
 
 // Run holds arm to every row and step in both families under each of its
-// classes, each on a network of its own that build makes, and to row 6 again
-// under its first class at a share its capability names, and, for an arm that
-// carries Address and None, under Inside at that share, with the frames across
-// a stop under each class that translates for an arm that crosses. Row 6 comes
-// last in a family, since it leaves the spare address at its limit.
+// classes, each on a network of its own that build makes, with the frames
+// across a stop under each of them that translates for an arm that crosses,
+// and to row 6 again under its first class at a share its capability names,
+// and, for an arm that carries Address and None, under Inside at that share.
+// Row 6 comes last in a family, since it leaves the spare address at its
+// limit.
 func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	if err := arm.check(); err != nil {
 		t.Fatal(err)
@@ -441,7 +472,12 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 			under.run("a batch judged ready before a stop", func(t *testing.T) { exit.judgedBeforeStop(t, network, class) })
 			crosses := arm.Crossings != 0 && class != None
 			if crosses {
-				under.run("frames across a stop", func(t *testing.T) { exit.crossings(t, network, class, arm) })
+				under.run("frames across a stop", func(t *testing.T) {
+					if arm.CrossingsSkipped != "" {
+						t.Skip(arm.CrossingsSkipped)
+					}
+					exit.crossings(t, network, class, arm)
+				})
 			}
 			if arm.Remove != nil {
 				under.run("another writer", func(t *testing.T) { exit.overwritten(t, network, class, arm.Remove) })
@@ -482,13 +518,14 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 				r := &rows{network: network, family: network.Family(v6), class: Inside, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
 				share.run(r.family.Name, r.judged(r.sourceLimit))
 			}
-			// the class that translates is dropped ahead of the class of none it lies inside
+			// the class that translates is dropped ahead of the class of none it
+			// lies inside. The frames across a stop are not run here: the named
+			// share is smaller than the frames they hand ahead of their first
+			// stop, so the limit refuses every later frame of the leaf's ahead of
+			// the translation, and no stop's fault could show among them.
 			share.run("a batch judged ready before a stop", func(t *testing.T) { exit.judgedBeforeStop(t, network, Inside) })
-			if arm.Crossings != 0 {
-				share.run("frames across a stop", func(t *testing.T) { exit.crossings(t, network, Inside, arm) })
-			}
 			share.run("stop", exit.stop)
-			share.holds(4 + ones(arm.Crossings != 0))
+			share.holds(4)
 		})
 	}
 	// the run makes each class of the arm's, the share, and Inside for an arm that carries Address and None
@@ -542,6 +579,12 @@ type running struct {
 	flows   func(Host) ([]Flow, error)
 	misses  *Missed
 	cancel  context.CancelFunc
+	// closeMesh closes host.Lanes, and with it host.Done, for an arm that
+	// waits for it, nil for one that does not, and the backend was started for
+	// class on network
+	closeMesh func()
+	network   Network
+	class     Class
 	// done is closed once Run has returned err
 	done chan struct{}
 	err  error
@@ -599,7 +642,11 @@ func start(t *testing.T, network Network, arm Arm, class Class, flows uint32) *r
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the capability is refused: %v", err)
 	}
-	r := &running{cfg: cfg, host: network.Exit(), holds: arm.Holds, stopped: arm.Stopped, flows: arm.Flows, misses: arm.MissesFlows, done: make(chan struct{})}
+	r := &running{cfg: cfg, host: network.Exit(), holds: arm.Holds, stopped: arm.Stopped, flows: arm.Flows, misses: arm.MissesFlows,
+		network: network, class: class, done: make(chan struct{})}
+	if arm.Waits {
+		r.host.Done, r.closeMesh = r.host.Lanes.Done(), r.host.Lanes.Close
+	}
 	r.Exit = arm.New(t, r.host, cfg, egress.Hooks{Ready: r.ready, Republish: r.republish})
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
@@ -613,11 +660,15 @@ func start(t *testing.T, network Network, arm Arm, class Class, flows uint32) *r
 	return r
 }
 
-// end ends Run and waits budget for it to return, failing t where it has not,
-// so a backend whose Run never returns fails its class and the suite goes on
-// to the next with that Run left running
+// end ends Run, closing Host.Done for an arm that waits for it, and waits
+// budget for it to return, failing t where it has not, so a backend whose Run
+// never returns fails its class and the suite goes on to the next with that
+// Run left running
 func (r *running) end(t interface{ Errorf(string, ...any) }, budget time.Duration) {
 	r.cancel()
+	if r.closeMesh != nil {
+		r.closeMesh()
+	}
 	select {
 	case <-r.done:
 	case <-time.After(budget):
@@ -643,6 +694,37 @@ func announcesDefaults(announced []netip.Prefix) bool {
 	return len(announced) == len(defaults) && !slices.ContainsFunc(defaults, func(prefix netip.Prefix) bool { return !slices.Contains(announced, prefix) })
 }
 
+// Headroomed is packet as a tun writer takes it, behind the headroom the
+// writer fills
+func Headroomed(packet []byte) []byte {
+	return slices.Concat(make([]byte, netstack.TUNHeadroom), packet)
+}
+
+// DatagramFrame is a leaf's UDP datagram from from to to carrying payload, as
+// a tun writer takes it
+func DatagramFrame(from, to netip.AddrPort, payload []byte) []byte {
+	return Headroomed(datagram(from, to, leafTTL, payload))
+}
+
+// DatagramFrameHops is DatagramFrame with hops as its TTL or hop limit
+func DatagramFrameHops(from, to netip.AddrPort, hops byte, payload []byte) []byte {
+	return Headroomed(datagram(from, to, hops, payload))
+}
+
+// PacketFrame is a leaf's IP packet from src to dst carrying payload under the
+// protocol next, as a tun writer takes it: over IPv4 with options in its
+// header, a whole number of words, and over IPv6, options nil, with next naming
+// the header payload starts with, such as an extension header
+func PacketFrame(src, dst netip.Addr, next byte, options, payload []byte) []byte {
+	return Headroomed(ipPacket(src, dst, next, leafTTL, options, payload))
+}
+
+// EchoFrame is a leaf's echo request from src to dst under id, carrying data,
+// as a tun writer takes it
+func EchoFrame(src, dst netip.Addr, id uint16, data []byte) []byte {
+	return Headroomed(echo(src, dst, id, data))
+}
+
 // hand is the dataplane's hand-off for a prefix cap.egress advertises
 func (r *running) hand(packets [][]byte) {
 	r.mu.Lock()
@@ -657,9 +739,7 @@ func (r *running) hand(packets [][]byte) {
 		if withheld != nil && withheld(packet) {
 			continue
 		}
-		frame := make([]byte, netstack.TUNHeadroom+len(packet))
-		copy(frame[netstack.TUNHeadroom:], packet)
-		frames = append(frames, frame)
+		frames = append(frames, Headroomed(packet))
 		handed = append(handed, slices.Clone(packet))
 	}
 	if len(frames) == 0 {
@@ -782,10 +862,59 @@ func (r *running) withdrew(t *testing.T, w *withdrawal, left []string) {
 	}
 }
 
-// stop ends Run, which owes the withdrawal withdrew holds it to
+// stop ends Run, which owes the withdrawal withdrew holds it to. A backend
+// that waits for the mesh (Arm.Waits) then holds what carried it until the
+// suite closes Host.Done: the first datagram of a new flow of the leaf's in
+// each family, which the dataplane judged before the stop and hands
+// meanwhile, reaches the server from its class's address, and
+// only once Host.Done closes does the backend withdraw and Run return.
 func (r *running) stop(t *testing.T) {
 	w := r.record()
+	var held []string
+	if r.closeMesh != nil {
+		var err error
+		if held, err = r.holds(r.host); err != nil {
+			t.Fatalf("read what the backend holds: %v", err)
+		}
+	}
 	r.cancel()
+	if r.closeMesh != nil {
+		for deadline := time.Now().Add(stopBudget); ; time.Sleep(pollInterval) {
+			r.mu.Lock()
+			told, republished := w.toldNone, w.republishedNone
+			r.mu.Unlock()
+			if told && republished {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("within %s of its context's end Run told Ready neither family %v and published nothing %v, want both", stopBudget, told, republished)
+			}
+		}
+		for _, v6 := range []bool{false, true} {
+			family := &rows{network: r.network, family: r.network.Family(v6), class: r.class, exit: r}
+			from, to := netip.AddrPortFrom(family.family.Leaf, leafStopPort), netip.AddrPortFrom(family.family.Server, stopPort)
+			data := fmt.Appendf(nil, "judged ready before the stop from %s, handed before the mesh closed", from)
+			frame := DatagramFrame(from, to, data)
+			seen := family.seen()
+			if r.cfg.ClassOf(from.Addr()).To.None {
+				seen = from.Addr()
+			}
+			// past the hand-off, whose judgment the stop moved, as a writer lane
+			// hands the tun what a session judged before the stop
+			if got := receiveFrom(t, udpReader(family.listenUDP(t, to)), data, func() { r.Egress([][]byte{slices.Clone(frame)}, nil) }); got.Addr() != seen {
+				t.Errorf("the datagram from %s handed before the mesh closed reached the server from %s, want %s", from, got, seen)
+			}
+		}
+		if now, err := r.holds(r.host); err != nil || !holding(now, held) {
+			t.Errorf("before the mesh closed the backend held %v (%v), want what it held before the stop, %v", now, err, held)
+		}
+		select {
+		case <-r.done:
+			t.Error("Run returned before the mesh closed")
+		default:
+		}
+		r.closeMesh()
+	}
 	select {
 	case <-r.done:
 	case <-time.After(stopBudget):
@@ -877,10 +1006,12 @@ func (r *running) disable(t *testing.T, network Network, class Class) {
 // from its own address where Arm.Stopped is set, and not at all where the
 // backend holds nothing while off. Where Arm.Stopped is set, a reply the server
 // sends while the backend is off to each flow it carried before reaches the
-// leaf, the exit's own datagram from its mesh address leaves under the class
-// of that address, and a datagram the exit's host routes from the mesh device
-// back into it reaches the leaf. Once enabled again each flow reaches the
-// server from its class's address.
+// leaf, whose session and routes the step leaves in place where `ranet3 down`
+// closes the one and, under cap.table, withdraws the other, the exit's own
+// datagram from its mesh address leaves under the class of that address, and
+// a datagram the exit's host routes from the mesh device back into it reaches
+// the leaf. Once enabled again each flow reaches the server from its class's
+// address.
 func (r *running) judgedBeforeStop(t *testing.T, network Network, class Class) {
 	type judged struct {
 		packet, data []byte
@@ -933,9 +1064,7 @@ func (r *running) judgedBeforeStop(t *testing.T, network Network, class Class) {
 	}
 	frames := make([][]byte, 0, len(batch))
 	for _, j := range batch {
-		frame := make([]byte, netstack.TUNHeadroom+len(j.packet))
-		copy(frame[netstack.TUNHeadroom:], j.packet)
-		frames = append(frames, frame)
+		frames = append(frames, Headroomed(j.packet))
 	}
 	r.off(t)
 	// the batch reaches the backend past the hand-off, whose judgment the stop moved
@@ -1002,7 +1131,7 @@ func (r *running) judgedBeforeStop(t *testing.T, network Network, class Class) {
 		for i, source := range []netip.Addr{netip.MustParseAddr("198.51.100.69"), netip.MustParseAddr("2001:db8:9::5")} {
 			from, to := netip.AddrPortFrom(source, leafTransitPort), netip.AddrPortFrom(network.Family(i == 1).Spare, leafTransitPort)
 			data := fmt.Appendf(nil, "back into the mesh while off from %s", from)
-			frame := slices.Concat(make([]byte, netstack.TUNHeadroom), datagram(from, to, leafTTL, data))
+			frame := DatagramFrame(from, to, data)
 			if !back.await(func() { r.Egress([][]byte{slices.Clone(frame)}, nil) }, func(packet []byte) bool {
 				p, ok := parse(packet)
 				return ok && p.src == from.Addr() && p.dst == to.Addr() && bytes.HasSuffix(p.payload, data)
@@ -1020,48 +1149,67 @@ func (r *running) judgedBeforeStop(t *testing.T, network Network, class Class) {
 }
 
 const (
-	// crossingBurst is the most new flows of each family the frames across a
-	// stop hand around one SetEnabled, each crossingPace after the last, which
-	// spans the backend's turn that answers it
-	crossingBurst = 32
-	crossingPace  = 150 * time.Microsecond
-	// crossingPort is the server's port the frames across a stop go to, and
-	// leafCrossingPort the first of the ports they leave the leaf from, one a
-	// flow
-	crossingPort     = 10400
-	leafCrossingPort = 46000
+	// crossingAhead is how many frames of new flows of each family the frames
+	// across a stop hand back to back before each SetEnabled, as a writer lane
+	// hands the tun what sessions judged ready, then on until the backend reads
+	// the change and crossingLinger after, at most crossingBurst of them around
+	// a stop and crossingStart around a start
+	crossingAhead  = 200
+	crossingBurst  = 4000
+	crossingStart  = 32
+	crossingLinger = 5 * time.Millisecond
+	// crossingPace is the pause after each crossingStart flows of the frames
+	// handed once more at the end, so the server's sockets read every one
+	crossingPace = 500 * time.Microsecond
+	// crossingPort is the first of the crossingPorts server ports the frames
+	// across a stop go to, and leafCrossingPort the first of the ports they
+	// leave the leaf from, each flow a pair of the two
+	crossingPort     = 10500
+	crossingPorts    = 8
+	leafCrossingPort = 1024
 	// leafTransitPort is the port of the datagram the exit's host routes back
 	// into the mesh while the backend is off, and ownWhileOffPort the server's
 	// port of the exit's own datagram then
 	leafTransitPort = 40802
 	ownWhileOffPort = 10401
+	// stopPort is the server's port of the datagram handed before the mesh
+	// closes in the stop of a backend that waits for it, and leafStopPort the
+	// port it leaves the leaf from
+	stopPort     = 10402
+	leafStopPort = 40803
 )
 
 // crossings takes the backend off with SetEnabled and puts it back
 // Arm.Crossings times, alone and again beside the chain Arm.Untranslating has
-// another writer hold, and hands frames of new flows from the leaf's address in
-// both families, one flow of each a crossingPace apart, from just before each
-// SetEnabled until the backend reads off or back or crossingBurst flows have
-// gone. Once the backend is back for the last time it hands one frame more of
-// every flow. The server reads none of them from the leaf's own address: a
-// frame the backend took while it translated leaves under its class's address,
-// one it took while off leaves not at all, and no flow left untranslated
-// across a stop leaves untranslated after the start.
+// another writer hold, and hands frames of new flows from the leaf's address,
+// each family's back to back from a goroutine of its own, crossingAhead before
+// each SetEnabled and then until the backend reads off or back, at most
+// crossingBurst around a stop and crossingStart around a start. Each flow is a
+// port of the leaf's and one of crossingPorts of the server's, so every frame
+// is a new flow's. Once the backend is back for the last time it hands one
+// frame more of every flow. The server reads none of them from the leaf's own
+// address: a frame the backend took while it translated leaves under its
+// class's address, one it took while off leaves not at all, and no flow left
+// untranslated across a stop leaves untranslated after the start. The step
+// then ends the leaf's flows by Arm.Forget, whose share they fill.
 func (r *running) crossings(t *testing.T, network Network, class Class, arm Arm) {
-	if last := leafCrossingPort + 2*2*arm.Crossings*crossingBurst; last > leafEphemeralLow {
-		t.Fatalf("the step's flows would take the leaf's ports up to %d, past %d where its kernel's own begin", last, leafEphemeralLow)
+	const leafPorts = 1<<16 - leafCrossingPort
+	if most := 2 * arm.Crossings * (crossingBurst + crossingStart); most > crossingPorts*leafPorts {
+		t.Fatalf("the step's %d flows of a family would take more than the %d pairs of ports it has", most, crossingPorts*leafPorts)
 	}
 	r.awaitReady(t)
 	var leaves []netip.Addr
-	var tos []netip.AddrPort
-	var servers []*net.UDPConn
+	var servers []netip.Addr
+	var sockets []*net.UDPConn
 	for _, v6 := range []bool{false, true} {
 		family := &rows{network: network, family: network.Family(v6), class: class, exit: r}
 		if r.cfg.ClassOf(family.family.Leaf).To.None {
 			t.Fatalf("the leaf's address %s is under no class that translates under %s", family.family.Leaf, class)
 		}
-		to := netip.AddrPortFrom(family.family.Server, crossingPort)
-		leaves, tos, servers = append(leaves, family.family.Leaf), append(tos, to), append(servers, family.listenUDP(t, to))
+		leaves, servers = append(leaves, family.family.Leaf), append(servers, family.family.Server)
+		for port := range crossingPorts {
+			sockets = append(sockets, family.listenUDP(t, netip.AddrPortFrom(family.family.Server, uint16(crossingPort+port))))
+		}
 	}
 	// arrived is each datagram the server read by where it came from, until
 	// quiet is closed
@@ -1069,9 +1217,9 @@ func (r *running) crossings(t *testing.T, network Network, class Class, arm Arm)
 	arrived := map[netip.Addr]int{}
 	quiet := make(chan struct{})
 	var reading sync.WaitGroup
-	for _, server := range servers {
+	for _, socket := range sockets {
 		reading.Go(func() {
-			read, buf := udpReader(server), make([]byte, readSize)
+			read, buf := udpReader(socket), make([]byte, readSize)
 			for {
 				_, from, err := read(buf, time.Now().Add(pollInterval))
 				select {
@@ -1088,38 +1236,43 @@ func (r *running) crossings(t *testing.T, network Network, class Class, arm Arm)
 		})
 	}
 	flows := 0
-	hand := func(flow int) {
-		frames := make([][]byte, 0, len(leaves))
-		for i, leaf := range leaves {
-			from := netip.AddrPortFrom(leaf, uint16(leafCrossingPort+flow))
-			frames = append(frames, slices.Concat(make([]byte, netstack.TUNHeadroom), datagram(from, tos[i], leafTTL, fmt.Appendf(nil, "across a stop from %s", from))))
-		}
-		r.Egress(frames, nil)
+	// hand hands family i's frame of flow
+	hand := func(i, flow int) {
+		from := netip.AddrPortFrom(leaves[i], uint16(leafCrossingPort+flow%leafPorts))
+		to := netip.AddrPortFrom(servers[i], uint16(crossingPort+flow/leafPorts))
+		r.Egress([][]byte{DatagramFrame(from, to, fmt.Appendf(nil, "across a stop from %s to %s", from, to))}, nil)
 	}
-	across := func(transition func(*testing.T)) {
-		done, handed := make(chan struct{}), make(chan int, 1)
-		go func() {
-			n := 0
-			for ; n < crossingBurst; n++ {
-				select {
-				case <-done:
-					handed <- n
-					return
-				default:
+	across := func(transition func(*testing.T), burst int) {
+		var done atomic.Bool
+		handed := make([]atomic.Int64, len(leaves))
+		var writing sync.WaitGroup
+		for i := range leaves {
+			writing.Go(func() {
+				for n := 0; n < burst && !done.Load(); n++ {
+					hand(i, flows+n)
+					handed[i].Add(1)
 				}
-				hand(flows + n)
-				time.Sleep(crossingPace)
+			})
+		}
+		for i := range handed {
+			for handed[i].Load() < min(crossingAhead, int64(burst)) {
+				time.Sleep(crossingPace / 10)
 			}
-			handed <- n
-		}()
+		}
 		transition(t)
-		close(done)
-		flows += <-handed
+		time.Sleep(crossingLinger)
+		done.Store(true)
+		writing.Wait()
+		most := 0
+		for i := range handed {
+			most = max(most, int(handed[i].Load()))
+		}
+		flows += most
 	}
 	cross := func() {
 		for range arm.Crossings {
-			across(r.off)
-			across(r.on)
+			across(r.off, crossingBurst)
+			across(r.on, crossingStart)
 		}
 	}
 	cross()
@@ -1134,14 +1287,21 @@ func (r *running) crossings(t *testing.T, network Network, class Class, arm Arm)
 		}
 	}
 	for flow := range flows {
-		hand(flow)
-		if flow%crossingBurst == crossingBurst-1 {
+		for i := range leaves {
+			hand(i, flow)
+		}
+		if flow%crossingStart == crossingStart-1 {
 			time.Sleep(crossingPace)
 		}
 	}
 	time.Sleep(quietPeriod)
 	close(quiet)
 	reading.Wait()
+	for _, leaf := range leaves {
+		if err := arm.Forget(r.host, leaf); err != nil {
+			t.Errorf("end the flows of %s the step made: %v", leaf, err)
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	for _, leaf := range leaves {
@@ -1386,7 +1546,7 @@ func (r *running) masqueraded(t *testing.T, network Network, class Class, masque
 				family := network.Family(v6)
 				from, to := netip.AddrPortFrom(family.Leaf, leafOffPort), netip.AddrPortFrom(family.Server, step.port)
 				data := fmt.Appendf(nil, "a datagram from %s while off with another writer's masquerade %s the backend's translation", from, step.where)
-				frame := slices.Concat(make([]byte, netstack.TUNHeadroom), datagram(from, to, leafTTL, data))
+				frame := DatagramFrame(from, to, data)
 				// past the hand-off, whose judgment the stop moved
 				hand := func() { r.Egress([][]byte{slices.Clone(frame)}, nil) }
 				if class == None {

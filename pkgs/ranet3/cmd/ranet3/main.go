@@ -487,7 +487,6 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 		slog.Info(fmt.Sprintf("antispoof filter in %s, inside %s", d.border.Where(), strings.Join(d.border.Inside(), " ")))
 	}
 
-	// the reconciler's run here and the exit's after the wait, each withdrawing what it holds once ctx ends
 	var withdrawals sync.WaitGroup
 	var firstPass <-chan struct{}
 	if routes := d.routes; routes != nil {
@@ -514,14 +513,16 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			mesh.Name, mesh.QueueCount()))
 	}
 	dials := awaitFirstPass(ctx, firstPass, firstPassWait)
-	// The exit withdraws what it holds while the tun still exists, as the
-	// reconciler withdraws its routes, so the two share the wait below.
+	// the exit's run, which returns only once the mesh has closed, so nothing
+	// that closes the mesh waits for it
+	var exits sync.WaitGroup
 	if exit := d.exit; exit != nil {
-		withdrawals.Go(func() {
-			// As with the reconciler, this error is the withdrawal failing as
-			// often as the pass: a translation rule left in the host's packet
-			// filter after shutdown must never be reported to an operator as a
-			// clean exit.
+		exits.Go(func() {
+			// As with the reconciler, this error is the end failing as often as
+			// the pass: a translation rule a failed withdrawal or stop left in
+			// the host's packet filter must never be reported to an operator as
+			// a clean exit. The kernel exit's stopped rules, left on purpose
+			// where the tun outlives the mesh, are a clean end it warns of.
 			if err := exit.Run(ctx); err != nil {
 				fail("egress", err)
 			}
@@ -576,9 +577,13 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 		// Run dials nothing where the stop began since the wait ended
 		d.node.Run(meshCtx)
 	}
-	// Whichever side stopped first, stop the other, then let the reconciler
-	// finish withdrawing before the process exits.
-	stopInOrder(cancel, withdrawals.Wait, func() { stopBorder(context.Cause(ctx)) })
+	// Whichever side stopped first, stop the other. A start that never dialed
+	// has not run the mesh, so the stop closes it here, for the exit to return.
+	stopInOrder(cancel, func() {
+		withdrawals.Wait()
+		d.node.Close()
+		exits.Wait()
+	}, func() { stopBorder(context.Cause(ctx)) })
 	if failed.Load() {
 		return 1
 	}
@@ -612,10 +617,11 @@ func read(ctx context.Context, signals <-chan os.Signal, act func()) {
 }
 
 // stopInOrder ends a daemon whose mesh has stopped: it cancels the reconciler
-// and the translator, waits for both to withdraw, and only then stops the
-// antispoof filter, so no route into the tun outlives it. The filter
-// withdraws its chains then, and leaves them where the stop is for the mesh's
-// failure.
+// and the translator, waits for both to end, the reconciler's routes withdrawn
+// and the translator's chains withdrawn or left as a stopped translator's
+// rules, and only then stops the antispoof filter, so no route into the tun
+// outlives it. The filter withdraws its chains then, and leaves them where the
+// stop is for the mesh's failure.
 func stopInOrder(cancel context.CancelFunc, wait, stopBorder func()) {
 	cancel()
 	wait()

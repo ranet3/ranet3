@@ -1127,7 +1127,8 @@ func TestTranslatorLeavesATimeoutAnotherWritersRuleHoldsToItsPass(t *testing.T) 
 // timeouts and attached by a rule of that writer's own chain is left by a
 // stop's write as a pass leaves it: the host takes the write, so the stopped
 // rules are in force, while their readback names the timeout and the chain
-// holding it, so the stop is an error and reads the translator stopping, and
+// holding it, so the stop is an error and reads the translator stopping and
+// the stopped rules not in place, since a line of theirs uses the timeout, and
 // each try while down does the same while that rule stays. Once the rule goes
 // the next try makes the timeout again and the stop is in effect.
 func TestStopOverATimeoutAnotherWritersRuleHoldsWritesItsRulesAndFails(t *testing.T) {
@@ -1164,14 +1165,14 @@ func TestStopOverATimeoutAnotherWritersRuleHoldsWritesItsRulesAndFails(t *testin
 	}
 	held := "seconds were written, and chain other holds a rule using it, so it stays until that rule goes"
 	for i := range 2 {
-		err := tr.stop()
+		taken, err := tr.stop()
 		s := tr.Status()
-		t.Logf("the stop's try %d: %v, reading %q", i+1, err, s.Unready)
-		if err == nil || !strings.Contains(err.Error(), timeout.Name) || !strings.Contains(err.Error(), held) {
-			t.Errorf("the stop's try %d: %v, want an error naming %s and %q", i+1, err, timeout.Name, held)
+		t.Logf("the stop's try %d: taken %v, %v, reading %q", i+1, taken, err, s.Unready)
+		if !taken || err == nil || !strings.Contains(err.Error(), timeout.Name) || !strings.Contains(err.Error(), held) {
+			t.Errorf("the stop's try %d: taken %v, %v, want taken and an error naming %s and %q", i+1, taken, err, timeout.Name, held)
 		}
-		if !strings.HasPrefix(s.Unready, "the translator is stopping: ") || s.Err == "" {
-			t.Errorf("after the stop's try %d the translator reads %q with the error %q, want it stopping with the error", i+1, s.Unready, s.Err)
+		if want := "the translator is stopping: the stopped rules are not in place: its ct timeout " + timeout.Name + " "; !strings.HasPrefix(s.Unready, want) || !strings.HasSuffix(s.Unready, held) || s.Err == "" {
+			t.Errorf("after the stop's try %d the translator reads %q with the error %q, want it to start with %q, end with %q and the error", i+1, s.Unready, s.Err, want, held)
 		}
 		if !inForce() {
 			t.Errorf("after the stop's try %d forward holds no stopped translator's hold, or a running one's limit", i+1)
@@ -1180,11 +1181,66 @@ func TestStopOverATimeoutAnotherWritersRuleHoldsWritesItsRulesAndFails(t *testin
 	if err := another.Batch(dropOther()); err != nil {
 		t.Fatalf("another writer deletes its rule: %v", err)
 	}
-	if err := tr.stop(); err != nil || tr.Status().Unready != "the translator is stopped" {
-		t.Errorf("once the rule is gone the stop: %v, reading %q, want the stop in effect", err, tr.Status().Unready)
+	if taken, err := tr.stop(); !taken || err != nil || tr.Status().Unready != "the translator is stopped" {
+		t.Errorf("once the rule is gone the stop: taken %v, %v, reading %q, want the stop in effect", taken, err, tr.Status().Unready)
 	}
 	if !inForce() {
 		t.Error("once the rule is gone forward holds no stopped translator's hold, or a running one's limit")
+	}
+}
+
+// A stop taken, then IPv6's set of untranslated sources made again by another
+// writer without the interval flag and held from a chain of its own, then a
+// stop tried again over the stopped rules the table holds: the host refuses
+// the write, which must delete that set. The stopped rules stay in place, so
+// Status's reason names the refusal and then the set and its holder, without
+// the words that the stopped rules are not in place, and the error names the
+// write's answer and then the set and its holder.
+func TestRefusedStopOverTheStoppedRulesTheTableHoldsSaysNothingOfThemOutOfPlace(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	run := nftRun(t)
+	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
+	be, err := newBackend(cfg, rt)
+	if err != nil {
+		t.Fatalf("open the translator's backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	tr := newTranslator(cfg, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the translator's first pass: %v", err)
+	}
+	if taken, err := tr.stop(); !taken || err != nil || tr.Status().Unready != "the translator is stopped" {
+		t.Fatalf("the first stop: taken %v, %v, reading %q, want the stop in effect", taken, err, tr.Status().Unready)
+	}
+	script := t.TempDir() + "/other.nft"
+	held := fmt.Sprintf("delete set inet %[1]s untranslated6\nadd set inet %[1]s untranslated6 { type ipv6_addr; }\nadd chain inet %[1]s other\nadd rule inet %[1]s other ip6 saddr @untranslated6 counter\n", nftables.Table)
+	if err := os.WriteFile(script, []byte(held), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("-f", script)
+	taken, err := tr.stop()
+	s := tr.Status()
+	t.Logf("the stop tried again: taken %v, %v, reading %q", taken, err, s.Unready)
+	const holder = "chain other holds a rule using it"
+	refusal, fault, ok := strings.Cut(fmt.Sprint(err), ", then the stopped rules read back other than written: ")
+	if taken || !ok || !strings.HasPrefix(refusal, "install rules: ") || !strings.Contains(refusal, unix.EBUSY.Error()) || !strings.HasPrefix(fault, "its set untranslated6 ") || !strings.Contains(fault, holder) || s.Err != err.Error() {
+		t.Errorf("the stop tried again: taken %v, %v, with the error %q, want none taken, the refusal with EBUSY and then the set and its holder", taken, err, s.Err)
+	}
+	if want := "the translator is stopping: the host refused the stopped rules: its set untranslated6 "; !strings.HasPrefix(s.Unready, want) || !strings.Contains(s.Unready, holder) {
+		t.Errorf("after the stop tried again Status reads %q, want it to start with %q and name the %s", s.Unready, want, holder)
+	}
+	rules, err := nftables.TableRules(anotherWriter(t), unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rules, func(rule nftables.Installed) bool {
+		return rule.Chain == LimitChain && rule.Spec == "out via ranet0 ipv4 dropped while stopped"
+	}) || slices.ContainsFunc(rules, func(rule nftables.Installed) bool { return strings.Contains(rule.Spec, " limit ") }) {
+		t.Error("after the stop tried again forward holds no stopped translator's hold, or a running one's limit")
 	}
 }
 

@@ -886,7 +886,7 @@ func TestNftablesHoldsAStoppedTranslatorsChainsUntilTheNextPass(t *testing.T) {
 	}
 	running(tr, "after the first pass")
 	chain, translation := handle(), run("list", "chain", "inet", nftables.Table, ChainName)
-	if err := tr.stop(); err != nil {
+	if err := stopTurn(tr); err != nil {
 		t.Fatalf("the stop after a pass: %v", err)
 	}
 	stopped(tr, "after a pass")
@@ -906,13 +906,13 @@ func TestNftablesHoldsAStoppedTranslatorsChainsUntilTheNextPass(t *testing.T) {
 	}
 	died()
 	down, died := start()
-	if err := down.stop(); err != nil {
+	if err := stopTurn(down); err != nil {
 		t.Fatalf("the stop of a start down over a pass's chains: %v", err)
 	}
 	stopped(down, "after a start down over a pass's chains")
 	died()
 	again, _ := start()
-	if err := again.stop(); err != nil {
+	if err := stopTurn(again); err != nil {
 		t.Fatalf("the stop of a start down over a stop's chains: %v", err)
 	}
 	stopped(again, "after a start down over a stop's chains")
@@ -949,7 +949,7 @@ func TestNftablesPutsBackAStoppedTranslatorsChainsAnotherWriterDeletes(t *testin
 	}
 	t.Cleanup(func() { _ = check.Close() })
 	reader := check.(*natTables)
-	tr := newTranslator(cfg, rt, be)
+	tr := newTranslator(cfg, meshGone(rt), be)
 	tr.Enabled.Store(false)
 	held := tr.stopped()
 	const drop = `drop comment "out via ranet0 ipv4 dropped while stopped"`
@@ -1001,85 +1001,147 @@ func TestNftablesPutsBackAStoppedTranslatorsChainsAnotherWriterDeletes(t *testin
 	requireEmptyRuleset(t, check)
 }
 
-// On a kernel that refuses connection labels, as one built without them
-// refuses their key, the translator writes its rules without the label and
-// they read back as written: each translation without its labelling, both
-// families ready, and a stop's rules without the drops of a labelled flow's
-// packets, read in effect. It warns once, at the first write, naming the
-// kernel's refusal of the label once as the cause and carrying the kernel's
-// answer, and its debug view names that refusal up and down and, down, no rule
-// wanted that the stop does not write.
-func TestNftablesWritesNoLabelWhereTheKernelRefusesIt(t *testing.T) {
+// A start learns at its first write whether the kernel takes the label, and
+// its run comes up and goes down, or starts down with a stop as its first
+// write, and shuts down over a mesh device still there, in effect either way,
+// at no class and at counts of classes whose transactions overflow the
+// socket's receive buffer, a third of them none. On a kernel that refuses the
+// label, as one built without connection labels refuses their key, the
+// translator warns once that it cannot label, naming the refusal once as why
+// and carrying the kernel's answer as err, no rule of the table sets or reads
+// a label, and the debug view's Labels line names the refusal up and down. On
+// one that takes it, under return, the label is on throughout with no such
+// warning. A run that comes up reads both families ready with their
+// translations listed. The down reads in effect, the rules the backend writes
+// of the stop's counted installed and those the stop changes listed as its
+// lines, and its debug view names no rule wanted that the host does not hold.
+// The shutdown reads them back as written, warns that it leaves them with no
+// error, and returns nil.
+func TestNftablesRunsDownAndShutsDownInEffectWhetherOrNotTheKernelTakesTheLabel(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
-	netnstest.EnterEmpty(t)
-	run := nftRun(t)
-	var lines strings.Builder
-	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
-	cfg := egress.Egress{}
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
-	be, err := newBackend(cfg, rt)
-	if err != nil {
-		t.Fatalf("open the nftables backend: %v", err)
-	}
-	t.Cleanup(func() { _ = be.Close() })
-	requireEmptyRuleset(t, be)
 	// a key no kernel knows, which nft_ct refuses as a kernel without labels
 	// refuses theirs
-	be.(*natTables).label.Store(255)
-	tr := newTranslator(cfg, rt, be)
-	if err := tr.reconcile(); err != nil {
-		t.Fatalf("the first pass: %v", err)
-	}
-	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 || s.Err != "" {
-		t.Errorf("the pass without the label reads ready %v and %v with the error %q, want both and none", s.Ready4, s.Ready6, s.Err)
-	}
-	if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, "ct label") || !strings.Contains(listing, "masquerade") {
-		t.Errorf("the pass without the label lists, want its translations and no label:\n%s", listing)
-	}
-	const refused = "the kernel refused a rule that sets or reads a connection label"
-	if why := tr.Debug().Unlabelled; !strings.HasPrefix(why, refused) {
-		t.Errorf("while up the debug view reads %q of the label, want the kernel's refusal named", why)
-	}
-	if err := tr.stop(); err != nil {
-		t.Fatalf("the stop: %v", err)
-	}
-	labelled := 0
-	for _, rule := range tr.stopped() {
-		if rule.Stopped == Labelled {
-			labelled++
+	const unknown = 255
+	const refusal = "the kernel refused a rule that sets or reads a connection label"
+	for _, c := range []struct {
+		key     uint32
+		classes int
+		// down is whether the run starts down, its first write a stop
+		down bool
+	}{
+		{unknown, 0, false}, {unknown, 512, false}, {unknown, 768, false}, {unknown, 4096, false}, {unknown, 768, true},
+		{unix.NFT_CT_LABELS, 768, false}, {unix.NFT_CT_LABELS, 4096, false}, {unix.NFT_CT_LABELS, 768, true},
+	} {
+		refused := c.key == unknown
+		name := fmt.Sprintf("%d classes under the key %d", c.classes, c.key)
+		if c.down {
+			name += " started down"
 		}
+		t.Run(name, func(t *testing.T) {
+			netnstest.EnterEmpty(t)
+			run := nftRun(t)
+			// read once Run has returned, which orders every write before it
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+			cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0"), Translate: manyClasses(c.classes), Return: !refused, Sweep: schema.Duration(lateSweep)}
+			done := make(chan struct{})
+			close(done)
+			rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard,
+				Done: done, Present: func() (bool, error) { return true, nil }}
+			be, err := newBackend(cfg, rt)
+			if err != nil {
+				t.Fatalf("open the nftables backend: %v", err)
+			}
+			t.Cleanup(func() { _ = be.Close() })
+			requireEmptyRuleset(t, be)
+			be.(*natTables).label.Store(c.key)
+			tr := newTranslator(cfg, rt, be)
+			if c.down {
+				tr.SetEnabled(false)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			ended, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				ended <- tr.Run(ctx)
+			}()
+			// ahead of the backend's close, so a subtest that fails leaves no
+			// run writing over a socket number the next one reuses
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(2 * PassWait):
+					t.Errorf("Run had not returned %s after its context ended", 2*PassWait)
+				}
+			})
+			until := func(what string, ok func() bool) {
+				t.Helper()
+				for deadline := time.Now().Add(2 * PassWait); !ok(); time.Sleep(passPoll) {
+					if time.Now().After(deadline) {
+						s := tr.Status()
+						t.Fatalf("waited %s for %s, the translator reading %q with the error %q", 2*PassWait, what, s.Unready, s.Err)
+					}
+				}
+			}
+			if !c.down {
+				until("both families ready", func() bool { s := tr.Status(); return s.Ready4 && s.Ready6 })
+				if got := tr.Debug().Unlabelled; strings.HasPrefix(got, refusal) != refused {
+					t.Errorf("while up the debug view reads %q of the label, want the refusal named %v", got, refused)
+				}
+				if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, "ct label") == refused || !strings.Contains(listing, "masquerade") {
+					t.Errorf("while up the table lists a label %v and a translation %v, want a label %v and a translation", !refused, strings.Contains(listing, "masquerade"), !refused)
+				}
+				tr.SetEnabled(false)
+			}
+			until("the stop in effect", func() bool { return tr.Status().Unready == "the translator is stopped" })
+			written, stops := tr.be.written(tr.stopped()), 0
+			for _, rule := range written {
+				if rule.Stopped != Running {
+					stops++
+				}
+			}
+			if s := tr.Status(); s.Err != "" || s.Rules.Installed != len(written) {
+				t.Errorf("the down reads the error %q and %d installed, want none and the %d rules the backend writes", s.Err, s.Rules.Installed, len(written))
+			}
+			debug := tr.Debug()
+			if strings.HasPrefix(debug.Unlabelled, refusal) != refused {
+				t.Errorf("while down the debug view reads %q of the label, want the refusal named %v", debug.Unlabelled, refused)
+			}
+			for _, rule := range debug.Rules {
+				if rule.Wanted && !rule.Held {
+					t.Errorf("while down the debug view names %q wanted and not held", rule.Spec)
+				}
+			}
+			if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, "ct label") == refused || strings.Count(listing, ` while stopped"`) != stops {
+				t.Errorf("while down the table lists a label %v and %d lines of the stop, want a label %v and %d", !refused, strings.Count(listing, ` while stopped"`), !refused, stops)
+			}
+			cancel()
+			if err := <-ended; err != nil {
+				t.Errorf("the shutdown returned %v, want nil, the stopped rules read back as written", err)
+			}
+			var warned []string
+			for line := range strings.Lines(lines.String()) {
+				switch {
+				case strings.Contains(line, `level=WARN msg="egress cannot label the flows it translates"`):
+					warned = append(warned, line)
+					if !strings.Contains(line, ` why="`+refusal) || strings.Count(line, refusal) != 1 || !strings.Contains(line, ` err="`+unix.EOPNOTSUPP.Error()+`"`) {
+						t.Errorf("the warning reads %s, want the refusal named once as why and the kernel's answer as err", line)
+					}
+				case strings.Contains(line, `msg="egress left its stopped rules at shutdown"`) && strings.Contains(line, " err="):
+					t.Errorf("the shutdown warned that it leaves its stopped rules with an error: %s", line)
+				}
+			}
+			if want := map[bool]int{true: 1, false: 0}[refused]; len(warned) != want {
+				t.Errorf("the translator warned %d times that it cannot label, want %d", len(warned), want)
+			}
+			if logged := lines.String(); !strings.Contains(logged, `level=WARN msg="egress left its stopped rules at shutdown"`) || !strings.Contains(logged, `msg="egress translator stopped"`) {
+				t.Errorf("the run logged, want the stop in effect and the warning that the shutdown leaves it:\n%s", logged)
+			}
+		})
 	}
-	if s := tr.Status(); s.Unready != "the translator is stopped" || s.Err != "" || s.Rules.Installed != len(tr.stopped())-labelled {
-		t.Errorf("the stop without the label reads %q, the error %q and %d installed, want it in effect with %d", s.Unready, s.Err, s.Rules.Installed, len(tr.stopped())-labelled)
-	}
-	if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, "ct label") || !strings.Contains(listing, "dropped while stopped") {
-		t.Errorf("the stop without the label lists, want its drops and no label:\n%s", listing)
-	}
-	tr.Enabled.Store(false)
-	debug := tr.Debug()
-	if !strings.HasPrefix(debug.Unlabelled, refused) {
-		t.Errorf("while down the debug view reads %q of the label, want the kernel's refusal named", debug.Unlabelled)
-	}
-	for _, rule := range debug.Rules {
-		if rule.Wanted && !rule.Held {
-			t.Errorf("while down the debug view names %q wanted and not held, a rule the stop without the label does not write", rule.Spec)
-		}
-	}
-	var warnings []string
-	for line := range strings.Lines(lines.String()) {
-		if strings.Contains(line, `level=WARN msg="egress cannot label the flows it translates"`) {
-			warnings = append(warnings, line)
-		}
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], ` why="`+refused) || strings.Count(warnings[0], refused) != 1 || !strings.Contains(warnings[0], ` err="`+unix.EOPNOTSUPP.Error()+`"`) {
-		t.Errorf("the translator warned %q that it cannot label, want once, naming the kernel's refusal once as why and carrying its answer as err", warnings)
-	}
-	if err := be.Withdraw(); err != nil {
-		t.Fatalf("the withdrawal: %v", err)
-	}
-	requireEmptyRuleset(t, be)
 }
 
 // The pass's line and each family's set of untranslated sources read back as
@@ -2023,7 +2085,7 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 	t.Cleanup(func() { _ = check.Close() })
 	// it reads through read, not Rules, so it holds no table beside the translator
 	reader := check.(*natTables)
-	tr := newTranslator(cfg, rt, be)
+	tr := newTranslator(cfg, meshGone(rt), be)
 	desired := tr.desired()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

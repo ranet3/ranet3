@@ -19,8 +19,10 @@
 // (exit-nodes.md, "Each source's share of the flows"), and a set of the sources
 // whose class is none, which the forward chain passes. Their names are the
 // ownership marker, the way Table.Proto is the reconciler's in
-// internal/kernel. This package writes only those, and withdraws them at
-// shutdown, with the table as nftables.Hold.Withdraw says.
+// internal/kernel. This package writes only those. A shutdown withdraws them,
+// with the table as nftables.Hold.Withdraw says, where the mesh device has
+// gone with the mesh, and leaves a stopped translator's rules in their place
+// where it has not or that cannot be read (Translator.Run).
 // It reads other writers' tables, chains and rules to find its own and to
 // report conflicts, and writes, replaces or deletes nothing else. A rule
 // another writer puts in this package's chains is removed by the next pass,
@@ -140,6 +142,25 @@ type Runtime struct {
 	// flow keeps its lane and its order and the host routes and translates what
 	// the tun delivers, with the hold on their storage Egress was handed
 	Write func(frames [][]byte, hold netstack.Hold)
+	// Done is closed once the mesh has closed, after which it writes nothing
+	// more to the tun. The end of Run waits for it before the chains go, so a
+	// packet a session took before the stop meets the chains it met before:
+	// a running translator's, which translate it or bind it to its own source
+	// under a class of none, or a stopped one's (Translator.stopped).
+	Done <-chan struct{}
+	// Present is whether a device of the calling thread's network namespace
+	// holds the index the mesh device held when the exit was built, supplied
+	// as Sysctl is. The end of Run reads it after Done and withdraws only
+	// where none does: a mesh device that went with the mesh's close was
+	// unregistered within it, and no frame it took reaches the forward hook
+	// after, where one still there can hold such a frame past Done. Where one
+	// does, the mesh device or another that took its index, or the reading
+	// counts as unread, as DevicePresence's reader judges it, the shutdown
+	// leaves a stopped translator's rules in place of the withdrawal. A device
+	// another program removes or moves to another namespace while this reads
+	// is gone from the reading while a frame it took can still reach the
+	// forward hook (design/limits.md).
+	Present func() (bool, error)
 	// Hooks report what every exit reports. Republish is called once per pass
 	// whose announcement differs from the last. A family is ready as Linux's
 	// readiness gives (exit-nodes.md, "Readiness", and judge). The SIDs are
@@ -519,6 +540,25 @@ type chainReadback struct {
 	// which no rule this package writes has
 	rules []Installed
 	fault string
+	// flag is the fault of a flag other than dormant another writer gave the
+	// table, which the translator's write is refused for and which fault
+	// starts with in every family. Its text names every flag the table holds.
+	flag string
+	// dormant is the fault of the table's flags where they hold the dormant
+	// one, the same text as flag where they hold another too. A dormant table
+	// runs none of its chains.
+	dormant string
+	// misplaced is, where the readback read the chains' lines, the family's
+	// first chain that reads back otherwise than written, by its type, hook,
+	// priority, policy or lines, or else the first set or object a rule of the
+	// family uses that reads back otherwise than written, a set by its elements
+	// too, whatever else the readback names. It is empty where all of them
+	// read back as written.
+	misplaced string
+	// refusedOn is the fault of a set or object of the family's that a write
+	// is refused on, which names what holds it. It is empty where the family
+	// has none.
+	refusedOn string
 	// unready says why the filter is not ready where its own rules read back
 	// as written, which a rewrite would not change
 	unready string
@@ -580,11 +620,20 @@ type backend interface {
 	// written is the rules of rules the backend writes, which Apply writes
 	// and Rules reads back
 	written(rules []Rule) []Rule
+	// refused is whether err, an Apply's, is the host's refusal of the write.
+	// An error before the write was sent is none. An error read in place of
+	// the host's answers is none either.
+	refused(err error) bool
 }
 
-// passStats is one finished pass, which Status reports. Installed counts the
-// rules the host holds for this translator once the pass has applied, and
-// Announced the prefixes it is willing to advertise as a result.
+// passStats is the record of one finished pass or one stop, which Status
+// reports. Installed counts the rules the host holds for this translator as
+// the last read back of that pass or stop found them, and is 0 where a pass
+// could not read them back or a stop could not after writing them. A stop
+// that has neither written nor read them back, one under way or one whose
+// read before its write failed, keeps the count of the record before it.
+// Announced is the prefixes it is willing to advertise as a result, none in a
+// stop's.
 type passStats struct {
 	At        time.Time
 	Desired   int
@@ -623,9 +672,9 @@ type Translator struct {
 	rt  Runtime
 	be  backend
 
-	// stats is the last pass as a reader takes it. The single run goroutine
-	// publishes a whole value and a reader takes one, so this needs no lock
-	// and a reader can never see half a pass.
+	// stats is the record of the last pass or stop as a reader takes it. The
+	// single run goroutine publishes a whole value and a reader takes one, so
+	// this needs no lock and a reader can never see half a record.
 	stats atomic.Pointer[passStats]
 	*egress.Shell
 	// warned holds the conflicts already reported, so a shared host costs one
@@ -636,6 +685,9 @@ type Translator struct {
 	// down is the run goroutine's record of the stop it recorded, which the
 	// next pass clears
 	down bool
+	// placed is whether the last stop's readback found the stopped rules in
+	// place, which belongs to the run goroutine
+	placed bool
 }
 
 var _ egress.Exit = (*Translator)(nil)
@@ -652,8 +704,8 @@ func newTranslator(cfg egress.Egress, rt Runtime, be backend) *Translator {
 // translates what the tun delivers
 func (t *Translator) Egress(frames [][]byte, hold netstack.Hold) { t.rt.Write(frames, hold) }
 
-// Status is the last pass, the capability's translation and the rules the
-// host holds for this translator
+// Status is the record of the last pass or stop, the capability's translation
+// and the rules the host holds for this translator
 func (t *Translator) Status() egress.Status { return t.statusOf(t.lastPass()) }
 
 func (t *Translator) statusOf(stats passStats) egress.Status {
@@ -680,7 +732,8 @@ func (t *Translator) statusOf(stats passStats) egress.Status {
 // operator injecting a packet reads counters of now rather than of the last
 // sweep, against the rules of a stopped translator while SetEnabled holds it
 // off, and lays each family's readiness beside them as the last pass judged
-// it, from the lookups and answers that pass read
+// it, from the lookups and answers that pass read, and none where a stop has
+// stored the record since
 func (t *Translator) Debug() egress.ExitDebug {
 	pass := t.lastPass()
 	out := egress.ExitDebug{Status: t.statusOf(pass), Unlabelled: t.be.unlabelled()}
@@ -733,7 +786,8 @@ func (t *Translator) Debug() egress.ExitDebug {
 
 func (t *Translator) where() string { return t.be.where() }
 
-// lastPass is the last pass, and the zero value before the first has run, which At tells apart
+// lastPass is the record the last pass or stop stored, and the zero value
+// before the first has run, which At tells apart
 func (t *Translator) lastPass() passStats {
 	if s := t.stats.Load(); s != nil {
 		return *s
@@ -741,11 +795,18 @@ func (t *Translator) lastPass() passStats {
 	return passStats{}
 }
 
-// Run reconciles until ctx is canceled, then withdraws the chains this
-// translator owns and closes what the backend holds. It is called once.
+// Run reconciles until ctx is canceled, then records the stop, waits for
+// Runtime.Done and withdraws the chains this translator owns where the mesh
+// device has gone, or else stops as a down does and leaves the stopped rules,
+// and closes what the backend holds. It is called once.
 //
-// Run returns the withdrawal error, never a reconcile error: a failed pass is
-// logged, costs the advertisement, and is retried.
+// Run returns the error of the withdrawal or of that stop, never a reconcile
+// error: a failed pass is logged, costs the advertisement, and is retried. It
+// returns nil where the stopped rules read back as written, warning that it
+// leaves them, and otherwise an error, which it does not try again, still
+// warning where the stop saw the host take the write. The warning says the
+// stopped rules hold the exit only where that stop read them in place, and
+// otherwise that they did not read back in place.
 func (t *Translator) Run(ctx context.Context) error {
 	slog.Info("egress translator started", "interface", t.rt.Interface, "steered", t.rt.Steered, "where", t.where(),
 		"advertise", len(t.cfg.Advertise))
@@ -764,7 +825,7 @@ func (t *Translator) Run(ctx context.Context) error {
 		if !passing {
 			// read back on every wake, so a change another writer makes to the
 			// stopped chains is written over as a pass writes over one to its own
-			if err := t.stop(); err != nil {
+			if _, err := t.stop(); err != nil {
 				slog.Warn("egress could not stop its chains, retrying", "err", err, "retry_in", retry.Failed(sweep))
 			} else {
 				retry.Passed()
@@ -805,12 +866,47 @@ func (t *Translator) Run(ctx context.Context) error {
 			t.trigger = "missed"
 		}
 	}
-	// Readiness and the advertisement go before the rules do. A peer that
-	// keeps selecting this node while its chains are being taken down is a peer
-	// whose traffic leaves untranslated, and babel's own retraction is the
-	// only thing that can tell it otherwise.
+	// Readiness and the advertisement go first, so the mesh stops handing this
+	// exit frames and peers stop selecting it while the shutdown waits for the
+	// mesh to close, and the record stands for a stop's first turn.
+	t.down = true
 	t.recordStop("the translator is stopping")
-	return errors.Join(t.withdraw(), t.be.Close())
+	<-t.rt.Done
+	why := t.lingers()
+	if why == "" {
+		return errors.Join(t.withdraw(), t.be.Close())
+	}
+	// a frame the device took before Done may still reach the forward hook,
+	// where the stopped rules meet it as a down's do
+	taken, err := t.stop()
+	if err != nil && !taken {
+		return errors.Join(fmt.Errorf("the shutdown saw no write of the stopped rules taken: %w", err), t.be.Close())
+	}
+	attrs, left := []any{"why", why, "where", t.where()}, "egress left its stopped rules at shutdown"
+	if t.placed {
+		attrs = append(attrs, "detail", "they hold the exit as ranet3 down does, as the exit page gives under down and up, until the next start with cap.egress takes them over or the table is deleted")
+	} else {
+		left += ", which did not read back in place"
+	}
+	if err != nil {
+		attrs = append(attrs, "err", err)
+	}
+	slog.Warn(left, attrs...)
+	return errors.Join(err, t.be.Close())
+}
+
+// lingers says why a frame the mesh device took before Done may still reach
+// the forward hook after it, the device still there or whether it is unread,
+// and is empty where the device is gone (Runtime.Present)
+func (t *Translator) lingers() string {
+	present, err := t.rt.Present()
+	switch {
+	case err != nil:
+		return "whether the mesh device " + t.rt.Interface + " outlives the mesh could not be read: " + err.Error()
+	case present:
+		return "the mesh device " + t.rt.Interface + " outlives the mesh"
+	}
+	return ""
 }
 
 func (t *Translator) Close() error { return t.be.Close() }
@@ -885,8 +981,9 @@ func (t *Translator) reconcile() error {
 	moved := t.Publish(announced)
 
 	// the counters are the host's, and a pass that could not read them keeps the
-	// last pass's rather than reading as a reset. One that rewrote the chains
-	// starts from zero as their counters do, whether or not it read them back.
+	// record's before it, a stop's among them, rather than reading as a reset.
+	// One that rewrote the chains starts from zero as their counters do, whether
+	// or not it read them back.
 	counted := counts(desired, held)
 	if unread {
 		counted = t.lastPass()
@@ -1153,10 +1250,38 @@ func (t *Translator) reportConflicts(conflicts []string) {
 // as written. Until then it reads the translator stopping and why, with the
 // rules the host holds as it read them, none for a write whose rules it could
 // not read back, and the last count for a read that failed before any write.
-// A write the host takes whose rules still read back otherwise is an error
-// naming how, as a pass names it, so the stop is tried again as a refused one
-// is.
-func (t *Translator) stop() error {
+//
+// A write's rules are read back whatever the host answered it with. A host
+// that commits a large transaction can drop the acknowledgments past the
+// socket's receive buffer, which reads as an error, so a write whose rules
+// read back as written was taken, whatever the answer. A taken write whose
+// rules read back otherwise is an error naming how, as a pass names it, and
+// the stop is tried again as a refused one is. A write answered with the
+// host's refusal whose rules read back is an error naming the refusal and then
+// how they read back, a flag another writer gave the table and what clears it
+// among them, and Status's reason names the refusal and how as well, as a
+// pass's reason names a fault. A write answered with another error whose rules
+// read back otherwise is an error naming that answer and then how they read
+// back. Status's reason names no refusal there. Nothing read then says the
+// host refused the write, which a host that refuses a large transaction can
+// still have done, its refusal lost behind the acknowledgments the socket
+// dropped. A write that failed before it was sent is one of those. Whatever
+// the answer, the reason says the stopped rules are not in place, ahead of how
+// they read back, unless the readback finds the table without the dormant
+// flag and no family's chain, set or object misplaced. The running rules a
+// refused write leaves are misplaced, and so is a chain another writer
+// emptied or added a line to. How they read back is a flag of the table's
+// that the write is refused for, then a set or object of either family's that
+// it is refused on, IPv4's then IPv6's, and else the first family's fault,
+// then each way the stopped rules are out of place that this has not named
+// (stopFault).
+//
+// stop reports whether the host took a write of the stopped rules, which then
+// hold whatever the readback found, and keeps in placed whether its last
+// readback found them in place. It reports none, with both errors, where the
+// host answered the write with an error and the rules could not be read back
+// after, since whether it took the write is then unknown.
+func (t *Translator) stop() (bool, error) {
 	started := time.Now()
 	if !t.down {
 		t.down = true
@@ -1169,53 +1294,99 @@ func (t *Translator) stop() error {
 	read, err := t.be.Rules(rules)
 	listed := err == nil
 	installed, faulted, remake := flatten(read)
-	applied := false
+	tried, taken, refused := false, false, false
 	switch {
 	case err != nil:
 		err = fmt.Errorf("list rules: %w", err)
 	case faulted:
-		if err = t.be.Apply(rules, remake); err != nil {
-			err = fmt.Errorf("install rules: %w", err)
-			break
-		}
-		applied = true
+		tried = true
+		answered := t.be.Apply(rules, remake)
 		read, err = t.be.Rules(rules)
 		listed = err == nil
 		installed, faulted, _ = flatten(read)
+		taken = answered == nil || listed && !faulted
+		refused = !taken && t.be.refused(answered)
 		switch {
+		case !taken && listed:
+			err = fmt.Errorf("install rules: %w, then the stopped rules read back other than written: %s", answered, stopFault(read))
+		case !taken:
+			err = fmt.Errorf("install rules: %w, then list rules: %w", answered, err)
 		case err != nil:
 			err = fmt.Errorf("list rules: %w", err)
 		case faulted:
-			err = fmt.Errorf("the stopped rules read back other than written: %s", cmp.Or(read[egress.FamilyIPv4].fault, read[egress.FamilyIPv6].fault))
+			err = fmt.Errorf("the stopped rules read back other than written: %s", stopFault(read))
 		default:
 			slog.Info("egress translator stopped", "rules", len(installed), "where", t.where())
 		}
 	}
-	// the kept translation's chain counts while down as while up
+	inPlace := listed && len(unplaced(read)) == 0
+	t.placed = inPlace
+	// the kept translation's chain counts while stopped as while running
 	stats, why := counts(rules, installed), "the translator is stopped"
 	stats.Installed = len(installed)
 	if err != nil {
 		stats, why = t.lastPass(), "the translator is stopping"
-		if listed || applied {
+		if listed || tried {
 			stats.Installed = len(installed)
 		}
+		// a write whose rules read back other than written, which is every
+		// listed one here, names how, as a pass's reason names it. One whose
+		// answer read as the host's refusal names the refusal first, as its
+		// error names that answer first. One whose readback lacks a stopped
+		// rule says the stopped rules are not in place, after the refusal where
+		// the answer read as one.
 		switch {
 		case !listed:
 			why += ": its chains could not be read back"
-		case applied:
-			why += ": " + cmp.Or(read[egress.FamilyIPv4].fault, read[egress.FamilyIPv6].fault)
+		case refused && !inPlace:
+			why += ": the host refused the stopped rules, which are not in place: " + stopFault(read)
+		case refused:
+			why += ": the host refused the stopped rules: " + stopFault(read)
+		case !inPlace:
+			why += ": the stopped rules are not in place: " + stopFault(read)
+		case faulted:
+			why += ": " + stopFault(read)
 		}
 	}
 	t.storeStop(why, stats, err)
-	if applied || err != nil {
+	if taken || err != nil {
 		attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
 			slog.Int("installed", stats.Installed), slog.Int("announced", 0)}
 		if err != nil {
-			attrs = append(attrs, slog.String("err", stats.Err))
+			// err itself, since stats here holds the last record's error and
+			// storeStop set this one's on its own copy
+			attrs = append(attrs, slog.String("err", err.Error()))
 		}
 		t.rt.Events.Emit("egress.pass", "", attrs...)
 	}
-	return err
+	return taken, err
+}
+
+// stopFault is how a stop names the way read differs from what it wrote. A
+// flag of the table's that the write is refused for goes first. Then a
+// family's refusedOn, IPv4's then IPv6's, which names a set or object the
+// write is refused on and what holds it. It goes ahead of a stray chain or an
+// object of an earlier version that every family's fault starts with, held or
+// not. Where neither is, it is the first family's fault, IPv4's then IPv6's.
+// Each way unplaced gives that is not equal to that cause or to a way already
+// named follows it.
+func stopFault(read map[uint8]chainReadback) string {
+	v4, v6 := read[egress.FamilyIPv4], read[egress.FamilyIPv6]
+	out := []string{cmp.Or(v4.flag, v6.flag, v4.refusedOn, v6.refusedOn, v4.fault, v6.fault)}
+	for _, way := range unplaced(read) {
+		if !slices.Contains(out, way) {
+			out = append(out, way)
+		}
+	}
+	return strings.Join(slices.DeleteFunc(out, func(fault string) bool { return fault == "" }), ", and ")
+}
+
+// unplaced is each way read keeps the stopped rules out of place: the table's
+// dormant flag, then the first family's misplaced chain, set or object, IPv4's
+// then IPv6's. It is empty where they are in place.
+func unplaced(read map[uint8]chainReadback) []string {
+	v4, v6 := read[egress.FamilyIPv4], read[egress.FamilyIPv6]
+	return slices.DeleteFunc([]string{cmp.Or(v4.dormant, v6.dormant), cmp.Or(v4.misplaced, v6.misplaced)}, func(way string) bool { return way == "" })
 }
 
 // stopped is the rules of a stopped translator: desired's, changed so that no
@@ -1275,8 +1446,8 @@ func (t *Translator) stopped() []Rule {
 	return out
 }
 
-// recordStop stores the stop for why as storeStop does, beside the rules the
-// last pass counted
+// recordStop stores the stop for why as storeStop does, beside the counts of
+// the record before it, the last pass's or the last stop's
 func (t *Translator) recordStop(why string) { t.storeStop(why, t.lastPass(), nil) }
 
 // storeStop retracts the advertisement for why and stores stats with every
@@ -1294,9 +1465,7 @@ func (t *Translator) storeStop(why string, stats passStats, err error) {
 }
 
 // withdraw removes the chains, sets and objects this translator owns, as its
-// backend's Withdraw does. It is best effort by
-// construction: the caller usually stops the mesh at the same moment, and what
-// is already gone is not an error.
+// backend's Withdraw does, and what is already gone is not an error
 func (t *Translator) withdraw() error {
 	if err := t.be.Withdraw(); err != nil {
 		return fmt.Errorf("withdraw %s: %w", t.where(), err)

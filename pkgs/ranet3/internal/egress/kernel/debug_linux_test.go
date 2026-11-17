@@ -39,8 +39,9 @@ const (
 )
 
 // debugExit is the kernel exit translating 0.0.0.0/0 in a namespace of its own
-// with sweep, whose uplink up0 routes 203.0.113.0/24 and whose loopback holds
-// its mesh address, and the exit's debug read on a thread joined to that
+// with sweep, whose uplink up0 routes 203.0.113.0/24, whose mesh device ranet0
+// is a dummy link and whose loopback holds its mesh address, and the exit's
+// debug read on a thread joined to that
 // namespace, which the daemon's process runs in whole. A read never runs on
 // host, whose thread the read's own sysctl reads take. Its Run is the
 // caller's.
@@ -58,8 +59,10 @@ func debugExit(t *testing.T, sweep time.Duration) (exit egress.Exit, debug func(
 		}
 		defer netlink.Close()
 		kind := netnstest.Attr(unix.IFLA_LINKINFO, netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("dummy")))
-		if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("up0")), kind)); err != nil {
-			return err
+		for _, name := range []string{"up0", "ranet0"} {
+			if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(name)), kind)); err != nil {
+				return err
+			}
 		}
 		if err := netnstest.BringUp("up0"); err != nil {
 			return err
@@ -209,12 +212,16 @@ func TestDebugReadsBesidePassesAndAnotherReader(t *testing.T) {
 // Reads go on while the exit stops and after Run has returned, which closed
 // the backend's sockets: each reads the rules or finds a table the stop
 // removed between the read's look at the tables and its read of one, and a
-// read after the stop finds no rule held
+// read after the stop finds no rule held. The mesh device goes ahead of the
+// stop, as a tun goes with the mesh, so the stop withdraws.
 func TestDebugReadsAcrossTheExitsStop(t *testing.T) {
 	exit, debug, host, _ := debugExit(t, schema.MinPassInterval)
 	stopExit := runDebugExit(t, exit)
 	stopReads := readDebug(t, host, debug)
 	awaitPasses(t, exit)
+	if err := host.Do(func() error { return netnstest.DelLink("ranet0") }); err != nil {
+		t.Fatalf("delete the mesh device: %v", err)
+	}
 	stopExit()
 	errs := stopReads()
 	after := debug(netnstest.JoinThread(t, host.Path))

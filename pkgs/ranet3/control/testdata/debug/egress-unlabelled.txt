@@ -1,5 +1,5 @@
 Exit    nftables table inet ranet3 chains forward, forward6 and postrouting, 5 rules, 12 flows, announcing 203.0.113.0/24, withholding 2001:db8::/32 until its family is ready, egress ready for ipv4, not ready for ipv6, the kernel does not forward ipv6, last pass or stop 2 minutes ago
-Labels  none, the kernel refused a rule that sets or reads a connection label, so ranet3 down leaves the replies of the flows the exit translates a way out by another link
+Labels  none, the kernel refused a rule that sets or reads a connection label, so ranet3 down, and a shutdown that leaves the stopped rules, leave the replies of the flows the exit translates a way out by another link
 Rules
   out via ranet0 ipv4 untracked dropped               2 packets, 120 B
   out via ranet0 ipv4 limit 1000                      0 packets, 0 B

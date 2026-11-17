@@ -4,6 +4,7 @@
 package kernel
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,10 +15,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/egress/egresstest"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -30,18 +35,26 @@ import (
 type fakeBackend struct {
 	mu   sync.Mutex
 	held []Installed
-	// stopped is the rules a stopped translator's apply wrote, which the next
-	// apply or withdrawal takes away. The fake holds a pass's rules or a stop's,
-	// never both, so a listing reads stopped while held is empty, and a test that
-	// hands held rules describes the host anew, the stop's gone with the rest.
-	stopped   []Installed
+	// decoys is rules another writer put in the chains under the translator's
+	// comments that do something else, which a listing reads back after held
+	decoys    []Installed
 	conflicts []string
 	applied   int
 	withdrawn int
 	// failApply makes a host that will not take the rules, which is the
-	// condition an exit has to refuse to advertise over.
-	failApply bool
-	// failWithdraw makes a host that will not let its chains go, which a stop tries again rather than records as done
+	// condition an exit has to refuse to advertise over, failStop one that will
+	// not take a stopped translator's alone, and loseStop one that takes them
+	// and answers with an error, as one whose acknowledgments overflow the
+	// socket does
+	failApply, failStop, loseStop bool
+	// unsentStop makes a stop's write fail before it is sent, as a failed read
+	// of the table or a label probe that answers neither way makes it
+	unsentStop bool
+	// overflowStop makes a host that refuses a stopped translator's rules and
+	// whose acknowledgments of the refusal overflow the socket. Its answer is
+	// then no refusal.
+	overflowStop bool
+	// failWithdraw makes a host that will not let its chains go
 	failWithdraw bool
 	// flows is added to each counted rule's counter on every readback, so a
 	// test can tell a rule the pass rewrote from one it left alone.
@@ -59,6 +72,14 @@ type fakeBackend struct {
 	faults map[uint8]string
 	remake map[uint8]bool
 	stuck  bool
+	// refusing makes each family's fault of faults its refusedOn too, as a
+	// set another writer holds that the write must delete is
+	refusing bool
+	// dormant is the fault of a dormant flag another writer set on the table,
+	// and refilled a family's set or object that a stopped rule uses read back
+	// otherwise than written. A taken apply clears both unless stuck holds them.
+	dormant  string
+	refilled map[uint8]string
 	// log records each listing, apply and withdrawal in order, beside what record adds
 	log []string
 	// reads counts the debug reads, and failRead makes them fail
@@ -90,7 +111,9 @@ func (f *fakeBackend) entries() []string {
 }
 
 // Rules reads each family's rules against desired by comment, as the kernel's
-// readback reads each line by its comment and its expressions
+// readback reads each line by its comment and its expressions, a decoy among
+// them, and names a listing that differs, a refilled set and the dormant flag
+// as the kernel's readback does
 func (f *fakeBackend) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -104,13 +127,20 @@ func (f *fakeBackend) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	for family, read := range out {
 		wanted := slices.DeleteFunc(slices.Clone(desired), func(rule Rule) bool { return rule.Family != family })
 		same := slices.EqualFunc(read.rules, wanted, func(held Installed, rule Rule) bool { return held.Spec == rule.String() })
-		if read.fault == "" && !same {
-			read.fault = "its chains read back other than they were written"
-			out[family] = read
+		var lines string
+		if !same {
+			lines = fakeLines
 		}
+		read.fault = cmp.Or(f.dormant, read.fault, f.refilled[family], lines)
+		read.dormant, read.misplaced = f.dormant, cmp.Or(lines, f.refilled[family])
+		out[family] = read
 	}
 	return out, nil
 }
+
+// fakeLines is the fault of chains a listing reads back otherwise than desired
+// writes them
+const fakeLines = "its chains read back other than they were written"
 
 // Read is Rules for a debug read, which logs no listing and leaves a readback
 // an apply made due as it is
@@ -124,20 +154,25 @@ func (f *fakeBackend) Read([]Rule) (map[uint8]chainReadback, error) {
 	return f.holding(), nil
 }
 
-// holding is the host's chains as a listing reads them, under f.mu
+// holding is the host's chains as a listing reads them, under f.mu: each rule
+// of held, and the decoys after them
 func (f *fakeBackend) holding() map[uint8]chainReadback {
 	out := map[uint8]chainReadback{}
-	held := f.held
-	if len(held) == 0 {
-		held = f.stopped
-	}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		read := chainReadback{fault: f.faults[family], remake: f.faults[family] != "" && f.remake[family]}
-		for _, rule := range held {
+		if f.refusing {
+			read.refusedOn = f.faults[family]
+		}
+		for _, rule := range f.held {
 			if rule.Family == family {
 				if rule.Counted {
 					rule.Packets += f.flows
 				}
+				read.rules = append(read.rules, rule)
+			}
+		}
+		for _, rule := range f.decoys {
+			if rule.Family == family {
 				read.rules = append(read.rules, rule)
 			}
 		}
@@ -150,10 +185,11 @@ func (f *fakeBackend) holding() map[uint8]chainReadback {
 // back: each rule placed in its family. A fake that kept the order it was
 // handed would hide a desired list ordered any other way, which never compares
 // equal to its own readback. It logs remake for an apply that deletes stale
-// objects first. An apply of a stopped translator's rules is stop's.
+// objects first, and reads seen first for a stopped translator's rules.
 func (f *fakeBackend) Apply(rules []Rule, remake bool) error {
-	if slices.ContainsFunc(rules, func(rule Rule) bool { return rule.Stopped != Running }) {
-		return f.stop(rules)
+	stopping := slices.ContainsFunc(rules, func(rule Rule) bool { return rule.Stopped != Running })
+	if stopping {
+		f.see()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -162,8 +198,14 @@ func (f *fakeBackend) Apply(rules []Rule, remake bool) error {
 		entry = "remake"
 	}
 	f.log = append(f.log, entry)
-	if f.failApply {
-		return errors.New("no")
+	if stopping && f.unsentStop {
+		return errUnsent
+	}
+	if stopping && f.overflowStop {
+		return errOverflow
+	}
+	if f.failApply || stopping && f.failStop {
+		return errRefused
 	}
 	f.applied++
 	f.readback = true
@@ -172,24 +214,13 @@ func (f *fakeBackend) Apply(rules []Rule, remake bool) error {
 			delete(f.faults, family)
 		}
 	}
-	f.held, f.stopped = placed(rules), nil
-	return nil
-}
-
-// stop takes the translator's own rules away as a withdrawal does, which
-// failWithdraw refuses, and holds the stopped translator's rules apart in the
-// same write, logged as a withdrawal and then a hold
-func (f *fakeBackend) stop(rules []Rule) error {
-	f.see()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.log = append(f.log, "withdraw")
-	if f.failWithdraw {
-		return errors.New("no")
+	f.held, f.decoys = placed(rules), nil
+	if !f.stuck {
+		f.dormant, f.refilled = "", nil
 	}
-	f.withdrawn++
-	f.held, f.stopped = nil, placed(rules)
-	f.log = append(f.log, "hold")
+	if stopping && f.loseStop {
+		return errLost
+	}
 	return nil
 }
 
@@ -202,17 +233,6 @@ func placed(rules []Rule) []Installed {
 				out = append(out, Installed{Spec: rule.String(), Family: family, Chain: rule.chain(), Counted: rule.kind().counted()})
 			}
 		}
-	}
-	return out
-}
-
-// stoppedSpecs is the spec of each rule the last stop holds
-func (f *fakeBackend) stoppedSpecs() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]string, 0, len(f.stopped))
-	for _, rule := range f.stopped {
-		out = append(out, rule.Spec)
 	}
 	return out
 }
@@ -235,7 +255,7 @@ func (f *fakeBackend) Withdraw() error {
 		return errors.New("no")
 	}
 	f.withdrawn++
-	f.held, f.stopped = nil, nil
+	f.held = nil
 	return nil
 }
 
@@ -248,6 +268,14 @@ func (f *fakeBackend) Missed() <-chan struct{} { return f.missed }
 func (f *fakeBackend) where() string { return "a fake host" }
 
 func (f *fakeBackend) unlabelled() string { return "" }
+
+// errRefused is the fake host's refusal of a write, errUnsent a write that
+// failed before it was sent, and errLost the answers to a write it committed
+// lost. errOverflow is the acknowledgments of a refusal lost. Each reads "no",
+// as the tests' errors read it.
+var errRefused, errUnsent, errLost, errOverflow = errors.New("no"), errors.New("no"), errors.New("no"), errors.New("no")
+
+func (f *fakeBackend) refused(err error) bool { return errors.Is(err, errRefused) }
 
 func (f *fakeBackend) written(rules []Rule) []Rule { return rules }
 
@@ -299,11 +327,38 @@ func translator(t *testing.T, cfg egress.Egress, rt Runtime, be backend) *Transl
 	if rt.Republish == nil {
 		rt.Republish = unheard.Republish
 	}
-	return newTranslator(cfg, rt, be)
+	return newTranslator(cfg, meshGone(rt), be)
 }
 
 // unheard is the hooks of a test that reads no report through them
 var unheard = egress.Hooks{Ready: func(bool, bool, bool) {}, Republish: func() {}}
+
+// meshGone is rt with each read of the mesh it leaves nil reading a mesh
+// that has closed, whose device went with it
+func meshGone(rt Runtime) Runtime {
+	if rt.Done == nil {
+		rt.Done = egresstest.Closed
+	}
+	if rt.Present == nil {
+		rt.Present = func() (bool, error) { return false, nil }
+	}
+	return rt
+}
+
+// endedAtOnce is tr's Run under a context that has already ended, which runs
+// no turn of the loop, so what it does is the shutdown's alone
+func endedAtOnce(tr *Translator) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return tr.Run(ctx)
+}
+
+// stopTurn is a turn of tr's loop while it is down, which answers the stop's
+// error
+func stopTurn(tr *Translator) error {
+	_, err := tr.stop()
+	return err
+}
 
 // readsNothing is a Runtime.Sysctl that reads no setting, as on a host whose
 // conntrack has not loaded
@@ -991,11 +1046,7 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 	if len(tr.Announce()) != 1 {
 		t.Fatal("the first pass announced nothing to retract")
 	}
-	// Canceled before Run is entered, so the loop body never runs and the
-	// order under test is the shutdown's alone.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := tr.Run(ctx); err != nil {
+	if err := endedAtOnce(tr); err != nil {
 		t.Fatal(err)
 	}
 	if got := tr.Announce(); len(got) != 0 {
@@ -1034,35 +1085,62 @@ func readyLog(t *testing.T, cfg egress.Egress, bus *events.Bus) (*Translator, *f
 // mesh to stop egressing before it retracts, and records the stop's reason for
 // every family before the rules change, so Status says why from the moment a
 // stop begins. `ranet3 down` writes the stopped translator's rules in place of
-// its own in one write.
+// its own in one write. At shutdown the translator waits for the mesh's done
+// channel after the record and withdraws only once it has closed. Either logs
+// each family not ready and the advertisement's change at info, since neither
+// is a fault of the exit.
 func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
+	count := func(lines, level, message string) int {
+		return strings.Count(lines, "level="+level+" msg=\""+message+"\"")
+	}
 	for name, stop := range map[string]struct {
-		run  func(*Translator) error
-		ends []string
+		run func(*Translator) error
+		// waits gives the translator a mesh's done channel the test closes
+		// once Run waits on it alone
+		waits bool
+		ends  []string
 	}{
-		"shutdown": {func(tr *Translator) error {
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			return tr.Run(ctx)
-		}, []string{"withdraw"}},
-		"ranet3 down": {func(tr *Translator) error { return tr.stop() }, []string{"withdraw", "hold"}},
+		"shutdown":    {endedAtOnce, true, []string{"withdraw"}},
+		"ranet3 down": {stopTurn, false, []string{"apply"}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 			bus := events.New()
 			tr, be := readyLog(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, bus)
 			be.seen = func() string {
 				s := tr.Status()
 				return fmt.Sprintf("status %v %v %s", s.Ready4, s.Ready6, s.Unready)
 			}
+			closed := make(chan struct{})
+			if stop.waits {
+				tr.rt.Done = closed
+			}
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			if err := stop.run(tr); err != nil {
+			passed := len(be.entries())
+			ended := make(chan error, 1)
+			go func() { ended <- stop.run(tr) }()
+			if stop.waits {
+				// every goroutine of the bubble is blocked, Run on the mesh's done
+				// channel alone
+				synctest.Wait()
+				got, s := be.entries(), tr.Status()
+				switch {
+				case slices.Contains(got, "withdraw"):
+					t.Errorf("with the mesh open the translator went %q, want no withdrawal before it closed", got)
+				case !slices.Contains(got, "retract") || s.Ready4 || s.Ready6 || s.Unready != "the translator is stopping":
+					t.Errorf("with the mesh open the translator went %q and Status read ready %v %v, %q, want the stop retracted and recorded before it waits", got, s.Ready4, s.Ready6, s.Unready)
+				}
+				close(closed)
+			}
+			if err := <-ended; err != nil {
 				t.Fatal(err)
 			}
 			var order []string
-			for _, entry := range be.entries() {
-				if entry != "rules" && entry != "apply" {
+			for i, entry := range be.entries() {
+				if entry != "rules" && (entry != "apply" || i >= passed) {
 					order = append(order, entry)
 				}
 			}
@@ -1076,7 +1154,11 @@ func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
 			if want := []string{"true true true", "false false false"}; !slices.Equal(recorded, want) {
 				t.Errorf("recorded egress.ready %q, want %q", recorded, want)
 			}
-		})
+			if got := lines.String(); count(got, "INFO", "egress not ready") != 2 || count(got, "INFO", "egress advertisement changed") != 1 ||
+				count(got, "WARN", "egress not ready") != 0 || count(got, "WARN", "egress advertisement changed") != 0 {
+				t.Errorf("the %s logged other than both families not ready and the advertisement's change at info:\n%s", name, got)
+			}
+		}))
 	}
 }
 
@@ -1260,42 +1342,82 @@ func edges(classes []egress.Class, family uint8) []netip.Addr {
 }
 
 // A translator started down writes a stopped translator's rules from its first
-// turn, the translation's chain as a pass writes it among them, and reads
-// stopped with none of a running translator's installed once they read back as
-// written. Its first pass after `ranet3 up` puts its own in their place.
-func TestStartedDownHoldsUntilTheFirstPass(t *testing.T) {
-	be := &fakeBackend{}
+// turn, the translation's chain as a pass writes it among them, and reads them
+// back at every turn of its loop, writing them again where they no longer read
+// back as written, as a pass does its own: a stop the host refused is tried
+// again at the next wake, logged at warn, and the rules another writer took
+// away are put back, each write logged at info, with no pass between. Status
+// reads the stop in effect, neither family ready and the stopped rules counted,
+// once they read back. Its first pass after `ranet3 up` puts its own in their
+// place.
+func TestStartedDownHoldsItsStoppedRulesUntilTheFirstPass(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	be := &fakeBackend{changed: make(chan struct{}, 1), failStop: true}
 	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
 	tr.Enabled.Store(false)
+	want := specsOf(tr.stopped())
+	if !slices.Contains(want, "out via ranet0 ipv4 dropped while stopped") || !slices.Contains(want, "out via ranet0 ipv4 masquerade") {
+		t.Fatalf("a stopped translator's rules are %q, want the hold and the translation among them", want)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
-	t.Cleanup(func() {
+	end := sync.OnceFunc(func() {
 		cancel()
 		<-done
 	})
-	await := func(what string, ok func() bool) {
+	t.Cleanup(end)
+	await := awaiting(t, be, tr)
+	stopped := func() bool {
+		s := tr.Status()
+		return !s.Ready4 && !s.Ready6 && s.Unready == "the translator is stopped" && s.Err == "" && s.Rules.Installed == len(want) && slices.Equal(be.specs(), want)
+	}
+	await("the refused stop", func() bool { return tr.Status().Err != "" })
+	be.mu.Lock()
+	if be.withdrawn != 0 || len(be.held) != 0 {
+		t.Errorf("the refused stop left %d rules after %d withdrawals, want none of either, as it found the host", len(be.held), be.withdrawn)
+	}
+	be.failStop = false
+	be.mu.Unlock()
+	be.changed <- struct{}{}
+	await("the stop tried again", stopped)
+	be.mu.Lock()
+	be.held = be.held[1:]
+	be.mu.Unlock()
+	be.changed <- struct{}{}
+	await("the rules another writer took away put back", stopped)
+	tr.SetEnabled(true)
+	await("the first pass", func() bool { return slices.Equal(be.specs(), specsOf(tr.desired())) })
+	end()
+	got := lines.String()
+	if passes, refused, wrote := strings.Count(got, `msg="egress rules installed"`), strings.Count(got, `level=WARN msg="egress could not stop its chains, retrying"`),
+		strings.Count(got, `level=INFO msg="egress translator stopped"`); passes != 1 || refused == 0 || wrote != 2 {
+		t.Errorf("the translator started down ran %d passes, logged %d refusals at warn and %d writes at info, want the one after up, at least 1 and 2:\n%s", passes, refused, wrote, got)
+	}
+}
+
+// awaiting is a wait of up to PassWait for ok, failing t with what be holds
+// and what Status of tr reads where ok never held
+func awaiting(t *testing.T, be *fakeBackend, tr *Translator) func(what string, ok func() bool) {
+	return func(what string, ok func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(passWait); !ok(); time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); !ok(); time.Sleep(passPoll) {
 			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s, the host holding %q and %q", what, be.specs(), be.stoppedSpecs())
+				s := tr.Status()
+				t.Fatalf("timed out waiting for %s, the host holding %q, Status reading %q and the error %q", what, be.specs(), s.Unready, s.Err)
 			}
 		}
 	}
-	await("the stop", func() bool { return tr.Status().Unready == "the translator is stopped" })
-	var want []string
-	for _, rule := range tr.stopped() {
-		want = append(want, rule.String())
+}
+
+// specsOf is the spec of each of rules
+func specsOf(rules []Rule) []string {
+	out := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, rule.String())
 	}
-	if got := be.stoppedSpecs(); !slices.Equal(got, want) || len(be.specs()) != 0 ||
-		!slices.Contains(got, "out via ranet0 ipv4 dropped while stopped") || !slices.Contains(got, "out via ranet0 ipv4 masquerade") {
-		t.Errorf("a translator started down holds %q and %q of its own, want %q, the drop and the translation among them", got, be.specs(), want)
-	}
-	if s := tr.Status(); s.Ready4 || s.Ready6 || s.Err != "" || s.Rules.Installed != len(want) {
-		t.Errorf("a translator started down reads ready %v and %v with the error %q and %d installed, want neither, none and the %d stopped rules", s.Ready4, s.Ready6, s.Err, s.Rules.Installed, len(want))
-	}
-	tr.SetEnabled(true)
-	await("the first pass", func() bool { return len(be.specs()) != 0 && len(be.stoppedSpecs()) == 0 })
+	return out
 }
 
 // A start that finds the rules of a run that died brings the host to its own
@@ -1333,22 +1455,18 @@ func TestStartOverTheRulesOfARunThatDied(t *testing.T) {
 			turn, wanted, status := tr.reconcile, tr.desired(), ""
 			if c.down {
 				tr.Enabled.Store(false)
-				turn, wanted, status = tr.stop, tr.stopped(), "the translator is stopped"
+				turn, wanted, status = func() error { return stopTurn(tr) }, tr.stopped(), "the translator is stopped"
 			}
 			if err := turn(); err != nil {
 				t.Fatal(err)
 			}
 			writes := 0
 			for _, entry := range be.entries()[mark:] {
-				if entry == "apply" || entry == "hold" {
+				if entry == "apply" {
 					writes++
 				}
 			}
-			var want []string
-			for _, rule := range wanted {
-				want = append(want, rule.String())
-			}
-			if got := slices.Concat(be.specs(), be.stoppedSpecs()); !slices.Equal(got, want) || writes != c.writes {
+			if got, want := be.specs(), specsOf(wanted); !slices.Equal(got, want) || writes != c.writes {
 				t.Errorf("the start left %q after %d writes, want %q after %d", got, writes, want, c.writes)
 			}
 			if s := tr.Status(); s.Unready != status || s.Err != "" {
@@ -1358,141 +1476,632 @@ func TestStartOverTheRulesOfARunThatDied(t *testing.T) {
 	}
 }
 
-// A stop the host refuses leaves what the host held as it was, and Status reads
-// at every moment of each try, a retry's among them, that the stop has not
-// taken effect: both families not ready for the stop under way, the rules the
-// host holds and the last refusal. Once the host takes the stop Status reads it
-// in effect.
-func TestRefusedStopLeavesTheChainsItFound(t *testing.T) {
+// A stop whose write the host takes but whose rules then read back other than
+// written, or cannot be read back, reads the translator stopping, why as a pass
+// names it and the error, the rules it read counted, or none where it read
+// none, and is an error, so it is tried again. Once they read back as written
+// Status reads the stop in effect, with the flows the kept translation's chain
+// counts.
+func TestStopReadsInEffectOnlyOnceItsRulesReadBack(t *testing.T) {
 	be := &fakeBackend{}
 	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
+	fault := "its chain none_x is not one the translator writes, and chain other holds a rule going to it, so it stays until that rule goes"
+	be.faults, be.stuck = map[uint8]string{egress.FamilyIPv6: fault}, true
+	_, err := tr.stop()
+	if s := tr.Status(); err == nil || !strings.Contains(err.Error(), fault) || s.Ready4 || s.Ready6 || s.Unready != "the translator is stopping: "+fault ||
+		s.Err != err.Error() || s.Rules.Installed != len(tr.stopped()) {
+		t.Errorf("a stop whose rules read back with a fault returned %v and reads ready %v %v, %q, the error %q and %d installed, want the fault named and %d", err, s.Ready4, s.Ready6, s.Unready, s.Err, s.Rules.Installed, len(tr.stopped()))
+	}
+	be.faults, be.stuck = map[uint8]string{egress.FamilyIPv6: fault}, false
+	be.failReadback = true
+	_, err = tr.stop()
+	if s := tr.Status(); err == nil || s.Unready != "the translator is stopping: its chains could not be read back" || s.Err != err.Error() || s.Rules.Installed != 0 {
+		t.Errorf("a stop whose rules could not be read back returned %v and reads %q, the error %q and %d installed, want them said unread and none", err, s.Unready, s.Err, s.Rules.Installed)
+	}
+	be.failReadback, be.flows = false, 3
+	if err := stopTurn(tr); err != nil {
+		t.Fatal(err)
+	}
+	// the kept translation's chain counts on while down, each of its counters
+	// at 3
+	var flows uint64
+	for _, rule := range tr.stopped() {
+		if rule.kind() == translating && !rule.None {
+			flows += be.flows
+		}
+	}
+	if s := tr.Status(); s.Unready != "the translator is stopped" || s.Err != "" || s.Rules.Installed != len(tr.stopped()) || flows == 0 || s.Rules.Flows != flows {
+		t.Errorf("the stop whose rules read back reads %q, the error %q, %d installed and %d flows, want it in effect with %d and %d", s.Unready, s.Err, s.Rules.Installed, s.Rules.Flows, len(tr.stopped()), flows)
+	}
+}
+
+// A write of the stopped rules the host answers with an error, as it answers a
+// transaction it commits whose acknowledgments overflow the socket, is judged
+// by the readback after it. Where the rules read back as written the stop
+// reports the write taken, logs that the translator stopped, reads in effect
+// and is no error. Where they cannot be read back after it, the stop reports
+// no write taken, reads the translator stopping with none counted, and is an
+// error naming the write's and the readback's.
+func TestStopJudgesAWriteAnsweredWithAnErrorByItsReadback(t *testing.T) {
+	for name, unread := range map[string]bool{"read back as written": false, "not read back": true} {
+		t.Run(name, func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+			be := &fakeBackend{loseStop: true}
+			tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			be.failReadback = unread
+			wrote, err := tr.stop()
+			s, logged := tr.Status(), strings.Contains(lines.String(), `msg="egress translator stopped"`)
+			switch {
+			case !unread && (!wrote || err != nil || !logged || s.Unready != "the translator is stopped" || s.Rules.Installed != len(tr.stopped())):
+				t.Errorf("the stop reported the write taken %v, returned %v, logged its stop %v and reads %q with %d installed, want it taken, in effect with %d and logged", wrote, err, logged, s.Unready, s.Rules.Installed, len(tr.stopped()))
+			case unread && (wrote || err == nil || err.Error() != "install rules: no, then list rules: no" || logged || s.Unready != "the translator is stopping: its chains could not be read back" || s.Rules.Installed != 0):
+				t.Errorf("the stop reported the write taken %v, returned %v, logged its stop %v and reads %q with %d installed, want none taken, both errors, no stop logged and none counted", wrote, err, logged, s.Unready, s.Rules.Installed)
+			}
+		})
+	}
+}
+
+// A stop the host refuses whose rules then read back with a fault, as those of
+// a table another writer gave a flag do, names the fault beside the refusal:
+// Status reads the translator stopping, the refusal, that the stopped rules are
+// not in place and then the fault and the running rules it found in place of
+// the stopped ones, as a pass's reason names a fault, with the rules the host
+// holds counted, and the error, which the egress.pass event carries too, reads
+// the refusal and then the same faults
+func TestRefusedStopNamesHowItsRulesReadBack(t *testing.T) {
+	bus := events.New()
+	be := &fakeBackend{}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Events: bus}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	const fault = "its table carries flags 0x4, where none are written and 0x1 is dormant, and only nft delete table inet ranet3 clears another"
+	be.faults, be.failStop = map[uint8]string{egress.FamilyIPv4: fault, egress.FamilyIPv6: fault}, true
 	held := be.specs()
+	taken, err := tr.stop()
+	want := "install rules: no, then the stopped rules read back other than written: " + fault + ", and " + fakeLines
+	const stopping = "the translator is stopping: the host refused the stopped rules, which are not in place: " + fault + ", and " + fakeLines
+	if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != stopping || s.Err != want || s.Rules.Installed != len(held) {
+		t.Errorf("the refused stop reported the write taken %v, returned %v and reads %q, the error %q and %d installed, want none taken, %q, %q and the %d rules the host holds",
+			taken, err, s.Unready, s.Err, s.Rules.Installed, stopping, want, len(held))
+	}
+	var errs []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
+		errs = append(errs, event.Attrs["err"])
+	}
+	if len(errs) == 0 || errs[len(errs)-1] != want {
+		t.Errorf("the egress.pass events carry the errors %q, want the last %q", errs, want)
+	}
+}
+
+// A stop names no refusal in Status's reason where the host refused nothing of
+// its write and its rules read back with a fault, a chain of an earlier
+// version's another writer holds, which leaves the stopped rules in place. One
+// such write failed before it was sent. Its reason says the stopped rules are
+// not in place, ahead of the fault and the running rules it found. The host
+// committed another, and its answers were lost. Its reason names the fault
+// alone. The error names the write's answer and then what the reason names
+// after its colon. The host holds what it held in the first case and the
+// stopped rules in the second.
+func TestStopNamesNoRefusalWhereTheHostRefusedNothing(t *testing.T) {
+	const fault = "its chain forward4 is not one the translator writes, and chain other holds a rule going to it, so it stays until that rule goes"
+	for _, c := range []struct {
+		name         string
+		unsent, lost bool
+		read         string
+		stopping     string
+	}{
+		{"a write that failed before it was sent", true, false, fault + ", and " + fakeLines, "the translator is stopping: the stopped rules are not in place: " + fault + ", and " + fakeLines},
+		{"a write whose answers were lost", false, true, fault, "the translator is stopping: " + fault},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			be := &fakeBackend{}
+			tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			held := be.specs()
+			if c.lost {
+				held = specsOf(tr.stopped())
+			}
+			be.faults, be.stuck = map[uint8]string{egress.FamilyIPv4: fault}, true
+			be.unsentStop, be.loseStop = c.unsent, c.lost
+			taken, err := tr.stop()
+			want := "install rules: no, then the stopped rules read back other than written: " + c.read
+			if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != c.stopping || s.Err != want {
+				t.Errorf("the stop reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, c.stopping, want)
+			}
+			if got := be.specs(); !slices.Equal(got, held) {
+				t.Errorf("the host holds %q, want %q", got, held)
+			}
+		})
+	}
+}
+
+// A stop's write the host refuses, whose acknowledgments of the refusal
+// overflow the socket, has an answer that is no refusal. Status's reason names
+// no refusal then. It says the stopped rules are not in place, ahead of the
+// fault and the running rules the readback finds in their place. The error
+// names the answer and then the same faults. The host holds the running rules.
+func TestRefusedStopWhoseAnswersOverflowSaysItsRulesAreNotInPlace(t *testing.T) {
+	be := &fakeBackend{}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	const fault = "its set untranslated4 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+	be.faults, be.stuck, be.overflowStop = map[uint8]string{egress.FamilyIPv4: fault}, true, true
+	held := be.specs()
+	taken, err := tr.stop()
+	want := "install rules: no, then the stopped rules read back other than written: " + fault + ", and " + fakeLines
+	const stopping = "the translator is stopping: the stopped rules are not in place: " + fault + ", and " + fakeLines
+	if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != stopping || s.Err != want {
+		t.Errorf("the stop reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, stopping, want)
+	}
+	if got := be.specs(); !slices.Equal(got, held) {
+		t.Errorf("the host holds %q, want the running rules %q", got, held)
+	}
+}
+
+// A stop the host refuses over the stopped rules it already holds, as a stop
+// tried again after another writer's change meets, finds every stopped rule in
+// its readback. Status's reason names the refusal and then the fault, without
+// the words that the stopped rules are not in place. The error names the
+// refusal and then the fault. The host holds the stopped rules.
+func TestRefusedStopOverTheStoppedRulesItHoldsSaysNothingOfThemOutOfPlace(t *testing.T) {
+	be := &fakeBackend{}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if taken, err := tr.stop(); !taken || err != nil {
+		t.Fatalf("the first stop reported the write taken %v and returned %v, want it taken", taken, err)
+	}
+	const fault = "its set untranslated6 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+	be.faults, be.stuck, be.failStop = map[uint8]string{egress.FamilyIPv6: fault}, true, true
+	held := be.specs()
+	taken, err := tr.stop()
+	want := "install rules: no, then the stopped rules read back other than written: " + fault
+	const stopping = "the translator is stopping: the host refused the stopped rules: " + fault
+	if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != stopping || s.Err != want {
+		t.Errorf("the stop tried again reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, stopping, want)
+	}
+	if got := be.specs(); !slices.Equal(got, held) || !slices.Equal(got, specsOf(tr.stopped())) {
+		t.Errorf("the host holds %q, want the stopped rules %q", got, specsOf(tr.stopped()))
+	}
+}
+
+// A stop the host refuses over the stopped rules it holds in a table another
+// writer made dormant, which runs none of its chains, reads them not in place.
+// Status's reason names the refusal, the words that the stopped rules are not
+// in place, the held set and then the dormant flag, and the error names the
+// refusal, the set and the flag. The host holds the stopped rules.
+func TestRefusedStopInADormantTableSaysItsRulesAreNotInPlace(t *testing.T) {
+	be := &fakeBackend{}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if taken, err := tr.stop(); !taken || err != nil {
+		t.Fatalf("the first stop reported the write taken %v and returned %v, want it taken", taken, err)
+	}
+	const (
+		held    = "its set untranslated6 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+		dormant = "its table carries flags 0x1, where none are written and 0x1 is dormant"
+	)
+	be.faults, be.refusing, be.stuck, be.failStop, be.dormant = map[uint8]string{egress.FamilyIPv6: held}, true, true, true, dormant
+	taken, err := tr.stop()
+	want := "install rules: no, then the stopped rules read back other than written: " + held + ", and " + dormant
+	const stopping = "the translator is stopping: the host refused the stopped rules, which are not in place: " + held + ", and " + dormant
+	if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != stopping || s.Err != want {
+		t.Errorf("the stop tried again reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, stopping, want)
+	}
+	if got := be.specs(); !slices.Equal(got, specsOf(tr.stopped())) {
+		t.Errorf("the host holds %q, want the stopped rules %q", got, specsOf(tr.stopped()))
+	}
+}
+
+// A stop the host refuses over the stopped rules it holds beside a line
+// another writer put in a family's chains, IPv4's or IPv6's alone, reads them
+// not in place: Status's reason names the refusal, the words that they are
+// not in place, the held set and then how the chains read back.
+func TestRefusedStopBesideAnotherWritersLineSaysItsRulesAreNotInPlace(t *testing.T) {
+	const held = "its set untranslated4 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+	for _, c := range []struct {
+		name   string
+		family uint8
+		chain  string
+	}{
+		{"a line in IPv4's chain", egress.FamilyIPv4, LimitChain},
+		{"a line in IPv6's chain alone", egress.FamilyIPv6, familyChain(egress.FamilyIPv6)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			be := &fakeBackend{}
+			tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if taken, err := tr.stop(); !taken || err != nil {
+				t.Fatalf("the first stop reported the write taken %v and returned %v, want it taken", taken, err)
+			}
+			be.decoys = []Installed{{Family: c.family, Chain: c.chain, Counted: true}}
+			be.faults, be.refusing, be.stuck, be.failStop = map[uint8]string{egress.FamilyIPv4: held}, true, true, true
+			taken, err := tr.stop()
+			want := "install rules: no, then the stopped rules read back other than written: " + held + ", and " + fakeLines
+			const stopping = "the translator is stopping: the host refused the stopped rules, which are not in place: " + held + ", and " + fakeLines
+			if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != stopping || s.Err != want {
+				t.Errorf("the stop tried again reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, stopping, want)
+			}
+		})
+	}
+}
+
+// A stop the host refuses over the stopped rules it holds, where a set of
+// untranslated sources a stopped rule looks up reads back with elements
+// another writer added, IPv4's or IPv6's, reads them not in place: Status's
+// reason names the refusal, the words that they are not in place, the other
+// family's held set and then the refilled one.
+func TestRefusedStopOverARefilledSetSaysItsRulesAreNotInPlace(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		refilled, held uint8
+		refill, fault  string
+	}{
+		{"IPv4's set refilled", egress.FamilyIPv4, egress.FamilyIPv6, "its set untranslated4 holds { 192.0.2.2, 198.51.100.0/24 }, where { 198.51.100.0/24 } was written",
+			"its set untranslated6 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"},
+		{"IPv6's set refilled", egress.FamilyIPv6, egress.FamilyIPv4, "its set untranslated6 holds { 3fff::2, 2001:db8::/32 }, where { 2001:db8::/32 } was written",
+			"its set untranslated4 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			be := &fakeBackend{}
+			tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if taken, err := tr.stop(); !taken || err != nil {
+				t.Fatalf("the first stop reported the write taken %v and returned %v, want it taken", taken, err)
+			}
+			be.refilled = map[uint8]string{c.refilled: c.refill}
+			be.faults, be.refusing, be.stuck, be.failStop = map[uint8]string{c.held: c.fault}, true, true, true
+			taken, err := tr.stop()
+			want := "install rules: no, then the stopped rules read back other than written: " + c.fault + ", and " + c.refill
+			stopping := "the translator is stopping: the host refused the stopped rules, which are not in place: " + c.fault + ", and " + c.refill
+			if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != stopping || s.Err != want {
+				t.Errorf("the stop tried again reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, stopping, want)
+			}
+		})
+	}
+}
+
+// Rules another writer put in the translator's chains under the comments of
+// the stopped rules a running translator lacks, which do something else, are
+// none of the stopped rules. A stop whose write must delete a set another
+// writer holds beside them, and which the host refuses, says the stopped rules
+// are not in place, after the refusal where the answer read as one and alone
+// where the refusal's acknowledgments overflowed the socket, and names the set
+// and then the chains holding the decoys. The host holds the running rules and
+// those decoys.
+func TestStopFindsTheStoppedRulesByWhatTheyDoNotByTheirComments(t *testing.T) {
+	const fault = "its set untranslated4 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+	for _, c := range []struct {
+		name     string
+		overflow bool
+		stopping string
+	}{
+		{"a refusal acknowledged", false, "the translator is stopping: the host refused the stopped rules, which are not in place: " + fault + ", and " + fakeLines},
+		{"a refusal whose acknowledgments overflowed", true, "the translator is stopping: the stopped rules are not in place: " + fault + ", and " + fakeLines},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			be := &fakeBackend{}
+			tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{}, be)
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			running := be.specs()
+			for _, rule := range placed(tr.stopped()) {
+				if !slices.Contains(running, rule.Spec) {
+					rule.Counted = true
+					be.decoys = append(be.decoys, rule)
+				}
+			}
+			if len(be.decoys) == 0 {
+				t.Fatal("every stopped rule carries a running rule's comment, so no decoy can stand in for one")
+			}
+			be.faults, be.stuck, be.failStop, be.overflowStop = map[uint8]string{egress.FamilyIPv4: fault}, true, !c.overflow, c.overflow
+			taken, err := tr.stop()
+			want := "install rules: no, then the stopped rules read back other than written: " + fault + ", and " + fakeLines
+			if s := tr.Status(); taken || err == nil || err.Error() != want || s.Unready != c.stopping || s.Err != want {
+				t.Errorf("the stop reported the write taken %v, returned %v and reads %q and the error %q, want none taken, %q and %q", taken, err, s.Unready, s.Err, c.stopping, want)
+			}
+			if got := be.specs(); !slices.Equal(got, running) || len(be.decoys) == 0 {
+				t.Errorf("the host holds %q and %d decoys, want the running rules %q and the decoys", got, len(be.decoys), running)
+			}
+		})
+	}
+}
+
+// A stop names the fault of a family's set or object that its write is
+// refused on ahead of any family's lines, IPv6's among them. A flag of the
+// table's that the write is refused for stays first. A stray chain or an
+// object of an earlier version that every family's fault starts with comes
+// after any family's set or object the write is refused on, held or not. Where
+// no family has a held one, IPv4's fault goes first. IPv4's stale set that
+// nothing holds comes after IPv6's held one. After that cause come the table's
+// dormant flag and then the first family's misplaced chain, set or object,
+// IPv4's then IPv6's, each where it is not the cause or already named.
+func TestStopFaultNamesAHeldObjectAheadOfTheLines(t *testing.T) {
+	const (
+		lines    = "its chain forward holds the running lines where the stopped ones were written"
+		held     = "its set untranslated6 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+		table    = "its table carries flags 0x4, where none are written and 0x1 is dormant"
+		stale    = "its set untranslated4 reads back with flags 0x0, where flags 0x4 were written"
+		stray    = "its chain forward4 is not one the translator writes"
+		leftover = "its ct timeout translated-udp4 is not one the translator writes, and chain other holds a rule using it, so it stays until that rule goes"
+		held4    = "its set untranslated4 reads back with flags 0x0, where flags 0x4 were written, and chain other holds a rule using it, so it stays until that rule goes"
+		dormant  = "its table carries flags 0x1, where none are written and 0x1 is dormant"
+		both     = "its table carries flags 0x5, where none are written and 0x1 is dormant, and only nft delete table inet ranet3 clears another"
+		lines6   = "its chain forward6 holds the stopped lines after a line with no comment"
+		refill6  = "its set untranslated6 holds { 3fff::2 }, where { } was written"
+	)
+	for _, c := range []struct {
+		name string
+		read map[uint8]chainReadback
+		want string
+	}{
+		{"IPv6's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: lines}, egress.FamilyIPv6: {fault: held, refusedOn: held}}, held},
+		{"the table's flag", map[uint8]chainReadback{egress.FamilyIPv4: {fault: table, flag: table}, egress.FamilyIPv6: {fault: table, flag: table, refusedOn: held}}, table},
+		{"lines alone", map[uint8]chainReadback{egress.FamilyIPv4: {fault: lines}, egress.FamilyIPv6: {fault: "its chain forward6 is missing"}}, lines},
+		{"IPv4's stale set beside IPv6's held one", map[uint8]chainReadback{egress.FamilyIPv4: {fault: stale}, egress.FamilyIPv6: {fault: held, refusedOn: held}}, held},
+		{"a stray chain beside IPv6's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: stray}, egress.FamilyIPv6: {fault: stray, refusedOn: held}}, held},
+		{"a held timeout of an earlier version beside IPv4's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: leftover, refusedOn: held4}, egress.FamilyIPv6: {fault: leftover}}, held4},
+		{"a stray chain alone", map[uint8]chainReadback{egress.FamilyIPv4: {fault: stray}, egress.FamilyIPv6: {fault: stray}}, stray},
+		{"the dormant flag beside IPv6's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: dormant, dormant: dormant}, egress.FamilyIPv6: {fault: dormant, dormant: dormant, refusedOn: held}}, held + ", and " + dormant},
+		{"the dormant flag beside another flag", map[uint8]chainReadback{egress.FamilyIPv4: {fault: both, flag: both, dormant: both}, egress.FamilyIPv6: {fault: both, flag: both, dormant: both, refusedOn: held}}, both},
+		{"the dormant flag beside a stray chain", map[uint8]chainReadback{egress.FamilyIPv4: {fault: stray, dormant: dormant}, egress.FamilyIPv6: {fault: stray, dormant: dormant}}, stray + ", and " + dormant},
+		{"the dormant flag alone", map[uint8]chainReadback{egress.FamilyIPv4: {fault: dormant, dormant: dormant}, egress.FamilyIPv6: {fault: dormant, dormant: dormant}}, dormant},
+		{"lines beside IPv6's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: lines, misplaced: lines}, egress.FamilyIPv6: {fault: held, refusedOn: held, misplaced: lines}}, held + ", and " + lines},
+		{"IPv6's lines alone beside IPv4's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: held4, refusedOn: held4}, egress.FamilyIPv6: {fault: lines6, misplaced: lines6}}, held4 + ", and " + lines6},
+		{"IPv6's refilled set beside IPv4's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: held4, refusedOn: held4}, egress.FamilyIPv6: {fault: refill6, misplaced: refill6}}, held4 + ", and " + refill6},
+		{"the dormant flag and lines beside IPv6's held set", map[uint8]chainReadback{egress.FamilyIPv4: {fault: dormant, dormant: dormant, misplaced: lines}, egress.FamilyIPv6: {fault: dormant, dormant: dormant, refusedOn: held, misplaced: lines}}, held + ", and " + dormant + ", and " + lines},
+		{"a held set the stopped rules use", map[uint8]chainReadback{egress.FamilyIPv4: {fault: held4, refusedOn: held4, misplaced: held4}}, held4},
+	} {
+		if got := stopFault(c.read); got != c.want {
+			t.Errorf("%s: the stop names %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// At shutdown the translator waits for the mesh to close, then reads whether
+// the mesh device is still there and withdraws only where it has gone. Where
+// it outlives the mesh, or whether it does cannot be read, the shutdown ends as
+// a down does, the stopped rules written or left in place and nothing
+// withdrawn, and says why at warn, with the error of a stop whose rules read
+// back with a fault, which Run returns. A write the host answers with an error
+// after it took it, as one whose acknowledgments overflow the socket, is the
+// same where its rules read back as written. A stop the host refuses there
+// leaves what the host held, and one answered with an error whose rules cannot
+// be read back after it what the host took or held: either warns of no
+// stopped rules, and Run returns why, a refusal beside how the rules read
+// back. The warning says the stopped rules hold the exit only where the stop
+// read them in place, and otherwise that they did not read back in place,
+// Run's error naming how.
+func TestShutdownWithdrawsOnlyWhereTheMeshDeviceIsGone(t *testing.T) {
+	unread := errors.New("no")
+	const (
+		fault  = "its chains read back other than they were written"
+		refill = "its set untranslated4 holds { 192.0.2.2 }, where { } was written"
+	)
+	for name, c := range map[string]struct {
+		down, present bool
+		absent        error
+		// faulted makes the stop's rules read back with a fault, refilled with
+		// a set they use read back otherwise than written, refused the host
+		// refuse them, lost the host answer their write with an error after it
+		// took it, and unlisted then fail their readback
+		faulted, refilled, refused, lost, unlisted bool
+		// keeps is the warning's reason for the stopped rules, empty for a
+		// withdrawal, and fails what Run's error holds, empty for none
+		keeps, fails string
+	}{
+		"the device gone with the mesh":            {},
+		"the device outliving the mesh":            {present: true, keeps: "the mesh device ranet0 outlives the mesh"},
+		"down, the device outliving the mesh":      {down: true, present: true, keeps: "the mesh device ranet0 outlives the mesh"},
+		"the device's presence unread":             {absent: unread, keeps: "whether the mesh device ranet0 outlives the mesh could not be read: no"},
+		"the stopped rules read back with faults":  {present: true, faulted: true, keeps: "the mesh device ranet0 outlives the mesh", fails: fault},
+		"the stopped rules read back out of place": {present: true, refilled: true, keeps: "the mesh device ranet0 outlives the mesh", fails: refill},
+		"the stop's answer lost":                   {present: true, lost: true, keeps: "the mesh device ranet0 outlives the mesh"},
+		"the stop taken, not read back":            {present: true, unlisted: true, keeps: "the mesh device ranet0 outlives the mesh", fails: "list rules: no"},
+		"the stop refused":                         {present: true, refused: true, fails: "the shutdown saw no write of the stopped rules taken: install rules: no, then the stopped rules read back other than written: " + fault},
+		"the stop's answer lost, not read back":    {present: true, lost: true, unlisted: true, fails: "the shutdown saw no write of the stopped rules taken: install rules: no, then list rules: no"},
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+			be := &fakeBackend{}
+			var reads atomic.Int32
+			closed := make(chan struct{})
+			rt := Runtime{Done: closed, Present: func() (bool, error) { reads.Add(1); return c.present, c.absent }}
+			tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, rt, be)
+			turn := tr.reconcile
+			if c.down {
+				tr.Enabled.Store(false)
+				turn = func() error { return stopTurn(tr) }
+			}
+			if err := turn(); err != nil {
+				t.Fatal(err)
+			}
+			held := be.specs()
+			be.failStop, be.loseStop, be.failReadback = c.refused, c.lost, c.unlisted
+			if c.faulted {
+				be.faults, be.stuck = map[uint8]string{egress.FamilyIPv6: fault}, true
+			}
+			if c.refilled {
+				be.refilled, be.stuck = map[uint8]string{egress.FamilyIPv4: refill}, true
+			}
+			ran := make(chan error, 1)
+			go func() { ran <- endedAtOnce(tr) }()
+			// every goroutine of the bubble is blocked, Run on the mesh's done
+			// channel alone
+			synctest.Wait()
+			select {
+			case <-ran:
+				t.Fatal("Run returned before the mesh closed")
+			default:
+			}
+			if n := reads.Load(); n != 0 {
+				t.Errorf("the device's presence was read %d times before the mesh closed, want none", n)
+			}
+			close(closed)
+			err := <-ran
+			got := lines.String()
+			left := strings.Count(got, `level=WARN msg="egress left its stopped rules at shutdown"`)
+			misplaced := strings.Count(got, `level=WARN msg="egress left its stopped rules at shutdown, which did not read back in place"`)
+			hold := strings.Contains(got, "they hold the exit as ranet3 down does")
+			inPlace := !c.refilled && !c.unlisted
+			if !inPlace {
+				left, misplaced = misplaced, left
+			}
+			if misplaced != 0 || c.keeps != "" && hold != inPlace {
+				t.Errorf("the shutdown warned %d times with the other line and said the stopped rules hold the exit %v, want neither where they did not read back in place and only the latter where they did:\n%s", misplaced, hold, got)
+			}
+			want, withdrawals := specsOf(tr.stopped()), 0
+			switch {
+			case c.keeps == "" && c.fails == "":
+				want, withdrawals = nil, 1
+			case c.refused:
+				want = held
+			}
+			if c.fails == "" && err != nil || c.fails != "" && (err == nil || !strings.Contains(err.Error(), c.fails)) {
+				t.Errorf("Run returned %v, want an error holding %q, or none where that is empty", err, c.fails)
+			}
+			if be.withdrawn != withdrawals || !slices.Equal(be.specs(), want) {
+				t.Errorf("the shutdown withdrew %d times and left %q, want %d withdrawals and %q", be.withdrawn, be.specs(), withdrawals, want)
+			}
+			switch {
+			case c.keeps == "" && left != 0:
+				t.Errorf("the shutdown warned %d times that it left the stopped rules, want none:\n%s", left, got)
+			case c.keeps != "" && (left != 1 || !strings.Contains(got, c.keeps) || c.faulted && !strings.Contains(got, fault)):
+				t.Errorf("the shutdown warned %d times that it left the stopped rules, want once, naming %q and the fault where they read back with one:\n%s", left, c.keeps, got)
+			}
+			if c.keeps != "" && c.fails != "" && !inPlace {
+				// the line's err alone tells rules read back otherwise from rules not read
+				var carries bool
+				for line := range strings.Lines(got) {
+					_, attrs, warned := strings.Cut(line, `level=WARN msg="egress left its stopped rules at shutdown, which did not read back in place"`)
+					_, cause, ok := strings.Cut(attrs, " err=")
+					carries = carries || warned && ok && strings.Contains(cause, c.fails)
+				}
+				if !carries {
+					t.Errorf("the shutdown's warning carries no err holding %q:\n%s", c.fails, got)
+				}
+			}
+		}))
+	}
+}
+
+// A running translator taken down while the host refuses the stop leaves what
+// the host held as it was, withdrawing nothing, and Status reads at every try,
+// each retry's among them, that the stop has not taken effect: both families
+// not ready for the stop under way, from the first refusal on with how the
+// rules the host holds read back, those rules, and the last refusal beside how
+// they read back. The retry the refusal takes writes the stopped rules once
+// the host takes them, and Status reads the stop in effect with them counted.
+// Taken up and down again it records its second stop as its first, and each up
+// logs that the translator started again once, whatever passes follow it.
+func TestRefusedStopIsRetried(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	be := &fakeBackend{changed: make(chan struct{}, 1)}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
 	be.seen = func() string {
 		s := tr.Status()
 		return fmt.Sprintf("status %v %v %s, %d installed, error %q", s.Ready4, s.Ready6, s.Unready, s.Rules.Installed, s.Err)
 	}
-	be.failWithdraw = true
-	for range 2 {
-		if err := tr.stop(); err == nil {
-			t.Fatal("a stop the host refused returned no error")
-		}
-	}
-	if got := be.specs(); !slices.Equal(got, held) || len(be.stoppedSpecs()) != 0 {
-		t.Errorf("a refused stop left %q and held %q, want %q as it was", got, be.stoppedSpecs(), held)
-	}
-	be.failWithdraw = false
-	if err := tr.stop(); err != nil {
-		t.Fatal(err)
-	}
-	var seen []string
-	for _, entry := range be.entries() {
-		if strings.HasPrefix(entry, "status ") {
-			seen = append(seen, entry)
-		}
-	}
-	stopping := fmt.Sprintf("status false false the translator is stopping, %d installed, error ", len(held))
-	if want := []string{stopping + `""`, stopping + `"install rules: no"`, stopping + `"install rules: no"`}; !slices.Equal(seen, want) {
-		t.Errorf("Status read at each try %q, want %q", seen, want)
-	}
-	if s := tr.Status(); s.Ready4 || s.Ready6 || s.Unready != "the translator is stopped" || s.Rules.Installed != len(tr.stopped()) || s.Err != "" {
-		t.Errorf("the stop the host took reads ready %v and %v for %q, %d installed and the error %q, want it in effect with %d", s.Ready4, s.Ready6, s.Unready, s.Rules.Installed, s.Err, len(tr.stopped()))
-	}
-}
-
-// A stopped translator reads its rules back at every turn of its loop and
-// writes them again where they no longer read back as written, as a pass does
-// its own: a stop the host refused is tried again at the next wake, logged at
-// warn, and the rules another writer took away are put back, each write logged
-// at info, with no pass between and Status reading the stop in effect once the
-// rules read back.
-func TestStopWritesItsRulesBackAtEveryWake(t *testing.T) {
-	var lines strings.Builder
-	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
-	be := &fakeBackend{changed: make(chan struct{}, 1), failWithdraw: true}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
-	tr.Enabled.Store(false)
-	var want []string
-	for _, rule := range tr.stopped() {
-		want = append(want, rule.String())
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
-	end := sync.OnceFunc(func() {
+	t.Cleanup(func() {
 		cancel()
 		<-done
 	})
-	t.Cleanup(end)
-	await := func(what string, ok func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(passWait); !ok(); time.Sleep(passPoll) {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s, the host holding %q and %q, Status reading %q", what, be.specs(), be.stoppedSpecs(), tr.Status().Unready)
-			}
-		}
-	}
+	await := awaiting(t, be, tr)
+	ready := func() bool { s := tr.Status(); return s.Ready4 && s.Ready6 }
 	stopped := func() bool {
 		s := tr.Status()
-		return s.Unready == "the translator is stopped" && s.Err == "" && slices.Equal(be.stoppedSpecs(), want)
+		return s.Unready == "the translator is stopped" && s.Err == "" && s.Rules.Installed == len(tr.stopped()) && slices.Equal(be.specs(), specsOf(tr.stopped()))
 	}
-	await("the refused stop", func() bool { return tr.Status().Err != "" })
-	be.mu.Lock()
-	be.failWithdraw = false
-	be.mu.Unlock()
-	be.changed <- struct{}{}
-	await("the stop tried again", stopped)
-	be.mu.Lock()
-	be.stopped = be.stopped[1:]
-	be.mu.Unlock()
-	be.changed <- struct{}{}
-	await("the rules another writer took away put back", stopped)
-	end()
-	be.mu.Lock()
-	applied := be.applied
-	be.mu.Unlock()
-	got := lines.String()
-	if refused, wrote := strings.Count(got, `level=WARN msg="egress could not stop its chains, retrying"`), strings.Count(got, `level=INFO msg="egress translator stopped"`); applied != 0 || refused == 0 || wrote != 2 {
-		t.Errorf("the stopped translator ran %d passes, logged %d refusals at warn and %d writes at info, want none, at least 1 and 2:\n%s", applied, refused, wrote, got)
+	refused := func() bool { return tr.Status().Err != "" }
+	failStop := func(fail bool) {
+		be.mu.Lock()
+		be.failStop = fail
+		be.mu.Unlock()
+	}
+	await("the first pass", ready)
+	held := be.specs()
+	stopping := fmt.Sprintf("status false false the translator is stopping, %d installed, error ", len(held))
+	// the running translator's rules a refusal leaves read back other than a
+	// stopped one's
+	const differ = "its chains read back other than they were written"
+	refusal := fmt.Sprintf("status false false the translator is stopping: the host refused the stopped rules, which are not in place: %s, %d installed, error %q", differ, len(held), "install rules: no, then the stopped rules read back other than written: "+differ)
+	// first holds the Status read at each stop's first write
+	var first []string
+	for range 2 {
+		failStop(true)
+		mark := len(be.entries())
+		tr.SetEnabled(false)
+		await("the refused stop", refused)
+		be.mu.Lock()
+		withdrawn := be.withdrawn
+		be.mu.Unlock()
+		if got := be.specs(); !slices.Equal(got, held) || withdrawn != 0 {
+			t.Errorf("a refused stop left %q after %d withdrawals, want %q as it was and none", got, withdrawn, held)
+		}
+		// the sweep is out past the wait and nothing else wakes the run, so
+		// only the retry the refusal takes can write the stopped rules
+		failStop(false)
+		await("the retry to write the stopped rules", stopped)
+		var tries []string
+		for _, entry := range be.entries()[mark:] {
+			if strings.HasPrefix(entry, "status ") {
+				tries = append(tries, entry)
+			}
+		}
+		if len(tries) < 2 {
+			t.Fatalf("the stop wrote %d times, want a refusal and its retry", len(tries))
+		}
+		if tries[0] != stopping+`""` || slices.ContainsFunc(tries[1:], func(entry string) bool { return entry != refusal }) {
+			t.Errorf("Status read at each try %q, want %q at the first and %q at each after it", tries, stopping+`""`, refusal)
+		}
+		first = append(first, tries[0])
+		tr.SetEnabled(true)
+		await("the pass after up", ready)
+		// a pass more after up, which logs nothing of the stop
+		at := tr.Status().PassAt
+		be.changed <- struct{}{}
+		await("the pass after another writer's change", func() bool { return ready() && tr.Status().PassAt.After(at) })
+	}
+	if first[0] != first[1] {
+		t.Errorf("Status read at each stop's first write %q, want the second stop's as the first's", first)
+	}
+	if again := strings.Count(lines.String(), `msg="egress translator started again"`); again != 2 {
+		t.Errorf("two ups logged the translator started again %d times, want 2:\n%s", again, lines.String())
 	}
 }
 
-// A stop and `ranet3 down` log each family not ready and the advertisement's
-// change at info, since neither is a fault of the exit, and another writer's
-// change still logs the families not ready at warn
-func TestExitLogsItsStopAtInfo(t *testing.T) {
+// Another writer's change logs the families not ready at warn, where a stop
+// logs them at info (TestStoppingReportsTheEgressSegmentsNotReadyFirst)
+func TestAnotherWritersChangeLogsNotReadyAtWarn(t *testing.T) {
 	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
 	count := func(lines, level, message string) int {
 		return strings.Count(lines, "level="+level+" msg=\""+message+"\"")
 	}
-	for name, stop := range map[string]func(*Translator) error{
-		"shutdown": func(tr *Translator) error {
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			return tr.Run(ctx)
-		},
-		"ranet3 down": func(tr *Translator) error { return tr.stop() },
-	} {
-		t.Run(name, func(t *testing.T) {
-			var lines strings.Builder
-			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
-			tr := translator(t, cfg, Runtime{}, &fakeBackend{})
-			if err := tr.reconcile(); err != nil {
-				t.Fatal(err)
-			}
-			if err := stop(tr); err != nil {
-				t.Fatal(err)
-			}
-			got := lines.String()
-			if count(got, "INFO", "egress not ready") != 2 || count(got, "INFO", "egress advertisement changed") != 1 ||
-				count(got, "WARN", "egress not ready") != 0 || count(got, "WARN", "egress advertisement changed") != 0 {
-				t.Errorf("the %s logged other than both families not ready and the advertisement's change at info:\n%s", name, got)
-			}
-		})
-	}
-
 	var lines strings.Builder
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1552,21 +2161,14 @@ func TestChangeWhileStartedDownLeavesTheFirstPassFirst(t *testing.T) {
 		cancel()
 		<-ended
 	})
-	wait := func(what string, met func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(passWait); !met(); time.Sleep(passPoll) {
-			if time.Now().After(deadline) {
-				t.Fatalf("the translator never %s, it went %q", what, be.entries())
-			}
-		}
-	}
-	wait("stopped", func() bool { return slices.Contains(be.entries(), "withdraw") })
+	await := awaiting(t, be, tr)
+	await("the stop", func() bool { return tr.Status().Unready == "the translator is stopped" })
 	be.changed <- struct{}{}
-	wait("took the change", func() bool { return len(be.changed) == 0 })
+	await("the change taken", func() bool { return len(be.changed) == 0 })
 	tr.SetEnabled(true)
 	select {
 	case <-ended:
-	case <-time.After(passWait):
+	case <-time.After(PassWait):
 		t.Fatalf("the translator ran no pass after ranet3 up, it went %q", be.entries())
 	}
 	if runErr != nil {
@@ -1648,7 +2250,7 @@ func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
 	})
 	ready := func(times int) {
 		t.Helper()
-		for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 			if strings.Count(strings.Join(be.entries(), ","), "ready true true sid true") >= times {
 				return
 			}
@@ -1673,10 +2275,10 @@ func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
 	}
 }
 
-// passTriggers reads the trigger of each pass bus recorded, and whether one names want within passWait
+// passTriggers reads the trigger of each pass bus recorded, and whether one names want within PassWait
 // a pass records its event after its last call of the backend, and a backend's log can hold a pass that bus does not yet
 func passTriggers(bus *events.Bus, want string) ([]string, bool) {
-	for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+	for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 		var triggers []string
 		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
 			triggers = append(triggers, event.Attrs["trigger"])
@@ -1703,7 +2305,7 @@ func TestMissedNotificationsWakeAPassAndLeaveReadinessAlone(t *testing.T) {
 	})
 	settled := func(mark int, entries ...string) []string {
 		t.Helper()
-		for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 			if after := be.entries()[mark:]; slices.Equal(after, entries) {
 				return after
 			}

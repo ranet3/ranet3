@@ -17,15 +17,19 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
-// ipPacket is an IP packet from src to dst carrying payload of protocol, with
-// hops as its TTL or hop limit and, over IPv4, DF set
-func ipPacket(src, dst netip.Addr, protocol, hops byte, payload []byte) []byte {
+// ipPacket is an IP packet from src to dst carrying payload under the protocol
+// next, with hops as its TTL or hop limit. Over IPv4 it has DF set and options,
+// a whole number of words, in its header. Over IPv6 options is nil, and next
+// names the header payload starts with, an extension header where payload
+// begins with one.
+func ipPacket(src, dst netip.Addr, next, hops byte, options, payload []byte) []byte {
 	if src.Is4() {
-		header := make([]byte, 20, 20+len(payload))
-		header[0] = 0x45
-		binary.BigEndian.PutUint16(header[2:], uint16(20+len(payload)))
+		header := make([]byte, 20, 20+len(options)+len(payload))
+		header[0] = 0x45 + byte(len(options)/4)
+		header = append(header, options...)
+		binary.BigEndian.PutUint16(header[2:], uint16(len(header)+len(payload)))
 		binary.BigEndian.PutUint16(header[6:], 0x4000)
-		header[8], header[9] = hops, protocol
+		header[8], header[9] = hops, next
 		copy(header[12:], src.AsSlice())
 		copy(header[16:], dst.AsSlice())
 		binary.BigEndian.PutUint16(header[10:], ^uint16(packet.Sum(0, header)))
@@ -34,7 +38,7 @@ func ipPacket(src, dst netip.Addr, protocol, hops byte, payload []byte) []byte {
 	header := make([]byte, 40, 40+len(payload))
 	header[0] = 0x60
 	binary.BigEndian.PutUint16(header[4:], uint16(len(payload)))
-	header[6], header[7] = protocol, hops
+	header[6], header[7] = next, hops
 	copy(header[8:], src.AsSlice())
 	copy(header[24:], dst.AsSlice())
 	return append(header, payload...)
@@ -42,6 +46,13 @@ func ipPacket(src, dst netip.Addr, protocol, hops byte, payload []byte) []byte {
 
 // datagram is a UDP datagram from from to to carrying payload, with hops as its TTL or hop limit
 func datagram(from, to netip.AddrPort, hops byte, payload []byte) []byte {
+	return ipPacket(from.Addr(), to.Addr(), syscall.IPPROTO_UDP, hops, nil, UDPMessage(from, to, payload))
+}
+
+// UDPMessage is the UDP header and payload of a datagram from from to to, its
+// checksum over the pseudo header of their addresses, for PacketFrame to carry
+// behind IPv4 options or IPv6 extension headers
+func UDPMessage(from, to netip.AddrPort, payload []byte) []byte {
 	udp := make([]byte, 8, 8+len(payload))
 	binary.BigEndian.PutUint16(udp[0:], from.Port())
 	binary.BigEndian.PutUint16(udp[2:], to.Port())
@@ -53,7 +64,7 @@ func datagram(from, to netip.AddrPort, hops byte, payload []byte) []byte {
 		sum = 0xffff
 	}
 	binary.BigEndian.PutUint16(udp[6:], sum)
-	return ipPacket(from.Addr(), to.Addr(), syscall.IPPROTO_UDP, hops, udp)
+	return udp
 }
 
 // sized is a datagram from from to to whose packet is size bytes long
@@ -80,11 +91,11 @@ func query(src, dst netip.Addr, kind4, kind6 byte, id uint16, data []byte) []byt
 	if src.Is4() {
 		message[0] = kind4
 		binary.BigEndian.PutUint16(message[2:], ^uint16(packet.Sum(0, message)))
-		return ipPacket(src, dst, syscall.IPPROTO_ICMP, leafTTL, message)
+		return ipPacket(src, dst, syscall.IPPROTO_ICMP, leafTTL, nil, message)
 	}
 	message[0] = kind6
 	binary.BigEndian.PutUint16(message[2:], checksum(src, dst, syscall.IPPROTO_ICMPV6, message))
-	return ipPacket(src, dst, syscall.IPPROTO_ICMPV6, leafTTL, message)
+	return ipPacket(src, dst, syscall.IPPROTO_ICMPV6, leafTTL, nil, message)
 }
 
 // icmpError is the error m from src to dst carrying quote, the start of the
@@ -94,11 +105,11 @@ func icmpError(src, dst netip.Addr, m message, quote []byte) []byte {
 	if src.Is4() {
 		message[0], message[1] = m.kind4, m.code4
 		binary.BigEndian.PutUint16(message[2:], ^uint16(packet.Sum(0, message)))
-		return ipPacket(src, dst, syscall.IPPROTO_ICMP, leafTTL, message)
+		return ipPacket(src, dst, syscall.IPPROTO_ICMP, leafTTL, nil, message)
 	}
 	message[0], message[1] = m.kind6, m.code6
 	binary.BigEndian.PutUint16(message[2:], checksum(src, dst, syscall.IPPROTO_ICMPV6, message))
-	return ipPacket(src, dst, syscall.IPPROTO_ICMPV6, leafTTL, message)
+	return ipPacket(src, dst, syscall.IPPROTO_ICMPV6, leafTTL, nil, message)
 }
 
 // segment is a TCP segment from from to to with seq, ack and flags, carrying
@@ -113,7 +124,7 @@ func segment(from, to netip.AddrPort, seq, ack uint32, flags byte, payload []byt
 	binary.BigEndian.PutUint16(tcp[14:], math.MaxUint16)
 	tcp = append(tcp, payload...)
 	binary.BigEndian.PutUint16(tcp[16:], checksum(from.Addr(), to.Addr(), syscall.IPPROTO_TCP, tcp))
-	return ipPacket(from.Addr(), to.Addr(), syscall.IPPROTO_TCP, leafTTL, tcp)
+	return ipPacket(from.Addr(), to.Addr(), syscall.IPPROTO_TCP, leafTTL, nil, tcp)
 }
 
 // checksum is the checksum of segment, whose own checksum field reads zero,

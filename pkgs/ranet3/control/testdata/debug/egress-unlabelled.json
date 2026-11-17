@@ -136,5 +136,5 @@
       "err": "unreadable"
     }
   ],
-  "unlabelled": "the kernel refused a rule that sets or reads a connection label, so ranet3 down leaves the replies of the flows the exit translates a way out by another link"
+  "unlabelled": "the kernel refused a rule that sets or reads a connection label, so ranet3 down, and a shutdown that leaves the stopped rules, leave the replies of the flows the exit translates a way out by another link"
 }

@@ -835,3 +835,108 @@ func TestForwardChainTakesAChecksummedProtocolByItsFlow(t *testing.T) {
 		})
 	}
 }
+
+// ChainSpecs is the comment of each line t's rules give chain, stopped or
+// running, in order, forward's first line to IPv6's chain among them, joined
+// as a chain's fault joins them, the Labelled rules among them even where the
+// kernel refused the label. It reads t's configuration, so a test calls it
+// before Run.
+func (t *Translator) ChainSpecs(chain string, stopped bool) string {
+	rules := t.desired()
+	if stopped {
+		rules = t.stopped()
+	}
+	var specs []string
+	if chain == LimitChain {
+		specs = append(specs, dispatchSpec)
+	}
+	for _, rule := range rules {
+		if rule.chain() == chain {
+			specs = append(specs, rule.String())
+		}
+	}
+	return strings.Join(specs, "; ")
+}
+
+// lineUses is the name of each set a line's lookup or dynset names and each
+// object its objref names, in order
+func lineUses(line nftables.Line) []string {
+	attribute := map[string]uint16{"lookup": unix.NFTA_LOOKUP_SET, "dynset": unix.NFTA_DYNSET_SET_NAME, "objref": unix.NFTA_OBJREF_IMM_NAME}
+	var out []string
+	for _, element := range nftables.Nested(bytes.Join(line.Expressions, nil)) {
+		var name string
+		var data []byte
+		for _, field := range nftables.Nested(element.Value) {
+			switch field.Kind {
+			case unix.NFTA_EXPR_NAME:
+				name = unix.ByteSliceToString(field.Value)
+			case unix.NFTA_EXPR_DATA:
+				data = field.Value
+			}
+		}
+		kind, named := attribute[name]
+		if !named {
+			continue
+		}
+		for _, field := range nftables.Nested(data) {
+			if field.Kind == kind {
+				out = append(out, unix.ByteSliceToString(field.Value))
+			}
+		}
+	}
+	return out
+}
+
+// Each rule of a running and of a stopped translator with classes of none in
+// both families names, as the sets and objects it uses, those its line looks
+// up or uses, in order, and the stopped rules use each family's set of
+// untranslated sources and timeout objects and no set of flows
+func TestStoppedLinesUseTheSetsAndObjectsTheReadbackChecks(t *testing.T) {
+	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0"), Translate: []egress.Class{
+		{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
+		{From: schema.MustPrefix("2001:db8::/32"), To: egress.Translation{None: true}},
+	}}
+	tr := translator(t, cfg, Runtime{}, &fakeBackend{})
+	stopped := tr.stopped()
+	for _, rule := range slices.Concat(tr.desired(), stopped) {
+		line, err := translatorLine(rule, unix.NFT_CT_LABELS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := rule.uses(), lineUses(line); !slices.Equal(got, want) {
+			t.Errorf("%s uses %q, want %q as its line names", rule, got, want)
+		}
+	}
+	used := map[string]bool{}
+	for _, rule := range stopped {
+		for _, name := range rule.uses() {
+			used[name] = true
+		}
+	}
+	for _, name := range []string{"untranslated4", "untranslated6", "udp4", "tcp4", "icmp4", "udp6", "tcp6", "icmp6"} {
+		if !used[name] {
+			t.Errorf("no stopped rule uses %s, want each family's set of untranslated sources and timeout objects used", name)
+		}
+	}
+	if used["flows4"] || used["flows6"] {
+		t.Errorf("the stopped rules use %v, a set of flows among them, which only a limit uses", used)
+	}
+}
+
+// The table's flags read as a flag the write is refused for where they hold
+// any but dormant, and as dormant where they hold the dormant one, beside
+// another or alone, each the text of all of them
+func TestTableFlagsNameTheDormantBitBesideAnother(t *testing.T) {
+	for _, c := range []struct {
+		flags         uint32
+		flag, dormant bool
+	}{
+		{0, false, false}, {unix.NFT_TABLE_F_DORMANT, false, true}, {0x4, true, false}, {0x5, true, true}, {0x7, true, true},
+	} {
+		flag, dormant := tableFlags(c.flags)
+		text := nftables.FlagFault(nftables.Table, c.flags)
+		if (flag != "") != c.flag || (dormant != "") != c.dormant || flag != "" && flag != text || dormant != "" && dormant != text {
+			t.Errorf("flags %#x read as flag %q and dormant %q, want a flag %v and dormant %v, each %q", c.flags, flag, dormant, c.flag, c.dormant, text)
+		}
+	}
+}

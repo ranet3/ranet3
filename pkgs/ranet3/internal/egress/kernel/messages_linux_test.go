@@ -165,6 +165,31 @@ func TestLabelTakenReadsTheProbesAnswer(t *testing.T) {
 	}
 }
 
+// An Apply's error reads as the host's refusal of the write where the host
+// acknowledged the write's transaction with an error, wrapped or not. The
+// label probe's refusal ahead of the write reads as none. An error of the
+// socket in place of the acknowledgments reads as none too. A failure before
+// the send reads as none as well.
+func TestRefusedIsTheHostsRefusalOfTheWriteAlone(t *testing.T) {
+	n := &natTables{}
+	write := &nftables.Refused{Request: 3, Err: unix.EBUSY}
+	for _, c := range []struct {
+		err     error
+		refused bool
+	}{
+		{write, true},
+		{fmt.Errorf("wrapped: %w", write), true},
+		{fmt.Errorf("%w: %w", errUnlearned, &nftables.Refused{Request: 0, Err: unix.EPERM}), false},
+		{unix.ENOBUFS, false},
+		{fmt.Errorf("egress: read table inet %s: %w", nftables.Table, unix.EINTR), false},
+		{nil, false},
+	} {
+		if got := n.refused(c.err); got != c.refused {
+			t.Errorf("the error %v reads refused %v, want %v", c.err, got, c.refused)
+		}
+	}
+}
+
 // readsKey is whether request writes a rule holding a ct expression of key
 func readsKey(request nftables.Request, key uint32) bool {
 	if request.Kind&0xff != unix.NFT_MSG_NEWRULE || len(request.Body) < 4 {

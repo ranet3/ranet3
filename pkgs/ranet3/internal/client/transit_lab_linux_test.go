@@ -33,6 +33,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/egress/egresstest"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
@@ -563,6 +564,7 @@ func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *even
 	in := func(f func()) { _ = ns.Do(func() error { f(); return nil }) }
 	var translator *kernelexit.Translator
 	if err := ns.Do(func() (err error) {
+		present := kernelexit.DevicePresence(client.Mesh.Name)
 		translator, err = kernelexit.New(*cfg.Egress(), kernelexit.Runtime{
 			Interface:     client.Mesh.Name,
 			MeshAddresses: MeshAddresses(cfg),
@@ -572,9 +574,16 @@ func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *even
 				in(func() { answers, err = RouteLookups(lookups) })
 				return answers, err
 			},
-			Sysctl:    func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
-			Members:   client.EgressMembers,
-			Write:     client.Mesh.WriteHost,
+			Sysctl:  func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
+			Members: client.EgressMembers,
+			Write:   client.Mesh.WriteHost,
+			// the labs stop the translator before they close the mesh, whose tun then outlives it, so a lab's
+			// shutdown leaves the stopped rules in its namespace, which goes with the test
+			Done: egresstest.Closed,
+			Present: func() (there bool, err error) {
+				in(func() { there, err = present() })
+				return there, err
+			},
 			Steered:   len(cfg.Segments().Egress()) != 0,
 			Ready:     client.SetEgressReady,
 			Republish: client.Republish,

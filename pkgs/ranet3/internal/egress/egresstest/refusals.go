@@ -261,7 +261,7 @@ func dccp(from, to netip.AddrPort, kind byte, rest []byte) []byte {
 	// of the 48-bit sequence number
 	packet[4], packet[8], packet[15] = byte(len(packet)/4), kind<<1|1, 1
 	binary.BigEndian.PutUint16(packet[6:], checksum(from.Addr(), to.Addr(), 33, packet))
-	return ipPacket(from.Addr(), to.Addr(), 33, leafTTL, packet)
+	return ipPacket(from.Addr(), to.Addr(), 33, leafTTL, nil, packet)
 }
 
 // udpLite is a UDP-Lite datagram from from to to, RFC 3828 section 3.1, its
@@ -277,5 +277,5 @@ func udpLite(from, to netip.AddrPort) []byte {
 		sum = 0xffff
 	}
 	binary.BigEndian.PutUint16(lite[6:], sum)
-	return ipPacket(from.Addr(), to.Addr(), 136, leafTTL, lite)
+	return ipPacket(from.Addr(), to.Addr(), 136, leafTTL, nil, lite)
 }

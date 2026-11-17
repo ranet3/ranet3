@@ -122,7 +122,8 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		t.Fatalf("start the exit: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	// the antispoof filter stops last, as the daemon stops it, so its withdrawal alone finds the table holding nothing else
+	// the antispoof filter stops last, as the daemon stops it, so its withdrawal finds the table holding the translator's
+	// stopped chains alone (labLeftStopped)
 	filterCtx, cancelFilter := context.WithCancel(context.Background())
 	var runs, filter sync.WaitGroup
 	stop := sync.OnceFunc(func() {
@@ -577,15 +578,43 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 				return fmt.Errorf("a rule of the reconciler's outlived it: %v", rule)
 			}
 		}
-		for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_INET} {
-			if err := labDeleteTable(family, nftables.Table); !errors.Is(err, unix.ENOENT) {
-				return fmt.Errorf("deleting the table of family %d once the translator stopped answered %v, want it gone", family, err)
-			}
-		}
-		return nil
+		return labLeftStopped()
 	}); err != nil {
 		t.Error(err)
 	}
+}
+
+// labLeftStopped holds what a lab's stop leaves of the nftables tables in the exit's namespace: no table of family
+// IPv4 or IPv6, and in the table of family inet the translator's stopped chains alone, which it leaves as its tun
+// outlives the mesh (labTranslator) and which keep the table through the antispoof filter's withdrawal
+func labLeftStopped() error {
+	for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+		if err := labDeleteTable(family, nftables.Table); !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("deleting the table of family %d once the node stopped answered %v, want it gone", family, err)
+		}
+	}
+	conn, err := nftables.Dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	chains, err := nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		return err
+	}
+	for _, chain := range chains {
+		if chain != kernelexit.ChainName && !strings.HasPrefix(chain, kernelexit.LimitChain) {
+			return fmt.Errorf("the table once the node stopped holds the chain %s, want the translator's alone", chain)
+		}
+	}
+	rules, err := nftables.TableRules(conn, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(rules, func(rule nftables.Installed) bool { return strings.HasSuffix(rule.Spec, "dropped while stopped") }) {
+		return fmt.Errorf("the table once the node stopped holds the chains %v and no rule a stopped translator writes, want its stopped rules", chains)
+	}
+	return nil
 }
 
 // the mesh takes the readiness before the announcement is rebuilt, so the

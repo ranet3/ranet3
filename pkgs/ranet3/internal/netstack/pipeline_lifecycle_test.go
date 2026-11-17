@@ -202,6 +202,75 @@ func TestCloseWaitsForInboundWriters(t *testing.T) {
 	}
 }
 
+// heldReads holds every read until the test lets it go, which then answers the device closed, and says when one has started
+type heldReads struct {
+	recordingDevice
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (d *heldReads) Read([]byte, []tun.ReadPacket) (int, error) {
+	select {
+	case d.entered <- struct{}{}:
+	default:
+	}
+	<-d.release
+	return 0, os.ErrClosed
+}
+
+// Done stays open while a writer lane is inside a write to the tun or a reader inside a read of it, whatever else Close has
+// done by then, and is closed once Close returns: the exit withdraws its chains on Done, and a frame a lane writes after them
+// leaves untranslated. Workers write to no tun: what they seal goes to the peers.
+func TestDoneStaysOpenWhileTheTunIsInUse(t *testing.T) {
+	for name, held := range map[string]func() (m *Mesh, entered <-chan struct{}, release chan struct{}){
+		"a writer lane inside a write": func() (*Mesh, <-chan struct{}, chan struct{}) {
+			dev := &heldDevice{entered: make(chan struct{}, 2), release: make(chan struct{})}
+			m := ownEverything(&Mesh{closed: make(chan struct{}), done: make(chan struct{})})
+			m.setDevice(lanesOf(dev, dev))
+			m.startInboundWriters()
+			m.DeliverInboundBatch(framed(ipv6TCPPacket(40000, 5201, 1)), DefaultMTU, nil, nil)
+			return m, dev.entered, dev.release
+		},
+		"a reader inside a read": func() (*Mesh, <-chan struct{}, chan struct{}) {
+			dev := &heldReads{entered: make(chan struct{}, 2), release: make(chan struct{})}
+			m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), done: make(chan struct{})}
+			m.setDevice(lanesOf(dev, dev))
+			m.startOutboundPipeline()
+			return m, dev.entered, dev.release
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, entered, release := held()
+			select {
+			case <-entered:
+			case <-time.After(deliveryTimeout):
+				close(release)
+				t.Fatal("nothing entered the device, so this proves nothing")
+			}
+			closed := make(chan struct{})
+			go func() { m.Close(); close(closed) }()
+			select {
+			case <-m.Done():
+				close(release)
+				<-closed
+				t.Fatalf("Done closed while %s was still in the device", name)
+			case <-time.After(closeHold):
+			}
+			close(release)
+			select {
+			case <-closed:
+			case <-time.After(deliveryTimeout):
+				t.Fatal("Close did not return once the device let go")
+			}
+			select {
+			case <-m.Done():
+			default:
+				t.Error("Done is still open once Close has returned")
+			}
+		})
+	}
+}
+
 // closingDevice accepts writes until its Close and refuses every one after it, as a closed descriptor does
 // late counts the writes that began after the test saw Mesh.Close return
 type closingDevice struct {
