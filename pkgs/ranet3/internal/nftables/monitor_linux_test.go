@@ -21,6 +21,11 @@ import (
 // monitorWait bounds a wait on the monitor's goroutine
 const monitorWait = 30 * time.Second
 
+// drainedQuiet is how long the read after a drain is watched for a return it
+// must not make, which a read that does not wait for the next datagram makes
+// at once
+const drainedQuiet = 100 * time.Millisecond
+
 // the ports the kernel stamps on the notifications of the owner's socket, of
 // two other writers' and of another owner's of the table
 const ownPort, otherPort, thirdPort, siblingPort = 7, 9, 11, 13
@@ -607,7 +612,7 @@ func TestMonitorReadTellsEachDrainOnceThenWaits(t *testing.T) {
 		select {
 		case got := <-results:
 			t.Fatalf("the read after a drain returned %q and %v, want it to wait for a datagram", got.datagram, got.err)
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(drainedQuiet):
 		}
 	}
 	expect(result{"one", nil})
