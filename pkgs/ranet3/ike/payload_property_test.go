@@ -27,7 +27,9 @@ import (
 
 const (
 	decoderWatchInterval = 100 * time.Millisecond
-	decoderStallTimeout  = time.Second
+	// decoderStallTimeout is how long one decoder call runs before the property ends as hung
+	// a decoder that loops never blocks, so virtual time cannot see it, and a bound of real time far above the longest call a loaded machine gives under -race leaves only a call that does not return to fire it
+	decoderStallTimeout = time.Minute
 )
 
 // withEdges draws from gen half the time and one of edges the rest. A run
