@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	golang.org/x/sys v0.49.0
-	gvisor.dev/gvisor v0.0.0-20261111090704-c24795a75477
+	gvisor.dev/gvisor v0.0.0-20261117040555-0303b2605d5e
 )
 
 require (
