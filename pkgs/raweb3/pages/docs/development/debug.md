@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-16
+updated: 2026-11-17
 order: 30
 ---
 
@@ -1146,10 +1146,12 @@ left out where the node holds no such address.
 
 ## Adding a view
 
-A view is 3 new files and 4 edits: the daemon path map in
+A view is 3 new files and 5 edits: the daemon path map in
 `control/debug_test.go`, whose walk in
 `TestEveryDebugPathAnswersACallerOtherThanRoot` fails for a registered path it
-does not list, the tables of this page and of
+does not list, the views of `TestDebugViewsCarryNoKeyOfALiveSession` in
+`internal/client/debug_keys_test.go`, which fails for a served path it neither
+reads nor leaves out with its reason, the tables of this page and of
 [the control socket](../control-socket.md) that list the paths, and the table of
 commands in [the CLI](../cli.md). The 3 files:
 
@@ -1166,9 +1168,19 @@ Each renderer and wire form has a golden file under `control/testdata/debug`,
 which `go test ./control -update` rewrites. A renderer prints the ages the
 daemon computed rather than reading the clock, so its output is the same on
 every run, but for the egress and kernel lines, which read the time since
-`PassAt`, so their tests hand a `PassAt` relative to now. The check that no
-debug answer has room for key material, and the property that every wire type
-survives a trip through JSON, walk each registered path's type without being
-told about a new one. The check passes one field by name, a trace record's
+`PassAt`, so their tests hand a `PassAt` relative to now. Two checks walk each
+registered path's type without being told about a new one: the check that no
+debug answer's type holds bytes, an interface or an `esp.ChildSA`, which carries
+its keys in exported fields, and the property that every wire type survives a
+trip through JSON. The first passes one field by name, a trace record's
 `payload`, the packet's bytes `--payload` asks for, which hold none of the
-node's keys. Any other field of bytes fails it.
+node's keys. Any other field of bytes fails it. It reads types and no value, so
+a string, an event's attributes among them, passes it whatever it holds. The
+walk over a live session's views reads the values. Two nodes hold one session,
+which the dialing node rekeys, and the walk looks in every string, map key and
+field of bytes of each view of both nodes for the keys of the dialing node's
+Child SA and of the one its rekey replaced, and for the dialing node's private
+key, as octets, hex, base64 or the list of numbers `fmt` prints them as. It
+looks for the answering node's private key nowhere. It leaves out `probe` and
+`trace`, whose answers are the call's result and a stream of decisions rather
+than a state the node holds, and looks for no key of the IKE SA.
