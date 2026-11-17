@@ -268,6 +268,10 @@ type Readback struct {
 	// Refused is the fault of the first set or ct timeout that stays stale and
 	// has a holder, which the owner's transaction is refused on
 	Refused string
+	// Faults is the first fault of each set and ct timeout of Contents by its
+	// name, the text Fault takes for it, whether or not an earlier fault took
+	// Fault, its elements' among them
+	Faults map[string]string
 	// Stale is each chain, set and object of Contents that differs in what
 	// nf_tables will not change in place, which Rewrite deletes and its owner
 	// makes again in one transaction, but a binding chain, which goes with its
@@ -288,6 +292,27 @@ func (r Readback) Remake() bool {
 	return len(r.Stale.Chains) > 0 || len(r.Stale.Sets) > 0 || len(r.Stale.Timeouts) > 0
 }
 
+// FlagFault names the flags of the table named table as Read notes them, empty
+// for none
+func FlagFault(table string, flags uint32) string {
+	if flags == 0 {
+		return ""
+	}
+	// NewTable clears a dormant flag in place and no other
+	fault := fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags)
+	switch {
+	// nf_tables refuses every other socket's change or delete of an owned table, and drops the flag, or without persist the table, with its socket
+	case flags&0x2 != 0 && flags&0x4 != 0:
+		fault += fmt.Sprintf(", and another program's open socket owns it until that program closes the socket or stops, after which its persist flag keeps it until nft delete table inet %s", table)
+	case flags&0x2 != 0:
+		fault += ", and another program's open socket owns it until that program closes the socket or stops, which deletes the table"
+	case flags&^unix.NFT_TABLE_F_DORMANT != 0:
+		// deleting the table, with every other owner's chains in it, clears any other flag
+		fault += fmt.Sprintf(", and only nft delete table inet %s clears another", table)
+	}
+	return fault
+}
+
 // Read takes tables as Tables read them, and owner as the scope whose chains
 // the owner's transaction flushes before it deletes a stale set or object.
 // Where it finds anything stale it reads what holds it as Leftovers does: a
@@ -298,10 +323,17 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 	if !held {
 		return Readback{}, nil
 	}
-	var read Readback
+	read := Readback{Faults: map[string]string{}}
 	note := func(fault string) {
 		if read.Fault == "" {
 			read.Fault = fault
+		}
+	}
+	// noteOf notes fault, of the set or object name
+	noteOf := func(name, fault string) {
+		note(fault)
+		if fault != "" && read.Faults[name] == "" {
+			read.Faults[name] = fault
 		}
 	}
 	refuse := func(fault string, refused bool) {
@@ -317,21 +349,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 		}
 		return out[0].stays(fault), out[0].HeldBy != "", nil
 	}
-	if flags != 0 {
-		// NewTable clears a dormant flag in place and no other
-		fault := fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags)
-		switch {
-		// nf_tables refuses every other socket's change or delete of an owned table, and drops the flag, or without persist the table, with its socket
-		case flags&0x2 != 0 && flags&0x4 != 0:
-			fault += fmt.Sprintf(", and another program's open socket owns it until that program closes the socket or stops, after which its persist flag keeps it until nft delete table inet %s", c.table())
-		case flags&0x2 != 0:
-			fault += ", and another program's open socket owns it until that program closes the socket or stops, which deletes the table"
-		case flags&^unix.NFT_TABLE_F_DORMANT != 0:
-			// deleting the table, with every other owner's chains in it, clears any other flag
-			fault += fmt.Sprintf(", and only nft delete table inet %s clears another", c.table())
-		}
-		note(fault)
-	}
+	note(FlagFault(c.table(), flags))
 	// the kernel dumps the sets, objects and rules of the table and chain a
 	// request names alone, but the chains of every table of the family
 	if len(c.Chains) > 0 {
@@ -372,7 +390,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 				return held.Table == set.Table && held.Name == set.Name
 			})
 			if found < 0 {
-				note(fmt.Sprintf("its set %s is missing", set.Name))
+				noteOf(set.Name, fmt.Sprintf("its set %s is missing", set.Name))
 				continue
 			}
 			read.Held = true
@@ -387,7 +405,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 				remake = !kept || !set.resized(sets[found]) || int(size) < len(set.normal(c.Elements[set.Name]))
 				refuse(fault, kept && remake)
 			}
-			note(fault)
+			noteOf(set.Name, fault)
 			if remake {
 				read.Stale.Sets = append(read.Stale.Sets, set)
 				continue
@@ -400,9 +418,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 			if err != nil {
 				return Readback{}, err
 			}
-			if fault := set.elementFault(written, held); fault != "" {
-				note(fault)
-			}
+			noteOf(set.Name, set.elementFault(written, held))
 		}
 	}
 	if len(c.Timeouts) > 0 {
@@ -422,7 +438,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 				remake = !kept || !timeout.retimed(objects[i])
 				refuse(fault, kept && remake)
 			}
-			note(fault)
+			noteOf(timeout.Name, fault)
 			if remake {
 				read.Stale.Timeouts = append(read.Stale.Timeouts, timeout)
 			}

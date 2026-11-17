@@ -75,9 +75,9 @@ func TestFirstSignalShutsDownAndTheSecondGivesUp(t *testing.T) {
 }
 
 // The border withdraws only once the reconciler and the translator have
-// withdrawn, which they start on the cancel, so no route into the tun outlives
-// the filter. The two owners are a recording fake around the WaitGroup main
-// waits on.
+// ended, which they start on the cancel, so no route into the tun outlives the
+// filter. The two owners are a recording fake around the wait main hands
+// stopInOrder.
 func TestShutdownWithdrawsTheBorderLast(t *testing.T) {
 	var mu sync.Mutex
 	var order []string

@@ -66,8 +66,11 @@ func New(cfg egress.Egress, rt Runtime) (*Translator, error) {
 	if rt.Lookup == nil || rt.Sysctl == nil {
 		return nil, errors.New("egress: a route lookup and a sysctl reader are required")
 	}
-	if rt.Write == nil {
-		return nil, errors.New("egress: the mesh's tun writer is required")
+	if rt.Write == nil || rt.Done == nil {
+		return nil, errors.New("egress: the mesh's tun writer and its done channel are required")
+	}
+	if rt.Present == nil {
+		return nil, errors.New("egress: a reader of the mesh device's presence is required")
 	}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
@@ -135,7 +138,7 @@ func (n *natTables) unlabelled() string {
 	if n.label.Load() != 0 {
 		return ""
 	}
-	return labelRefused + ", so ranet3 down leaves the replies of the flows the exit translates a way out by another link"
+	return labelRefused + ", so ranet3 down, and a shutdown that leaves the stopped rules, leave the replies of the flows the exit translates a way out by another link"
 }
 
 // nftFamily is the NFPROTO_ value for one of this package's families.
@@ -190,7 +193,13 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	if err != nil {
 		return nil, err
 	}
-	_, there := tables[unix.NFPROTO_INET]
+	flags, there := tables[unix.NFPROTO_INET]
+	flag, dormant := tableFlags(flags)
+	// each fault but the flags' is read as in a table without flags, so no flag hides one
+	if there {
+		tables = maps.Clone(tables)
+		tables[unix.NFPROTO_INET] = 0
+	}
 	label := n.label.Load()
 	desired = n.written(desired)
 	common := slices.DeleteFunc(slices.Clone(translatorChains), func(chain nftables.Chain) bool { return chain.Name == forward6.Name })
@@ -202,7 +211,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	if err != nil {
 		return nil, err
 	}
-	fault := shared.Fault
+	fault := cmp.Or(flag, shared.Fault)
 	if there && fault == "" {
 		if fault, err = noneChainsRead(conn, shared.Chains); err != nil {
 			return nil, err
@@ -211,8 +220,9 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	if fault == "" && len(leftovers) > 0 {
 		fault = leftovers[0].Fault("the translator")
 	}
+	fault = cmp.Or(fault, dormant)
 	var linesFault string
-	if lines && fault == "" {
+	if lines {
 		if linesFault, err = translatorRulesFault(common, desired, shared.Rules, label); err != nil {
 			return nil, err
 		}
@@ -254,9 +264,62 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		if objects.Remake() {
 			stale = objects.Fault
 		}
-		out[family] = chainReadback{rules: placed[family], fault: cmp.Or(fault, objects.Refused, stale, linesFault, chainFault, objects.Fault), remake: remake || objects.Remake(), held: held || objects.Held}
+		var misplaced string
+		if lines {
+			misplaced = cmp.Or(shared.Fault, linesFault, chainFault, usedFault(objects, desired, family))
+		}
+		out[family] = chainReadback{rules: placed[family], fault: cmp.Or(fault, objects.Refused, stale, linesFault, chainFault, objects.Fault), flag: flag, dormant: dormant,
+			misplaced: misplaced, refusedOn: objects.Refused, remake: remake || objects.Remake(), held: held || objects.Held}
 	}
 	return out, nil
+}
+
+// tableFlags is the faults of the table's flags: flag where they hold a flag
+// other than dormant, which the translator's write is refused for, and dormant
+// where they hold the dormant one, each FlagFault of all of them
+func tableFlags(flags uint32) (flag, dormant string) {
+	fault := nftables.FlagFault(nftables.Table, flags)
+	if flags&^unix.NFT_TABLE_F_DORMANT != 0 {
+		flag = fault
+	}
+	if flags&unix.NFT_TABLE_F_DORMANT != 0 {
+		dormant = fault
+	}
+	return flag, dormant
+}
+
+// usedFault is the first fault of objects that is of a set or object a rule
+// of desired in family uses, in desired's order, empty where none is
+func usedFault(objects nftables.Readback, desired []Rule, family uint8) string {
+	for _, rule := range desired {
+		if rule.Family != family {
+			continue
+		}
+		for _, name := range rule.uses() {
+			if fault := objects.Faults[name]; fault != "" {
+				return fault
+			}
+		}
+	}
+	return ""
+}
+
+// uses is the name of each set and object r's line looks up or uses: the set
+// of untranslated sources for a rule with Sources, the pass and a stopped
+// translator's Labelled rule ahead of it, the set of flows for a limit, and
+// the timeout object for a rule that attaches one
+func (r Rule) uses() []string {
+	var out []string
+	if r.Sources != "" {
+		out = append(out, untranslatedSources(r.Family).Name)
+	}
+	switch r.kind() {
+	case limiting:
+		out = append(out, flowSet(r.Family, r.Limit).Name)
+	case timing:
+		out = append(out, timeoutName(r.Family, r.Timeouts))
+	}
+	return out
 }
 
 // placeRules is each rule of held in the family of the rule of desired written
@@ -481,7 +544,7 @@ func (n *natTables) learnLabel() error {
 	answer := n.conn.Batch(requests)
 	takes, err := labelTaken(answer, at, len(requests))
 	if err != nil {
-		return fmt.Errorf("egress: learn whether the kernel takes a connection label: %w", err)
+		return fmt.Errorf("%w: %w", errUnlearned, err)
 	}
 	if !takes {
 		n.label.Store(0)
@@ -489,6 +552,20 @@ func (n *natTables) learnLabel() error {
 	}
 	n.learned = true
 	return nil
+}
+
+// errUnlearned marks learnLabel's failure where the probe's answer reads
+// neither way. No write follows it, whatever that answer carries.
+var errUnlearned = errors.New("egress: learn whether the kernel takes a connection label")
+
+// refused is whether err, an Apply's, is the host's refusal of the write's
+// transaction. nftables.Conn.Batch reports that refusal as an
+// nftables.Refused. A failure before the write was sent is none, the label
+// probe's among them. An answer read off the socket in place of the
+// acknowledgments, as an overflow gives, is none either.
+func (n *natTables) refused(err error) bool {
+	_, ok := errors.AsType[*nftables.Refused](err)
+	return ok && !errors.Is(err, errUnlearned)
 }
 
 // labelRefused is the cause of the label's refusal, as one built without

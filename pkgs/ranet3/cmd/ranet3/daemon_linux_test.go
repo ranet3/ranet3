@@ -43,6 +43,7 @@ import (
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -67,9 +68,14 @@ var (
 	claimOnce sync.Once
 	claimSkip string
 	claimErr  error
+	// unreturned counts the daemons runAsync started that have not returned, which a test that failed before their stop
+	// leaves running
+	unreturned atomic.Int32
 )
 
-// claimNamespace skips the test without root and refuses it in a namespace that held anything, and brings the loopback up
+// claimNamespace skips the test without root, refuses it in a namespace that held anything, and brings the loopback up. It
+// skips the test where a daemon an earlier test started still runs, whose table, tun, port and goroutines the test would
+// report as its own leftovers.
 func claimNamespace(t *testing.T) {
 	t.Helper()
 	claimOnce.Do(func() {
@@ -82,6 +88,9 @@ func claimNamespace(t *testing.T) {
 	}
 	if claimErr != nil {
 		t.Fatal(claimErr)
+	}
+	if left := unreturned.Load(); left != 0 {
+		t.Skipf("%d daemons an earlier test started still run, holding what this test would read as its own start's", left)
 	}
 }
 
@@ -207,9 +216,16 @@ func freePort(t *testing.T, network string) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
-// watched is production with the node's bus kept, so a test reads what the daemon recorded
+// unforced is s with a second signal's forced exit taken out, so a daemon whose stop hangs is reported by the test that
+// started it and does not end the test binary
+func unforced(s stages) stages {
+	s.force = func() {}
+	return s
+}
+
+// watched is production, unforced, with the node's bus kept, so a test reads what the daemon recorded
 func watched(bus *atomic.Pointer[events.Bus]) stages {
-	s := production
+	s := unforced(production)
 	s.node = func(cfg *config.Config, b *events.Bus) (*client.Client, error) {
 		bus.Store(b)
 		return client.New(cfg, b)
@@ -259,7 +275,8 @@ func openFiles(t *testing.T) int {
 
 // leftNothing fails t for any goroutine of the start still running once it settled, and for anything of the start's still
 // bound or held: a listener, a socket or file open, the control socket, the node's port, the tun, an nftables table or a rule
-// or route of the reconciler's protocol
+// or route of the reconciler's protocol. The start's tun is one it made, which goes with the mesh, so an exit's shutdown
+// withdraws its chains. One that outlives the daemon keeps the exit's stopped rules, which the exit nodes page tells.
 func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 	t.Helper()
 	// the listeners are read before any wait, since the collector closes one the start leaked once it finalizes it
@@ -353,7 +370,7 @@ func TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound(t *testing.T) {
 			defer slog.SetDefault(slog.Default())
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 			f := writeDaemon(t, exitCaps)
-			s := production
+			s := unforced(production)
 			// what holds an address the start binds until the start returns
 			var taken net.Listener
 			switch part {
@@ -606,7 +623,7 @@ func TestDaemonEndedInItsBuildLeavesTheChainsItFound(t *testing.T) {
 					t.Fatal(err)
 				}
 				was := before(t)
-				s := production
+				s := unforced(production)
 				arm.end(&s)
 				if code := exited(t, runAsync(f, s)); code != arm.code {
 					t.Errorf("a start %s over %s exited %d, want %d", name, earlier.what, code, arm.code)
@@ -626,7 +643,7 @@ func TestDaemonEndedInItsBuildLeavesTheChainsItFound(t *testing.T) {
 	}
 }
 
-// held is production with the reconciler's passes held at their first read of the sessions until release is called, which
+// held is watched with the reconciler's passes held at their first read of the sessions until release is called, which
 // the test's end calls too, and asked closed at the first pass's
 func held(t *testing.T, bus *atomic.Pointer[events.Bus]) (s stages, asked <-chan struct{}, release func()) {
 	s = watched(bus)
@@ -649,21 +666,35 @@ func held(t *testing.T, bus *atomic.Pointer[events.Bus]) (s stages, asked <-chan
 // runAsync starts the daemon on a goroutine and answers its exit status once it returns
 func runAsync(f *daemonFiles, s stages) <-chan int {
 	code := make(chan int, 1)
-	go func() { code <- startDaemon(f.opts, s) }()
+	unreturned.Add(1)
+	go func() {
+		got := startDaemon(f.opts, s)
+		// before the answer, so a test that read it finds the daemon gone
+		unreturned.Add(-1)
+		code <- got
+	}()
 	return code
 }
 
-// exited is the daemon's exit status once code answers it, failing t where it takes longer than daemonSettle, after which
-// a SIGTERM stops the daemon so the next test finds nothing of it
+// exited is the daemon's exit status once code answers it. Where that takes longer than daemonSettle it fails t at once,
+// before it sends anything, then sends a SIGTERM, which ends a daemon that never took the first and which the tests'
+// unforced stages take as no forced exit, and where the daemon has not returned daemonSettle after that either it answers
+// -1 and leaves the daemon running, so the test reports by its name and the binary goes on
 func exited(t *testing.T, code <-chan int) int {
 	t.Helper()
 	select {
 	case got := <-code:
 		return got
 	case <-time.After(daemonSettle):
-		t.Error("the daemon did not return")
-		signalSelf(t, syscall.SIGTERM)
-		return <-code
+	}
+	t.Errorf("the daemon did not return within %s", daemonSettle)
+	signalSelf(t, syscall.SIGTERM)
+	select {
+	case got := <-code:
+		return got
+	case <-time.After(daemonSettle):
+		t.Errorf("the daemon did not return within %s of a SIGTERM more either, and is left running", daemonSettle)
+		return -1
 	}
 }
 
@@ -698,6 +729,90 @@ func TestDaemonStoppedInTheFirstPassWaitDialsNothing(t *testing.T) {
 	if dials, started := f.dials.Load(), recorded(&bus, "daemon.started"); dials != 0 || started != 0 {
 		t.Errorf("the start stopped in its wait sent its peer %d datagrams and recorded %d starts", dials, started)
 	}
+}
+
+// A node with an exit stopped in the first pass's wait, which never dials, closes its mesh in the stop, so the exit's
+// withdrawal, which waits for the mesh to close, ends and the daemon returns 0 leaving nothing
+func TestDaemonExitStoppedInTheFirstPassWaitReturns(t *testing.T) {
+	claimNamespace(t)
+	leaf := writeDaemon(t, leafCaps)
+	f := writeDaemon(t, exitCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	s, asked, release := held(t, &bus)
+	// the exit's file under cap.exit's fallback = "none", which the loader refuses beside cap.egress, so the start waits
+	s.load = func(path string) (*config.Config, error) {
+		cfg, err := config.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		mode, err := config.Load(leaf.opts.configPath)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Cap.Exit = mode.Cap.Exit
+		return cfg, nil
+	}
+	code := runAsync(f, s)
+	select {
+	case <-asked:
+	case <-time.After(daemonSettle):
+		t.Fatal("the reconciler's first pass did not start")
+	}
+	signalSelf(t, syscall.SIGTERM)
+	waitWithin(t, "the stop", daemonPrompt, func() bool { return recorded(&bus, "daemon.stopping") != 0 })
+	release()
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the exit stopped in its wait exited %d", got)
+	}
+	leftNothing(t, f, was)
+	if dials := f.dials.Load(); dials != 0 {
+		t.Errorf("the exit stopped in its wait sent its peer %d datagrams", dials)
+	}
+}
+
+// A stop keeps every chain of the exit's in place, its translation among them, until the mesh has closed: with the
+// reconciler's pass held its withdrawal waits, and the mesh's close after it, while the exit reads the stop under way and
+// holds the chains it wrote, and once the pass is let go the daemon returns 0 leaving nothing
+func TestDaemonKeepsTheExitsChainsUntilTheMeshHasClosed(t *testing.T) {
+	claimNamespace(t)
+	f := writeDaemon(t, exitCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	s, asked, release := held(t, &bus)
+	code := runAsync(f, s)
+	select {
+	case <-asked:
+	case <-time.After(daemonSettle):
+		t.Fatal("the reconciler's first pass did not start")
+	}
+	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	nft, closeNft := dialTable(t)
+	// held is the chains of the table, the antispoof filter's beside the exit's
+	held := func() []string {
+		t.Helper()
+		chains, err := nftables.TableChains(nft, unix.NFPROTO_INET, nftables.Table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(chains)
+		return chains
+	}
+	waitTill(t, "the exit's chains", func() bool { return slices.Contains(held(), kernelexit.ChainName) })
+	wrote := held()
+	signalSelf(t, syscall.SIGTERM)
+	waitTill(t, "the exit's stop", func() bool { return unready(t, f) == "the translator is stopping" })
+	// past a withdrawal that would not wait
+	time.Sleep(daemonQuiet)
+	if got := held(); !slices.Equal(got, wrote) {
+		t.Errorf("with the mesh open the stop left the chains %q, want those the exit wrote, %q", got, wrote)
+	}
+	closeNft()
+	release()
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the daemon exited %d after SIGTERM", got)
+	}
+	leftNothing(t, f, was)
 }
 
 // A SIGHUP and a SIGUSR1 that came while the start built are read once the reconciler's first pass has ended, and reload
@@ -884,6 +999,30 @@ func ask(t *testing.T, socket, method, path string, request *control.Request) (i
 	return answer.StatusCode, string(text)
 }
 
+// unready is why the status f's daemon answers says its exit does not serve
+func unready(t *testing.T, f *daemonFiles) string {
+	t.Helper()
+	answered, body := ask(t, f.opts.controlPath, http.MethodGet, control.PathStatus, nil)
+	var status control.Status
+	if err := json.Unmarshal([]byte(body), &status); answered != http.StatusOK || err != nil {
+		t.Fatalf("status answered %d %q (%v)", answered, body, err)
+	}
+	return status.Egress.Unready
+}
+
+// dialTable opens the socket a test reads the table by, and answers its close, which the test calls before leftNothing
+// counts the files open and which runs at the test's end where it did not
+func dialTable(t *testing.T) (*nftables.Conn, func()) {
+	t.Helper()
+	nft, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeNft := sync.OnceFunc(func() { _ = nft.Close() })
+	t.Cleanup(closeNft)
+	return nft, closeNft
+}
+
 // heldExit is the exit a start builds with its run held from the stop's start until release is closed, so the stop waits
 type heldExit struct {
 	egress.Exit
@@ -972,6 +1111,166 @@ func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofChains(t *testing.T) {
 	leftNothing(t, f, was)
 }
 
+// A node with an exit over a tun made before its start, left persistent with its maker's descriptor closed as
+// systemd-networkd leaves the device a netdev of kind tun makes, exits 0 on SIGTERM, and the device outlives its mesh.
+// The exit leaves its stopped rules over it, the table holding nothing else, and warns why, and the rest of the daemon
+// leaves nothing: once the table and the device are deleted, as whoever retires the device deletes them, no listener,
+// socket, file, goroutine, route or rule of the start is left.
+func TestDaemonShutdownOverATunMadeBeforeIt(t *testing.T) {
+	claimNamespace(t)
+	persistentTUN(t, daemonTUN)
+	var logged lockedLog
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	f := writeDaemon(t, exitCaps)
+	// opened before the count of open files the start is held to
+	nft, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if chains, err := nftables.TableChains(nft, unix.NFPROTO_INET, nftables.Table); err == nil && len(chains) != 0 {
+			_ = nft.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)})
+		}
+		_ = nft.Close()
+	})
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&bus))
+	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the daemon exited %d after SIGTERM", got)
+	}
+	if _, err := net.InterfaceByName(daemonTUN); err != nil {
+		t.Fatalf("the tun made before the start is gone after the stop: %v", err)
+	}
+	// The form below is the one place this test says what a shutdown leaves over a tun that outlives the mesh. The
+	// table holds the exit's chains, its sets of flows and of untranslated sources and its timeouts and nothing of the
+	// antispoof filter's. Among its
+	// rules are the hold in place of the limit and each family's labelled drop, and none of them is a limit of the
+	// running pass. The log holds the warning that names why.
+	left := tableContents{
+		chains:  []string{kernelexit.LimitChain, "forward6", kernelexit.ChainName},
+		sets:    []string{"flows4", "untranslated4"},
+		objects: []string{"icmp4", "tcp4", "udp4"},
+	}
+	stopped := []string{
+		kernelexit.LimitChain + ": out via " + daemonTUN + " ipv4 dropped while stopped",
+		kernelexit.LimitChain + ": translated via " + daemonTUN + " ipv4 leaving by another link dropped while stopped",
+		"forward6: translated via " + daemonTUN + " ipv6 leaving by another link dropped while stopped",
+	}
+	line := `level=WARN msg="egress left its stopped rules at shutdown" why="the mesh device ` + daemonTUN + ` outlives the mesh"`
+	held := readTable(t, nft)
+	if !slices.Equal(held.chains, left.chains) || !slices.Equal(held.sets, left.sets) || !slices.Equal(held.objects, left.objects) {
+		t.Errorf("the shutdown left the chains %q, the sets %q and the objects %q in the table %s, want %q, %q and %q",
+			held.chains, held.sets, held.objects, nftables.Table, left.chains, left.sets, left.objects)
+	}
+	for _, rule := range stopped {
+		if !slices.Contains(held.rules, rule) {
+			t.Errorf("the shutdown left the rules %q, want %q among them", held.rules, rule)
+		}
+	}
+	if i := slices.IndexFunc(held.rules, func(rule string) bool { return strings.Contains(rule, " limit ") }); i >= 0 {
+		t.Errorf("the shutdown left the running pass's limit %q among the rules %q", held.rules[i], held.rules)
+	}
+	if !strings.Contains(logged.String(), line) {
+		t.Errorf("the shutdown logged no line %s:\n%s", line, logged.String())
+	}
+	if len(held.chains) != 0 {
+		if err := nft.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)}); err != nil {
+			t.Fatalf("delete the table the shutdown left: %v", err)
+		}
+	}
+	if err := netnstest.DelLink(daemonTUN); err != nil {
+		t.Fatalf("delete the tun: %v", err)
+	}
+	leftNothing(t, f, was)
+}
+
+// persistentTUN makes the tun name as systemd-networkd makes a netdev of kind tun with MultiQueue and VNetHeader, the
+// flags the mesh attaches with, persistent, and closes its descriptor, so the device stays with no queue until the
+// test deletes it, which a cleanup does where the test has not
+func persistentTUN(t *testing.T, name string) {
+	t.Helper()
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR | unix.IFF_MULTI_QUEUE)
+	if err := unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
+		t.Fatalf("make the tun %s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = netnstest.DelLink(name) })
+	if err := unix.IoctlSetInt(fd, unix.TUNSETPERSIST, 1); err != nil {
+		t.Fatalf("make the tun %s persistent: %v", name, err)
+	}
+}
+
+// tableContents holds, of the inet table named nftables.Table, the name of each chain, named set and object, each
+// sorted, and each rule as its chain and its comment, in the order of its chain
+type tableContents struct {
+	chains, sets, objects, rules []string
+}
+
+// readTable reads what the table holds through nft, none where the table is not there
+func readTable(t *testing.T, nft *nftables.Conn) tableContents {
+	t.Helper()
+	var out tableContents
+	if held, err := nftables.Tables(nft, nftables.Table); err != nil {
+		t.Fatal(err)
+	} else if _, there := held[unix.NFPROTO_INET]; !there {
+		return out
+	}
+	chains, err := nftables.TableChains(nft, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.chains = slices.Sorted(slices.Values(chains))
+	sets, err := nft.Dump(nftables.Command(unix.NFT_MSG_GETSET), netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, nftables.Table))
+	if err != nil {
+		t.Fatalf("dump the sets of the table %s: %v", nftables.Table, err)
+	}
+	for _, reply := range sets {
+		if set := nftables.DecodeSet(reply); set.Table == nftables.Table && set.Flags&unix.NFT_SET_ANONYMOUS == 0 {
+			out.sets = append(out.sets, set.Name)
+		}
+	}
+	slices.Sort(out.sets)
+	objects, err := nft.Dump(nftables.Command(unix.NFT_MSG_GETOBJ), netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_OBJ_TABLE, nftables.Table))
+	if err != nil {
+		t.Fatalf("dump the objects of the table %s: %v", nftables.Table, err)
+	}
+	for _, reply := range objects {
+		var table, name string
+		for kind, value := range reply.Attributes(nftables.SizeofNfgenmsg) {
+			switch kind {
+			case unix.NFTA_OBJ_TABLE:
+				table = unix.ByteSliceToString(value)
+			case unix.NFTA_OBJ_NAME:
+				name = unix.ByteSliceToString(value)
+			}
+		}
+		if table == nftables.Table {
+			out.objects = append(out.objects, name)
+		}
+	}
+	slices.Sort(out.objects)
+	rules, err := nftables.TableRules(nft, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range rules {
+		out.rules = append(out.rules, rule.Chain+": "+rule.Spec)
+	}
+	return out
+}
+
 // A reload while the node is down leaves the chains of its stopped exit, the translation's chain kept beside the stop's
 // drops, as the stop wrote them: the node takes a file whose cap.egress is unchanged and refuses one that changes it as a
 // restart's to apply, and for neither does the exit write or read anything but stopped
@@ -982,12 +1281,7 @@ func TestDaemonReloadWhileDownLeavesTheStoppedExitsChains(t *testing.T) {
 	var bus atomic.Pointer[events.Bus]
 	code := runAsync(f, watched(&bus))
 	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
-	nft, err := nftables.Dial()
-	if err != nil {
-		t.Fatal(err)
-	}
-	closeNft := sync.OnceFunc(func() { _ = nft.Close() })
-	defer closeNft()
+	nft, closeNft := dialTable(t)
 	// held is the rules the host holds in the table, each by its chain and its comment
 	held := func() []string {
 		t.Helper()
@@ -1001,21 +1295,11 @@ func TestDaemonReloadWhileDownLeavesTheStoppedExitsChains(t *testing.T) {
 		}
 		return lines
 	}
-	// unready is why the status says the exit does not serve
-	unready := func() string {
-		t.Helper()
-		answered, body := ask(t, f.opts.controlPath, http.MethodGet, control.PathStatus, nil)
-		var status control.Status
-		if err := json.Unmarshal([]byte(body), &status); answered != http.StatusOK || err != nil {
-			t.Fatalf("status answered %d %q (%v)", answered, body, err)
-		}
-		return status.Egress.Unready
-	}
 	const stopped = "the translator is stopped"
 	if answered, body := ask(t, f.opts.controlPath, http.MethodPost, control.PathDown, &control.Request{}); answered != http.StatusOK {
 		t.Fatalf("down answered %d %q", answered, body)
 	}
-	waitTill(t, "the stop", func() bool { return unready() == stopped })
+	waitTill(t, "the stop", func() bool { return unready(t, f) == stopped })
 	lines, passes := held(), recorded(&bus, "egress.pass")
 	for _, line := range []string{
 		kernelexit.ChainName + ": out via " + daemonTUN + " ipv4 masquerade",
@@ -1047,7 +1331,7 @@ func TestDaemonReloadWhileDownLeavesTheStoppedExitsChains(t *testing.T) {
 		}
 		// past any pass a wake would run
 		time.Sleep(daemonQuiet)
-		if got, wrote, why := held(), recorded(&bus, "egress.pass")-passes, unready(); !slices.Equal(got, lines) || wrote != 0 || why != stopped {
+		if got, wrote, why := held(), recorded(&bus, "egress.pass")-passes, unready(t, f); !slices.Equal(got, lines) || wrote != 0 || why != stopped {
 			t.Errorf("after a reload of %s while down the table holds %q after %d writes of the exit, which reads %q, want %q after none and %q",
 				reload.what, got, wrote, why, lines, stopped)
 		}

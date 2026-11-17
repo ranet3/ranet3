@@ -87,6 +87,9 @@ type Mesh struct {
 	answerState
 	transitState
 	traceState
+
+	// done is closed at the end of Close, nil in a mesh a test builds bare
+	done chan struct{}
 }
 
 // outboundBatch owns the TUN buffers from one read until a crypto worker has
@@ -212,7 +215,7 @@ type inboundWriteBatch struct {
 // one. Delivering one to it is a no-op.
 // SetMTU installs the steering and sets no MTU
 func NewRoutesOnly() *Mesh {
-	return &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
+	return &Mesh{Routes: NewRouteTable(), closed: make(chan struct{}), done: make(chan struct{})}
 }
 
 // NewOnDevice is NewRoutesOnly writing what it delivers to dev, for a test
@@ -263,6 +266,7 @@ func NewNamed(mtu int, name string, ownedOnly bool, events func(kind, peer strin
 		Name:      actualName,
 		setMTU:    setTUNMTU,
 		closed:    make(chan struct{}),
+		done:      make(chan struct{}),
 		events:    events,
 		ownedOnly: ownedOnly,
 	}
@@ -1129,5 +1133,13 @@ func (m *Mesh) Close() {
 		}
 		m.outboundWorkerWG.Wait()
 		m.writerWG.Wait()
+		if m.done != nil {
+			close(m.done)
+		}
 	})
 }
+
+// Done is closed at the end of Close, once it has closed the tun and waited out the tun's readers, the workers and the
+// writer lanes, so the mesh writes nothing to the tun after it, where a Lane's Done is closed as Close begins, before
+// those waits. A frame written before may still be held in the kernel where the tun outlives Close.
+func (m *Mesh) Done() <-chan struct{} { return m.done }

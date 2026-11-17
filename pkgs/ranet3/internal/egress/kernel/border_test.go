@@ -292,7 +292,7 @@ func runBorder(t *testing.T, f *BorderFilter) {
 // waitForPass waits for an antispoof.pass event woken by trigger
 func waitForPass(t *testing.T, bus *events.Bus, trigger string) {
 	t.Helper()
-	for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+	for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 		var triggers []string
 		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.pass" }, 0) {
 			triggers = append(triggers, event.Attrs["trigger"])
@@ -780,7 +780,7 @@ func TestBorderFollowsTheHostsLinksBetweenSweeps(t *testing.T) {
 		derived = step.sets
 		mu.Unlock()
 		network <- struct{}{}
-		for deadline := time.Now().Add(passWait); carved() != step.want; time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); carved() != step.want; time.Sleep(passPoll) {
 			if time.Now().After(deadline) {
 				t.Fatalf("after %s the chain holds %q, carved %v, want carved %v", step.what, be.specs(), carved(), step.want)
 			}

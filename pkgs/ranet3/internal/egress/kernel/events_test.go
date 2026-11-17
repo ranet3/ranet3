@@ -16,17 +16,18 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// passWait is how long a test waits for a pass it expects, generous for a loaded machine
+// PassWait is how long a test of this package or of its external tests waits for what it expects, a pass, a retransmission
+// or a Run's return, generous for a loaded machine
 // passPoll is how often it looks
 // sweepEvery is the sweep of a test that waits for one
 // stoppedFor is how long a stopped translator is watched for a sweep that installs anything, four of those sweeps
-// lateSweep is the sweep of a test in which no sweep may act, out past passWait
+// lateSweep is the sweep of a test in which no sweep may act, out past PassWait
 const (
-	passWait   = 30 * time.Second
+	PassWait   = 30 * time.Second
 	passPoll   = 5 * time.Millisecond
 	sweepEvery = 100 * time.Millisecond
 	stoppedFor = 4 * sweepEvery
-	lateSweep  = 2 * passWait
+	lateSweep  = 2 * PassWait
 )
 
 // a pass that rewrote the rules, moved the announcement or failed is recorded, and a quiet one is not
@@ -183,7 +184,7 @@ func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 		cancel()
 		<-done
 	})
-	for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+	for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 		var triggers []string
 		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
 			triggers = append(triggers, event.Attrs["trigger"])
@@ -197,24 +198,24 @@ func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 	}
 }
 
-// a running translator told to stop retracts its advertisement, then withdraws its chains, and holds nothing across its sweeps
-// told to start again it installs the rules and announces on its next pass
+// a running translator told to stop retracts its advertisement, then writes the stopped rules once, and holds them across its sweeps
+// told to start again it installs its own rules and announces on its next pass
 // a sweep may run the pass of a stop or a start before its wake is read, so neither is told by the trigger its pass records
-func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
+func TestStoppedTranslatorHoldsItsStoppedRulesUntilItIsStartedAgain(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{}
 	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
 	var mu sync.Mutex
-	withdrawnWhenRetracted := -1
+	appliedWhenRetracted := -1
 	tr.rt.Republish = func() {
 		if len(tr.Announce()) != 0 {
 			return
 		}
 		be.mu.Lock()
-		withdrawn := be.withdrawn
+		applied := be.applied
 		be.mu.Unlock()
 		mu.Lock()
-		withdrawnWhenRetracted = withdrawn
+		appliedWhenRetracted = applied
 		mu.Unlock()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -224,60 +225,52 @@ func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
 		cancel()
 		<-done
 	})
-	state := func() (held, withdrawn int) {
+	applied := func() int {
 		be.mu.Lock()
 		defer be.mu.Unlock()
-		return len(be.held), be.withdrawn
+		return be.applied
 	}
 	passes := func() int {
 		return len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0))
 	}
 	await := func(what string, before int, ok func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 			recorded := passes()
 			if recorded > before && ok() {
 				return
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s, the translator recorded %d passes", what, recorded)
+				t.Fatalf("timed out waiting for %s, the translator recorded %d passes and the host holding %q", what, recorded, be.specs())
 			}
 		}
 	}
-	await("the first pass", 0, func() bool {
-		held, _ := state()
-		return held > 0 && len(tr.Announce()) == 1
-	})
+	running, stopped := specsOf(tr.desired()), specsOf(tr.stopped())
+	await("the first pass", 0, func() bool { return slices.Equal(be.specs(), running) && len(tr.Announce()) == 1 })
 
 	before := passes()
 	tr.SetEnabled(false)
-	await("the stop", before, func() bool {
-		held, withdrawn := state()
-		return held == 0 && withdrawn == 1 && len(tr.Announce()) == 0
-	})
+	await("the stop", before, func() bool { return slices.Equal(be.specs(), stopped) && applied() == 2 && len(tr.Announce()) == 0 })
 	mu.Lock()
-	if withdrawnWhenRetracted != 0 {
-		t.Errorf("the advertisement was retracted after %d withdrawals, want before the first", withdrawnWhenRetracted)
+	if appliedWhenRetracted != 1 {
+		t.Errorf("the advertisement was retracted after %d writes, want after the first pass's alone", appliedWhenRetracted)
 	}
 	mu.Unlock()
-	if stats := tr.lastPass(); stats.Installed != len(tr.stopped()) || len(stats.Announced) != 0 {
-		t.Errorf("a stopped translator reports %+v, want the %d stopped rules installed and nothing announced", stats, len(tr.stopped()))
+	if stats := tr.lastPass(); stats.Installed != len(stopped) || len(stats.Announced) != 0 {
+		t.Errorf("a stopped translator reports %+v, want the %d stopped rules installed and nothing announced", stats, len(stopped))
 	}
 	time.Sleep(stoppedFor)
-	if held, withdrawn := state(); held != 0 || withdrawn != 1 {
-		t.Errorf("the sweeps after the stop left %d rules held and withdrew %d times, want none held and one withdrawal", held, withdrawn)
+	if held, writes := be.specs(), applied(); !slices.Equal(held, stopped) || writes != 2 {
+		t.Errorf("the sweeps after the stop left %q after %d writes, want the stopped rules after 2", held, writes)
 	}
 
 	before = passes()
 	tr.SetEnabled(true)
-	await("the start", before, func() bool {
-		held, _ := state()
-		return held > 0 && len(tr.Announce()) == 1
-	})
+	await("the start", before, func() bool { return slices.Equal(be.specs(), running) && len(tr.Announce()) == 1 })
 }
 
 // a start whose pass a sweep ran before its wake was read still ends the record of the last stop
-// the stop after it then withdraws what that pass installed
+// the stop after it then writes the stopped rules over what that pass installed
 // enabled is stored without the wake, which is how the select leaves a start whose wake it passed over for the tick
 func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 	be := &fakeBackend{}
@@ -289,78 +282,16 @@ func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 		cancel()
 		<-done
 	})
-	state := func() (held, withdrawn int) {
-		be.mu.Lock()
-		defer be.mu.Unlock()
-		return len(be.held), be.withdrawn
-	}
-	await := func(what string, ok func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(passWait); !ok(); time.Sleep(passPoll) {
-			if time.Now().After(deadline) {
-				held, withdrawn := state()
-				t.Fatalf("timed out waiting for %s, with %d rules held after %d withdrawals and %v announced", what, held, withdrawn, tr.Announce())
-			}
-		}
-	}
-	installed := func() bool {
-		held, _ := state()
-		return held > 0 && len(tr.Announce()) == 1
-	}
-	stopped := func(times int) func() bool {
-		return func() bool {
-			held, withdrawn := state()
-			return held == 0 && withdrawn == times && len(tr.Announce()) == 0
-		}
-	}
+	await := awaiting(t, be, tr)
+	installed := func() bool { return slices.Equal(be.specs(), specsOf(tr.desired())) && len(tr.Announce()) == 1 }
+	stopped := func() bool { return slices.Equal(be.specs(), specsOf(tr.stopped())) && len(tr.Announce()) == 0 }
 	await("the first pass", installed)
 	tr.SetEnabled(false)
-	await("the stop", stopped(1))
+	await("the stop", stopped)
 	tr.Enabled.Store(true)
 	await("a sweep to install the rules again", installed)
 	tr.SetEnabled(false)
-	await("the second stop", stopped(2))
-}
-
-// a stop whose withdrawal failed is still a stop the translator owes
-// it tries again rather than recording its chains as gone
-// the sweep is out past the wait
-// only the retry a failed pass takes can then withdraw its chains within it
-func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
-	be := &fakeBackend{}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- tr.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-	await := func(what string, ok func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(passWait); !ok(); time.Sleep(passPoll) {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s, the last pass reading %+v", what, tr.lastPass())
-			}
-		}
-	}
-	held := func() int {
-		be.mu.Lock()
-		defer be.mu.Unlock()
-		return len(be.held)
-	}
-	await("the first pass", func() bool { return held() > 0 })
-
-	be.mu.Lock()
-	be.failWithdraw = true
-	be.mu.Unlock()
-	tr.SetEnabled(false)
-	await("the stop to fail", func() bool { return tr.lastPass().Err != "" })
-
-	be.mu.Lock()
-	be.failWithdraw = false
-	be.mu.Unlock()
-	await("the retry to withdraw its chains", func() bool { return held() == 0 && tr.lastPass().Err == "" })
+	await("the second stop", stopped)
 }
 
 // a pass the sweep woke, putting back rules somebody else flushed, is named for the sweep
@@ -382,7 +313,7 @@ func TestTranslatorNamesTheSweep(t *testing.T) {
 	}
 	await := func(what, trigger string) {
 		t.Helper()
-		for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); ; time.Sleep(passPoll) {
 			passes := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0)
 			if len(passes) > 0 && passes[len(passes)-1].Attrs["trigger"] == trigger && held() {
 				return
@@ -414,7 +345,7 @@ func TestTranslatorNamesTheStopAndTheStart(t *testing.T) {
 	await := func(want ...string) {
 		t.Helper()
 		var triggers []string
-		for deadline := time.Now().Add(passWait); time.Now().Before(deadline); time.Sleep(passPoll) {
+		for deadline := time.Now().Add(PassWait); time.Now().Before(deadline); time.Sleep(passPoll) {
 			triggers = nil
 			for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
 				triggers = append(triggers, event.Attrs["trigger"])

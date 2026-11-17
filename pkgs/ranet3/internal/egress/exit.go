@@ -20,8 +20,15 @@ import (
 type Exit interface {
 	// Run carries until ctx ends, then returns once readiness has gone false
 	// in both families, the announcement has been published empty and the
-	// backend holds nothing. It is called once, and its error is the
-	// withdrawal's.
+	// backend has ended what it holds: the userspace exit its flows, and the
+	// kernel exit its chains. The kernel exit withdraws them where the mesh
+	// device has gone, and Run returns the withdrawal's error. Where the
+	// device outlives the mesh, or whether it does cannot be read, it stops
+	// as a down does and leaves the stopped rules, and Run returns nil where
+	// they read back as written, warning that it leaves them, and otherwise
+	// an error. It is called once. The kernel exit ends only once the mesh it
+	// writes to has closed, so a caller closes the mesh without waiting for
+	// Run, and waits for Run after.
 	Run(ctx context.Context) error
 	// Close closes the backend of an exit whose Run was never called and
 	// withdraws nothing, so what it holds stays for the next start
@@ -69,7 +76,10 @@ type Hooks struct {
 	Events *events.Bus
 }
 
-// Status is the report every backend gives, with a detail of its own
+// Status is the report every backend gives, with a detail of its own. Its
+// readiness, announcement, counts, time and error are the record the backend's
+// last pass or last stop stored (exit-nodes.md, "Watching it"), but a userspace
+// exit's Refused4, Refused6, Dropped4, Dropped6 and Flows, which it reads now.
 type Status struct {
 	// Backend names the backend, and Where the space it owns on the host
 	Backend, Where string
@@ -79,7 +89,7 @@ type Status struct {
 	Ready4, Ready6   bool
 	Unready, Skipped string
 	// Advertise is the prefixes the capability advertises, and Announced
-	// those of the families ready at the last pass
+	// those of the families the record judged ready, none in a stop's
 	Advertise, Announced []netip.Prefix
 	// Translate and Return are the capability's translation
 	Translate []Class
@@ -100,7 +110,8 @@ type Status struct {
 	// their errors about no datagram of a live mapping, each counted by its
 	// reason in Flows.Dropped too.
 	Dropped4, Dropped6 uint64
-	// PassAt is the last pass, zero before the first, and Err its error
+	// PassAt is when the record was stored, zero before the first pass or
+	// stop, and Err its error
 	PassAt time.Time
 	Err    string
 	// Rules is the detail of a backend that installs rules in the host's
@@ -180,17 +191,18 @@ type SourceFlows struct {
 // ExitDebug is an exit's detail as a debug read finds it, which a backend
 // holding rules in the host's packet filter answers beside its Status: each
 // rule with its counter read now, and each family's readiness as the last pass
-// judged it
+// judged it, none where a stop has stored the record since
 type ExitDebug struct {
 	Status Status
 	// Rules is each rule the backend asks for in order, then each its chains
 	// hold that it does not ask for, and ReadErr why they could not be read now
 	Rules   []RuleReading
 	ReadErr string
-	// Families is each family the backend translates
+	// Families is each family the backend translates, as the last pass judged
+	// it, and empty where a stop has stored the record since
 	Families []FamilyReading
 	// RPFilter is IPv4's rp_filter on all and on each device a route of the
-	// last pass's lookups leaves by, read now
+	// lookups in Families leaves by, read now
 	RPFilter []Setting
 	// Unlabelled is why the backend writes no connection label on the flows
 	// it translates, empty while it writes one
@@ -268,7 +280,11 @@ type Setting struct {
 	Name, Value string
 }
 
-// Rules is the rules a backend installed, as its last pass read them back
+// Rules is the rules a backend installed as the exit's record holds them,
+// which a pass or a stop stored. Installed counts them as that pass or stop
+// last read them back, 0 where a pass could not read them back or a stop could
+// not after writing them, and as the record before it counts them for a stop
+// that has neither written nor read them back.
 type Rules struct {
 	Installed int
 	// Flows counts the connections the rules have translated, and Bytes the
@@ -278,7 +294,7 @@ type Rules struct {
 	Flows, Bytes, Untranslated uint64
 	// ConntrackCount and ConntrackMax are the host's connection tracking
 	// table, the entries it holds and the most it takes, which the limit's
-	// shares come out of. Each is nil where the pass could not read it.
+	// shares come out of. Each is nil where the record holds no reading of it.
 	ConntrackCount, ConntrackMax *uint64
 	// Conflicts names the other source translation on the host this node's
 	// traffic can meet

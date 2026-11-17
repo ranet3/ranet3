@@ -27,7 +27,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
-	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -201,7 +200,8 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 		t.Fatalf("start the exit: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	// the antispoof filter stops last, as the daemon stops it, so its withdrawal alone finds the table holding nothing else
+	// the antispoof filter stops last, as the daemon stops it, so its withdrawal finds the table holding the translator's
+	// stopped chains alone (labLeftStopped)
 	filterCtx, cancelFilter := context.WithCancel(context.Background())
 	var runs, filter sync.WaitGroup
 	stop := sync.OnceFunc(func() {
@@ -503,10 +503,8 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 		if _, err := net.InterfaceByName(labTUN); err == nil {
 			return fmt.Errorf("%s outlived the node", labTUN)
 		}
-		for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_INET} {
-			if err := labDeleteTable(family, nftables.Table); !errors.Is(err, unix.ENOENT) {
-				return fmt.Errorf("deleting the table of family %d once the node stopped answered %v, want it gone", family, err)
-			}
+		if err := labLeftStopped(); err != nil {
+			return err
 		}
 		rules, err := dumpRules()
 		if err != nil {

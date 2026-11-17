@@ -391,7 +391,7 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			if now.enabled {
 				_ = tr.reconcile()
 			} else {
-				_ = tr.stop()
+				_, _ = tr.stop()
 			}
 
 			written := writtenAfter(now, desired)

@@ -745,7 +745,7 @@ func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 				carried[egress.FamilyIPv4] = written[egress.FamilyIPv4] && now.forward4
 				carried[egress.FamilyIPv6] = written[egress.FamilyIPv6] && now.forward6
 			} else {
-				_ = tr.stop()
+				_, _ = tr.stop()
 			}
 			var announced []netip.Prefix
 			for _, prefix := range cfg.Advertise {
@@ -818,7 +818,7 @@ func TestSIDIsOriginatedExactlyWhileEveryForwardedFamilyServes(t *testing.T) {
 			if now.enabled {
 				_ = tr.reconcile()
 			} else {
-				_ = tr.stop()
+				_, _ = tr.stop()
 			}
 			ready := readyAfter(rt, desired, now)
 			broken := now.forward4 && !ready[0] || now.forward6 && !ready[1]

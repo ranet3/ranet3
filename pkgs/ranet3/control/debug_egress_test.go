@@ -81,7 +81,7 @@ func egressFixtures(passAt time.Time) map[string]EgressInfo {
 	u.Host = &EgressHost{Ports: 17}
 	none.Userspace = &u
 	unlabelled := ready
-	unlabelled.Unlabelled = "the kernel refused a rule that sets or reads a connection label, so ranet3 down leaves the replies of the flows the exit translates a way out by another link"
+	unlabelled.Unlabelled = "the kernel refused a rule that sets or reads a connection label, so ranet3 down, and a shutdown that leaves the stopped rules, leave the replies of the flows the exit translates a way out by another link"
 	return map[string]EgressInfo{
 		"egress": ready, "egress-off": {}, "egress-unready": unready, "egress-unlabelled": unlabelled,
 		"egress-userspace":              {Enabled: true, Status: userspace, Memory: set},
