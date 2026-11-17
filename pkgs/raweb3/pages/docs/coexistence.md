@@ -620,12 +620,17 @@ set of flows read back under another share, nf_tables refuses the pass, since
 that set differs in its comment. The family the object is in stays not ready,
 both families for a chain they share, with the reason that section gives.
 
-It removes its chains, sets and timeout objects at shutdown and at
-`ranet3 down`, and the table with them as
-[the nftables table](#the-nftables-table) gives. What an earlier instance left
-carries the same names and is adopted, then brought to what the configuration
-now asks for, and a rule of a family the configuration no longer covers goes
-with the first pass's rewrite of the chains.
+It removes its chains, sets and timeout objects at a shutdown whose tun went
+with the mesh, and the table with them as
+[the nftables table](#the-nftables-table) gives. At `ranet3 down` it keeps them
+all, its nat chain with its rules among them, and writes in its forward hook's
+chains the rules of a stopped translator, as
+[down and up](exit-nodes.md#reloads-down-and-up) gives, and a shutdown ends the
+same way where the tun outlives the mesh or that cannot be read, as
+[the tun device](design/limits.md#the-tun-device) gives. What an earlier
+instance left carries the same names and is adopted, then brought to what the
+configuration now asks for, and a rule of a family the configuration no longer
+covers goes with the first pass's rewrite of the chains.
 
 Nothing here writes iptables. The 2 are separate registries in the kernel, an
 `iptables-nft` rule is visible here as an ordinary nftables table, and the
@@ -737,6 +742,33 @@ arriving on its own interface. Tailscale's sources forwarded from `tailscale0`
 into the tun are dropped by `entry` unless a masquerade gives them the tun's
 address, since this node owns none of them.
 
+### The exit's connection label
+
+The exit's label is bit 127 of the connection label, the 128 bits the kernel
+keeps on a connection entry for any program to set. What sets it and what its
+stopped rules drop for it are on
+[down and up](exit-nodes.md#reloads-down-and-up). No registry assigns the bits,
+and a program numbering its labels from 0 reaches the highest last, so the
+translator takes bit 127. Its rule sets that bit and keeps the others, as
+[a rule's write of a label](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_ct.c?id=940de590b839f71d6dc846160534bf202401b8b7#n309)
+does, and its drops read that bit alone. The bit is fixed in the build.
+
+Another program that sets bit 127 on a connection of either family marks it as
+one of the exit's, so while the exit is down, or after a shutdown that left its
+stopped rules, the labelled drop
+[down and up](exit-nodes.md#reloads-down-and-up) gives takes that connection's
+packets as it takes the exit's flows', for as long as the connection's entry
+lasts. A program that reads the bit for its own use finds it set on the exit's
+flows. A program that clears the bit, or writes a connection's labels over
+ctnetlink in fewer than 16 bytes, mask or not, since
+[the kernel zeroes every word past the write's length](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_labels.c?id=940de590b839f71d6dc846160534bf202401b8b7#n50),
+or in 16 without a mask, as
+[an update over ctnetlink without one does](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_netlink.c?id=940de590b839f71d6dc846160534bf202401b8b7#n2155),
+takes the mark off an exit's flow, whose replies then leave by the host's other
+routes while the exit is down and the tun's routes are gone. The labels
+extension every connection entry carries while the exit's rules are in place is
+on [down and up](exit-nodes.md#reloads-down-and-up) with its cost.
+
 ### A rule that holds forwarded packets
 
 Another program's rule can hold a packet forwarded out of the mesh after the
@@ -789,10 +821,11 @@ read finds a change to one. A table message wakes every writer but its sender,
 unless it is a `NEWTABLE` whose flags are 0, which makes the table or clears its
 flags. One that deletes the table wakes them whatever it carries. A flush of the
 whole ruleset deletes the table and another program setting it dormant sets a
-flag on it, so each wakes every writer once, and the first writer's pass after
-it makes the table again or clears the flag, which wakes no other: the table it
-makes holds none of their chains, and with the flag cleared it bypasses none. No
-writer's writes wake another. Each makes the table where it is missing.
+flag on it, so each wakes every writer once, and the first write of a writer's
+that the host takes after it, a pass or the translator's stop, makes the table
+again or clears the flag, which wakes no other: the table it makes holds none of
+their chains, and with the flag cleared it bypasses none. No writer's writes
+wake another. Each makes the table where it is missing.
 
 A writer's rewrite is the transaction that writes its chains and sets whole:
 every write of the translator and of the kill switch, and every write of the
@@ -808,16 +841,17 @@ The daemon counts its own writers. Each holds the table from its first write
 that succeeds, or from the read that finds what an earlier instance of it left,
 until its withdrawal, or until it ends without one. The count decides for the
 daemon's writers: once one has ended without withdrawing, as the antispoof
-filter and the kill switch do at a stop for the mesh's failure, no later
-withdrawal deletes the table. The withdrawal's listing decides for anything else
-in the table: the last withdrawal deletes the table in the transaction that
-deletes its own, only where it lists nothing but its own and no flag but
-dormant. A chain, set, object or flowtable that is not its own keeps the table
-where the listing shows it, and goes with the table where a listing comes back
-without it. No other withdrawal deletes the table, whatever it lists, so a
-daemon that dies between two withdrawals, or a start without `cap.table` that
-deletes the kill switch an earlier instance left, leaves the table for the next
-start to take over.
+filter and the kill switch do at a stop for the mesh's failure and the
+translator does at a shutdown that leaves its stopped rules, no later withdrawal
+deletes the table. The withdrawal's listing decides for anything else in the
+table: the last withdrawal deletes the table in the transaction that deletes its
+own, only where it lists nothing but its own and no flag but dormant. A chain,
+set, object or flowtable that is not its own keeps the table where the listing
+shows it, and goes with the table where a listing comes back without it. No
+other withdrawal deletes the table, whatever it lists, so a daemon that dies
+between two withdrawals, or a start without `cap.table` that deletes the kill
+switch an earlier instance left, leaves the table for the next start to take
+over.
 
 Each writer's pass also deletes what an earlier version of it wrote under the
 names its own section lists, in the transaction that writes its own, and its
@@ -849,13 +883,15 @@ A table another writer gave a flag other than dormant refuses every writer's
 rewrite, and each writer names the flag beside the refusal: the translator in
 the reason a family is not ready, beside the pass's error, the antispoof filter
 in its readiness and the pass's error, which ends a start at its first pass, and
-the kill switch in its `not holding` reason and the pass's error. Where the
-table outlived the socket that set its `persist` flag, the refusal is
-`operation not supported` and the reason names `nft delete table inet ranet3`,
-which alone clears the flag and deletes every writer's chains with the table.
-Where another program's open socket owns the table, the refusal is
-`operation not permitted`, and the reason says what the kernel does once that
-program closes the socket or stops, as the table flags of
+the kill switch in its `not holding` reason and the pass's error. The
+translator's stop names the flag in its reason and its error both, down or at a
+shutdown where the tun outlives the mesh or where whether it does cannot be
+read. Where the table outlived the socket that set its `persist` flag, the
+refusal is `operation not supported` and the reason names
+`nft delete table inet ranet3`, which alone clears the flag and deletes every
+writer's chains with the table. Where another program's open socket owns the
+table, the refusal is `operation not permitted`, and the reason says what the
+kernel does once that program closes the socket or stops, as the table flags of
 [nft(8)](https://www.netfilter.org/projects/nftables/manpage.html) give: without
 `persist` it deletes the table with the socket, and with `persist` it keeps the
 table as in the case before, until `nft delete table inet ranet3`. No writer

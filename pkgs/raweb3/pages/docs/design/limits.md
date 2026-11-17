@@ -778,6 +778,56 @@ before it pass the lookup on, as rows L6 to L12 of
 off unless enabled. Without it, another program assigns the addresses and
 installs the kernel routes.
 
+**On a tun that outlives the mesh, a shutdown leaves the exit's stopped rules
+behind.** The translator under `cap.egress` keeps its chains until the mesh has
+closed, so each frame the mesh wrote to the tun meets them, and then asks the
+kernel of the daemon's own network namespace for the device of the index the tun
+held at the start. Closing the tun the daemon makes unregisters the device
+before the mesh's close returns, and unregistering a device
+[flushes every CPU's backlog of its frames](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/core/dev.c?id=940de590b839f71d6dc846160534bf202401b8b7#n12496)
+and
+[waits out each of its frames in flight](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/core/dev.c?id=940de590b839f71d6dc846160534bf202401b8b7#n12498),
+so where the kernel answers that no device holds the index, the translator
+withdraws and leaves nothing of its own. A tun that `link.tun` attaches to
+stays, and the kernel can hold a frame it took past the mesh's close: in another
+CPU's backlog where its receive is steered, in a cpumap where generic XDP
+redirects into one, in an ifb its ingress is redirected to, or in a queue
+waiting for a userspace verdict. A withdrawal there lets such frames leave under
+their leaf's address. So wherever a device holds the index, or the kernel's
+answer does not say for that one index, the translator ends the shutdown as
+`ranet3 down` does, its stopped rules written and the translation's chain kept,
+and warns. The index can name another device by then, since the kernel
+[gives a device made with an index it asks for that index where it is free](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/core/dev.c?id=940de590b839f71d6dc846160534bf202401b8b7#n10869)
+and
+[lets one moved in from another namespace keep its own where it is free](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/core/dev.c?id=940de590b839f71d6dc846160534bf202401b8b7#n12772),
+and that device reads as the tun, which leaves the stopped rules. The tree's
+test of such a tun, steered, not steered, and beside another namespace's sysfs
+naming a device of its name and index, reads the stopped rules left and no frame
+under the leaf's address after each of its shutdowns. What stays, what it does
+and how it goes are on [the exit page](../exit-nodes.md#reloads-down-and-up).
+
+**A tun another program takes out of the daemon's namespace while the shutdown
+reads whether it is there can let a frame out.** A removal
+[takes the device out of the namespace's list](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/core/dev.c?id=940de590b839f71d6dc846160534bf202401b8b7#n12491)
+ahead of that flush and wait, and a move to another namespace
+[takes it out](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/core/dev.c?id=940de590b839f71d6dc846160534bf202401b8b7#n12791)
+and flushes no backlog, so a translator reading in that moment finds the tun
+gone and withdraws while a frame it took can still reach the forward hook and
+leave under its leaf's address. And a device another program makes with the
+tun's old index, or moves in holding it, takes a frame an ifb held for the tun,
+since the ifb
+[hands each frame to the device its index names](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/net/ifb.c?id=940de590b839f71d6dc846160534bf202401b8b7#n115)
+then: the frame comes in by that device, which no rule of the exit's holds, and
+leaves under its leaf's address whether the translator withdraws or not. Only
+another program acting on the tun or its index at the shutdown meets these.
+
+**Once the tun's routes are withdrawn, what the host itself sends to a leaf can
+leave by another link.** A packet the host sends to a leaf's mesh address meets
+none of the exit's drops, and
+[the exit page](../exit-nodes.md#what-the-host-itself-sends-to-a-leaf) gives
+when it leaves, the kinds a run or the kernel's source shows and what each
+family needs for one to leave.
+
 ## Babel
 
 Babel only exchanges control packets inside authenticated ESP tunnels. A local

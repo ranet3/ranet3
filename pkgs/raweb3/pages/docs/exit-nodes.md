@@ -311,15 +311,25 @@ no rule or map element of another writer's uses it, the pass deletes the object
 and makes it again, which leaves the flows that held it on the host's timeouts.
 Where such a rule or element uses it,
 [sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives
-what the pass does with it. A pass deletes `translated-udp4`, `translated-tcp4`,
-`translated-icmp4`, `translated-udp6`, `translated-tcp6` and
-`translated-icmpv66`, the objects an earlier version made, in the transaction
-that writes the chains, so on a host that version left by a kill or a crash the
-flows that held one take the host's timeouts after the first pass. A stop
-withdraws the objects under either name with the chains, and the flows it leaves
-keep their translation under the host's timeouts. Neither deletes an object that
-a rule or a map element of another writer's attaches, as
-[sharing a host](coexistence.md#the-nftables-table) gives.
+what the pass does with it. A pass, and the write of `ranet3 down`, deletes
+`translated-udp4`, `translated-tcp4`, `translated-icmp4`, `translated-udp6`,
+`translated-tcp6` and `translated-icmpv66`, the objects an earlier version made,
+in the transaction that writes the chains, so on a host that version left by a
+kill or a crash the flows that held one take the host's timeouts after the first
+pass. `ranet3 down` keeps the objects with the translation's chain, as
+[down and up](#reloads-down-and-up) gives, and so does a shutdown that leaves
+the stopped rules there. A shutdown that withdraws takes the objects under
+either name with the chains, and the flows it leaves are the host's, under the
+host's timeouts. Neither deletes an object that a rule or a map element of
+another writer's attaches, as
+[sharing a host](coexistence.md#the-nftables-table) gives. The withdrawal takes
+the kernel's nat hooks with the family's last nat chain, since
+[nf_nat_core.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_core.c?id=940de590b839f71d6dc846160534bf202401b8b7)
+holds them only while a nat chain of the family uses them, so such a flow keeps
+its translation where another nat chain of the family stays on the host, and
+where another table's flowtable has offloaded it, since
+[the flowtable translates a packet from its own entry](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_flow_table_ip.c?id=940de590b839f71d6dc846160534bf202401b8b7#n507)
+whatever nat chain stays.
 
 ## Each source's share of the flows
 
@@ -567,7 +577,8 @@ egress segment's packet for the families ready, as
 [what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
 translate is not ready. On Linux `ranet3 debug egress` shows each family's
-judgment condition by condition with the lookups the last pass read, as
+judgment condition by condition with the lookups the last pass read, and none
+from a [stop](#watching-it) to the next pass, as
 [debugging](development/debug.md) describes.
 
 On macOS a family is ready while the exit's stack runs, a link outside the mesh
@@ -710,21 +721,21 @@ which reassembles or parses it first:
   seconds past the last request that left on it or reply it took, so one that
   carried neither ends at the first sweep after its sends end. Replies from
   those destinations keep a mapping and its flow, with no request from the leaf,
-  for as long as they come 60 seconds apart or closer. A withdrawal or the stop
-  ends every mapping at once, and a request whose mapping it closed meanwhile is
-  refused and counted as `withdrawn`. A request the exit or the host refuses to
-  send once its mapping is open is dropped and counted as `echo unsent`: the
-  exit refuses one toward a destination its underlay names no link for, and the
-  host refuses one on the send. The exit's refusal, and the host's with
-  `ENETUNREACH` or `EHOSTUNREACH`, which say no route or no way leads to the
-  destination's host, are answered with network unreachable over IPv4 and no
-  route over IPv6, within the node's ICMP limits, since macOS's errnos do not
-  tell those causes apart. Scoped to lo0 toward a destination lo0 holds no route
-  for, macOS was seen to refuse the IPv6 send with `EHOSTUNREACH` and to send
-  the IPv4 one, whose leaf then hears nothing. Over IPv6 XNU also gives
-  `EHOSTUNREACH` for a host route flagged reject or blackhole and for a socket
-  restricted from sending on the link, and `ENETUNREACH` for such a network
-  route
+  for as long as they come 60 seconds apart or closer. The exit's stop, at the
+  times [watching it](#watching-it) gives, ends every mapping at once, and a
+  request whose mapping it closed meanwhile is refused and counted as
+  `withdrawn`. A request the exit or the host refuses to send once its mapping
+  is open is dropped and counted as `echo unsent`: the exit refuses one toward a
+  destination its underlay names no link for, and the host refuses one on the
+  send. The exit's refusal, and the host's with `ENETUNREACH` or `EHOSTUNREACH`,
+  which say no route or no way leads to the destination's host, are answered
+  with network unreachable over IPv4 and no route over IPv6, within the node's
+  ICMP limits, since macOS's errnos do not tell those causes apart. Scoped to
+  lo0 toward a destination lo0 holds no route for, macOS was seen to refuse the
+  IPv6 send with `EHOSTUNREACH` and to send the IPv4 one, whose leaf then hears
+  nothing. Over IPv6 XNU also gives `EHOSTUNREACH` for a host route flagged
+  reject or blackhole and for a socket restricted from sending on the link, and
+  `ENETUNREACH` for such a network route
   ([`in6_src.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c)),
   each answered alike, a departure
   [protocol deviations](design/protocol-deviations.md) declares. What it gives a
@@ -898,7 +909,7 @@ What the exit does:
   A server off the Mac that retransmitted its FIN eight times over 27 seconds
   had each acknowledged and the TIME_WAIT gone 45 seconds after the close, at
   the default MSL.
-- **A reset.** A flow the exit resets, at a withdraw or a relay's error, closes
+- **A reset.** A flow the exit resets, at its stop or a relay's error, closes
   its host socket with a linger of 0 in any state before TIME_WAIT, CLOSING and
   LAST_ACK among them, as a reset of the leaf's connection asks, and keeps no
   slot. A socket it reads in TIME_WAIT, where both FINs have passed and a reset
@@ -1036,20 +1047,23 @@ class that translates, a rule for each protocol attaching its timeouts, then its
 translation, and for a class of `none` its binding alone. Where no class covers
 every source, the rules of `auto` for the rest follow. The in rules come next,
 for each advertised prefix a rule for each protocol attaching its timeouts, then
-its translation, and then the local rules of this node's mesh addresses. A
-family's lines at the forward hook, IPv4's past `forward`'s first line and
-IPv6's in `forward6`, hold in IPv4 the 4 ICMP drops first, which take Source
-Quench and then Information Request and Reply, out of the mesh and then into it,
-from any source. Where a class of the family is `none`, 1 line follows that
-accepts a packet out of the mesh from a source the family's set of untranslated
-sources holds, those whose longest covering class is `none`, each range of
-adjacent sources as 1 element. A family with no class of `none` has no such
-line, and no line reads its set. The screens follow, once, for every source: a
-rule that drops a packet no flow is tracked for, the refusals of DCCP and of
-UDP-Lite, which take a packet in its flow's original direction, and out of the
-mesh the limit's rule, then under `return` those for each advertised prefix of
-the family into the mesh, with no limit. A packet out of the mesh whose longest
-covering class is `none` meets that line and no screen, so no limit, as
+its translation, and then the local rules of this node's mesh addresses. Each
+translation out of the mesh and each local one sets bit 127 of the flow's
+connection label after its counter, `ct label set 127`, which
+[down and up](#reloads-down-and-up) reads. A family's lines at the forward hook,
+IPv4's past `forward`'s first line and IPv6's in `forward6`, hold in IPv4 the 4
+ICMP drops first, which take Source Quench and then Information Request and
+Reply, out of the mesh and then into it, from any source. Where a class of the
+family is `none`, 1 line follows that accepts a packet out of the mesh from a
+source the family's set of untranslated sources holds, those whose longest
+covering class is `none`, each range of adjacent sources as 1 element. A family
+with no class of `none` has no such line, and no line reads its set. The screens
+follow, once, for every source: a rule that drops a packet no flow is tracked
+for, the refusals of DCCP and of UDP-Lite, which take a packet in its flow's
+original direction, and out of the mesh the limit's rule, then under `return`
+those for each advertised prefix of the family into the mesh, with no limit. A
+packet out of the mesh whose longest covering class is `none` meets that line
+and no screen, so no limit, as
 [each source's share](#each-sources-share-of-the-flows) describes, and any other
 meets the 4 screens once, whatever classes cover it.
 
@@ -1092,13 +1106,27 @@ reads each rule back by its comment and by what it does:
 - `in via ranet3 ipv4 from 198.51.100.0/24 source 203.0.113.10`
 - `local via ranet3 ipv4 from 192.0.2.1/32 masquerade`
 
+A stopped translator's lines sit in the forward hook's chains in place of its
+own: each family's limit becomes its drop, of every packet the limit would meet,
+the drop of a packet no flow is tracked for and the refusals out of the mesh are
+left out, and the other lines stay. The labelled drop, which
+[down and up](#reloads-down-and-up) gives, ends each family's chain, in both
+families, and where a family has the line that accepts untranslated sources, a
+labelled drop of a packet out of the mesh from those sources stands directly
+ahead of that line:
+
+- `out via ranet3 ipv4 dropped while stopped`
+- `out via ranet3 ipv6 untranslated leaving by another link dropped while stopped`
+- `translated via ranet3 ipv4 leaving by another link dropped while stopped`
+
 `forward`'s first line carries the comment `ipv6 to forward6`. nf_tables
 [refuses to delete a chain a goto still names](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n3367),
-so `forward6` goes missing only with that line, and the pass and the stop empty
-`forward` in the transaction that deletes `forward6`. A pass that finds a chain
-an earlier version wrote, as [refusing to advertise](#refusing-to-advertise)
-names, empties it, every other such chain and `forward` in its transaction,
-since a line of one of them may go to it by a goto or a map and
+so `forward6` goes missing only with that line, and the pass and the withdrawal
+empty `forward` in the transaction that deletes `forward6`. A pass that finds a
+chain an earlier version wrote, as
+[refusing to advertise](#refusing-to-advertise) names, empties it, every other
+such chain and `forward` in its transaction, since a line of one of them may go
+to it by a goto or a map and
 [the gotos of a line's map go with the line](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n6016).
 The same transaction then deletes each such chain that no rule or map element of
 another writer's goes to, as [refusing to advertise](#refusing-to-advertise)
@@ -1222,12 +1250,356 @@ segment to another SID or editing its `allow` list applies in place, and the
 originated `/128` moves with the SID. [Reloading](reloading.md) lists what else
 a reload applies.
 
-On Linux `ranet3 down` retracts the advertisement and removes the translator's
-chains, sets and timeout objects from the table. The flows they leave keep their
-translation under the host's timeouts. `ranet3 up` installs them again on the
-next pass, and the advertisement follows. On macOS `ranet3 down` retracts the
-advertisement, ends each dial, resets each connection and ends each mapping, and
-`ranet3 up` takes flows again from the next pass, which announces what is ready.
+On Linux `ranet3 down` retracts the advertisement and, in one transaction,
+writes a stopped translator's rules in the forward hook's chains in place of its
+own, and keeps the translation's chain, `postrouting`, with its rules and
+timeout objects as the last pass wrote them. A down exit holds in
+`table inet ranet3` what a running one holds there, beside the antispoof
+filter's chains: its chains, 2 sets and 3 timeout objects for each family it
+translates, and those a pass leaves of a family an earlier run translated, with
+the stopped rules in the forward hook's chains. `nft list ruleset` lists each
+stopped line with a comment, such as
+`out via ranet0 ipv4 dropped while stopped`, and `ranet3 debug egress` lists
+each with its counter, each drop counting the packets it dropped. The stop
+writes the translation's chain again as it was, so its counters start from zero
+at a down, as those of the forward hook's chains do.
+
+Under each class that translates, the stopped rules drop every packet from the
+mesh device that leaves by another link, to the internet or to a network this
+node routes for, with no answer, a DCCP or UDP-Lite packet among them: the
+family's drop, which stands where the family's limit stood. So a packet a
+session took before the stop and wrote to the tun after it leaves under no
+leaf's address, and its drop leaves no connection entry. The stopped rules sit
+at the forward hook, ahead of every source translation, so a packet they drop is
+dropped whatever another program's nat chain would make of it. A flow that
+another table's flowtable offloads passes the forward hook by and keeps its
+translation, since
+[the flowtable translates a packet from its own entry](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_flow_table_ip.c?id=940de590b839f71d6dc846160534bf202401b8b7#n507).
+A packet under a class of `none` passes and leaves under its own address unless
+its connection entry carries the exit's label, as below. A packet the host
+routes from the mesh back into the mesh passes. A down exit lets into the mesh
+what a running one lets in, since the ICMP drops and, under `return`, the drop
+of a packet no flow is tracked for and the refusals into the mesh stay where
+they are.
+
+`ranet3 down` closes every session, so no reply reaches a leaf once they have
+closed. The exit's label is bit 127 of a flow's connection label, which
+[the translation's rules](#the-nftables-chains) set. The stopped rules end the
+chain of each family, in both families whatever the configuration translates,
+with the labelled drop, which drops every packet the host forwards whose
+connection entry carries the label and that would leave by a link other than the
+tun, whatever link it came in by. A packet from the tun from an untranslated
+source never reaches the end of its family's chain, since the line that accepts
+those sources passes it, so the stopped rules put a labelled drop of such a
+packet directly ahead of that line, where a family has one. That takes a reply
+translated back to the leaf's mesh address once the reconciler has withdrawn the
+tun's addresses and routes under `cap.table`, and a packet from the tun of a
+flow an earlier run translated, in a family this run does not translate or from
+a source it puts under a class of `none`. The flow's binding stays, so after
+`ranet3 up` its next packet leaves under the same address and its replies reach
+the leaf again, for as long as the host's connection tracking keeps it under
+[the exit's timeouts](#timeouts). A reply the labelled drop takes still renews
+its flow's entry, which connection tracking does ahead of the forward hook, so a
+remote end that keeps sending keeps the binding, its port and its place in the
+leaf's share for the whole of a down. The host's own packets from a mesh address
+leave under that address's class.
+
+A packet carrying a leaf's mesh address can still leave by another link in these
+cases:
+
+- From the reconciler's withdrawal of the tun's routes until the translator's
+  commit, under the running chains: a reply translated back to the leaf.
+  `ranet3 down` wakes the reconciler and the translator at once, so this is open
+  where the withdrawal commits first. A shutdown under `cap.table` withdraws the
+  routes before the mesh closes, as its sessions leave, and the translator
+  commits only after that, so this is open at every shutdown. The stop begins
+  once the translator's turn under way has ended, reads its chains back and
+  writes them in one transaction with the translation's chain whole, so its time
+  grows with the exit's rules, and a pass under way adds its own.
+- While a stop is not taken, which leaves the chains the host held, as below.
+- A flow whose connection entry carries no room for a label. The kernel
+  [makes that room](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/net/netfilter/nf_conntrack_labels.h?id=940de590b839f71d6dc846160534bf202401b8b7#n42),
+  its labels extension, on each entry it makes while a rule of the network
+  namespace sets a label, since such a rule
+  [turns the extension on](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_ct.c?id=940de590b839f71d6dc846160534bf202401b8b7#n580),
+  or, on a kernel that carries
+  [the change that has a rule reading one turn it on too](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=514f1dc8f2ca3101e04cdf452e53baca3a76e544),
+  first released in Linux 6.18, reads one, and not where
+  [its allocation fails](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1793),
+  and a nat chain meets a flow's first packet alone. So a flow translated by a
+  version that set no label goes unlabelled until it ends. So does a flow whose
+  first packet the kernel tracked before the first pass committed and whose
+  translation came after it, at a start where no rule of the namespace turns the
+  extension on: one another program wrote or one an earlier run left, as the
+  rules a shutdown leaves are, keeps the room made.
+- A connection a conntrack helper expects, such as an FTP data connection where
+  a rule of the host assigns the FTP helper to forwarded flows. The kernel
+  [translates it from its master's binding](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_helper.c?id=940de590b839f71d6dc846160534bf202401b8b7#n179)
+  as it makes its entry, so it meets no chain, and
+  [copies the master's mark](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1826)
+  to it and not its label.
+- A packet from the tun that connection tracking finds invalid, such as a TCP
+  segment carrying SYN and FIN or an ACK outside the window, which gets no entry
+  and so carries no label. Under a class that translates the family's drop takes
+  it. Of a flow an earlier run translated, under a class of `none` or in a
+  family this run does not translate, it leaves under the leaf's mesh address
+  with its old flow's ports.
+- Every packet the labelled drop would take, on a kernel that refuses the label,
+  as the next paragraph gives.
+- [What the host itself sends to a leaf](#what-the-host-itself-sends-to-a-leaf),
+  whatever made it, such as an error about a frame from the tun or the host's
+  answer to a frame addressed to it.
+
+A kernel built without connection labels refuses a rule that sets or reads one
+with `EOPNOTSUPP`, since `CONFIG_NF_CONNTRACK_LABELS` is
+[an option a kernel can leave out](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/Kconfig?id=940de590b839f71d6dc846160534bf202401b8b7#n188).
+The translator learns which kernel it runs on once a start, ahead of its first
+write, by a transaction of its own: it makes a chain holding a rule that sets
+the label, which such a kernel refuses as it refuses one that reads it, and ends
+with a request the kernel always refuses, so the kernel commits none of it and
+the table stays as it was. Where the kernel refuses that rule with `EOPNOTSUPP`,
+the exit writes without the label and without the labelled drop, starts as it
+does elsewhere at every number of classes, and warns once,
+`egress cannot label the flows it translates`, with the cause as `why` and the
+kernel's answer as `err`. Any other answer fails that pass, and the next asks
+again. The answer to a write is never read for the label, so neither a refusal
+of the write, as another writer's change to the table can cause, nor the loss of
+its acknowledgments past the socket's buffer turns the label off. Once the label
+is off, `ranet3 debug egress` prints a `Labels` line with the same cause, up and
+down, until the daemon restarts, and lists no labelled drop.
+
+While down a packet meets no more of the exit's rules than while up, but in 3
+cases, each a labelled drop more. On an exit translating one family, a packet of
+the other family meets the one that ends its family's chain after the line that
+sends it on. A packet from the tun under a class of `none` meets the one ahead
+of the line that accepts untranslated sources. So does a packet from the tun
+under a class that translates that no flow is tracked for, in a family with that
+line, which a running exit drops at the drop that follows the line and the
+stopped rules drop at the family's drop in its place. The tree's test holds the
+bound over the forward hook's lines in configurations of classes inside one
+another, of a class of `none` from every source and of an exit translating one
+family alone. A packet the host forwards that did not come in by the tun,
+another program's among them, meets in a family the exit translates the rules a
+running exit gives it, less the drop of a packet no flow is tracked for and the
+refusals of DCCP and UDP-Lite out of the mesh, which the stop leaves out, with
+the family's drop in place of its limit, and with the labelled drop that ends
+its family's chain and, in a family with the line that accepts untranslated
+sources, the labelled drop ahead of that line, which takes only a packet from
+the tun. A packet from the tun under a class that translates is dropped at its
+family's drop. The kept translation chain is walked to its end by the first
+packet of every new flow the host forwards or originates while down, as while
+up, since it holds the running exit's rules.
+
+The label costs a running exit too. A flow's first packet meets the label's
+setting in the rule that translates it. And every connection entry the host's
+network namespace makes while the exit's rules are in place, up, down or left at
+a shutdown, carries the labels extension, made as the list above gives. The
+extension is 16 bytes, which an entry that already has another extension, as
+each flow the exit translates does, holds in the area it has. An entry with
+none, as another program's plain flow has at the kernel's default settings, gets
+an area of its own for it, of
+[at least 128 bytes](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_extend.c?id=940de590b839f71d6dc846160534bf202401b8b7#n114),
+allocated as the entry is made.
+[Sharing a host](coexistence.md#the-exits-connection-label) gives what another
+program that sets or reads the bit meets.
+
+A node that starts down writes the stopped rules at the translator's first turn,
+which comes once the daemon has built its parts and, under `cap.exit`'s
+`fallback = "none"`, once the reconciler's first pass has ended or 10 seconds
+have passed. Until then the table holds what the last run left, and that turn
+writes over it. A change another writer makes while down to the translator's
+chains, rules or sets, a set's elements or a flag it sets on the table wakes the
+translator, which reads them and writes its stopped rules back where they no
+longer read back as written. Status tells the table as that read found it, and
+until the read and the write it wakes, a packet meets what the other writer
+left. A lost notification is read at the next sweep at the latest. A reload
+while down leaves the stopped rules as they are, since it refuses each change
+the translator reads. They stay until `ranet3 up`, whose next pass writes the
+translator's own rules in their place in one transaction, the translation's
+chain as it was, and the advertisement follows.
+
+What a run leaves in the table stays until a start with `cap.egress` takes it
+over at that first turn, or until the operator deletes it with
+`nft delete table inet ranet3` while the daemon is stopped, which takes the
+antispoof filter's and the kill switch's chains with it. A start whose
+configuration has no `cap.egress` takes no such turn. A daemon killed, or ended
+by a second signal while its shutdown waits for the mesh, leaves its chains as
+they stood. Where the exit was up, those are the running chains, which go on
+translating with no labelled drop, so a reply to a kept binding leaves by
+another link where the tun's routes are gone. Where it was down, and where a
+shutdown leaves them as below, they are the stopped rules, which act as a down
+exit's do. They drop forwarding from the mesh device under the classes that
+translated then, and their labelled drop takes a connection another program set
+the bit on as it takes the exit's flows. Either kept translation chain still
+translates the host's own flows from a mesh address under those classes, and
+every connection entry the namespace makes carries the labels extension, as
+above.
+
+At shutdown the translator keeps its chains until the mesh has closed, so each
+packet the mesh wrote to the tun before meets them, and then ends one of 2 ways,
+as [the tun device](design/limits.md#the-tun-device) gives when. It removes its
+chains with their sets and objects and leaves nothing of its own in the table.
+The bindings then stay in the host's connection tracking, and beside another
+program's nat chain in the namespace the kernel keeps translating their replies
+back to the leaf's address, which then leave by another link for as long as the
+bindings last. Or, at every shutdown over a tun that outlives the daemon, as one
+`link.tun` attaches to does, it ends as `ranet3 down` does: it writes the
+stopped rules, keeps the translation's chain, and warns
+`egress left its stopped rules at shutdown` with the reason as `why`, the line
+ending `, which did not read back in place` where it did not read them back in
+place. Where the host took that write and its rules could not then be read back
+as written, the warning carries that as `err`, and the daemon exits with it.
+
+A stop is not taken where its chains cannot be read before the write, where the
+host refuses the write, or where it answers the write with an error and the
+rules cannot be read back after. The host can answer with an error a write it
+committed, since its acknowledgments of a large transaction can overflow the
+socket's receive buffer, so the stop reads the rules back whatever the answer
+and counts a write whose rules read back as written as taken. A stop not taken
+leaves the table as the host held it. While the daemon runs it is tried again,
+as [watching it](#watching-it) shows. At a shutdown it is not: the daemon exits
+with `the shutdown saw no write of the stopped rules taken` and the cause. Where
+the host read back an up exit's running chains, they stay as a killed daemon
+leaves them, above, and translate a frame the tun took before the mesh closed
+under the exit's address. A packet leaves under its leaf's address only where
+the host held other than the exit's chains, as where another writer had removed
+them. Where the rules could not be read back after the write, the host holds
+either the stopped rules or what it held before. A set of the translator's in a
+family it translates that reads back otherwise than written in a way nf_tables
+will not change in place, held by a rule of another writer's, makes the host
+refuse the whole of each stop's write, which must delete it, so the table keeps
+what it held, an up exit's running rules where the exit was up, as
+[a writer's own that another writer holds](coexistence.md#a-writers-own-that-another-writer-holds)
+gives.
+
+On macOS `ranet3 down` retracts the advertisement, ends each dial, resets each
+connection and ends each mapping, and `ranet3 up` takes flows again from the
+next pass, which announces what is ready.
+
+### What the host itself sends to a leaf
+
+On Linux a packet the host itself sends to a leaf's mesh address meets none of
+the exit's drops, which sit at the forward hook. Once the reconciler has
+withdrawn the tun's addresses and routes under `cap.table`, the host's other
+routes send such a packet by another link, the leaf's mesh address its
+destination, whatever made it and whatever connection entry it belongs to. The
+cause is the mesh's routes, not the exit's rules, so it leaves alike in 3
+states: under the running chains from that withdrawal until the stop's commit,
+while down, and in the rules a shutdown leaves. Each kind below says what a run
+has shown or what is read in the kernel's source, what IPv4's reverse path
+filter does to it where the filter is on, as the paragraphs after the list give,
+and whether the tree's test holds it:
+
+- The time exceeded for a frame at a TTL or hop limit of 1, which the host's
+  forwarding sends ahead of the forward hook, in
+  [IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_forward.c?id=940de590b839f71d6dc846160534bf202401b8b7#n118)
+  and
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n576),
+  for any such frame: one of a labelled flow, the first of a new one, such as
+  each probe of a UDP traceroute, or a segment connection tracking finds invalid
+  and gives no entry, such as a TCP segment carrying SYN and FIN. A run has
+  shown each leaving, and over IPv4 none where the filter is on. The tree's test
+  holds the first two, with the filter off.
+- The fragmentation needed or packet too big for a frame past the uplink's MTU
+  that may not be fragmented, which the host's forwarding sends there too, in
+  [IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_forward.c?id=940de590b839f71d6dc846160534bf202401b8b7#n137)
+  and
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n672).
+  A run has shown it leaving, and over IPv4 not where the filter is on. The
+  tree's test holds it, with the filter off.
+- The destination unreachable for a frame to a destination the host holds an
+  unreachable or a prohibit route for, which the routing sends in
+  [IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/route.c?id=940de590b839f71d6dc846160534bf202401b8b7#n2385)
+  and
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/route.c?id=940de590b839f71d6dc846160534bf202401b8b7#n4661):
+  the host unreachable over IPv4 and the no route over IPv6 for an unreachable
+  route, and the administratively prohibited in both for a prohibit route. A run
+  has shown each leaving, over IPv4 whatever the filter holds. As read there, a
+  frame to a destination the host holds no route for draws the net unreachable
+  over IPv4 and the no route over IPv6 the same way, unchecked by the filter
+  too. The tree's test holds those of an unreachable and of a prohibit route,
+  with the filter strict.
+- The parameter problem for an option the host refuses: over IPv4 one it cannot
+  read, such as a record route too short to hold its pointer, which
+  [IPv4's input reads](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_input.c?id=940de590b839f71d6dc846160534bf202401b8b7#n430)
+  after
+  [the route lookup](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_input.c?id=940de590b839f71d6dc846160534bf202401b8b7#n407),
+  and over IPv6 a hop-by-hop option the host does not know whose type asks for
+  an error, which
+  [IPv6's input reads](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_input.c?id=940de590b839f71d6dc846160534bf202401b8b7#n321)
+  ahead of
+  [the prerouting hook](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_input.c?id=940de590b839f71d6dc846160534bf202401b8b7#n351).
+  A run has shown it leaving, and over IPv4 not where the filter is on. The
+  tree's test holds it, with the filter off.
+- The reassembly time exceeded for an IPv6 first fragment whose packet is never
+  completed, which
+  [the reassembly sends](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/net/ipv6_frag.h?id=940de590b839f71d6dc846160534bf202401b8b7#n108)
+  for a packet connection tracking never tracked. A run has shown it leaving.
+  Over IPv4
+  [the reassembly sends it](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_fragment.c?id=940de590b839f71d6dc846160534bf202401b8b7#n180)
+  only for a packet addressed to the host, as read. The tree's test holds
+  IPv6's, with the filter off.
+- The port unreachable or TCP reset of another program's reject of the frame,
+  the reset sent from the remote end's address. In all 3 states a reject answers
+  the frame at the prerouting hook at any priority, at the forward hook ahead of
+  the exit's chain, and after that chain where a class of `none` passes the
+  frame or where the frame is of a family the exit does not translate, which the
+  chain sends on and, while down, the labelled drop passes as a new flow's. A
+  run has shown each leaving. Under the running chains a reject after the exit's
+  chain answers a frame under a class that translates too, since those chains
+  pass it on where the stopped rules drop it, and a run has shown that port
+  unreachable leaving in both families. Over IPv4 the answer of a reject at the
+  forward hook does not leave where the filter is on, and that of one at the
+  prerouting hook leaves whatever the filter holds. The tree's test holds the
+  port unreachable of a reject at the forward hook ahead of the exit's chain,
+  with the filter off.
+- The host's own answer to a frame addressed to one of its addresses: its port
+  unreachable or TCP reset for a closed port, its echo reply, and a service's
+  answer. A run has shown each leaving, and over IPv4 none where the filter is
+  on. The tree's test holds the port unreachable for a closed port and the echo
+  reply, with the filter off.
+
+Each error carries as much of the leaf's packet as fits in
+[576 octets](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/icmp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n983)
+over IPv4, up to 548 octets of it, and in
+[1280](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/icmp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n803)
+over IPv6, up to 1232.
+
+Over IPv4 the host's reverse path filter, strict or loose, refuses a frame from
+the tun once the tun's addresses are gone, since
+[a link with no IPv4 address fails it](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/fib_frontend.c?id=940de590b839f71d6dc846160534bf202401b8b7#n423),
+the kernel taking the larger of `rp_filter` on `all` and on the tun, and the
+filter is on where that value is not 0. It checks a frame the host forwards or
+delivers to itself at the route lookup. It checks no frame the lookup finds an
+unreachable or a prohibit route for, which
+[goes to the routing's error unchecked](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/route.c?id=940de590b839f71d6dc846160534bf202401b8b7#n2385),
+nor, as read there, one it finds no route for, and none ahead of the lookup. The
+daemon sets neither value. Over IPv6 nothing filters such a frame by default.
+
+The tree's test of a down under `cap.table` writes each frame alone and finds
+the packet it draws leaving by the uplink in each family that makes one, with
+`net.ipv4.icmp_ratemask` and `net.ipv6.icmp.ratemask` empty, since the kernel
+limits the rate of each type of error a family's mask names, and with IPv4's
+filter strict or off as each kind above gives.
+
+On Linux 5.2 to 6.1 an IPv6 redirect can carry a leaf's mesh address out to a
+remote end that is the host's neighbor on the uplink. Where such an end's reply,
+translated back to the leaf's mesh address, would leave by the uplink it came in
+by, through a gateway its route names by a link-local address, as a default
+route from a router advertisement does,
+[IPv6's forwarding sends that end a redirect](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=v6.1#n569)
+ahead of the forward hook, addressed to it, naming the leaf's mesh address and
+carrying the reply. It
+[sends none where the host's route to that end has a gateway](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ndisc.c?id=v6.1#n1707).
+Those kernels
+[take a redirect for no error](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto_icmpv6.c?id=v6.1#n163)
+and
+[make it no entry](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto_icmpv6.c?id=v6.1#n104),
+so nf_nat leaves it as it is and it leaves by the uplink. Linux 6.2 and later
+[relate it to the flow's entry](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=7d7cfb48d81353e826493d24c7cec7360950968f),
+and
+[nf_nat drops a redirect related to a translated flow](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n838).
+This is as read in the kernel's source at those tags, and no run has shown it.
 
 ## Watching it
 
@@ -1238,14 +1610,112 @@ dropped with no tracked flow where any were, the entries the host's connection
 table holds against its maximum, what it announces, what it withholds "until its
 family is ready", the families it is ready for and the reason the others are
 not, what the lookups skipped, any chain it shares the hook with, the time since
-the last pass and the last error, such as
+the exit's last pass or stop stored its record, and the record's error, such as
 `nftables table inet ranet3 chains forward, forward6 and postrouting, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
-A family not ready is named with the reason the last pass found, and a family
-the node does not translate with none. Before the first pass the line names no
-family. The refused counts are the limit rules' counters, of packets, each retry
-of a refused flow among them, and the dropped counts are those of the rules that
-drop a packet no flow is tracked for. All of them start from zero when a pass
-rewrites the chains.
+A family not ready is named with the reason the record holds, and a family the
+node does not translate with none. Before the first pass or stop the line names
+no family. The refused counts are the limit rules' counters, of packets, each
+retry of a refused flow among them, and the dropped counts are those of the
+rules that drop a packet no flow is tracked for. All of them start from zero
+when a pass rewrites the chains, and when a stop writes the stopped rules. Down,
+the line reads the stopped rules the host holds, the flows the kept translation
+chain has counted since the stop wrote it, the dropped counts of the rules into
+the mesh it keeps under `return`, no refused count, since a down holds no limit,
+no reading of the connection table, no chain it shares the hook with, and each
+family not ready because the translator is stopped. From `ranet3 down` until the
+translator's turn it wakes, the line still reads the last pass. Until the
+stopped rules read back as written, while the stop is under way or not taken, it
+reads each family not ready because the translator is stopping, the rules the
+host holds as the record before it counts them, the last pass's or the last
+stop's, until the stop writes the stopped rules and then as the read after the
+write found them, none where that read failed, the other counts, the reading of
+the connection table and the chains it shares the hook with as that record holds
+them, and the error of the last stop, none until one has failed. Where the
+stopped rules read back other than written after a write, the reason names how,
+as a pass names a fault, and the error names it too, the error after the write's
+answer and the reason after the refusal where that answer read as the host's
+refusal. The stopped rules are in place where that read finds the table without
+the dormant flag, each of the translator's chains with the type, hook, priority
+and policy written and holding them alone, line for line in the order written,
+each by its comment and its expressions, and each set and timeout object a
+stopped line uses as written, a set with its elements. Where they are not, the
+reason says the stopped rules are not in place, ahead of how, whatever the
+answer. A rule another writer put in the translator's chains under a stopped
+rule's comment that does something else is not that rule. A chain or object an
+earlier version wrote that a rule or a map element of another writer's holds, as
+[refusing to advertise](#refusing-to-advertise) names, makes them read back so,
+and so does a set or object of the translator's that reads back otherwise than
+written while another writer holds it, as
+[a writer's own that another writer holds](coexistence.md#a-writers-own-that-another-writer-holds)
+gives. The stop's write takes or is refused over such a set or object as that
+section gives for a pass, and leaves such a chain or object of an earlier
+version, and where the host takes the write the stopped rules are in force while
+the stop reads as failed. A flag other than dormant another writer gave the
+table makes them read back so too, over which the host refuses the write and the
+reason names the flag and what clears it, as
+[the nftables table](coexistence.md#the-nftables-table) gives. The reason and
+the error name such a flag first, then such a set or object of the translator's
+that the write is refused on, ahead of a chain or object of an earlier version,
+held or not. Where the stopped rules are not in place, both then name the
+dormant flag where the table carries it, and the first chain, or set or object a
+stopped line uses, that reads back otherwise than the stopped state writes it,
+IPv4's and then IPv6's, each unless they named it already. A dormant table runs
+none of its chains, so while it is dormant nothing in it filters or translates a
+packet. The stop is tried again until the stopped rules read back as written. A
+write the host refused and acknowledged reads
+`the translator is stopping: the host refused the stopped rules, which are not in place:`
+and how. A refused write whose acknowledgments overflowed the socket, as those
+of an exit of some hundreds of classes can, reads
+`the translator is stopping: the stopped rules are not in place:` and how. A
+write that failed before it was sent reads the same. A write the host took, or
+committed with its answers lost, reads `the translator is stopping:` and how
+where a set or object another writer holds that no stopped line uses, or a chain
+of an earlier version's it holds, keeps its readback otherwise than written
+while the stopped rules are in place, reads as a write that failed before it was
+sent where they are not, and reads the stop in effect where its rules read back
+as written. Where the table already held the stopped rules in place, as at a
+stop tried again after another writer's change that left them so, each reads
+without the words that they are not in place. Where the rules cannot be read
+back after the write, each reads
+`the translator is stopping: its chains could not be read back`. Whether the
+stopped rules are in place is read from the translator's own chains, the sets
+and objects its stopped lines use and the table's flags alone, so Status cannot
+tell of a base chain another writer adds, in the table `inet ranet3` or in
+another, that the kernel runs at a hook ahead of the translator's, of a
+flowtable whose flows skip the forward hook, nor of any other rule or anything
+else outside the translator's chains.
+
+The line, the `egress` object of the
+[status answer](control-socket.md#requests-and-answers), `ranet3 debug egress`
+and the egress series of the [metrics](metrics.md) read one record, which the
+exit's last pass or its last stop stored, and the configuration, which gives the
+prefixes the exit advertises, its classes, whether it translates into the mesh
+and each source's share of the flows. Each of the four also gives what it reads
+at the time it is asked, as the next sentences name. The line gives where the
+kernel exit writes, and the userspace exit's flows and its refused and dropped
+counts. On macOS the 2 lines under it give the userspace exit's flows against
+its limits, the endpoints it holds in TIME_WAIT, its held slots and host ports,
+and the bytes its buffers hold. The status answer carries each of these, and the
+TIME_WAIT endpoints the userspace exit reused or closed early and its busiest
+sources. `ranet3 debug egress` prints each of these, and the kernel exit's
+chains with each rule's counter or the error of reading them, IPv4's reverse
+path filters and why the exit writes no label, and Go's memory limit beside the
+userspace exit. The metrics give the userspace exit's refused counts and its
+held slots. Each exit stores a stop's record at its first turn after
+`ranet3 down` wakes it, or at its first turn on a node that starts down, and at
+a shutdown's start. The kernel exit stores another at each later turn while
+down, as it reads the stopped rules back, and the userspace exit stores none.
+The status answer and the metrics serve the record until the daemon exits, so a
+read during a shutdown finds a stop's record on a node that is not down. A
+stop's record holds the time it was stored and the stop's error, none for a stop
+under way. It holds every family not ready, no family's judgment, no prefix
+announced and no lookup skipped, so `ranet3 debug egress` lists no judgment. On
+Linux it holds the counts the paragraph above gives for each state of a stop. A
+shutdown's stop is under way from the shutdown's start. Where the tun outlives
+the mesh, or where whether it does cannot be read, the kernel exit then writes
+the stopped rules as a down's stop does, and where the tun is gone it withdraws
+its chains and the record stays as the stop under way stored it. The userspace
+exit's stop stores the time and each family not ready, and nothing it counts.
 
 On macOS the line names the userspace exit and its flows in place of where it
 writes and its rules, with the refused counts, the leaves' packets it dropped as
@@ -1256,7 +1726,7 @@ connections take against `HostPorts`, and the bytes its TCP endpoints toward the
 leaves hold received and not yet read against its budget, such as:
 
 ```
-Egress   userspace, 23 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, no pass yet
+Egress   userspace, 23 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, last pass or stop 4 seconds ago
 Flows    61 of 10240 allowed: 23 open, 3 dialing and 37 held slots, 2 of them also open while closing and counted once, 19 TCP of 985 allowed: 16 open and 3 dialing, 6 UDP, 1 echo, 210 in TIME_WAIT outside both, 54 host ports of 5120
 Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
 ```
@@ -1295,30 +1765,38 @@ kernel exit's on Linux:
 | `egress userspace exit keeps a host socket the host refused to abort, and its slot, and tries again at each sweep`              | warn  | on macOS the host refused the linger of 0 that ends a held socket, with `err`, once for the exit's run                                       |
 | `egress userspace exit closed host sockets the host refused to abort, and left them to the host`                                | warn  | on macOS the exit's stop closed held sockets whose linger of 0 the host refused, with `sockets` and `err`                                    |
 
-| Log line                                                            | Level | When                                                                                                                                     |
-| ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's table and chains, and `userspace` under the userspace exit                |
-| `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                             |
-| `egress ready`                                                      | info  | a family went ready, or was ready at the exit's first pass, with `family`                                                                |
-| `egress not ready`                                                  | warn  | a family stopped being ready, or was not ready at the exit's first pass, with `family` and the reason as `detail`                        |
-| `stopped reading nf_tables notifications`                           | warn  | a read of the notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next sweep |
-| `egress rules installed`                                            | info  | a pass wrote the chains                                                                                                                  |
-| `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                                      |
-| `egress is sharing the source translation hook with another writer` | warn  | a new chain appears at the same hook, once each                                                                                          |
-| `egress pass failed, retrying`                                      | warn  | a pass failed, retried with backoff                                                                                                      |
-| `egress translator withdrawn`                                       | info  | its chains, sets and objects are removed, at shutdown or at `ranet3 down`                                                                |
-| `egress could not withdraw its chains, retrying`                    | warn  | `ranet3 down` could not remove them                                                                                                      |
-| `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                                         |
+| Log line                                                                      | Level | When                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `egress translating for N prefixes in <where>`                                | info  | the daemon starts the exit, `<where>` naming the kernel exit's table and chains, and `userspace` under the userspace exit                                                                                                                                        |
+| `egress translator started`                                                   | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                                                                                                                                                     |
+| `egress ready`                                                                | info  | a family went ready, or was ready at the exit's first pass, with `family`                                                                                                                                                                                        |
+| `egress not ready`                                                            | warn  | a family stopped being ready, or was not ready at the exit's first pass, with `family` and the reason as `detail`                                                                                                                                                |
+| `stopped reading nf_tables notifications`                                     | warn  | a read of the notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next sweep                                                                                                                         |
+| `egress rules installed`                                                      | info  | a pass wrote the chains                                                                                                                                                                                                                                          |
+| `egress advertisement changed`                                                | warn  | the announced prefixes changed after the first pass                                                                                                                                                                                                              |
+| `egress is sharing the source translation hook with another writer`           | warn  | a new chain appears at the same hook, once each                                                                                                                                                                                                                  |
+| `egress pass failed, retrying`                                                | warn  | a pass failed, retried with backoff                                                                                                                                                                                                                              |
+| `egress translator stopped`                                                   | info  | a stop wrote the stopped translator's rules and they read back as written, at the translator's first turn after `ranet3 down` wakes it, at the first turn of a node that starts down, at a later turn while down or at a shutdown that leaves them, with `rules` |
+| `egress could not stop its chains, retrying`                                  | warn  | a stop at the translator's first turn after `ranet3 down` wakes it, at the first turn of a node that starts down or at a later turn while down could not write them, read them back or read them back as written, with `err`                                     |
+| `egress translator withdrawn`                                                 | info  | its chains, sets and objects are removed, at a shutdown that withdraws them                                                                                                                                                                                      |
+| `egress left its stopped rules at shutdown`                                   | warn  | a shutdown found the stopped rules or saw its write of them taken and read them back in place, the tun outliving the mesh or that unread, with the reason as `why`, and `err` where something else then read back otherwise than written                         |
+| `egress left its stopped rules at shutdown, which did not read back in place` | warn  | a shutdown saw its write of the stopped rules taken and did not read them back in place, with the reason as `why` and how as `err`                                                                                                                               |
+| `egress cannot label the flows it translates`                                 | warn  | the kernel refused a rule carrying the connection label as one built without labels does, once, with the cause as `why` and `err`, after which the exit writes its rules without it                                                                              |
+| `egress translator started again`                                             | info  | the first pass after `ranet3 up`                                                                                                                                                                                                                                 |
 
 A stop, `ranet3 down` included, logs at info `egress not ready` for each family
 that was ready and `egress advertisement changed` where the exit announced any
 prefix, and a stop before the exit's first pass logs neither of the two.
 
 On Linux a pass that writes the chains, changes the announced prefixes or fails
-records an `egress.pass` event, and so does `ranet3 down`, with `trigger`,
-`took`, `installed`, `announced` and, on failure, `err`. The userspace exit
-records `egress.pass` only for a pass that changes the announced prefixes, with
-`trigger` and `announced`, and none at `ranet3 down`. A change of a family's
+records an `egress.pass` event, and so does a stop whose write of the stopped
+rules the host takes or that fails, at the translator's first turn after
+`ranet3 down` wakes it, at the first turn of a node that starts down, at a later
+turn while down or at a shutdown that leaves them, with `trigger`, `took`,
+`installed`, `announced` and, on failure, `err`. A shutdown's stop carries the
+`trigger` of the translator's last wake before it. The userspace exit records
+`egress.pass` only for a pass that changes the announced prefixes, with
+`trigger` and `announced`, and none for its stop. A change of a family's
 readiness, of whether the egress SIDs are served or of what the lookups skipped
 records `egress.ready`, and so does the exit's first pass, with `ipv4`, `ipv6`,
 `sid`, the reason as `reason` and the skip as `skipped`. A reason that changes
@@ -1326,12 +1804,13 @@ while nothing else moves reaches `status` and not the event. On Linux a pass
 whose count of a family's refused packets moved records `egress.refused` with
 `family` and the packets refused since the pass before as `refused`, counted
 from zero after a pass that wrote the chains. A pass that cannot read the
-counters back keeps the last pass's counts, the dropped ones among them, unless
-it rewrote the chains, whose counters start from zero whether or not it read
-them back. The userspace exit records `egress.refused` itself when it refuses a
-packet, at most once every 30 seconds, with the `source` and the `reason` of the
-refusal that falls due and every packet refused since the last record as
-`refused`, so a source retrying does not flood the log.
+counters back keeps the counts of the record before it, a pass's or a stop's,
+the dropped ones among them, unless it rewrote the chains, whose counters start
+from zero whether or not it read them back. The userspace exit records
+`egress.refused` itself when it refuses a packet, at most once every 30 seconds,
+with the `source` and the `reason` of the refusal that falls due and every
+packet refused since the last record as `refused`, so a source retrying does not
+flood the log.
 
 The packets the userspace exit refuses, each counted by its reason in
 `ranet3 debug egress` and in the `refused` of its status, are these, each retry
@@ -1362,21 +1841,21 @@ counted again:
   stop closed while it was sent, that no earlier check refused or dropped
   (`withdrawn`).
 
-| Metric                                   | Meaning                                                                                                                        |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                                 |
-| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                     |
-| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                          |
-| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                 |
-| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                |
-| `ranet3_egress_host_held`                | the macOS userspace exit's [held slots](#host-ports)                                                                           |
-| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them |
-| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                              |
-| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                     |
-| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them             |
-| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                    |
-| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                        |
-| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |
+| Metric                                   | Meaning                                                                                                                                                                                                                                                                             |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as the exit's last pass or [stop](#watching-it) read them back, zero where a pass could not read them back or a stop could not after writing them, and the count of the record before a stop that has neither written nor read them back |
+| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                                                                                                                                                                          |
+| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                                                                                                                                                                               |
+| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                                                                                                                                                                      |
+| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                                                                                                                                                                     |
+| `ranet3_egress_host_held`                | the macOS userspace exit's [held slots](#host-ports)                                                                                                                                                                                                                                |
+| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them                                                                                                                                                      |
+| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the exit's record holds a reading of it                                                                                                                                                                                            |
+| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the exit's record holds a reading of it                                                                                                                                                                                   |
+| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them, as of the exit's record                                                                                                                                         |
+| `ranet3_egress_pass_timestamp_seconds`   | when the exit's record was stored                                                                                                                                                                                                                                                   |
+| `ranet3_egress_pass_failed`              | whether the exit's record holds an error                                                                                                                                                                                                                                            |
+| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                                                                                                                                                                              |
 
 The userspace exit writes the prefix counts, the refused counts, the pass's 2
 series, readiness and, on macOS, the held slots alone, and none of the rules',
