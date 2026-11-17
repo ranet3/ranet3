@@ -109,6 +109,59 @@ let
   # and link.tun names it for ranet3 to attach to
   # the default name, ranet3, is only ever created
   clientDevice = "ranet0";
+  # tun-write <device> <source> <destination> <port> <count> attaches a queue to a tun another program made, with the
+  # flags networkd made the client's with, and writes count UDP datagrams of the source's family into it, as a program
+  # that holds the device once the daemon has stopped would
+  tunWrite = pkgs.writeScriptBin "tun-write" ''
+    #!${pkgs.python3.interpreter}
+    import fcntl
+    import ipaddress
+    import os
+    import socket
+    import struct
+    import sys
+
+    TUNSETIFF = 0x400454CA
+    # IFF_TUN, IFF_NO_PI, IFF_VNET_HDR and IFF_MULTI_QUEUE, the flags networkd made the device with
+    FLAGS = 0x0001 | 0x1000 | 0x4000 | 0x0100
+
+
+    def checksum(data):
+        """the ones' complement of the ones' complement sum of data's 16-bit words"""
+        if len(data) % 2:
+            data += b"\0"
+        total = sum(struct.unpack(f"!{len(data) // 2}H", data))
+        while total >> 16:
+            total = (total & 0xFFFF) + (total >> 16)
+        return ~total & 0xFFFF
+
+
+    device = sys.argv[1]
+    source, destination = ipaddress.ip_address(sys.argv[2]), ipaddress.ip_address(sys.argv[3])
+    port, count = int(sys.argv[4]), int(sys.argv[5])
+    payload = b"a packet of the mesh after the stop"
+    length = 8 + len(payload)
+    if source.version == 4:
+        # a UDP checksum of zero is none, which IPv4 allows
+        udp = struct.pack("!HHHH", port, port, length, 0) + payload
+        header = struct.pack(
+            "!BBHHHBBH4s4s", 0x45, 0, 20 + length, 0, 0x4000, 64, socket.IPPROTO_UDP, 0,
+            source.packed, destination.packed)
+        header = header[:10] + struct.pack("!H", checksum(header)) + header[12:]
+    else:
+        # IPv6 requires the checksum, over its pseudo-header, and sends one that sums to zero as all ones (RFC 8200
+        # section 8.1)
+        pseudo = source.packed + destination.packed + struct.pack("!I3xB", length, socket.IPPROTO_UDP)
+        summed = checksum(pseudo + struct.pack("!HHHH", port, port, length, 0) + payload) or 0xFFFF
+        udp = struct.pack("!HHHH", port, port, length, summed) + payload
+        header = struct.pack("!IHBB16s16s", 0x60000000, length, socket.IPPROTO_UDP, 64, source.packed, destination.packed)
+    fd = os.open("/dev/net/tun", os.O_RDWR)
+    fcntl.ioctl(fd, TUNSETIFF, struct.pack("16sH22x", device.encode(), FLAGS))
+    for _ in range(count):
+        # a zero virtio_net_hdr ahead of the packet, which IFF_VNET_HDR has the device read first
+        os.write(fd, bytes(10) + header + udp)
+    os.close(fd)
+  '';
   # Inside the /64 BIRD already announces, so the segment is reachable over
   # the mesh without a second announcement to keep in step with this one.
   gatewaySID = "fd00:99::6:1";
@@ -865,6 +918,9 @@ testers.runNixOSTest {
           ]
           # jq asks the control socket a question the shell cannot.
           ++ pkgs.lib.optionals (egress || beside != null) [ jq ]
+          # A stop of the service leaves the exit's stopped rules over the tun,
+          # which a packet written into it after the stop meets.
+          ++ pkgs.lib.optionals egress [ tunWrite ]
           ++ lib.optionals profile [
             pprof
             perf
@@ -1352,14 +1408,128 @@ testers.runNixOSTest {
                     f"the mesh address reached the far side untranslated:\n{capture}")
       '';
 
+      # A stop of the service over the client's tun, which networkd made before
+      # the daemon and keeps after it, leaves the exit's stopped rules, as the
+      # exit page gives for a shutdown over a tun that outlives the mesh, and the
+      # next start takes them over. It imports json for the script joined after
+      # it as well, since the driver's lint refuses a module imported twice.
+      stoppedRules = ''
+        import json
+        import time
+
+        def held_by(chain):
+            """the packets the stopped rules' drops in chain have counted"""
+            listing = json.loads(client.succeed("nft -j list table inet ranet3"))["nftables"]
+            return sum(expr["counter"]["packets"]
+                       for item in listing
+                       if "rule" in item and item["rule"]["chain"] == chain and item["rule"].get("comment", "").endswith("dropped while stopped")
+                       for expr in item["rule"]["expr"] if "counter" in expr)
+
+        def table_contents():
+            """each chain, set and object of table inet ranet3 as its kind and name, sorted, and the handles of the table
+            and of each chain, which nf_tables numbers anew for one made again"""
+            listing = json.loads(client.succeed("nft -j list table inet ranet3"))["nftables"]
+            named, handles = [], {}
+            for item in listing:
+                kind, body = next(iter(item.items()))
+                if kind == "table":
+                    handles["table"] = body["handle"]
+                elif kind not in ["metainfo", "rule"]:
+                    named.append((kind, body["name"]))
+                    if kind == "chain":
+                        handles[body["name"]] = body["handle"]
+            return sorted(named), handles
+
+        def logged(since, message):
+            """the daemon's lines that carry the message in the journal past the cursor named in since, a command
+            journal_after returned"""
+            return [line for line in client.succeed(f"{since} -o cat").splitlines() if f'msg="{message}"' in line]
+
+        def stop_leaves_the_stopped_rules():
+            """systemctl stop over the tun, which outlives the daemon, and the number of stopped rules the stop wrote with
+            the chains, sets and objects the table held before it
+
+            The exit leaves its stopped rules in table inet ranet3, as ranet3 down
+            leaves them, and warns why. The antispoof filter withdraws its chains
+            and sets, as it does at a stop that is not for the mesh's failure, so
+            the table holds the exit's chains, sets and timeouts alone. A packet
+            of the mesh in each family that a program holding the tun writes into
+            it after the stop meets the stopped rules at the forward hook, whose
+            hold in place of the family's limit drops it, so no new flow is
+            translated and nothing leaves by the uplink.
+            """
+            running, _ = table_contents()
+            since = journal_after(client, "ranet3.service")
+            client.succeed("systemctl stop ranet3.service")
+            assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
+            # journald may write the stop's last lines after the unit has stopped
+            warning = 'msg="egress left its stopped rules at shutdown" why="the mesh device ${clientDevice} outlives the mesh"'
+            client.wait_until_succeeds(f"{since} -o cat | grep -qF '{warning}'", timeout=timeout)
+            stopped = logged(since, "egress translator stopped")
+            assert len(stopped) == 1, f"the stop logged {len(stopped)} writes of the stopped rules: {stopped}"
+            written = re.findall(r" rules=(\d+) ", stopped[0])
+            assert len(written) == 1, f"the stop's line names no count of rules: {stopped[0]}"
+            tables = sorted(t for t in client.succeed("nft list tables").splitlines() if t.strip())
+            assert tables == ["table inet ranet3"], f"the stop left the tables {tables}"
+            # the exit's three chains, its sets of flows and of untranslated sources and its timeouts are told apart from
+            # the rest by their names
+            named, _ = table_contents()
+            chains = [name for kind, name in named if kind == "chain"]
+            assert chains == ["forward", "forward6", "postrouting"], (
+                f"the stop left the chains {chains}, where the exit's stopped rules are its three and the antispoof filter's chains go")
+            others = [(kind, name) for kind, name in named
+                      if kind != "chain" and not (kind == "set" and name.startswith(("flows", "untranslated")))
+                      and not (kind == "ct timeout" and name in ("udp4", "tcp4", "icmp4", "udp6", "tcp6", "icmp6"))]
+            assert others == [], f"the stop left {others} beside the exit's chains, sets and timeouts, where the antispoof filter's sets go"
+            client.succeed("rm -f /tmp/stopped.pcap /tmp/stopped.log")
+            # outlasts both families' writes and waits, and ends on its own, so its file is whole once it has
+            client.execute("timeout 30 tcpdump -Uni eth1 -w /tmp/stopped.pcap 'udp port 7777' >/tmp/stopped.log 2>&1 &")
+            client.wait_until_succeeds("grep -q 'listening on' /tmp/stopped.log", timeout=timeout)
+            # each family's hold sits in its own chain at the forward hook, IPv4's in forward and IPv6's in forward6
+            for chain, source, destination in [("forward", "${gatewayTunnelV4}", "${behindV4}"), ("forward6", "${gatewayTunnel}", "${behindV6}")]:
+                held = held_by(chain)
+                client.succeed(f"tun-write ${clientDevice} {source} {destination} 7777 3")
+                deadline = time.monotonic() + 10
+                while held_by(chain) < held + 3 and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                dropped = held_by(chain) - held
+                assert dropped == 3, f"the stopped rules of {chain} dropped {dropped} of the 3 packets of the mesh from {source} written into the tun"
+            client.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
+            left = client.succeed("tcpdump -nr /tmp/stopped.pcap 2>/dev/null")
+            assert left.strip() == "", f"a packet of the mesh left by the uplink after the stop:\n{left}"
+            return int(written[0]), running
+
+        def start_takes_the_table_over(written, running):
+            """the next start adopts the table and the chains the stop left, as the package takes over a table a previous
+            instance left behind, and its first write replaces the written stopped rules it finds with its running ones,
+            the antispoof filter's chains and sets back beside them, so the table holds what it held running
+
+            A table or chain deleted and made again would carry a new handle, and
+            a write over a table made again would replace no rule.
+            """
+            _, was = table_contents()
+            since = journal_after(client, "ranet3.service")
+            client.succeed("systemctl start ranet3.service")
+            client.wait_until_succeeds("ranet3 status --json | jq -e '(.egress.ready | length == 2) and .antispoof.ready'", timeout=timeout)
+            named, handles = table_contents()
+            assert named == running, f"the next start holds {named}, where the table held {running} before the stop"
+            kept = {name: handles.get(name) for name in was}
+            assert kept == was, f"the next start holds the table and the exit's chains under the handles {kept}, where the stop left {was}"
+            failed = logged(since, "egress pass failed, retrying")
+            assert failed == [], f"a pass of the next start failed: {failed}"
+            installed = logged(since, "egress rules installed")
+            assert installed and re.findall(r" replaced=(\d+) ", installed[0]) == [str(written)], (
+                f"the next start's first write replaced other than the {written} stopped rules the stop wrote: {installed}")
+      '';
+
       # The client is the exit node and the gateway is the peer using it. What
       # is measured is a third machine's view: it answers in prefixes only the
       # exit can reach, and it sees the exit's own address rather than the mesh
-      # address the packet started with. The rules go away at shutdown, which
-      # is the ownership claim and not a guess.
+      # address the packet started with. A shutdown over the client's tun,
+      # which outlives the daemon, leaves a stopped exit's rules, and the next
+      # start takes them over. It takes json from stoppedRules, joined ahead of
+      # it.
       exitNode = ''
-        import json
-
         try:
             gateway.wait_for_unit("systemd-networkd-wait-online.service")
             gateway.wait_for_unit("strongswan-swanctl.service")
@@ -1441,18 +1611,20 @@ testers.runNixOSTest {
                 "ranet3 status --json | jq -e '.egress.announced | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
 
-            # Shutdown takes the table with it, the antispoof filter's chains
-            # among its contents. A rule left behind would go on translating for
-            # a process that is no longer running.
-            client.succeed("systemctl stop ranet3.service")
-            assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
-            left = client.succeed("nft list tables").strip()
-            assert left == "", f"shutdown left tables behind: {left}"
+            # A stop leaves the exit's stopped rules over ranet0, which networkd
+            # made before the daemon and keeps after it, so whatever reaches the
+            # forward hook through the tun once the daemon is gone meets them as
+            # it would under ranet3 down: no new flow of either family is
+            # translated and nothing of the mesh leaves by the uplink. The
+            # antispoof filter's chain and sets go, as at any stop that is not
+            # for the mesh's failure.
+            written, running = stop_leaves_the_stopped_rules()
 
-            # And a restart installs them again, so the withdrawal above was a
-            # shutdown rather than a failure to write.
-            client.succeed("systemctl start ranet3.service")
-            client.wait_until_succeeds("nft list chain inet ranet3 postrouting", timeout=timeout)
+            # The next start adopts the table and the chains the stop left, under
+            # the handles they had, and its first write replaces the stopped
+            # rules it finds with its running ones, which then translate again.
+            start_takes_the_table_over(written, running)
+            exit_translates()
         finally:
             print(client.execute("nft list ruleset")[1])
             print(client.execute("ip -4 rule show")[1])
@@ -1464,10 +1636,9 @@ testers.runNixOSTest {
       # client's egress segment, and the far side sees the exit's address. The
       # IPv6 arm only, since the root test in internal/client carries IPv4
       # with synthetic frames. The SID's /128 is the exit's liveness on the
-      # gateway's own table.
+      # gateway's own table. It takes json from stoppedRules, joined ahead of
+      # it.
       egressSegmentScript = ''
-        import json
-
         def status():
             return json.loads(client.succeed("ranet3 status --json"))
 
@@ -1628,11 +1799,15 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ping -c 1 -W 2 -I ${gatewayTunnel} ${behindV6}", timeout=timeout)
 
-            # shutdown takes the tables with it, the antispoof filter's inet table among them
-            client.succeed("systemctl stop ranet3.service")
-            assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
-            left = client.succeed("nft list tables").strip()
-            assert left == "", f"shutdown left tables behind: {left}"
+            # a stop leaves the exit's stopped rules over ranet0, which networkd made before the daemon and keeps after
+            # it, so what reaches the forward hook through the tun once the daemon is gone meets them as under ranet3
+            # down, and the antispoof filter's chains, antispoof and entry under overlay, and its sets go, as at
+            # any stop that is not for the mesh's failure. The next start adopts the table and the exit's chains under
+            # the handles they had, its first write replaces the stopped rules it finds, and the antispoof filter
+            # writes its chains and sets again.
+            written, running = stop_leaves_the_stopped_rules()
+            start_takes_the_table_over(written, running)
+            gateway.wait_until_succeeds("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
         finally:
             print(client.execute("ranet3 status")[1])
             print(client.execute("nft list ruleset")[1])
@@ -2997,13 +3172,13 @@ testers.runNixOSTest {
       else if responder then
         responderScript
       else if egressSegment then
-        egressSegmentScript
+        stoppedRules + egressSegmentScript
       else if segments then
         segmentRouted
       else if none then
         noneScript
       else if egress then
-        exitTranslates + exitNode
+        exitTranslates + stoppedRules + exitNode
       else
         initiator
     );
