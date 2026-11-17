@@ -915,8 +915,10 @@ func TestHostPortsCountOpenAndHeldConnectionsAcrossFamilies(t *testing.T) {
 		h, bus, _ := holdHarness(t, newFakeHostSockets(hostTimeWait).platform())
 		for i := range 4 {
 			h.closeFirst(t, h.open(t, netip.AddrPortFrom(leaf4, uint16(42200+i)), leafFirst))
+			// a connection's end follows the return of its host admission, which
+			// the next admission would otherwise count beside its hold
+			h.waitConnections(t, 0)
 		}
-		h.waitConnections(t, 0)
 		if reason := h.syn(t, netip.AddrPortFrom(leaf4, 42204), leafFirst); reason != reasonShareHeld {
 			t.Fatalf("a source holding four closed slots was refused past %q, want %q", reason, reasonShareHeld)
 		}
@@ -930,6 +932,7 @@ func TestHostPortsCountOpenAndHeldConnectionsAcrossFamilies(t *testing.T) {
 	t.Run("share", func(t *testing.T) {
 		h, _, _ := holdHarness(t, newFakeHostSockets(hostTimeWait).platform())
 		h.closeFirst(t, h.open(t, netip.AddrPortFrom(leaf4, 42250), leafFirst))
+		h.waitConnections(t, 0)
 		for i := range 3 {
 			h.open(t, netip.AddrPortFrom(leaf4, uint16(42251+i)), leafFirst)
 		}
@@ -1016,8 +1019,8 @@ func TestHostPortsCountOpenAndHeldConnectionsAcrossFamilies(t *testing.T) {
 		h, _, _ := holdHarness(t, newFakeHostSockets(hostTimeWait).platform())
 		for i := range 4 {
 			h.closeFirst(t, h.open(t, netip.AddrPortFrom(leaf4, uint16(42400+i)), leafFirst))
+			h.waitConnections(t, 0)
 		}
-		h.waitConnections(t, 0)
 		next := netip.AddrPortFrom(leaf4, 42404)
 		h.advance(2 * fakeMSL)
 		h.advance(fakeMargin - time.Second)
