@@ -302,7 +302,7 @@ func userspaceFlowsLine(u EgressUserspace) string {
 	open := tcp + udp + echo
 	kinds, host := fmt.Sprintf("%d open and %d dialing", open, u.Dialing), ""
 	if h := u.Host; h != nil {
-		kinds = fmt.Sprintf("%d open, %d dialing and %d held for host sockets", open, u.Dialing, h.Held)
+		kinds = fmt.Sprintf("%d open, %d dialing and %s", open, u.Dialing, countOf(h.Held, "held slot"))
 		if h.Shared > 0 {
 			kinds += fmt.Sprintf(", %d of them also open while closing and counted once", h.Shared)
 		}

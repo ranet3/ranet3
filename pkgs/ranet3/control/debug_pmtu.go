@@ -36,7 +36,7 @@ type PMTUInfo struct {
 	// DeviceMTU is the tun's MTU as the kernel reported it for this answer, zero where the device could not answer
 	DeviceMTU int `json:"device_mtu"`
 	// TooBigSent counts the packet too big and fragmentation needed answers the node sent: to packets past their session's budget, and the userspace
-	// exit's to a leaf's datagram the path outside refused as too large
+	// exit's own to a leaf's datagram its host refused to send as larger than the path MTU it holds
 	TooBigSent uint64 `json:"packet_too_big_sent"`
 	// MSSClamped counts the lowerings of a SYN or SYN-ACK's MSS to a session's budget, a forwarded SYN lowered at two sessions counting twice
 	MSSClamped uint64 `json:"mss_clamped"`
@@ -161,7 +161,7 @@ func RenderPMTU(w io.Writer, info PMTUInfo) {
 		{"Link MTU", strconv.Itoa(info.LinkMTU) + " B"},
 		{"Steering", steering},
 		{"Device MTU", device},
-		{"Too big", countOf(int(info.TooBigSent), "answer") + " sent to packets past their session's budget"},
+		{"Too big", countOf(int(info.TooBigSent), "answer") + " sent to packets too large to go on"},
 		{"MSS clamped", countOf(int(info.MSSClamped), "lowering")},
 		{"Answer sources", sourceText(info.RouterIDv4) + " for IPv4, " + sourceText(info.RouterIDv6) + " for IPv6"},
 		{"Answer SID", sourceText(info.AnswerSID)},

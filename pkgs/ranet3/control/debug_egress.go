@@ -248,7 +248,7 @@ func renderUserspace(w io.Writer, u EgressUserspace) {
 	for _, source := range u.Sources {
 		flows := countOf(source.Flows, "flow")
 		if source.Held > 0 {
-			flows += fmt.Sprintf(", %d held for host sockets", source.Held)
+			flows += ", " + countOf(source.Held, "held slot")
 		}
 		rows = append(rows, []string{source.Source.String(), flows})
 	}

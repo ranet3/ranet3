@@ -406,10 +406,10 @@ func TestUserspaceFlowsLineOpensWithTheFlowsCounted(t *testing.T) {
 		want    string
 	}{
 		{"no host part", 5, nil, "5 of 10 allowed: 4 open and 1 dialing, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both"},
-		{"holds sharing nothing", 7, &EgressHost{Held: 2, Ports: 6, Bound: 8}, "7 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 6 host ports of 8"},
-		{"one closing connection sharing", 6, &EgressHost{Held: 2, Ports: 5, Bound: 8, Shared: 1}, "6 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 1 of them also open while closing and counted once, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 5 host ports of 8"},
-		{"two closing connections sharing", 5, &EgressHost{Held: 2, Ports: 4, Bound: 8, Shared: 2}, "5 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 2 of them also open while closing and counted once, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 4 host ports of 8"},
-		{"parts read as a flow moved", 6, &EgressHost{Held: 2, Ports: 6, Bound: 8}, "6 of 10 allowed: 4 open, 1 dialing and 2 held for host sockets, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 6 host ports of 8"},
+		{"holds sharing nothing", 7, &EgressHost{Held: 2, Ports: 6, Bound: 8}, "7 of 10 allowed: 4 open, 1 dialing and 2 held slots, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 6 host ports of 8"},
+		{"one closing connection sharing", 6, &EgressHost{Held: 2, Ports: 5, Bound: 8, Shared: 1}, "6 of 10 allowed: 4 open, 1 dialing and 2 held slots, 1 of them also open while closing and counted once, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 5 host ports of 8"},
+		{"two closing connections sharing", 5, &EgressHost{Held: 2, Ports: 4, Bound: 8, Shared: 2}, "5 of 10 allowed: 4 open, 1 dialing and 2 held slots, 2 of them also open while closing and counted once, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 4 host ports of 8"},
+		{"parts read as a flow moved", 6, &EgressHost{Held: 2, Ports: 6, Bound: 8}, "6 of 10 allowed: 4 open, 1 dialing and 2 held slots, 4 TCP of 5 allowed: 3 open and 1 dialing, 1 UDP, 0 echo, 4 in TIME_WAIT outside both, 6 host ports of 8"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			u := base
