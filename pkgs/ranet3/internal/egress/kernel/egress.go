@@ -762,7 +762,7 @@ func (t *Translator) Run(ctx context.Context) error {
 	// keeps selecting this node while its chains are being taken down is a peer
 	// whose traffic leaves untranslated, and babel's own retraction is the
 	// only thing that can tell it otherwise.
-	t.Retract("the translator is stopping")
+	t.recordStop("the translator is stopping")
 	return errors.Join(t.withdraw(), t.be.Close())
 }
 
@@ -1087,23 +1087,32 @@ func (t *Translator) reportConflicts(conflicts []string) {
 	t.warned = slices.Clone(conflicts)
 }
 
-// stop retracts the advertisement and withdraws the chains, in the order Run's
-// exit takes, and records the pass. The pass reads zero installed, so a
-// diagnostic does not go on reporting the rules of the last pass that ran.
+// stop records the stop and withdraws the chains, in the order Run's exit
+// takes, and records a withdrawal that fails with its error
 func (t *Translator) stop() error {
 	started := time.Now()
-	t.Retract("the translator is stopped")
+	stats := t.recordStop("the translator is stopped")
 	err := t.withdraw()
-	stats := passStats{At: time.Now()}
 	attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
 		slog.Int("installed", 0), slog.Int("announced", 0)}
 	if err != nil {
 		stats.Err = err.Error()
+		t.stats.Store(&stats)
 		attrs = append(attrs, slog.String("err", stats.Err))
 	}
-	t.stats.Store(&stats)
 	t.rt.Events.Emit("egress.pass", "", attrs...)
 	return err
+}
+
+// recordStop retracts the advertisement for why and stores, and returns, a
+// pass that reads every family not ready for it and zero installed, so Status
+// says why from the moment a stop begins and no longer reports the rules of
+// the last pass that ran
+func (t *Translator) recordStop(why string) passStats {
+	t.Retract(why)
+	stats := passStats{At: time.Now(), Unready: t.Unready()}
+	t.stats.Store(&stats)
+	return stats
 }
 
 // withdraw removes the chains, sets and objects this translator owns, as its

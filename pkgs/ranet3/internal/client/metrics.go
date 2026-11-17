@@ -258,7 +258,7 @@ func (c *Client) renderEgress(w io.Writer) {
 	// installing nothing
 	rules := status.Userspace == nil
 	if rules {
-		fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Rules the host holds in this node's limit and translation chains as of its last pass.\n")
+		fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Rules the host holds in this node's limit and translation chains as of the exit's last pass, and 0 from the start of a stop.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_rules_installed gauge\n")
 		fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", status.Installed)
 	}
@@ -296,7 +296,7 @@ func (c *Client) renderEgress(w io.Writer) {
 		fmt.Fprintf(w, "ranet3_egress_conntrack_entries %d\n", *status.ConntrackCount)
 	}
 	if status.ConntrackMax != nil {
-		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_max The most entries the host's connection tracking table takes, net.netfilter.nf_conntrack_max, read on each pass and never written.\n")
+		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_max The most entries the host's connection tracking table takes, net.netfilter.nf_conntrack_max, which a pass reads and this node never writes.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_conntrack_max gauge\n")
 		fmt.Fprintf(w, "ranet3_egress_conntrack_max %d\n", *status.ConntrackMax)
 	}
@@ -305,10 +305,10 @@ func (c *Client) renderEgress(w io.Writer) {
 		fmt.Fprint(w, "# TYPE ranet3_egress_conflicts gauge\n")
 		fmt.Fprintf(w, "ranet3_egress_conflicts %d\n", len(status.Conflicts))
 	}
-	fmt.Fprint(w, "# HELP ranet3_egress_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
+	fmt.Fprint(w, "# HELP ranet3_egress_pass_timestamp_seconds When the exit's last pass or stop stored its record, and zero before the first one has.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_pass_timestamp_seconds gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_pass_timestamp_seconds %d\n", unixOrZero(status.PassAt))
-	fmt.Fprint(w, "# HELP ranet3_egress_pass_failed Whether the last pass reported an error.\n")
+	fmt.Fprint(w, "# HELP ranet3_egress_pass_failed Whether the record the exit's last pass or stop stored holds an error.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_pass_failed gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(status.Err != ""))
 	ready := status.Ready
