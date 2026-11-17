@@ -40,6 +40,10 @@ const (
 	setSize = 65535
 	// udpDestinationOffset is where the destination port sits in a UDP header
 	udpDestinationOffset = 2
+	// labelBit is the exit's connection label among the 128 bits the kernel
+	// keeps on a conntrack entry (Rule.setsLabel). No registry assigns them,
+	// and a program numbering its labels from 0 reaches the highest last.
+	labelBit = 127
 )
 
 // The names an earlier version of an owner gave an object the owner now

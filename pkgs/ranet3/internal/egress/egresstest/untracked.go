@@ -148,6 +148,39 @@ func (r *rows) untrackedInto(t *testing.T) {
 	r.verdict()
 }
 
+// untrackedIntoWhileOff holds that, under return, what the backend keeps while
+// off where Arm.Stopped is set takes into the mesh no extended echo request
+// the server sends the leaf, which no flow is tracked for, as while the
+// backend runs
+func (r *running) untrackedIntoWhileOff(t *testing.T, network Network, class Class) {
+	if r.stopped == nil || !r.cfg.Return {
+		return
+	}
+	mark, sent := len(network.Back()), make([][]byte, 0, 2)
+	for _, v6 := range []bool{false, true} {
+		family := &rows{network: network, family: network.Family(v6), class: class, exit: r}
+		protocol := syscall.IPPROTO_ICMP
+		if v6 {
+			protocol = syscall.IPPROTO_ICMPV6
+		}
+		data := []byte("an extended echo request into the mesh while off over " + family.family.Name)
+		request := query(family.family.Server, family.family.Leaf, byte(ipv4.ICMPTypeExtendedEchoRequest), byte(ipv6.ICMPTypeExtendedEchoRequest), intoUntrackedEchoID, data)
+		if _, err := family.serverIP(t, protocol, family.family.Server).WriteToIP(request[headerLength(request):], &net.IPAddr{IP: family.family.Leaf.AsSlice()}); err != nil {
+			t.Fatalf("send from the server to %s: %v", family.family.Leaf, err)
+		}
+		sent = append(sent, data)
+	}
+	time.Sleep(quietPeriod)
+	for _, packet := range network.Back()[mark:] {
+		p, ok := parse(packet)
+		for _, data := range sent {
+			if ok && bytes.Contains(p.payload, data) {
+				t.Errorf("%q, sent by the server to the leaf while off, came into the mesh from %s, want it dropped as a packet no flow is tracked for", data, p.src)
+			}
+		}
+	}
+}
+
 // awaitDropped waits for a pass after now whose count of the family's packets
 // dropped is want, before of them counted before the step
 func (r *rows) awaitDropped(t *testing.T, before, want uint64) {

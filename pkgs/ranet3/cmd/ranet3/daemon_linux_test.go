@@ -971,3 +971,92 @@ func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofChains(t *testing.T) {
 	}
 	leftNothing(t, f, was)
 }
+
+// A reload while the node is down leaves the chains of its stopped exit, the translation's chain kept beside the stop's
+// drops, as the stop wrote them: the node takes a file whose cap.egress is unchanged and refuses one that changes it as a
+// restart's to apply, and for neither does the exit write or read anything but stopped
+func TestDaemonReloadWhileDownLeavesTheStoppedExitsChains(t *testing.T) {
+	claimNamespace(t)
+	f := writeDaemon(t, exitCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&bus))
+	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	nft, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeNft := sync.OnceFunc(func() { _ = nft.Close() })
+	defer closeNft()
+	// held is the rules the host holds in the table, each by its chain and its comment
+	held := func() []string {
+		t.Helper()
+		rules, err := nftables.TableRules(nft, unix.NFPROTO_INET, nftables.Table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lines []string
+		for _, rule := range rules {
+			lines = append(lines, rule.Chain+": "+rule.Spec)
+		}
+		return lines
+	}
+	// unready is why the status says the exit does not serve
+	unready := func() string {
+		t.Helper()
+		answered, body := ask(t, f.opts.controlPath, http.MethodGet, control.PathStatus, nil)
+		var status control.Status
+		if err := json.Unmarshal([]byte(body), &status); answered != http.StatusOK || err != nil {
+			t.Fatalf("status answered %d %q (%v)", answered, body, err)
+		}
+		return status.Egress.Unready
+	}
+	const stopped = "the translator is stopped"
+	if answered, body := ask(t, f.opts.controlPath, http.MethodPost, control.PathDown, &control.Request{}); answered != http.StatusOK {
+		t.Fatalf("down answered %d %q", answered, body)
+	}
+	waitTill(t, "the stop", func() bool { return unready() == stopped })
+	lines, passes := held(), recorded(&bus, "egress.pass")
+	for _, line := range []string{
+		kernelexit.ChainName + ": out via " + daemonTUN + " ipv4 masquerade",
+		kernelexit.LimitChain + ": out via " + daemonTUN + " ipv4 dropped while stopped",
+		kernelexit.LimitChain + ": translated via " + daemonTUN + " ipv4 leaving by another link dropped while stopped",
+	} {
+		if !slices.Contains(lines, line) {
+			t.Errorf("the stopped exit's table holds %q, want %q among them", lines, line)
+		}
+	}
+	file, err := os.ReadFile(f.opts.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(file), "198.51.100.0/24", "198.51.100.0/25", 1)
+	for _, reload := range []struct {
+		what, file string
+		answered   int
+		answer     string
+	}{
+		{"the same file", string(file), http.StatusOK, ""},
+		{"a file changing cap.egress", changed, http.StatusBadRequest, "cap.egress changed, restart to apply"},
+	} {
+		if err := os.WriteFile(f.opts.configPath, []byte(reload.file), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if answered, body := ask(t, f.opts.controlPath, http.MethodPost, control.PathReload, &control.Request{}); answered != reload.answered || !strings.Contains(body, reload.answer) {
+			t.Errorf("a reload of %s while down answered %d %q, want %d holding %q", reload.what, answered, body, reload.answered, reload.answer)
+		}
+		// past any pass a wake would run
+		time.Sleep(daemonQuiet)
+		if got, wrote, why := held(), recorded(&bus, "egress.pass")-passes, unready(); !slices.Equal(got, lines) || wrote != 0 || why != stopped {
+			t.Errorf("after a reload of %s while down the table holds %q after %d writes of the exit, which reads %q, want %q after none and %q",
+				reload.what, got, wrote, why, lines, stopped)
+		}
+	}
+	// the test's own socket is no file of the start's
+	closeNft()
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the daemon exited %d after SIGTERM", got)
+	}
+	leftNothing(t, f, was)
+}

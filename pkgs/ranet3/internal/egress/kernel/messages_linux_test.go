@@ -90,7 +90,7 @@ func everyTranslation() []Rule {
 func TestLimitLineCountsToItsRulesLimit(t *testing.T) {
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		for _, limit := range []int{1, 300, egress.DefaultFlowsPerSource} {
-			line, err := translatorLine(Rule{Family: family, Direction: Out, Interface: "ranet3", Limit: limit})
+			line, err := translatorLine(Rule{Family: family, Direction: Out, Interface: "ranet3", Limit: limit}, unix.NFT_CT_LABELS)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,6 +99,92 @@ func TestLimitLineCountsToItsRulesLimit(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The probe of the label carries it by the key it is given in one request
+// alone, the rule at the index labelTaken reads a refusal of the label at, in
+// a chain none of the translator's, and ends in that chain made again under
+// NLM_F_EXCL, which the kernel refuses whatever it made of the label, so a
+// refusal of the rule is told from the refusal that ends the probe
+func TestLabelProbeIsRefusedWhateverTheKernelMakesOfTheLabel(t *testing.T) {
+	for _, key := range []uint32{unix.NFT_CT_LABELS, 255} {
+		requests, at, err := labelProbe(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var carrying []int
+		for i, request := range requests {
+			if readsKey(request, key) {
+				carrying = append(carrying, i)
+			}
+		}
+		if !slices.Equal(carrying, []int{at}) || at == len(requests)-1 {
+			t.Errorf("the probe under the key %d carries it in the requests %v of %d, want its rule at %d alone, ahead of the last", key, carrying, len(requests), at)
+		}
+		made, again := requests[1], requests[len(requests)-1]
+		if made.Kind&0xff != unix.NFT_MSG_NEWCHAIN || again.Kind != made.Kind || !bytes.Equal(again.Body, made.Body) || again.Flags != made.Flags|unix.NLM_F_EXCL {
+			t.Errorf("the probe makes the chain %+v and ends in %+v, want the same chain made again under NLM_F_EXCL", made, again)
+		}
+		if scope := translatorScope; slices.Contains(scope.Chains, probeChain) || strings.HasPrefix(probeChain, scope.Prefix) {
+			t.Errorf("the probe's chain %s is named as one of the translator's", probeChain)
+		}
+	}
+}
+
+// labelTaken reads the label taken from the refusal of the probe's last
+// request with EEXIST alone, and refused from a refusal of its rule with
+// EOPNOTSUPP alone. Every other answer, of the probe's own requests or of the
+// socket, is an error that says neither.
+func TestLabelTakenReadsTheProbesAnswer(t *testing.T) {
+	requests, at, err := labelProbe(unix.NFT_CT_LABELS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := len(requests) - 1
+	for _, c := range []struct {
+		answer error
+		takes  bool
+		err    bool
+	}{
+		{&nftables.Refused{Request: last, Err: unix.EEXIST}, true, false},
+		{&nftables.Refused{Request: at, Err: unix.EOPNOTSUPP}, false, false},
+		{&nftables.Refused{Request: 0, Err: unix.EOPNOTSUPP}, false, true},
+		{&nftables.Refused{Request: last, Err: unix.EOPNOTSUPP}, false, true},
+		{&nftables.Refused{Request: at, Err: unix.EINVAL}, false, true},
+		{&nftables.Refused{Request: 1, Err: unix.EEXIST}, false, true},
+		{&nftables.Refused{Request: 0, Err: unix.EPERM}, false, true},
+		{&nftables.Refused{Request: -1, Err: unix.EOPNOTSUPP}, false, true},
+		{unix.ENOBUFS, false, true},
+		{fmt.Errorf("wrapped: %w", unix.EOPNOTSUPP), false, true},
+		{nil, false, true},
+	} {
+		takes, err := labelTaken(c.answer, at, len(requests))
+		if takes != c.takes || (err != nil) != c.err {
+			t.Errorf("the answer %v reads the label taken %v with the error %v, want taken %v and an error %v", c.answer, takes, err, c.takes, c.err)
+		}
+	}
+}
+
+// readsKey is whether request writes a rule holding a ct expression of key
+func readsKey(request nftables.Request, key uint32) bool {
+	if request.Kind&0xff != unix.NFT_MSG_NEWRULE || len(request.Body) < 4 {
+		return false
+	}
+	for _, attr := range nftables.Nested(request.Body[4:]) {
+		if attr.Kind != unix.NFTA_RULE_EXPRESSIONS {
+			continue
+		}
+		for _, element := range nftables.Nested(attr.Value) {
+			if name, data := expressionParts(element.Value); name == "ct" {
+				for _, field := range nftables.Nested(data) {
+					if field.Kind == unix.NFTA_CT_KEY && len(field.Value) == 4 && binary.BigEndian.Uint32(field.Value) == key {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // connlimitCounts reads the count of each connlimit a dynset among expressions
@@ -153,21 +239,23 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 	}
 	both, rules, limit := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}, everyTranslation(), egress.DefaultFlowsPerSource
 	contents := translatorContents(both, limit, rules)
-	requests, err := translatorBatch(contents, rules, nftables.Contents{}, nil, nil)
+	requests, err := translatorBatch(contents, rules, nftables.Contents{}, nil, nil, unix.NFT_CT_LABELS)
 	write("translator in both families", requests, err)
-	requests, err = translatorBatch(contents, rules, nftables.Contents{Chains: []nftables.Chain{forward}, Sets: contents.Sets, Timeouts: contents.Timeouts}, nil, nil)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{}, nil, nil, 0)
+	write("translator in both families on a kernel that refuses connection labels", requests, err)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{Chains: []nftables.Chain{forward}, Sets: contents.Sets, Timeouts: contents.Timeouts}, nil, nil, unix.NFT_CT_LABELS)
 	write("translator remaking its forward chain and both families' sets and timeout objects", requests, err)
 	ipv6 := translatorContents([]uint8{egress.FamilyIPv6}, limit, nil)
-	requests, err = translatorBatch(contents, rules, nftables.Contents{Sets: ipv6.Sets, Timeouts: ipv6.Timeouts[:1]}, nil, nil)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{Sets: ipv6.Sets, Timeouts: ipv6.Timeouts[:1]}, nil, nil, unix.NFT_CT_LABELS)
 	write("translator remaking the ipv6 set and one ipv6 timeout object alone", requests, err)
 	ipv4 := translatorContents([]uint8{egress.FamilyIPv4}, limit, nil)
-	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, nil, nil)
+	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, nil, nil, unix.NFT_CT_LABELS)
 	write("translator in ipv4 with no rule", requests, err)
 	// a table holding three chains an earlier translator wrote for classes of
 	// none, one of which a goto of another names and one a rule of another
 	// writer's chain goes to, which stays
 	stray := []noneStray{{name: "none_198_51_100_0_24"}, {name: "none_198_51_100_0_25"}, {name: "none_203_0_113_0_24", heldBy: "chain other"}}
-	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, stray, nil)
+	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, stray, nil, unix.NFT_CT_LABELS)
 	write("translator in ipv4 deleting the chains an earlier translator wrote", requests, err)
 	// what a pass writes for the default capability and for one of each kind of
 	// class, one that translates inside one of none among them, without return
@@ -193,9 +281,14 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		{"translator of that capability under return", returned},
 	} {
 		desired := newTranslator(c.cfg, node, &fakeBackend{}).desired()
-		requests, err = translatorBatch(translatorContents(both, limit, desired), desired, nftables.Contents{}, nil, nil)
+		requests, err = translatorBatch(translatorContents(both, limit, desired), desired, nftables.Contents{}, nil, nil, unix.NFT_CT_LABELS)
 		write(c.name, requests, err)
 	}
+	stopped := newTranslator(returned, node, &fakeBackend{}).stopped()
+	requests, err = translatorBatch(translatorContents(both, limit, stopped), stopped, nftables.Contents{}, nil, nil, unix.NFT_CT_LABELS)
+	write("stopped translator of that capability under return", requests, err)
+	requests, _, err = labelProbe(unix.NFT_CT_LABELS)
+	write("translator's probe of the connection label", requests, err)
 
 	sets := egress.BorderSets{
 		CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("192.0.2.0/25")}},

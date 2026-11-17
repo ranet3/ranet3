@@ -58,6 +58,45 @@ func (r *rows) icmpNotCarried(t *testing.T) {
 	r.verdict()
 }
 
+// icmpIntoWhileOff opens a flow of the leaf's in IPv4 for an arm whose
+// backend keeps rules while off and returns flows into the mesh, and answers
+// what the step runs once the backend is off: the server's source quench to
+// the flow's mapping, quoting its datagram, and its information request to the
+// leaf, neither of which reaches the mesh while off, as icmpNotCarried has
+// them reach it not at all while on
+func (r *running) icmpIntoWhileOff(t *testing.T, network Network, class Class) func(*testing.T) {
+	if r.stopped == nil || !r.cfg.Return {
+		return func(*testing.T) {}
+	}
+	family := &rows{network: network, family: network.Family(false), class: class, exit: r}
+	to := netip.AddrPortFrom(family.family.Server, quenchWhileOffPort)
+	from := netip.AddrPortFrom(family.family.Leaf, leafQuenchWhileOffPort)
+	server, leaf := family.listenUDP(t, to), family.bindUDP(t, from)
+	opened := []byte("opens the mapping a quench while off quotes")
+	mapping := receiveFrom(t, udpReader(server), opened, func() { _, _ = leaf.WriteToUDPAddrPort(opened, to) })
+	return func(t *testing.T) {
+		icmp := family.serverIP(t, syscall.IPPROTO_ICMP, family.family.Server)
+		back := len(network.Back())
+		for _, sent := range []struct {
+			to     netip.Addr
+			packet []byte
+		}{
+			{mapping.Addr(), icmpError(family.family.Server, mapping.Addr(), message{kind4: 4}, datagram(mapping, to, leafTTL, opened))},
+			{family.family.Leaf, query(family.family.Server, family.family.Leaf, 15, 0, informationWhileOffID, []byte("an information request into the mesh while off"))},
+		} {
+			if _, err := icmp.WriteToIP(sent.packet[headerLength(sent.packet):], &net.IPAddr{IP: sent.to.AsSlice()}); err != nil {
+				t.Fatalf("send from the server to %s: %v", sent.to, err)
+			}
+		}
+		time.Sleep(quietPeriod)
+		for _, packet := range network.Back()[back:] {
+			if p, ok := parse(packet); ok && p.protocol == syscall.IPPROTO_ICMP && len(p.payload) > 0 && (p.payload[0] == 4 || p.payload[0] == 15) {
+				t.Errorf("the server's ICMP message of type %d reached the leaf from %s while off, want it dropped as while on", p.payload[0], p.src)
+			}
+		}
+	}
+}
+
 // readsICMP is whether the server reads an ICMP message of type kind within
 // quietPeriod
 func readsICMP(icmp *net.IPConn, kind byte) bool {

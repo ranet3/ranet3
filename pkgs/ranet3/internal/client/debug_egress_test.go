@@ -23,8 +23,8 @@ func (d *debugExit) Debug() egress.ExitDebug { return d.debug }
 
 // A node with no exit answers that it holds none, an exit holding no rules
 // answers its status alone, and one holding rules answers each rule, each
-// family's lookups with their answers, and the settings read, the reply's
-// answer only where the lookup asked for it
+// family's lookups with their answers, the settings read, the reply's answer
+// only where the lookup asked for it, and why it writes no connection label
 func TestDebugEgressCarriesTheExitsDebugRead(t *testing.T) {
 	c := writable(t)
 	if got := c.DebugEgress(); !reflect.DeepEqual(got, control.EgressInfo{}) {
@@ -53,11 +53,12 @@ func TestDebugEgressCarriesTheExitsDebugRead(t *testing.T) {
 				{Err: errors.New("network is unreachable"), ReplyIIF: "up9"},
 			},
 		}},
-		RPFilter: []egress.Setting{{Name: "net/ipv4/conf/all/rp_filter", Value: "1"}, {Name: "net/ipv4/conf/up0/rp_filter"}},
+		RPFilter:   []egress.Setting{{Name: "net/ipv4/conf/all/rp_filter", Value: "1"}, {Name: "net/ipv4/conf/up0/rp_filter"}},
+		Unlabelled: "the kernel refused a rule that sets or reads a connection label",
 	}})
 	got := c.DebugEgress()
 	want := control.EgressInfo{
-		Enabled: true, Status: plain.Status,
+		Enabled: true, Status: plain.Status, Unlabelled: "the kernel refused a rule that sets or reads a connection label",
 		Rules: []control.EgressRule{{Spec: "out via ranet0 ipv4 masquerade", Wanted: true, Held: true, Counter: "flows", Packets: 3, Bytes: 180}},
 		Families: []control.EgressFamily{{Family: "ipv4", Ready: true, Forwarding: true, Lookups: []control.EgressLookup{
 			{Source: member, Destination: read, IIF: "ranet0", Reply: true, Answered: true,

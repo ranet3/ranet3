@@ -15,7 +15,8 @@ import (
 // PathDebugEgress is cap.egress: the exit's status, Go's memory limit beside
 // an exit sized within a budget, and, where its backend holds rules in the
 // host's packet filter, each rule with its counter read now and each family's
-// readiness condition by condition as the last pass judged it
+// readiness condition by condition as the last pass judged it, none where a
+// stop has stored the exit's record since
 const PathDebugEgress = PathDebug + "egress"
 
 func init() {
@@ -43,8 +44,11 @@ type EgressInfo struct {
 	ReadErr  string         `json:"read_err,omitempty"`
 	Families []EgressFamily `json:"families,omitempty"`
 	// RPFilter is IPv4's rp_filter on all and on each device a route of the
-	// last pass's lookups leaves by, read now
+	// lookups in Families leaves by, read now
 	RPFilter []RouteSetting `json:"rp_filter,omitempty"`
+	// Unlabelled is why the exit writes no connection label on the flows it
+	// translates, absent while it writes one or holds no rules
+	Unlabelled string `json:"unlabelled,omitempty"`
 }
 
 // EgressMemory is Go's memory limit L, which holds the exit's budget B twice,
@@ -131,6 +135,9 @@ func RenderEgress(w io.Writer, info EgressInfo) {
 	}
 	if m := info.Memory; m != nil {
 		exit = append(exit, []string{"Memory", memoryLine(*m)})
+	}
+	if info.Unlabelled != "" {
+		exit = append(exit, []string{"Labels", "none, " + info.Unlabelled})
 	}
 	pairs(w, exit)
 	if u := info.Status.Userspace; u != nil {

@@ -129,7 +129,8 @@ type Exit struct {
 	closeOnce sync.Once
 
 	*egress.Shell
-	// stats is the last pass as a reader takes it, stored whole
+	// stats is the record of the last pass or stop as a reader takes it,
+	// stored whole
 	stats atomic.Pointer[passStats]
 
 	// trigger names what woke the run goroutine, and withdrawn is its record
@@ -140,7 +141,8 @@ type Exit struct {
 
 var _ egress.Exit = (*Exit)(nil)
 
-// passStats is one readiness pass as Status reads it
+// passStats is the record of one readiness pass or one stop, as Status reads
+// it
 type passStats struct {
 	At             time.Time
 	Ready4, Ready6 bool
@@ -275,8 +277,9 @@ func (x *Exit) sourceFor(leaf netip.Addr) netip.Addr {
 	return x.cfg.ClassOf(leaf).To.Addr
 }
 
-// Status is the last pass, the capability the exit carries, the packets
-// refused past a source's share in each family, and the exit's detail
+// Status is the record of the last pass or stop, the capability the exit
+// carries, and, read now, the packets refused past a source's share and those
+// dropped as belonging to no flow in each family and the exit's detail
 func (x *Exit) Status() egress.Status {
 	pass := x.lastPass()
 	advertise := make([]netip.Prefix, 0, len(x.cfg.Advertise))
@@ -364,8 +367,10 @@ func (x *Exit) Run(ctx context.Context) error {
 	return x.Close()
 }
 
-// withdraw takes nothing more from the sessions, calls Retract, and then ends
-// each dial, resets each connection and ends each mapping
+// withdraw is the exit's stop, which Run calls once for each down and once at
+// its end. It takes nothing more from the sessions, calls Retract, stores the
+// stop's record, and then ends each dial, resets each connection and ends each
+// mapping.
 func (x *Exit) withdraw(why string) {
 	x.taking.Store(false)
 	x.Retract(why)

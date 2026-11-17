@@ -737,6 +737,9 @@ func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			want := readyAfter(rt, desired, now)
 			carried := map[uint8]bool{}
 			if now.enabled {
+				// as Run ends the record of a stop before each pass, so the next
+				// stop records itself before its write
+				tr.down = false
 				_ = tr.reconcile()
 				written := writtenAfter(now, desired)
 				carried[egress.FamilyIPv4] = written[egress.FamilyIPv4] && now.forward4

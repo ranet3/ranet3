@@ -260,8 +260,8 @@ func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
 		t.Errorf("the advertisement was retracted after %d withdrawals, want before the first", withdrawnWhenRetracted)
 	}
 	mu.Unlock()
-	if stats := tr.lastPass(); stats.Installed != 0 || len(stats.Announced) != 0 {
-		t.Errorf("a stopped translator reports %+v, want nothing installed or announced", stats)
+	if stats := tr.lastPass(); stats.Installed != len(tr.stopped()) || len(stats.Announced) != 0 {
+		t.Errorf("a stopped translator reports %+v, want the %d stopped rules installed and nothing announced", stats, len(tr.stopped()))
 	}
 	time.Sleep(stoppedFor)
 	if held, withdrawn := state(); held != 0 || withdrawn != 1 {

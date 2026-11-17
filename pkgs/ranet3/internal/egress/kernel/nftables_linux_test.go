@@ -47,15 +47,18 @@ func expressionNames(t *testing.T, body []byte) []string {
 // A rule reaches the kernel as the expressions its comment describes, in the
 // order a packet meets them: in the translation's chain its family's test,
 // which every case's list leaves out, then both interfaces, then the
-// narrowing, then the counter and the translation, or for a timeout rule its
-// protocol and its object, and for the limit's rule the connection's state and
-// status first and the count, the counter and the answer last, in its family's
-// chain, as are the ICMP drops and the refusals, which take their protocol
-// first, and a refusal then its flow's direction. A rule of the forward hook's
-// tests no family first, since forward's first line sends IPv6's packets on to
-// IPv6's chain, which leaves IPv4's alone past it, but a pass tests its family
-// just before the source it looks up in its set, which nft lists as an address
-// only after that test.
+// narrowing, then the counter, the exit's label for a flow translated out of
+// the mesh or from a mesh address, and the translation, or for a timeout rule
+// its protocol and its object, for a stopped translator's drop of a labelled
+// flow the departure, the label and the counted drop, and for the limit's rule
+// the connection's state and status first and the count, the counter and the
+// answer last, in its family's chain, as are the ICMP drops and the refusals,
+// which take their protocol first, and a refusal then its flow's direction. A
+// rule of the forward hook's tests no family first, since forward's first line
+// sends IPv6's packets on to IPv6's chain, which leaves IPv4's alone past it,
+// but a pass, and a stopped translator's drop of a labelled flow ahead of it,
+// tests its family just before the source it looks up in its set, which nft
+// lists as an address only after that test.
 func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	for _, one := range []struct {
 		name string
@@ -65,12 +68,25 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 		{
 			"out of the mesh under the host's own address",
 			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"},
-			[]string{"meta", "cmp", "meta", "cmp", "counter", "masq"},
+			[]string{"meta", "cmp", "meta", "cmp", "counter", "immediate", "ct", "masq"},
 		},
 		{
 			"out of the mesh under a configured address",
 			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", Source: netip.MustParseAddr("2001:db8::1")},
-			[]string{"meta", "cmp", "meta", "cmp", "counter", "immediate", "nat"},
+			[]string{"meta", "cmp", "meta", "cmp", "counter", "immediate", "ct", "immediate", "nat"},
+		},
+		{
+			"a stopped translator's drop of a labelled flow leaving by another link",
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Stopped: Labelled},
+			[]string{"meta", "cmp", "ct", "bitwise", "cmp", "counter", "immediate"},
+		},
+		{
+			"that drop ahead of the pass of the untranslated sources",
+			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", Stopped: Labelled, Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("3fff::/20")})},
+			// What the pass takes, the direction and the source looked up in
+			// the family's set after the family test, then the label and the
+			// counted drop.
+			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "lookup", "ct", "bitwise", "cmp", "counter", "immediate"},
 		},
 		{
 			"into the mesh from one prefix",
@@ -97,7 +113,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			"from this node's own mesh address",
 			Rule{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet0",
 				From: netip.MustParsePrefix("3fff::1/128"), Source: netip.MustParseAddr("2001:db8::7")},
-			[]string{"meta", "cmp", "payload", "cmp", "counter", "immediate", "nat"},
+			[]string{"meta", "cmp", "payload", "cmp", "counter", "immediate", "ct", "immediate", "nat"},
 		},
 		{
 			"timeouts for UDP out of the mesh",
@@ -150,7 +166,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
-			request, err := newRule(one.rule)
+			request, err := newRule(one.rule, unix.NFT_CT_LABELS)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,11 +197,43 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	}
 }
 
+// Once the kernel has refused the label, a pass's rules, which hold no drop of
+// a labelled flow, are written as they are, with nothing copied, and a stop's
+// are written without that drop
+func TestRulesWithoutTheLabelCostAPassNothing(t *testing.T) {
+	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	tr := newTranslator(cfg, Runtime{Interface: "ranet0"}, &fakeBackend{})
+	n := &natTables{}
+	desired, stopped := tr.desired(), tr.stopped()
+	if allocs := testing.AllocsPerRun(100, func() { desired = n.written(desired) }); allocs != 0 {
+		t.Errorf("writing a pass's rules without the label allocated %v times, want none", allocs)
+	}
+	written := n.written(stopped)
+	if slices.ContainsFunc(written, func(rule Rule) bool { return rule.Stopped == Labelled }) || len(written) != len(stopped)-2 {
+		t.Errorf("a stop's rules without the label are %v, want %v without its 2 drops of a labelled flow", written, stopped)
+	}
+}
+
+// manyClasses is n classes of /48 prefixes inside 3fff::/32, every third of
+// them none and the others auto
+func manyClasses(n int) []egress.Class {
+	classes := make([]egress.Class, n)
+	for i := range classes {
+		to := egress.Translation{Auto: true}
+		if i%3 == 0 {
+			to = egress.Translation{None: true}
+		}
+		from := netip.AddrFrom16([16]byte{0x3f, 0xff, 0, 0, byte(i >> 8), byte(i)})
+		classes[i] = egress.Class{From: schema.Prefix{Prefix: netip.PrefixFrom(from, 48)}, To: to}
+	}
+	return classes
+}
+
 // An interface name is compared over the whole IFNAMSIZ the kernel pads it to.
 // A shorter comparison matches every device whose name starts the same way, so
 // a rule for "ranet0" would also claim traffic on "ranet01".
 func TestInterfaceComparisonCoversTheWholePaddedName(t *testing.T) {
-	request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"})
+	request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"}, unix.NFT_CT_LABELS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +296,7 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 		{In, []uint32{unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ, unix.NFT_CMP_NEQ, unix.NFT_CMP_EQ}},
 	} {
 		t.Run(one.direction.String(), func(t *testing.T) {
-			request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: one.direction, Interface: "ranet0"})
+			request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: one.direction, Interface: "ranet0"}, unix.NFT_CT_LABELS)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -296,16 +344,16 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 		timeouts := rule
 		timeouts.Source, timeouts.Timeouts = netip.Addr{}, ICMPv6Timeouts
 		for _, rule := range []Rule{rule, timeouts} {
-			if _, err := newRule(rule); err != nil {
+			if _, err := newRule(rule, unix.NFT_CT_LABELS); err != nil {
 				t.Errorf("the longest %s rule was refused: %v", direction, err)
 			}
 		}
 	}
-	if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, Limit: egress.MaxFlowsPerSource}); err != nil {
+	if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, Limit: egress.MaxFlowsPerSource}, unix.NFT_CT_LABELS); err != nil {
 		t.Errorf("the longest limit rule was refused: %v", err)
 	}
 	for _, none := range []bool{false, true} {
-		if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), None: none, Untracked: true}); err != nil {
+		if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), None: none, Untracked: true}, unix.NFT_CT_LABELS); err != nil {
 			t.Errorf("the longest rule taking what no flow is tracked for was refused: %v", err)
 		}
 	}
@@ -315,7 +363,7 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), Protocol: udpLite},
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), None: true, Protocol: udpLite},
 	} {
-		if _, err := newRule(rule); err != nil {
+		if _, err := newRule(rule, unix.NFT_CT_LABELS); err != nil {
 			t.Errorf("the longest pass, drop or refusal was refused: %v", err)
 		}
 	}
@@ -430,7 +478,7 @@ func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 		if got := noneChainsFault(c.held, c.in); got != c.want {
 			t.Errorf("%s reads back with the fault %q, want %q", name, got, c.want)
 		}
-		requests, err := translatorBatch(translatorContents([]uint8{egress.FamilyIPv4}, egress.DefaultFlowsPerSource, nil), nil, nftables.Contents{}, strays(c.held, c.in), nil)
+		requests, err := translatorBatch(translatorContents([]uint8{egress.FamilyIPv4}, egress.DefaultFlowsPerSource, nil), nil, nftables.Contents{}, strays(c.held, c.in), nil, unix.NFT_CT_LABELS)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -450,7 +498,7 @@ func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 func TestTranslatorBatchDeletesTheEarlierTimeoutObjectsInItsTransaction(t *testing.T) {
 	rules := everyTranslation()
 	contents := translatorContents([]uint8{egress.FamilyIPv4, egress.FamilyIPv6}, egress.DefaultFlowsPerSource, rules)
-	without, err := translatorBatch(contents, rules, nftables.Contents{}, nil, nil)
+	without, err := translatorBatch(contents, rules, nftables.Contents{}, nil, nil, unix.NFT_CT_LABELS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +508,7 @@ func TestTranslatorBatchDeletesTheEarlierTimeoutObjectsInItsTransaction(t *testi
 		leftovers = append(leftovers, nftables.Retired{Kind: "ct timeout", Name: name})
 		want = append(want, nftables.Timeout{Table: nftables.Table, Name: name}.Delete(unix.NFPROTO_INET))
 	}
-	with, err := translatorBatch(contents, rules, nftables.Contents{}, nil, leftovers)
+	with, err := translatorBatch(contents, rules, nftables.Contents{}, nil, leftovers, unix.NFT_CT_LABELS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +581,7 @@ func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
 // kernel that answers the question at all.
 func TestInboundRuleExcludesThisNodesOwnTraffic(t *testing.T) {
 	inbound, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0",
-		Source: netip.MustParseAddr("10.88.0.2")})
+		Source: netip.MustParseAddr("10.88.0.2")}, unix.NFT_CT_LABELS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +593,7 @@ func TestInboundRuleExcludesThisNodesOwnTraffic(t *testing.T) {
 
 	// An outbound rule needs none of it: a locally generated packet fails
 	// "iifname is the mesh device" whichever way the kernel answers.
-	outbound, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"})
+	outbound, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"}, unix.NFT_CT_LABELS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,11 +639,11 @@ func metaKeys(t *testing.T, body []byte) []uint32 {
 // sixteen byte comparison without one can never equal it: the rule would
 // install and then match nothing, or in the inbound direction everything.
 func TestOversizedInterfaceNameIsRefused(t *testing.T) {
-	_, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ)})
+	_, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ)}, unix.NFT_CT_LABELS)
 	if err == nil || !strings.Contains(err.Error(), "device name is at most") {
 		t.Fatalf("refused with %v, want a message naming the limit", err)
 	}
-	if _, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ-1)}); err != nil {
+	if _, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ-1)}, unix.NFT_CT_LABELS); err != nil {
 		t.Errorf("the longest name a device can have was refused: %v", err)
 	}
 }
@@ -653,7 +701,7 @@ func forwardButLimit(t testing.TB, tr *Translator, family uint8) ([]nftables.Req
 		if rule.Family != family || rule.chain() == ChainName || rule.kind() == limiting {
 			continue
 		}
-		request, err := newRule(rule)
+		request, err := newRule(rule, unix.NFT_CT_LABELS)
 		if err != nil {
 			t.Fatal(err)
 		}

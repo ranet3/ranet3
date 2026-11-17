@@ -84,6 +84,7 @@
 package kernel
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -228,8 +229,9 @@ type Rule struct {
 	// invalid for a prefix covering every address, which selects nothing
 	// extra.
 	From netip.Prefix
-	// Sources is the prefixes a pass looks a source up in, those whose class is
-	// none, which its family's set of them holds
+	// Sources is the prefixes a pass, and a stopped translator's Labelled rule
+	// ahead of it, look a source up in, those whose class is none, which its
+	// family's set of them holds
 	Sources PrefixSet
 	// Timeouts makes the rule one that attaches this exit's timeouts to a new
 	// flow of its protocol and translates nothing, with Source and None left
@@ -261,7 +263,27 @@ type Rule struct {
 	// A reply is translated only where its flow's first packet was, which the
 	// rule took.
 	Protocol Protocol
+	// Stopped names the rule's place among a stopped translator's rules
+	Stopped Stop
 }
+
+// Stop names a rule's place among a stopped translator's rules (see stopped)
+type Stop uint8
+
+const (
+	// Running is a running translator's rule, or one a stopped translator
+	// keeps where it sat
+	Running Stop = iota
+	// Held stands in place of a limit and drops every packet out of the mesh
+	// from From, whatever its flow's state
+	Held
+	// Labelled drops a packet of the family that leaves by a link other than
+	// the mesh device and whose flow carries the exit's connection label,
+	// whatever link it came in by, or with Sources set, one out of the mesh
+	// from a source the family's pass looks up (Rule.setsLabel says which
+	// rules set it)
+	Labelled
+)
 
 // byProtocol is whether r is a rule of the limit's chain that takes a packet
 // by its protocol first, an ICMP drop or a protocol's refusal
@@ -350,10 +372,18 @@ const (
 	// screening drops an ICMP message of a kind or refuses a packet by its
 	// protocol, at the forward hook, counting the packets
 	screening
+	// holding is a Held rule's, at the forward hook, counting the packets
+	holding
+	// leaving is a Labelled rule's, at the forward hook, counting the packets
+	leaving
 )
 
 func (r Rule) kind() ruleKind {
 	switch {
+	case r.Stopped == Held:
+		return holding
+	case r.Stopped == Labelled:
+		return leaving
 	case r.Passes:
 		return passing
 	case r.Limit != 0:
@@ -422,11 +452,20 @@ func counterUnit(chain string, counted bool) string {
 
 // String is the rule as an operator reads it in `nft list ruleset`. Every
 // field that changes what the rule does is in it, so two lines of a chain never
-// share a comment, but Sources, which would not fit nft's comment: a pass is
-// its family's one, and its set's elements are read back apart.
+// share a comment, but Sources, which would not fit nft's comment: a pass, as
+// the Labelled rule ahead of it, is its family's one, and its set's elements
+// are read back apart.
 func (r Rule) String() string {
 	action := "masquerade"
 	switch kind := r.kind(); {
+	case kind == leaving && r.Sources != "":
+		// out of the mesh from the untranslated sources, as the family's pass
+		// takes a packet
+		return "out via " + r.Interface + " " + egress.FamilyName(r.Family) + " untranslated leaving by another link dropped while stopped"
+	case kind == leaving:
+		return "translated via " + r.Interface + " " + egress.FamilyName(r.Family) + " leaving by another link dropped while stopped"
+	case kind == holding:
+		action = "dropped while stopped"
 	case kind == limiting:
 		action = fmt.Sprintf("limit %d", r.Limit)
 	case kind == passing:
@@ -535,6 +574,12 @@ type backend interface {
 	Close() error
 	// where names the space this backend owns, for a log line.
 	where() string
+	// unlabelled is why the backend writes no connection label on the flows
+	// it translates, empty while it writes one
+	unlabelled() string
+	// written is the rules of rules the backend writes, which Apply writes
+	// and Rules reads back
+	written(rules []Rule) []Rule
 }
 
 // passStats is one finished pass, which Status reports. Installed counts the
@@ -588,9 +633,9 @@ type Translator struct {
 	warned []string
 	// trigger names what woke the run goroutine for the pass it runs, and belongs to that goroutine
 	trigger string
-	// withdrawn is the run goroutine's record of having acted on a stop, as
-	// kernel.Reconciler keeps one
-	withdrawn bool
+	// down is the run goroutine's record of the stop it recorded, which the
+	// next pass clears
+	down bool
 }
 
 var _ egress.Exit = (*Translator)(nil)
@@ -633,12 +678,17 @@ func (t *Translator) statusOf(stats passStats) egress.Status {
 
 // Debug reads the chains now through a socket of the backend's own, so an
 // operator injecting a packet reads counters of now rather than of the last
-// sweep, and lays each family's readiness beside them as the last pass judged
+// sweep, against the rules of a stopped translator while SetEnabled holds it
+// off, and lays each family's readiness beside them as the last pass judged
 // it, from the lookups and answers that pass read
 func (t *Translator) Debug() egress.ExitDebug {
 	pass := t.lastPass()
-	out := egress.ExitDebug{Status: t.statusOf(pass)}
+	out := egress.ExitDebug{Status: t.statusOf(pass), Unlabelled: t.be.unlabelled()}
 	desired := t.desired()
+	if !t.Enabled.Load() {
+		desired = t.stopped()
+	}
+	desired = t.be.written(desired)
 	read, err := t.be.Read(desired)
 	if err != nil {
 		out.ReadErr = err.Error()
@@ -712,20 +762,17 @@ func (t *Translator) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		passing = t.Enabled.Load()
 		if !passing {
-			// once per stop rather than once per wake, and a withdrawal that
-			// failed is retried on the backoff a failed pass takes
-			if !t.withdrawn {
-				if err := t.stop(); err != nil {
-					slog.Warn("egress could not withdraw its chains, retrying", "err", err, "retry_in", retry.Failed(sweep))
-				} else {
-					t.withdrawn = true
-					retry.Passed()
-				}
+			// read back on every wake, so a change another writer makes to the
+			// stopped chains is written over as a pass writes over one to its own
+			if err := t.stop(); err != nil {
+				slog.Warn("egress could not stop its chains, retrying", "err", err, "retry_in", retry.Failed(sweep))
+			} else {
+				retry.Passed()
 			}
 		} else {
 			// the record of a stop lasts until the next pass, whatever woke it
-			if t.withdrawn {
-				t.withdrawn = false
+			if t.down {
+				t.down = false
 				slog.Info("egress translator started again", "where", t.where())
 			}
 			if err := t.reconcile(); err != nil {
@@ -837,48 +884,18 @@ func (t *Translator) reconcile() error {
 	t.SetReady(egress.Readiness{Ready4: j4.ready, Ready6: j6.ready, Why4: j4.why, Why6: j6.why, Carries4: v4, Carries6: v6, Skipped: skipped})
 	moved := t.Publish(announced)
 
-	kinds := map[string]Rule{}
-	for _, rule := range desired {
-		kinds[rule.String()] = rule
-	}
-	var flows, bytes, untranslated uint64
-	refused, dropped := map[uint8]uint64{}, map[uint8]uint64{}
-	for _, rule := range held {
-		want, ok := kinds[rule.Spec]
-		if !ok {
-			continue
-		}
-		switch want.kind() {
-		case screening, passing, timing:
-			// nf_tables' counters alone hold a screen's, which no Status field
-			// reads, and a pass and the timeouts keep none
-		case limiting:
-			refused[rule.Family] += rule.Packets
-		case dropping:
-			dropped[rule.Family] += rule.Packets
-		case translating:
-			if want.None {
-				untranslated += rule.Packets
-				continue
-			}
-			flows += rule.Packets
-			bytes += rule.Bytes
-		}
-	}
 	// the counters are the host's, and a pass that could not read them keeps the
 	// last pass's rather than reading as a reset. One that rewrote the chains
 	// starts from zero as their counters do, whether or not it read them back.
+	counted := counts(desired, held)
 	if unread {
-		last := t.lastPass()
-		flows, bytes, untranslated = last.Flows, last.Bytes, last.Untranslated
-		refused[egress.FamilyIPv4], refused[egress.FamilyIPv6] = last.Refused4, last.Refused6
-		dropped[egress.FamilyIPv4], dropped[egress.FamilyIPv6] = last.Dropped4, last.Dropped6
+		counted = t.lastPass()
 	}
 	stats := passStats{
 		At: time.Now(), Desired: len(desired), Installed: len(held),
-		Flows: flows, Bytes: bytes, Untranslated: untranslated,
-		Refused4: refused[egress.FamilyIPv4], Refused6: refused[egress.FamilyIPv6],
-		Dropped4: dropped[egress.FamilyIPv4], Dropped6: dropped[egress.FamilyIPv6],
+		Flows: counted.Flows, Bytes: counted.Bytes, Untranslated: counted.Untranslated,
+		Refused4: counted.Refused4, Refused6: counted.Refused6,
+		Dropped4: counted.Dropped4, Dropped6: counted.Dropped6,
 		ConntrackCount: t.conntrack("count"), ConntrackMax: t.conntrack("max"),
 		Announced: announced, Conflicts: conflicts,
 		Ready4: j4.ready, Ready6: j6.ready, Unready: t.Unready(), Skipped: skipped,
@@ -902,6 +919,45 @@ func (t *Translator) reconcile() error {
 		t.rt.Events.Emit("egress.pass", "", attrs...)
 	}
 	return err
+}
+
+// counts reads held's counters for Status, read back for rules: the flows the
+// translation's rules translated and those a class of none's bound,
+// and each family's packets its limits refused and its rules for what no flow
+// is tracked for dropped
+func counts(rules []Rule, held []Installed) passStats {
+	kinds := map[string]Rule{}
+	for _, rule := range rules {
+		kinds[rule.String()] = rule
+	}
+	var stats passStats
+	refused, dropped := map[uint8]uint64{}, map[uint8]uint64{}
+	for _, rule := range held {
+		want, ok := kinds[rule.Spec]
+		if !ok {
+			continue
+		}
+		switch want.kind() {
+		case screening, passing, timing, holding, leaving:
+			// nf_tables' counters alone hold a screen's and a stopped
+			// translator's drops, which no Status field reads, and a pass and
+			// the timeouts keep none
+		case limiting:
+			refused[rule.Family] += rule.Packets
+		case dropping:
+			dropped[rule.Family] += rule.Packets
+		case translating:
+			if want.None {
+				stats.Untranslated += rule.Packets
+				continue
+			}
+			stats.Flows += rule.Packets
+			stats.Bytes += rule.Bytes
+		}
+	}
+	stats.Refused4, stats.Refused6 = refused[egress.FamilyIPv4], refused[egress.FamilyIPv6]
+	stats.Dropped4, stats.Dropped6 = dropped[egress.FamilyIPv4], dropped[egress.FamilyIPv6]
+	return stats
 }
 
 // conntrack reads conntrack's setting of that name, nil where it cannot, as
@@ -1087,32 +1143,154 @@ func (t *Translator) reportConflicts(conflicts []string) {
 	t.warned = slices.Clone(conflicts)
 }
 
-// stop records the stop and withdraws the chains, in the order Run's exit
-// takes, and records a withdrawal that fails with its error
+// stop records the stop on its first turn, then brings the host to the rules
+// stopped gives as reconcile brings it to desired, in one transaction that
+// leaves the translation's chain whole at every moment: a packet met before
+// its commit meets a running translator's chains, and one met after it a
+// stopped one's, which drop a packet out of the mesh under a class that
+// translates before conntrack confirms its flow. Status reads the stop in
+// effect, with the stopped rules the host holds counted, once they read back
+// as written. Until then it reads the translator stopping and why, with the
+// rules the host holds as it read them, none for a write whose rules it could
+// not read back, and the last count for a read that failed before any write.
+// A write the host takes whose rules still read back otherwise is an error
+// naming how, as a pass names it, so the stop is tried again as a refused one
+// is.
 func (t *Translator) stop() error {
 	started := time.Now()
-	stats := t.recordStop("the translator is stopped")
-	err := t.withdraw()
-	attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
-		slog.Int("installed", 0), slog.Int("announced", 0)}
-	if err != nil {
-		stats.Err = err.Error()
-		t.stats.Store(&stats)
-		attrs = append(attrs, slog.String("err", stats.Err))
+	if !t.down {
+		t.down = true
+		// before the write, which takes as long as the translation's chain is,
+		// so the mesh stops handing the exit frames and peers stop selecting
+		// it from the stop's start
+		t.recordStop("the translator is stopping")
 	}
-	t.rt.Events.Emit("egress.pass", "", attrs...)
+	rules := t.stopped()
+	read, err := t.be.Rules(rules)
+	listed := err == nil
+	installed, faulted, remake := flatten(read)
+	applied := false
+	switch {
+	case err != nil:
+		err = fmt.Errorf("list rules: %w", err)
+	case faulted:
+		if err = t.be.Apply(rules, remake); err != nil {
+			err = fmt.Errorf("install rules: %w", err)
+			break
+		}
+		applied = true
+		read, err = t.be.Rules(rules)
+		listed = err == nil
+		installed, faulted, _ = flatten(read)
+		switch {
+		case err != nil:
+			err = fmt.Errorf("list rules: %w", err)
+		case faulted:
+			err = fmt.Errorf("the stopped rules read back other than written: %s", cmp.Or(read[egress.FamilyIPv4].fault, read[egress.FamilyIPv6].fault))
+		default:
+			slog.Info("egress translator stopped", "rules", len(installed), "where", t.where())
+		}
+	}
+	// the kept translation's chain counts while down as while up
+	stats, why := counts(rules, installed), "the translator is stopped"
+	stats.Installed = len(installed)
+	if err != nil {
+		stats, why = t.lastPass(), "the translator is stopping"
+		if listed || applied {
+			stats.Installed = len(installed)
+		}
+		switch {
+		case !listed:
+			why += ": its chains could not be read back"
+		case applied:
+			why += ": " + cmp.Or(read[egress.FamilyIPv4].fault, read[egress.FamilyIPv6].fault)
+		}
+	}
+	t.storeStop(why, stats, err)
+	if applied || err != nil {
+		attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
+			slog.Int("installed", stats.Installed), slog.Int("announced", 0)}
+		if err != nil {
+			attrs = append(attrs, slog.String("err", stats.Err))
+		}
+		t.rt.Events.Emit("egress.pass", "", attrs...)
+	}
 	return err
 }
 
-// recordStop retracts the advertisement for why and stores, and returns, a
-// pass that reads every family not ready for it and zero installed, so Status
-// says why from the moment a stop begins and no longer reports the rules of
-// the last pass that ran
-func (t *Translator) recordStop(why string) passStats {
+// stopped is the rules of a stopped translator: desired's, changed so that no
+// packet out of the mesh leaves under a class that translates and no
+// forwarded packet of a labelled flow leaves by a link other than the mesh
+// device. Each of desired's rules at the forward hook stays where it sits,
+// the ICMP drops, each family's pass of its untranslated sources and the rules
+// into the mesh among them, so a stopped translator lets into the mesh what a
+// running one does, but:
+//   - Each limit becomes a Held rule. A packet out of the mesh meets a limit
+//     under every class that translates and under no class of none, so it
+//     meets the hold exactly there.
+//   - The rules out of the mesh that drop what no flow is tracked for or
+//     refuse a protocol are left out, since each sits ahead of a limit and
+//     takes only what the hold after it drops.
+//   - A Labelled rule ends each family's chain at the forward hook, in both
+//     families whatever the configuration translates, since an earlier run
+//     may have labelled flows of a family this one does not translate.
+//   - A Labelled rule that takes what the family's pass accepts, a packet out
+//     of the mesh from an untranslated source, stands directly ahead of that
+//     pass, since an earlier run may have labelled flows of a source this one
+//     leaves untranslated.
+//
+// So a packet the host forwards meets no more rules than desired's give it,
+// since a family desired translates has its chain at the forward hook hold
+// the rules left out from every source ahead of its limit, but in three
+// cases. A packet of a family the configuration does not translate meets one
+// rule more, the Labelled rule. A packet out of the mesh from an untranslated
+// source meets one rule more, the Labelled rule ahead of its family's pass,
+// and so does one out of the mesh that no flow is tracked for in a family
+// with a pass, which the running translator drops at the first screen past
+// the pass and the hold drops in its place. A packet the host itself sends
+// meets none of them, one to a leaf's mesh address among them (exit-nodes.md,
+// "What the host itself sends to a leaf"). The
+// translation's chain stays as a pass writes it, so every binding keeps its
+// translation and every flow it translates keeps its label.
+func (t *Translator) stopped() []Rule {
+	var out []Rule
+	desired := t.desired()
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		for _, rule := range desired {
+			if rule.Family != family {
+				continue
+			}
+			switch kind := rule.kind(); {
+			case kind == limiting:
+				rule.Limit, rule.Stopped = 0, Held
+			case rule.Direction == Out && (kind == dropping || kind == screening && rule.Protocol.Number != 0):
+				continue
+			case kind == passing:
+				out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Stopped: Labelled, Sources: rule.Sources})
+			}
+			out = append(out, rule)
+		}
+		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Stopped: Labelled})
+	}
+	return out
+}
+
+// recordStop stores the stop for why as storeStop does, beside the rules the
+// last pass counted
+func (t *Translator) recordStop(why string) { t.storeStop(why, t.lastPass(), nil) }
+
+// storeStop retracts the advertisement for why and stores stats with every
+// family not ready for it, no lookup judged, nothing announced or skipped and
+// err as its error, so Status says why from the moment a stop begins, beside
+// the rules stats counts
+func (t *Translator) storeStop(why string, stats passStats, err error) {
 	t.Retract(why)
-	stats := passStats{At: time.Now(), Unready: t.Unready()}
+	stats.At, stats.Ready4, stats.Ready6, stats.Unready, stats.Skipped = time.Now(), false, false, t.Unready(), ""
+	stats.Announced, stats.Err, stats.judged = nil, "", nil
+	if err != nil {
+		stats.Err = err.Error()
+	}
 	t.stats.Store(&stats)
-	return stats
 }
 
 // withdraw removes the chains, sets and objects this translator owns, as its

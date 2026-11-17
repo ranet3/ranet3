@@ -245,7 +245,7 @@ func TestPassChangesTheUntranslatedSetsInTheTransactionOfItsRules(t *testing.T) 
 	}}
 	both := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}
 	desired := newTranslator(cfg, Runtime{Interface: "ranet0", Steered: true}, &fakeBackend{}).desired()
-	requests, err := translatorBatch(translatorContents(both, cfg.SourceLimit(), desired), desired, nftables.Contents{}, nil, nil)
+	requests, err := translatorBatch(translatorContents(both, cfg.SourceLimit(), desired), desired, nftables.Contents{}, nil, nil, unix.NFT_CT_LABELS)
 	if err != nil {
 		t.Fatal(err)
 	}
