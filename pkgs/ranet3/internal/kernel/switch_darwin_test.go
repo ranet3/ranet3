@@ -1080,17 +1080,26 @@ func killQuery(t *testing.T, kind string, nameserver netip.Addr, prepare underla
 // cleanup of the test has run deletes any reject on lo0 at the switch's keys,
 // the overlay's or killOwn's that an arm left, scoped or not, and then waits for the
 // table and the defaults to be as they were, but for ARP, NDP and cloned rows
+// and the rows killMade leaves out
 func killLeavesTheHost(t *testing.T) {
 	t.Helper()
 	loopback := interfaceIndex(t, Loopback)
 	defaults := defaultRoutesOnHost(t)
-	table := hostRows(t)
+	links := map[int]bool{}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range interfaces {
+		links[link.Index] = true
+	}
+	table := killMade(t, hostRows(t), links)
 	t.Cleanup(func() {
 		var gone, added []string
 		same := false
 		for deadline := time.Now().Add(killGone); ; time.Sleep(killPoll) {
 			same = sameDefaults(defaults, defaultRoutesOnHost(t))
-			gone, added = rowsDiff(table, hostRows(t))
+			gone, added = rowsDiff(table, killMade(t, hostRows(t), links))
 			if same && len(gone) == 0 && len(added) == 0 || time.Now().After(deadline) {
 				break
 			}
@@ -1103,6 +1112,24 @@ func killLeavesTheHost(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { killSweep(t, loopback) })
+}
+
+// killMade is the rows of hostRows a test could have made: a row a program
+// wrote through a routing socket, which carries RTF_STATIC as every route the
+// platform and this file write does, or a row out of an interface not among
+// links, the host's at the test's start. A route the kernel adds on a link the
+// host had, as one an RA or DHCP brings while the test runs, is neither.
+func killMade(t *testing.T, rows []string, links map[int]bool) []string {
+	t.Helper()
+	return slices.DeleteFunc(slices.Clone(rows), func(row string) bool {
+		_, tail, _ := strings.Cut(row, " on index ")
+		var index int
+		var flags uint
+		if _, err := fmt.Sscanf(tail, "%d flags %v", &index, &flags); err != nil {
+			t.Fatalf("read the interface and flags of the row %q: %v", row, err)
+		}
+		return links[index] && flags&unix.RTF_STATIC == 0
+	})
 }
 
 // killSweep deletes each reject on lo0 at a key of the switch's or the
