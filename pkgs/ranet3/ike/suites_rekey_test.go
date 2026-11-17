@@ -196,7 +196,7 @@ func TestOfferIsAnsweredInTheFirstListedGroupAnyProposalHolds(t *testing.T) {
 				}
 				answer := answerPeerRekey(t, s, ike, peerRekeyOf(t, s, ike, proposals, test.ke))
 				if test.retry != 0 {
-					if group, ok := preferredGroupFromNotify(answer.notify); !ok || group != test.retry {
+					if !namesGroup(answer.notify, test.retry) {
 						t.Errorf("%s: answered %+v, want INVALID_KE_PAYLOAD naming %d", test.name, answer, test.retry)
 					}
 					continue
@@ -240,7 +240,7 @@ func TestChildSARekeyWithoutAKEPayloadTakesAProposalWithoutAGroup(t *testing.T) 
 			}
 			answer := answerPeerRekey(t, s, false, peerRekeyOf(t, s, false, proposals, 0))
 			if test.retry != 0 {
-				if group, ok := preferredGroupFromNotify(answer.notify); !ok || group != test.retry {
+				if !namesGroup(answer.notify, test.retry) {
 					t.Errorf("answered %+v, want INVALID_KE_PAYLOAD naming %d", answer, test.retry)
 				}
 				return
@@ -335,7 +335,7 @@ func testPeerRekeyKeepsTheGroupOfTheSAItReplaces(t *testing.T) {
 		offer := []Proposal{{Transforms: []Transform{encrAES256, encrAES128, kind, dhX25519, dhP384, dhP256}}}
 		answer := answerPeerRekey(t, s, test.ike, peerRekeyOf(t, s, test.ike, offer, test.ke))
 		if test.retry != 0 {
-			if group, ok := preferredGroupFromNotify(answer.notify); !ok || group != test.retry {
+			if !namesGroup(answer.notify, test.retry) {
 				t.Errorf("%s: answered %+v, want INVALID_KE_PAYLOAD naming %d", test.name, answer, test.retry)
 			}
 			continue

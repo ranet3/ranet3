@@ -489,25 +489,18 @@ func TestEveryInvalidKENotifyNamesAGroup(t *testing.T) {
 	if len(notify.Data) != 2 || binary.BigEndian.Uint16(notify.Data) != DH_CURVE25519 {
 		t.Errorf("the notify carries %v, which no initiator can retry from", notify.Data)
 	}
-	if group, ok := preferredGroupFromNotify(notify); !ok || group != DH_CURVE25519 {
-		t.Errorf("an initiator reading that notify got %d, %v", group, ok)
-	}
 }
 
-// preferredGroupFromNotify spells out what an initiator does with the data,
-// so the two halves are checked against each other.
-func preferredGroupFromNotify(n Notify) (uint16, bool) {
-	if n.Type != N_INVALID_KE_PAYLOAD || len(n.Data) < 2 {
-		return 0, false
-	}
-	return binary.BigEndian.Uint16(n.Data), true
+// namesGroup reports whether answer is INVALID_KE_PAYLOAD with the two octets of group as its data
+func namesGroup(answer Notify, group uint16) bool {
+	return answer.Type == N_INVALID_KE_PAYLOAD && bytes.Equal(answer.Data, binary.BigEndian.AppendUint16(nil, group))
 }
 
 // wantInvalidKE fails a test whose answer is not INVALID_KE_PAYLOAD
 // with the two octets of group as its data
 func wantInvalidKE(t *testing.T, answer Notify, group uint16) {
 	t.Helper()
-	if got, ok := preferredGroupFromNotify(answer); !ok || len(answer.Data) != 2 || got != group {
+	if !namesGroup(answer, group) {
 		t.Errorf("answered notify %d with data %x, want INVALID_KE_PAYLOAD naming group %d", answer.Type, answer.Data, group)
 	}
 }

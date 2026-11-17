@@ -257,9 +257,8 @@ func testPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
 		switch {
 		case answer.notify.Type == N_NO_PROPOSAL_CHOSEN:
 			got.refused = true
-		case answer.notify.Type == N_INVALID_KE_PAYLOAD:
-			retry, _ := preferredGroupFromNotify(answer.notify)
-			got.retry = transformName(Transform{Type: TransDH, ID: retry})
+		case answer.notify.Type == N_INVALID_KE_PAYLOAD && len(answer.notify.Data) == 2:
+			got.retry = transformName(Transform{Type: TransDH, ID: binary.BigEndian.Uint16(answer.notify.Data)})
 		case answer.notify.Type != 0:
 			ht.Fatalf("the rekey was answered with notify %d", answer.notify.Type)
 		default:
