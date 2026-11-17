@@ -801,3 +801,25 @@ func TestNftablesLastHoldersWithdrawalDeletesTheTableInItsOwnTransaction(t *test
 		t.Errorf("the withdrawal's notifications %v end %d generations, want 1", kinds, generations)
 	}
 }
+
+// A transaction the kernel refuses at two of its requests leaves the
+// namespace as it was, and Batch names the earlier of the two, which a caller
+// judges the refusal by
+func TestNftablesBatchNamesTheFirstRequestTheKernelRefused(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmptyLoopbackDown(t)
+	conn := dial(t)
+	// a chain of a table no request makes
+	orphan := func(name string) Request {
+		return Chain{Table: "absent", Name: name, Hook: NoHook}.Create(unix.NFPROTO_INET)
+	}
+	err := conn.Batch([]Request{NewTable(unix.NFPROTO_INET, Table), orphan("first"), orphan("second")})
+	if refused, ok := errors.AsType[*Refused](err); !ok || refused.Request != 1 || refused.Err != unix.ENOENT {
+		t.Errorf("a transaction refused at its second and third requests ended with %v, want the second named, refused with ENOENT", err)
+	}
+	if tables, err := Tables(conn, Table); err != nil || len(tables) != 0 {
+		t.Errorf("after the refusal the namespace holds the tables %v (%v), want none", tables, err)
+	}
+}

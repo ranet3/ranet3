@@ -130,7 +130,9 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 			rule.From = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked()
 		}
 
-		request, err := newRule(rule)
+		// with no label, which a translation sets on a packet it takes and no rule
+		// takes a packet by
+		request, err := newRule(rule, 0)
 		refused := len(rule.Interface) >= unix.IFNAMSIZ
 		if refused != (err != nil) {
 			ht.Fatalf("%s encoded with %v, want refused %v", rule, err, refused)

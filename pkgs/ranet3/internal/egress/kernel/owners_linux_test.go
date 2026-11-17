@@ -1123,6 +1123,71 @@ func TestTranslatorLeavesATimeoutAnotherWritersRuleHoldsToItsPass(t *testing.T) 
 	}
 }
 
+// A ct timeout of the translator's made again by another writer with other
+// timeouts and attached by a rule of that writer's own chain is left by a
+// stop's write as a pass leaves it: the host takes the write, so the stopped
+// rules are in force, while their readback names the timeout and the chain
+// holding it, so the stop is an error and reads the translator stopping, and
+// each try while down does the same while that rule stays. Once the rule goes
+// the next try makes the timeout again and the stop is in effect.
+func TestStopOverATimeoutAnotherWritersRuleHoldsWritesItsRulesAndFails(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	tr, _ := startTranslator(t)
+	another := anotherWriter(t)
+	timeout := timeoutObjects(egress.FamilyIPv4)[0]
+	theirs := timeout
+	theirs.Policy = nil
+	for _, seconds := range timeout.Policy {
+		theirs.Policy = append(theirs.Policy, seconds+1)
+	}
+	var head []nftables.Request
+	for _, chain := range translatorChains {
+		head = append(head, chain.Flush(unix.NFPROTO_INET))
+	}
+	head = append(head, timeout.Delete(unix.NFPROTO_INET), theirs.Create(unix.NFPROTO_INET))
+	if err := another.Batch(heldBeside(t, head, postrouting, nftables.ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, timeout.Name))); err != nil {
+		t.Fatalf("another writer makes %s again, attaches it and drops: %v", timeout.Name, err)
+	}
+	// inForce is whether forward holds the hold of a stopped translator and
+	// no limit of a running one
+	inForce := func() bool {
+		rules, err := nftables.TableRules(another, unix.NFPROTO_INET, nftables.Table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.ContainsFunc(rules, func(rule nftables.Installed) bool {
+			return rule.Chain == LimitChain && rule.Spec == "out via ranet0 ipv4 dropped while stopped"
+		}) && !slices.ContainsFunc(rules, func(rule nftables.Installed) bool { return strings.Contains(rule.Spec, " limit ") })
+	}
+	held := "seconds were written, and chain other holds a rule using it, so it stays until that rule goes"
+	for i := range 2 {
+		err := tr.stop()
+		s := tr.Status()
+		t.Logf("the stop's try %d: %v, reading %q", i+1, err, s.Unready)
+		if err == nil || !strings.Contains(err.Error(), timeout.Name) || !strings.Contains(err.Error(), held) {
+			t.Errorf("the stop's try %d: %v, want an error naming %s and %q", i+1, err, timeout.Name, held)
+		}
+		if !strings.HasPrefix(s.Unready, "the translator is stopping: ") || s.Err == "" {
+			t.Errorf("after the stop's try %d the translator reads %q with the error %q, want it stopping with the error", i+1, s.Unready, s.Err)
+		}
+		if !inForce() {
+			t.Errorf("after the stop's try %d forward holds no stopped translator's hold, or a running one's limit", i+1)
+		}
+	}
+	if err := another.Batch(dropOther()); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if err := tr.stop(); err != nil || tr.Status().Unready != "the translator is stopped" {
+		t.Errorf("once the rule is gone the stop: %v, reading %q, want the stop in effect", err, tr.Status().Unready)
+	}
+	if !inForce() {
+		t.Error("once the rule is gone forward holds no stopped translator's hold, or a running one's limit")
+	}
+}
+
 // A ct timeout of the translator's made again by another writer as one of
 // another protocol and attached by a rule of that writer's own chain, beside
 // that writer's drop at the head of the translator's chain at postrouting and

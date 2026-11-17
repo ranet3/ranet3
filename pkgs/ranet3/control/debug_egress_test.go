@@ -17,7 +17,8 @@ import (
 // reply lookup leaves by its uplink while its listing failed now, and an exit
 // carrying its flows itself with its refusals, drops and sources, under the
 // Go limit its node set to twice its budget beside the node's own heap, and
-// under a given one its node's heap has outgrown
+// under a given one its node's heap has outgrown, and the ready exit on a
+// kernel that refused its connection label
 func egressFixtures(passAt time.Time) map[string]EgressInfo {
 	advertise := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8::/32")}
 	status := EgressStatus{
@@ -79,8 +80,10 @@ func egressFixtures(passAt time.Time) map[string]EgressInfo {
 	u := *none.Userspace
 	u.Host = &EgressHost{Ports: 17}
 	none.Userspace = &u
+	unlabelled := ready
+	unlabelled.Unlabelled = "the kernel refused a rule that sets or reads a connection label, so ranet3 down leaves the replies of the flows the exit translates a way out by another link"
 	return map[string]EgressInfo{
-		"egress": ready, "egress-off": {}, "egress-unready": unready,
+		"egress": ready, "egress-off": {}, "egress-unready": unready, "egress-unlabelled": unlabelled,
 		"egress-userspace":              {Enabled: true, Status: userspace, Memory: set},
 		"egress-userspace-given":        {Enabled: true, Status: given, Memory: outgrown},
 		"egress-userspace-host-ports":   {Enabled: true, Status: hostPorts, Memory: set},
@@ -94,7 +97,7 @@ func TestEgressRendersAsTheGoldenFiles(t *testing.T) {
 		RenderEgress(&out, info)
 		golden(t, name+".txt", []byte(out.String()))
 	}
-	for _, name := range []string{"egress", "egress-userspace", "egress-userspace-given", "egress-userspace-host-ports", "egress-userspace-host-ports-0"} {
+	for _, name := range []string{"egress", "egress-unlabelled", "egress-userspace", "egress-userspace-given", "egress-userspace-host-ports", "egress-userspace-host-ports-0"} {
 		goldenJSON(t, name+".json", egressFixtures(time.Date(2026, 10, 28, 19, 0, 0, 0, time.UTC))[name])
 	}
 }

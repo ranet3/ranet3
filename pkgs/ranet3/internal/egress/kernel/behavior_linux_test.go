@@ -41,7 +41,8 @@ const noTranslationPerEndpoint = "an external endpoint can name several leaves a
 // under a class that translates, holding each source to the share of flows
 // its capability names, the default or another, but for the flows its count
 // misses, with no total of its own beside conntrack's table
-// its stop leaves no table of its name
+// its stop leaves no table of its name, and its disabling every chain it held, its status reading the stop in effect
+// it crosses stopCrossings stops and starts alone and beside another writer's empty nat chain at srcnat
 // another writer's deletion of its table is the change it is held to notice
 // the second owner of its table is the antispoof filter, and the reload a host firewall's flush of the ruleset
 // another writer's masquerade is a nat chain at srcnat made after the exit's, or one below the exit's
@@ -87,15 +88,23 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 			Reason:    "the kernel's count of a source's flows can leave a flow open and uncounted",
 			LimitsRow: "Flows of 1 mesh source the kernel exit's count misses",
 		},
-		New:        newKernelExit,
-		Holds:      kernelExitTables,
-		Remove:     deleteKernelExitTables,
-		Beside:     besideFilter,
-		Reload:     reloadFirewall,
-		Masquerade: masqueradeAsAnotherWriter,
-		Flows:      conntrackFlows,
+		New:           newKernelExit,
+		Holds:         kernelExitTables,
+		Stopped:       func(s egress.Status) bool { return s.Unready == "the translator is stopped" },
+		Crossings:     stopCrossings,
+		Untranslating: untranslatingAsAnotherWriter,
+		Remove:        deleteKernelExitTables,
+		Beside:        besideFilter,
+		Reload:        reloadFirewall,
+		Masquerade:    masqueradeAsAnotherWriter,
+		Flows:         conntrackFlows,
 	})
 }
+
+// stopCrossings is how many stops and starts each class that translates
+// crosses alone and again beside another writer's nat chain, about a tenth of
+// a second each
+const stopCrossings = 20
 
 // udpLiteBefore71 is limits with UDP-Lite declared unanswered on a kernel
 // before 7.1
@@ -211,16 +220,34 @@ func masqueradeAsAnotherWriter(host egresstest.Host, ahead bool) (func() error, 
 	return masqueradeAt(host, srcnat)
 }
 
+// untranslatingAsAnotherWriter adds another writer's table in each family
+// whose nat chain at postrouting, at srcnat, holds no rule, which keeps the
+// host's source translation hooked whatever the exit holds, and returns what
+// deletes the tables
+func untranslatingAsAnotherWriter(host egresstest.Host) (func() error, error) {
+	return natChainAt(host, srcnat, false)
+}
+
 func masqueradeAt(host egresstest.Host, priority int32) (func() error, error) {
+	return natChainAt(host, priority, true)
+}
+
+// natChainAt adds another writer's table in each family with a nat chain at
+// postrouting at priority, masquerading every packet where masquerades is set
+// and holding no rule where it is not, and returns what deletes the tables
+func natChainAt(host egresstest.Host, priority int32, masquerades bool) (func() error, error) {
 	const table = "another"
 	chain := nftables.Chain{Table: table, Name: "postrouting", Type: "nat", Hook: unix.NF_INET_POST_ROUTING, Priority: priority}
 	var requests []nftables.Request
 	for _, proto := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
-		rule, err := chain.Rule(proto, "masquerade", [][]byte{nftables.Expression("masq", nil)})
-		if err != nil {
-			return nil, err
+		requests = append(requests, nftables.NewTable(proto, table), chain.Create(proto))
+		if masquerades {
+			rule, err := chain.Rule(proto, "masquerade", [][]byte{nftables.Expression("masq", nil)})
+			if err != nil {
+				return nil, err
+			}
+			requests = append(requests, rule)
 		}
-		requests = append(requests, nftables.NewTable(proto, table), chain.Create(proto), rule)
 	}
 	batch := func(requests []nftables.Request) error {
 		return host.Do(func() error {

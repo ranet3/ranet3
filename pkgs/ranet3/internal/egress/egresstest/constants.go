@@ -137,14 +137,18 @@ const (
 
 	// the server's port the quench's mapping is opened toward, the identifiers
 	// of the information request and the echo after it, the leaf's port of the
-	// mapping, and the ends of the DCCP and UDP-Lite packets
-	quenchPort      = 10300
-	informationID   = 10301
-	quenchEchoID    = 10302
-	checksummedPort = 10303
-	leafQuenchPort  = 40710
-	leafDCCPPort    = 40711
-	leafUDPLitePort = 40712
+	// mapping, and the ends of the DCCP and UDP-Lite packets, then the same
+	// mapping's ports and the information request's identifier while off
+	quenchPort             = 10300
+	informationID          = 10301
+	quenchEchoID           = 10302
+	checksummedPort        = 10303
+	leafQuenchPort         = 40710
+	leafDCCPPort           = 40711
+	leafUDPLitePort        = 40712
+	quenchWhileOffPort     = 10304
+	informationWhileOffID  = 10305
+	leafQuenchWhileOffPort = 40713
 
 	// the ports of the rows TCP and the mappings' further requirements take:
 	// the server's a TCP mapping is opened toward, the other it connects to the

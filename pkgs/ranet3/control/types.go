@@ -207,7 +207,9 @@ type Sink interface {
 	Reload(ctx context.Context) (Result, error)
 	// Down takes the node off the mesh and keeps its daemon, tun and socket
 	// every dialer, the responder and Babel stop, every session is closed with a Delete
-	// and the routes, rules, addresses and egress chains the node installed and the kill switch are withdrawn
+	// and the routes, rules and addresses the node installed and the kill switch are withdrawn
+	// an exit retracts its advertisement and on Linux keeps its translation chain and writes stopped rules in place of its own,
+	// whose drops exit-nodes.md gives under "Reloads, down and up"
 	// the flag it writes first keeps the node down through a restart until Up
 	Down(ctx context.Context) (Result, error)
 	// Up removes the flag and puts the node back on the mesh as a start would
@@ -572,13 +574,18 @@ type KernelTaken struct {
 // Announced is this node declining to attract traffic it would have to drop,
 // and it is the line to read when a customer's exit node has stopped being
 // selected.
+//
+// Ready, Unready, Skipped, Announced, PassAt and Err, and on an exit that
+// installs rules Refused, Dropped, Installed, Flows, Bytes, Untranslated,
+// ConntrackCount, ConntrackMax and Conflicts too, are the record the exit's
+// last pass or last stop stored (exit-nodes.md, "Watching it").
 type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the table and the translator's chains, as the backend spells them.
 	Where string `json:"where,omitempty"`
-	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
+	// Ready is the families the record judged ready, ipv4 and ipv6, by the
 	// route lookups where they ran, and Unready why a family it translates is
-	// not. Skipped names the route lookups the pass left out and why: those of
+	// not. Skipped names the route lookups left out and why: those of
 	// a family no other node's prefix inside overlay gives a source to read from
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
@@ -608,7 +615,7 @@ type EgressStatus struct {
 	FlowsPerSource int           `json:"flows_per_source"`
 	Refused        EgressPackets `json:"refused"`
 	Dropped        EgressPackets `json:"dropped"`
-	// PassAt is zero until the first pass has run.
+	// PassAt is when the record was stored, zero until the first pass or stop.
 	PassAt    time.Time `json:"pass_at,omitzero"`
 	Installed int       `json:"installed"`
 	// Flows counts the connections the rules have translated. A nat chain is
@@ -620,7 +627,7 @@ type EgressStatus struct {
 	Untranslated uint64 `json:"untranslated"`
 	// ConntrackCount and ConntrackMax are the host's connection tracking
 	// table, the entries it holds and the most it takes, each left out where
-	// the last pass could not read it.
+	// the record holds no reading of it.
 	ConntrackCount *uint64 `json:"conntrack_count,omitempty"`
 	ConntrackMax   *uint64 `json:"conntrack_max,omitempty"`
 	// Conflicts names other source translation at the same hook at the

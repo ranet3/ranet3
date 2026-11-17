@@ -1292,6 +1292,19 @@ func (c *Conn) fitSendBuffer(size int) error {
 	return unix.SetsockoptInt(c.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 }
 
+// Refused is a transaction the kernel refused, Request being the index among
+// the requests Batch was given of the one it reported the refusal against, or
+// -1 for the batch marker, which a failure of the commit itself is reported
+// against
+type Refused struct {
+	Request int
+	Err     unix.Errno
+}
+
+func (r *Refused) Error() string { return r.Err.Error() }
+
+func (r *Refused) Unwrap() error { return r.Err }
+
 // Batch sends one transaction and waits for the kernel to acknowledge every
 // message in it. Everything between the batch markers commits together or not
 // at all. An error the kernel acknowledges leaves the host holding what it
@@ -1300,9 +1313,12 @@ func (c *Conn) fitSendBuffer(size int) error {
 //
 // A failure inside the batch is reported against the message that caused it,
 // and a failure of the commit itself against the batch marker, so any nonzero
-// error in the range this call owns ends it. Acknowledgments left in the
-// socket by an earlier call carry earlier sequence numbers and are ignored
-// rather than mistaken for this call's.
+// error in the range this call owns ends it, as a Refused naming where. The
+// kernel goes on through the batch past a failure and reports each in the
+// order of the messages (nfnetlink.c), so the first is the earliest message
+// it refused. Acknowledgments left in the socket by an earlier call carry
+// earlier sequence numbers and are ignored rather than mistaken for this
+// call's.
 func (c *Conn) Batch(requests []Request) error {
 	if len(requests) == 0 {
 		return nil
@@ -1347,7 +1363,13 @@ func (c *Conn) Batch(requests []Request) error {
 				return errors.New("nftables: truncated netlink error")
 			}
 			if code := int32(binary.NativeEndian.Uint32(message.Data)); code != 0 {
-				return unix.Errno(-code)
+				// the requests carry the sequence numbers right after begin's,
+				// in their order
+				at := -1
+				if expected[message.Seq] {
+					at = int(message.Seq - begin - 1)
+				}
+				return &Refused{Request: at, Err: unix.Errno(-code)}
 			}
 			delete(expected, message.Seq)
 		}

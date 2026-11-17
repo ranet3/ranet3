@@ -10,10 +10,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 
@@ -31,6 +33,13 @@ type natTables struct {
 	holder   nftables.Hold
 	families []uint8
 	limit    int
+	// label is the conntrack key the rules of Rule.setsLabel set the exit's
+	// label by and the Labelled rules read it by, NFT_CT_LABELS, and 0 once the
+	// kernel has refused it (see learnLabel)
+	label atomic.Uint32
+	// learned is whether learnLabel has learned the kernel's answer, read and
+	// written by Apply alone
+	learned bool
 }
 
 // New validates the capability and opens the backend's socket and monitor, so a
@@ -73,6 +82,7 @@ func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 		return nil, err
 	}
 	be := &natTables{conn: conn, families: cfg.Translated(rt.Steered), limit: cfg.SourceLimit()}
+	be.label.Store(unix.NFT_CT_LABELS)
 	if be.monitor, err = nftables.OpenMonitor(conn, translatorScope); err != nil {
 		conn.Close()
 		return nil, err
@@ -107,6 +117,25 @@ var translatorRetired = nftables.Scope{Timeouts: retiredTimeouts}
 
 func (n *natTables) where() string {
 	return fmt.Sprintf("nftables table inet %s chains %s, %s and %s", nftables.Table, LimitChain, familyChain(egress.FamilyIPv6), ChainName)
+}
+
+// written is rules as n writes them, which leaves out the Labelled rules once
+// the kernel has refused the label
+func (n *natTables) written(rules []Rule) []Rule {
+	labelled := func(rule Rule) bool { return rule.Stopped == Labelled }
+	if n.label.Load() != 0 || !slices.ContainsFunc(rules, labelled) {
+		return rules
+	}
+	return slices.DeleteFunc(slices.Clone(rules), labelled)
+}
+
+// unlabelled is why n writes no label, empty while it writes one, as the
+// warning of the refusal and the debug view's Labels line read it
+func (n *natTables) unlabelled() string {
+	if n.label.Load() != 0 {
+		return ""
+	}
+	return labelRefused + ", so ranet3 down leaves the replies of the flows the exit translates a way out by another link"
 }
 
 // nftFamily is the NFPROTO_ value for one of this package's families.
@@ -162,6 +191,8 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		return nil, err
 	}
 	_, there := tables[unix.NFPROTO_INET]
+	label := n.label.Load()
+	desired = n.written(desired)
 	common := slices.DeleteFunc(slices.Clone(translatorChains), func(chain nftables.Chain) bool { return chain.Name == forward6.Name })
 	shared, err := nftables.Contents{Chains: common}.Read(conn, tables, unix.NFPROTO_INET, translatorScope)
 	if err != nil {
@@ -182,7 +213,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	}
 	var linesFault string
 	if lines && fault == "" {
-		if linesFault, err = translatorRulesFault(common, desired, shared.Rules); err != nil {
+		if linesFault, err = translatorRulesFault(common, desired, shared.Rules, label); err != nil {
 			return nil, err
 		}
 	}
@@ -195,7 +226,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		ownFault = fmt.Sprintf("its chain %s is missing", forward6.Name)
 	}
 	if lines && ownFault == "" {
-		if ownFault, err = translatorRulesFault([]nftables.Chain{forward6}, desired, own.Rules); err != nil {
+		if ownFault, err = translatorRulesFault([]nftables.Chain{forward6}, desired, own.Rules, label); err != nil {
 			return nil, err
 		}
 	}
@@ -333,9 +364,9 @@ func strays(held []string, in holders) []noneStray {
 }
 
 // translatorRulesFault names how a chain holds lines other than desired
-// writes there, the forward hook's first its line to IPv6's chain, empty where
-// none does
-func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftables.Installed) (string, error) {
+// writes there under the label key label, the forward hook's first its line to
+// IPv6's chain, empty where none does
+func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftables.Installed, label uint32) (string, error) {
 	for _, chain := range chains {
 		var want []nftables.Line
 		if chain.Name == LimitChain {
@@ -345,7 +376,7 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 			if rule.chain() != chain.Name {
 				continue
 			}
-			line, err := translatorLine(rule)
+			line, err := translatorLine(rule, label)
 			if err != nil {
 				return "", err
 			}
@@ -386,7 +417,17 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // it. The sets of untranslated sources are emptied and filled in the
 // transaction, so a lookup meets the sources the old rules pass or those the
 // new ones do.
+//
+// The first Apply learns whether the kernel takes the exit's label
+// (learnLabel), and writes, as every Apply after it does, with the label or
+// without it and the rules that read it by what that learned. The answer to a
+// write is never read for the label, so neither a refusal of the write nor an
+// overflow of its answers turns the label off.
 func (n *natTables) Apply(rules []Rule, remake bool) error {
+	if err := n.learnLabel(); err != nil {
+		return err
+	}
+	rules = n.written(rules)
 	contents := translatorContents(n.families, n.limit, rules)
 	var tables map[uint8]uint32
 	var stale nftables.Contents
@@ -413,9 +454,87 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 	if err != nil {
 		return err
 	}
+	label := n.label.Load()
 	return n.holder.Rewrite(n.conn, contents.Sets, stale, func(stale nftables.Contents) ([]nftables.Request, error) {
-		return translatorBatch(contents, rules, stale, strays(held, in), leftovers)
+		return translatorBatch(contents, rules, stale, strays(held, in), leftovers, label)
 	})
+}
+
+// learnLabel learns, once, whether the kernel takes a rule that sets or reads
+// the exit's label, which a kernel built without connection labels
+// (CONFIG_NF_CONNTRACK_LABELS) refuses with EOPNOTSUPP, and where it does not,
+// turns the label off for good and says so once at warn. It asks by
+// labelProbe's transaction rather than by a write's, since the kernel answers
+// each request of a transaction it refuses as of one it commits, and the
+// answers of a large one overflow the socket's receive buffer, which reads as
+// ENOBUFS ahead of the refusal. An answer that reads neither way, an error of
+// the socket among them, leaves the label as it was and fails the Apply, so
+// the next asks again.
+func (n *natTables) learnLabel() error {
+	if n.learned {
+		return nil
+	}
+	requests, at, err := labelProbe(n.label.Load())
+	if err != nil {
+		return err
+	}
+	answer := n.conn.Batch(requests)
+	takes, err := labelTaken(answer, at, len(requests))
+	if err != nil {
+		return fmt.Errorf("egress: learn whether the kernel takes a connection label: %w", err)
+	}
+	if !takes {
+		n.label.Store(0)
+		slog.Warn("egress cannot label the flows it translates", "why", n.unlabelled(), "where", n.where(), "err", answer)
+	}
+	n.learned = true
+	return nil
+}
+
+// labelRefused is the cause of the label's refusal, as one built without
+// connection labels refuses it
+const labelRefused = "the kernel refused a rule that sets or reads a connection label"
+
+// probeChain names the regular chain labelProbe makes, which no commit holds
+const probeChain = "label_probe"
+
+// labelProbe is a transaction the kernel refuses whatever it makes of the
+// label, so it changes nothing on the host and notifies no monitor, nf_tables
+// notifying at a commit alone, and small enough for each answer to arrive: the
+// table, a regular chain, a rule that sets the label under the key label, its
+// index at, and the same chain made again under NLM_F_EXCL, which the kernel
+// refuses with EEXIST once it has taken the rest. A kernel without connection
+// labels refuses a rule that reads one as it refuses one that sets it
+// (nft_ct.c:419-428 and :575-583 at 940de590b), so the one rule answers for
+// both.
+func labelProbe(label uint32) (requests []nftables.Request, at int, err error) {
+	chain := regularChain(probeChain)
+	sets, err := chain.Rule(unix.NFPROTO_INET, "sets the label", labelFlow(label))
+	if err != nil {
+		return nil, 0, err
+	}
+	again := chain.Create(unix.NFPROTO_INET)
+	again.Flags |= unix.NLM_F_EXCL
+	requests = []nftables.Request{nftables.NewTable(unix.NFPROTO_INET, nftables.Table), chain.Create(unix.NFPROTO_INET)}
+	at = len(requests)
+	return append(requests, sets, again), at, nil
+}
+
+// labelTaken reads the answer to labelProbe's transaction of n requests,
+// whose rule is at at: the kernel takes the label where the first request it
+// refused is the last, with EEXIST, and refuses it where that is the rule,
+// with EOPNOTSUPP. Any other answer is an error, as it says neither.
+func labelTaken(answer error, at, n int) (bool, error) {
+	refused, ok := errors.AsType[*nftables.Refused](answer)
+	switch {
+	case ok && refused.Request == n-1 && refused.Err == unix.EEXIST:
+		return true, nil
+	case ok && refused.Request == at && refused.Err == unix.EOPNOTSUPP:
+		return false, nil
+	case answer == nil:
+		return false, errors.New("the kernel took a transaction that makes one chain twice")
+	}
+	return false, answer
 }
 
 // translatorContents is the translator's chains and the sets and timeout
@@ -448,10 +567,10 @@ func familyContents(family uint8, limit int, rules []Rule) nftables.Contents {
 
 // translatorBatch is the transaction Apply sends: contents over the stale
 // chains, sets and objects of stale, the stray chains as stray names them, the
-// forward hook's first line, rules in their order, and leftovers retired. A
-// set contents fills is emptied and filled, and the others made, keeping their
-// elements.
-func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Contents, stray []noneStray, leftovers []nftables.Retired) ([]nftables.Request, error) {
+// forward hook's first line, rules in their order under the label key label,
+// and leftovers retired. A set contents fills is emptied and filled, and the
+// others made, keeping their elements.
+func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Contents, stray []noneStray, leftovers []nftables.Retired, label uint32) ([]nftables.Request, error) {
 	names := make([]string, 0, len(stray))
 	for _, chain := range stray {
 		names = append(names, chain.name)
@@ -492,7 +611,7 @@ func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Co
 	}
 	requests = append(requests, dispatch)
 	for _, rule := range rules {
-		request, err := newRule(rule)
+		request, err := newRule(rule, label)
 		if err != nil {
 			return nil, err
 		}
@@ -616,20 +735,45 @@ func untranslatedSources(family uint8) nftables.Set {
 	return set
 }
 
-// newRule is the request writing rule
-func newRule(rule Rule) (nftables.Request, error) {
-	line, err := translatorLine(rule)
+// newRule is the request writing rule under the label key label
+func newRule(rule Rule, label uint32) (nftables.Request, error) {
+	line, err := translatorLine(rule, label)
 	if err != nil {
 		return nftables.Request{}, err
 	}
 	return nftables.Chain{Table: nftables.Table, Name: rule.chain()}.Rule(unix.NFPROTO_INET, line.Spec, line.Expressions)
 }
 
+// setsLabel is whether r, a rule that translates, sets the exit's connection
+// label on each flow whose first packet it translates: every Out or Local
+// rule does, a class of none's binding aside, where the kernel takes labels,
+// but on the flows exit-nodes.md names under "Reloads, down and up"
+func (r Rule) setsLabel() bool { return r.Direction != In && !r.None }
+
 // translatorLine's expressions come in the order `nft list ruleset` prints
-// them
-func translatorLine(rule Rule) (nftables.Line, error) {
+// them, a rule labelling or reading the exit's label doing so by the conntrack
+// key label
+func translatorLine(rule Rule, label uint32) (nftables.Line, error) {
 	if err := nftables.DeviceName(rule.Interface); err != nil {
 		return nftables.Line{}, err
+	}
+	kind := rule.kind()
+	if kind == leaving {
+		expressions := nftables.MetaCompare(unix.NFT_META_OIFNAME, unix.NFT_CMP_NEQ, rule.Interface)
+		if rule.Sources != "" {
+			// what the family's pass takes, a packet out of the mesh from a
+			// source whose class is none
+			proto := nftFamily(rule.Family)
+			expressions = slices.Concat(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Interface), expressions, nftables.NFProto(proto),
+				[][]byte{nftables.SourceLoad(proto), nftables.Lookup(untranslatedSources(rule.Family), false)})
+		}
+		// the label's bit set among the flow's labels, which a packet with no
+		// flow lacks, as does one of a flow made before any rule set a label,
+		// or from Linux 6.18 read one
+		expressions = slices.Concat(expressions, [][]byte{
+			nftables.CTLoad(label), nftables.Bitwise(exitLabel), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_NEQ, make([]byte, len(exitLabel)))),
+			nftables.Expression("counter", nil), nftables.Verdict(nftables.Drop)})
+		return nftables.Line{Spec: rule.String(), Expressions: expressions}, nil
 	}
 	proto := nftFamily(rule.Family)
 	// A rule that tests the flow's state or its protocol reads it first, so a
@@ -643,7 +787,6 @@ func translatorLine(rule Rule) (nftables.Line, error) {
 	if rule.chain() == ChainName {
 		expressions, family = slices.Concat(family, head), nil
 	}
-	kind := rule.kind()
 	if kind == limiting {
 		// Only the packet that creates a connection's entry is judged. A UDP
 		// flow nothing has answered stays in state new, and nf_conncount ends
@@ -724,9 +867,12 @@ func translatorLine(rule Rule) (nftables.Line, error) {
 		expressions = append(expressions, nftables.RejectICMPX(code))
 	case passing:
 		expressions = append(expressions, nftables.Verdict(nftables.Accept))
-	case dropping:
+	case dropping, holding:
 		expressions = append(expressions, nftables.Verdict(nftables.Drop))
 	case translating:
+		if label != 0 && rule.setsLabel() {
+			expressions = append(expressions, labelFlow(label)...)
+		}
 		expressions = append(expressions, translate(rule)...)
 	case screening:
 		expressions = append(expressions, action)
@@ -820,6 +966,26 @@ func timeoutPolicy(timeouts Timeouts) (protocol uint8, policy []uint32) {
 		return unix.IPPROTO_ICMP, []uint32{icmpTimeout}
 	}
 	return unix.IPPROTO_ICMPV6, []uint32{icmpTimeout}
+}
+
+// exitLabel is the connection labels with labelBit alone set, as the kernel's
+// bitmap of native words holds them (nf_conntrack_labels.h)
+var exitLabel = func() []byte {
+	out := make([]byte, 16)
+	binary.NativeEndian.PutUint64(out[labelBit/64*8:], 1<<(labelBit%64))
+	return out
+}()
+
+// labelFlow sets exitLabel among the labels of the packet's flow by the
+// conntrack key label, keeping every other bit, which the kernel does alone on
+// an entry made after a rule set a label, or from Linux 6.18 one read a label,
+// since only such an entry has room for them
+func labelFlow(label uint32) [][]byte {
+	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_1)
+	immediate = netlink.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, exitLabel))
+	set := nftables.PutAttrBE32(nil, unix.NFTA_CT_KEY, label)
+	set = nftables.PutAttrBE32(set, unix.NFTA_CT_SREG, unix.NFT_REG_1)
+	return [][]byte{nftables.Expression("immediate", immediate), nftables.Expression("ct", set)}
 }
 
 // translate is the statement that rewrites the source: the address written in

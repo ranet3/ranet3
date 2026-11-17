@@ -24,9 +24,12 @@ import (
 // Metrics writes the Prometheus text exposition format, by hand rather than
 // through a client library so the dependency list stays short.
 //
-// Everything here is read from live state at scrape time but the kernel,
-// egress and border series, which hold the last pass of the reconciler that
-// writes each as that pass read it.
+// The kernel and border series hold the last pass of the reconciler that
+// writes each as that pass read it, and the egress series the record the
+// exit's last pass or last stop stored (exit-nodes.md, "Watching it"), but for
+// the count of the prefixes the configuration advertises and the userspace
+// exit's refused counts and held slots. Those, and every other series, are
+// read from live state at scrape time.
 func (c *Client) Metrics(w io.Writer) {
 	stats := c.speaker.Stats()
 	sessions := c.sessions.paths()
@@ -258,7 +261,7 @@ func (c *Client) renderEgress(w io.Writer) {
 	// installing nothing
 	rules := status.Userspace == nil
 	if rules {
-		fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Rules the host holds in this node's limit and translation chains as of the exit's last pass, and 0 from the start of a stop.\n")
+		fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Rules the host holds in this node's chains as the exit's last pass or stop read them back. The count is zero where a pass could not read them back or a stop could not after writing them. A stop that has neither written nor read them back keeps the count of the record before it.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_rules_installed gauge\n")
 		fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", status.Installed)
 	}
@@ -451,10 +454,10 @@ func writeTaken(w io.Writer, lookups []kernel.Lookup) {
 	}
 }
 
-// unixOrZero is the unix time of a pass, and zero rather than a negative
-// number before the first one, since the zero time predates the epoch by two
-// millennia and an alert reading "older than five minutes" would be true of it
-// either way.
+// unixOrZero is the unix time of a pass or an exit's stop, and zero rather
+// than a negative number before the first one, since the zero time predates
+// the epoch by two millennia and an alert reading "older than five minutes"
+// would be true of it either way.
 func unixOrZero(at time.Time) int64 {
 	if at.IsZero() {
 		return 0

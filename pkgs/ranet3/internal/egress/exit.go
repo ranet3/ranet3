@@ -26,9 +26,15 @@ type Exit interface {
 	// Close closes the backend of an exit whose Run was never called and
 	// withdraws nothing, so what it holds stays for the next start
 	Close() error
-	// SetEnabled withdraws everything while Run runs, in the order Run's end
-	// takes, and restores it, for a node taken off the mesh and put back. It
-	// returns before the backend has caught up, which Status then reports.
+	// SetEnabled(false) has a running exit go not ready in both families and
+	// publish the empty announcement, as Run's end does, and then carry nothing
+	// out of the mesh under a class that translates: the kernel exit drops it,
+	// keeping its translation's chain with its bindings and the rules into the
+	// mesh, and the userspace exit ends its flows. The exit nodes page's
+	// "Reloads, down and up" tells what else each drops and what it lets through.
+	// SetEnabled(true) carries again. Both are for a node taken off the mesh and
+	// put back, and return before the backend has caught up, which Status then
+	// reports.
 	SetEnabled(on bool)
 	// Egress takes the packets a verdict decided to egress, all of them in
 	// families Ready last named ready and those through an advertised prefix
@@ -53,7 +59,7 @@ type Exit interface {
 type Hooks struct {
 	// Ready receives each family's readiness, and whether the egress SIDs are
 	// served, whenever one of the three moves, starting from none. A family is
-	// reported not ready before what carries it is withdrawn.
+	// reported not ready before the backend stops carrying it.
 	Ready func(v4, v6, serves bool)
 	// Republish says that Announce has moved, once per move, Run's end
 	// moving it to empty.
@@ -186,6 +192,9 @@ type ExitDebug struct {
 	// RPFilter is IPv4's rp_filter on all and on each device a route of the
 	// last pass's lookups leaves by, read now
 	RPFilter []Setting
+	// Unlabelled is why the backend writes no connection label on the flows
+	// it translates, empty while it writes one
+	Unlabelled string
 }
 
 // RuleReading is one rule as a debug read finds it. Counter is the unit of
