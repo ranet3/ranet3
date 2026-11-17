@@ -13,7 +13,7 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
-	gvisor.dev/gvisor v0.0.0-20261111090704-c24795a75477
+	gvisor.dev/gvisor v0.0.0-20261117040555-0303b2605d5e
 	hegel.dev/go/hegel v0.9.29
 	ranet3.com/pkgs/wireguard v0.0.0-00010101000000-000000000000
 )
@@ -29,4 +29,4 @@ require (
 
 replace ranet3.com/pkgs/wireguard => ../wireguard
 
-replace gvisor.dev/gvisor => github.com/stepbrobd/gvisor v0.0.0-20261111114150-a3c66be4a4fe
+replace gvisor.dev/gvisor => github.com/stepbrobd/gvisor v0.0.0-20261117105134-d0259ec4c7f6

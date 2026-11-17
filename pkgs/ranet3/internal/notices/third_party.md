@@ -828,7 +828,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## gvisor.dev/gvisor
 
-gvisor.dev/gvisor v0.0.0-20261111090704-c24795a75477, modified: the fork github.com/stepbrobd/gvisor v0.0.0-20261111114150-a3c66be4a4fe replaces it, from `LICENSE`.
+gvisor.dev/gvisor v0.0.0-20261117040555-0303b2605d5e, modified: the fork github.com/stepbrobd/gvisor v0.0.0-20261117105134-d0259ec4c7f6 replaces it, from `LICENSE`.
 
 ```
 
