@@ -139,6 +139,10 @@ func TestDarwinModeMovesTheDefaultsThroughTheReconciler(t *testing.T) {
 // after the utun gains an IPv6 address installs it.
 func TestDarwinRouteOfABareFamilyIsSkipped(t *testing.T) {
 	requireNetTest(t)
+	keepLoopbackRejects(t)
+	if rows := loopbackRejects(t); len(rows) > 0 {
+		t.Skipf("lo0 holds a reject at %s already, which this test's reconciler would delete", rows[0])
+	}
 	logs := captureKernelLogs(t)
 	mesh, _ := createUTUNWithFD(t)
 	setInterfaceUp(t, mesh)

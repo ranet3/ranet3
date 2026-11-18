@@ -81,6 +81,11 @@ type holeRig struct {
 
 func newHoleRig(t *testing.T) *holeRig {
 	t.Helper()
+	keys := overlayKeys(holeOverlay)
+	keepLoopbackRejects(t, keys...)
+	if rows := loopbackRejects(t, keys...); len(rows) > 0 {
+		t.Skipf("lo0 holds a reject at %s already, which this test's reconciler would delete", rows[0])
+	}
 	uName, uFD := createUTUNWithFD(t)
 	setInterfaceUp(t, uName)
 	rig := &holeRig{

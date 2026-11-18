@@ -250,7 +250,7 @@ func TestDarwinSwitchCrashHelper(t *testing.T) {
 // the rejects and the holds.
 func TestDarwinSwitchPassesThenHolds(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, slices.Concat(overlayKeys(killOverlay), rejectKeys)...)
 	loopback := interfaceIndex(t, Loopback)
 	carved, _ := createFeth(t)
 	for _, step := range [][]string{
@@ -400,7 +400,7 @@ func TestDarwinSwitchPassesThenHolds(t *testing.T) {
 // rejects and at its stop the holds.
 func TestDarwinSwitchOutlivesACrash(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, slices.Concat(overlayKeys(killOverlay), rejectKeys)...)
 	loopback := interfaceIndex(t, Loopback)
 	u4, _, err := lookupDefault(runningKernel{}, 0, netip.IPv4Unspecified())
 	if err != nil {
@@ -490,7 +490,7 @@ func TestDarwinSwitchOutlivesACrash(t *testing.T) {
 // under fallback = "uplink", so no reject of the switch's refuses it.
 func TestDarwinFullLengthHoldOutlivesACrash(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, killFull...)
 	loopback := interfaceIndex(t, Loopback)
 	holder, name, index := killStartHelper(t, killHelperFull)
 	killLoopsHold(t, killLoops(t, loopback), killFull, true, "hold")
@@ -522,11 +522,11 @@ func TestDarwinFullLengthHoldOutlivesACrash(t *testing.T) {
 // the utun and the hold beneath the overlay's refuses an unbound send again.
 func TestDarwinRunReadsItsHostRoutesBack(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	routed := append(slices.Clone(killFull), prefix("2001:db8:dd::5/128"))
+	killLeavesTheHost(t, append(overlayKeys(killOverlay), routed...)...)
 	name, _ := createUTUNWithFD(t)
 	setInterfaceUp(t, name)
 	index := interfaceIndex(t, name)
-	routed := append(slices.Clone(killFull), prefix("2001:db8:dd::5/128"))
 	mesh := netstack.NewRouteTable()
 	table := Table{ID: DefaultTable, Proto: DefaultProtocol, Addresses: killAddresses, Reconcile: schema.Duration(time.Minute)}
 	reconciler, err := New(table, Runtime{Interface: name, Overlay: killFullOverlay}, mesh)
@@ -606,7 +606,7 @@ func TestDarwinRunReadsItsHostRoutesBack(t *testing.T) {
 // offload left unfinished completed, as the mesh completes it.
 func TestDarwinRunWritesNoHoldAtItsOwnAddresses(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, overlayKeys(killOverlay)...)
 	name, fd := createUTUNWithFD(t)
 	setInterfaceUp(t, name)
 	mesh := netstack.NewRouteTable()
@@ -765,7 +765,7 @@ func killDestination(packet []byte) netip.Addr {
 // a pass either. Its stop removes the rejects and the holds.
 func TestDarwinSwitchWritesADeletedRejectAgainAtOnce(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, slices.Concat(overlayKeys(killOverlay), rejectKeys)...)
 	loopback := interfaceIndex(t, Loopback)
 	rig := newKillRig(t, killRigOptions{fallback: FallbackNone})
 	rig.stopped = true
@@ -793,6 +793,11 @@ func TestDarwinSwitchWritesADeletedRejectAgainAtOnce(t *testing.T) {
 	killLoopsHold(t, loops, overlayKeys(killOverlay), true, "hold")
 
 	deleted := []netip.Prefix{prefix("128.0.0.0/1"), prefix("8000::/1"), overlayKeys(killOverlay)[0]}
+	for _, key := range deleted {
+		if !loops[key] {
+			t.Fatalf("lo0 holds no reject or hold at %s, and a delete by its key would take whatever route holds it", key)
+		}
+	}
 	sock := killSocket(t)
 	began := time.Now()
 	for _, key := range deleted {
@@ -827,7 +832,7 @@ func TestDarwinSwitchWritesADeletedRejectAgainAtOnce(t *testing.T) {
 // that ended without its stop left on lo0.
 func TestDarwinStartWithNoReconcilerDeletesWhatACrashLeft(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, slices.Concat(overlayKeys(killOverlay), rejectKeys)...)
 	loopback := interfaceIndex(t, Loopback)
 	rig := newKillRig(t, killRigOptions{fallback: FallbackNone, live: 1})
 	rig.pass(t, "the pass")
@@ -849,9 +854,9 @@ func TestDarwinStartWithNoReconcilerDeletesWhatACrashLeft(t *testing.T) {
 // skips a route.
 func TestDarwinSwitchWithholdsAHalfBeneathAHostRoute(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
-	loopback := interfaceIndex(t, Loopback)
 	members := []netip.Prefix{prefix("128.0.0.0/1"), prefix("8000::/1")}
+	killLeavesTheHost(t, append(slices.Concat(overlayKeys(killOverlay), rejectKeys), halves(members[0])[0], halves(members[1])[0])...)
+	loopback := interfaceIndex(t, Loopback)
 	u2Name, _ := createUTUNWithFD(t)
 	setInterfaceUp(t, u2Name)
 	u2 := interfaceIndex(t, u2Name)
@@ -933,7 +938,7 @@ func TestDarwinSwitchWithholdsAHalfBeneathAHostRoute(t *testing.T) {
 // its own resolver, takes that utun in each state.
 func TestDarwinBoundNameserverSocketLeavesByTheSelectedInterface(t *testing.T) {
 	requireNetTest(t)
-	killLeavesTheHost(t)
+	killLeavesTheHost(t, slices.Concat(killOtherNameservers, rejectKeys)...)
 	u4, _, err := lookupDefault(runningKernel{}, 0, netip.IPv4Unspecified())
 	if err != nil {
 		t.Skipf("this host has no IPv4 default to fall back on: %v", err)
@@ -1076,13 +1081,25 @@ func killQuery(t *testing.T, kind string, nameserver netip.Addr, prepare underla
 	return scope, err
 }
 
-// killLeavesTheHost reads the host's table and defaults, and once every later
-// cleanup of the test has run deletes any reject on lo0 at the switch's keys,
-// the overlay's or killOwn's that an arm left, scoped or not, and then waits for the
-// table and the defaults to be as they were, but for ARP, NDP and cloned rows
-// and the rows killMade leaves out
-func killLeavesTheHost(t *testing.T) {
+// killLeavesTheHost skips where lo0 holds a reject the sweep would delete
+// (loopbackRejects) or where the host routes one of keys unscoped, the keys at
+// which the test puts a route of its own and reads it (routedElsewhere). It
+// reads the host's table and defaults, and once every later cleanup of the
+// test has run deletes any reject on lo0 at the switch's keys, the overlay's
+// or killOwn's that an arm left, scoped or not, and then waits for the table
+// and the defaults to be as they were, but for ARP, NDP and cloned rows and
+// the rows killMade leaves out
+func killLeavesTheHost(t *testing.T, keys ...netip.Prefix) {
 	t.Helper()
+	if rows := loopbackRejects(t); len(rows) > 0 {
+		t.Skipf("lo0 holds a reject at %s already, which this test would delete", rows[0])
+	}
+	dump := dumpRoutes(t)
+	for _, key := range keys {
+		if index, ok := routedElsewhere(dump, key, 0); ok {
+			t.Skipf("the host routes %s unscoped out of interface %d, a key at which this test puts a route of its own, so the test cannot be measured here", key, index)
+		}
+	}
 	loopback := interfaceIndex(t, Loopback)
 	defaults := defaultRoutesOnHost(t)
 	links := map[int]bool{}
@@ -1143,11 +1160,9 @@ func killSweep(t *testing.T, loopback int) {
 		return
 	}
 	defer sock.Close()
-	keys := slices.Concat(rejectKeys, overlayKeys(killFullOverlay))
 	for _, rm := range dumpedRoutes(t) {
-		destination, ok := dumpedPrefix(rm)
-		own := slices.Contains(killOwn, destination)
-		if !ok || rm.Index != loopback || rm.Flags&unix.RTF_REJECT == 0 || !own && !slices.Contains(keys, destination) {
+		destination, own, ok := killSwept(rm, loopback)
+		if !ok {
 			continue
 		}
 		var message *route.RouteMessage
@@ -1164,6 +1179,53 @@ func killSweep(t *testing.T, loopback int) {
 			t.Errorf("delete the reject at %s an arm left: %v", destination, err)
 		}
 	}
+}
+
+// killSwept reports a dumped route killSweep deletes, a reject on lo0 at a key
+// of the switch's or the overlay's or at an address of killOwn, with its key
+// and whether that is one of killOwn's
+func killSwept(rm *route.RouteMessage, loopback int) (netip.Prefix, bool, bool) {
+	destination, ok := dumpedPrefix(rm)
+	own := slices.Contains(killOwn, destination)
+	keys := slices.Concat(rejectKeys, overlayKeys(killFullOverlay))
+	return destination, own, ok && rm.Index == loopback && rm.Flags&unix.RTF_REJECT != 0 && (own || slices.Contains(keys, destination))
+}
+
+// loopbackRejects is each reject on lo0 killSweep would delete, or at one of
+// keys, as its key and scope. Read before a test writes one, such a reject is
+// another instance's. A reconciler's first pass deletes one at the switch's
+// keys whoever wrote it (applyFallback), and a reconciler takes one at a key of
+// its overlay for its own hold and withdraws it (heldApart), so a rig passes
+// its overlay's keys.
+func loopbackRejects(t *testing.T, keys ...netip.Prefix) []string {
+	t.Helper()
+	loopback := interfaceIndex(t, Loopback)
+	var rows []string
+	for _, rm := range dumpedRoutes(t) {
+		destination, _, swept := killSwept(rm, loopback)
+		if swept || rm.Index == loopback && rm.Flags&unix.RTF_REJECT != 0 && slices.Contains(keys, destination) {
+			row := destination.String()
+			if rm.Flags&unix.RTF_IFSCOPE != 0 {
+				row += " scoped"
+			}
+			rows = append(rows, row)
+		}
+	}
+	slices.Sort(rows)
+	return rows
+}
+
+// keepLoopbackRejects fails the test where a reject loopbackRejects reads at
+// its start is gone at its end. Registered before the test writes anything,
+// so it reads the end after every other cleanup.
+func keepLoopbackRejects(t *testing.T, keys ...netip.Prefix) {
+	t.Helper()
+	before := loopbackRejects(t, keys...)
+	t.Cleanup(func() {
+		if gone, _ := rowsDiff(before, loopbackRejects(t, keys...)); len(gone) > 0 {
+			t.Errorf("lo0 held rejects at %q at the test's start and does not at its end", gone)
+		}
+	})
 }
 
 // killOwnDelete is the RTM_DELETE of a reject at an address of a utun's that

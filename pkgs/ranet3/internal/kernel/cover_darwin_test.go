@@ -71,6 +71,11 @@ type coverRigOptions struct {
 
 func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 	t.Helper()
+	keys := overlayKeys(coverRigOverlay)
+	keepLoopbackRejects(t, keys...)
+	if rows := loopbackRejects(t, keys...); len(rows) > 0 {
+		t.Skipf("lo0 holds a reject at %s already, which this test's reconciler would delete", rows[0])
+	}
 	mesh, tun := createUTUNWithFD(t)
 	setInterfaceUp(t, mesh)
 	meshIndex := interfaceIndex(t, mesh)
@@ -293,7 +298,7 @@ func TestDarwinRefusedMemberKeepsItsWholeFamilyOut(t *testing.T) {
 		t.Errorf("the pass reports the cover %v, want IPv6 alone", got)
 	}
 	if _, ok := heldOn(t, interfaceIndex(t, other))[upper.Destination]; !ok {
-		t.Errorf("another program's %s left the host's table", upper.Destination)
+		t.Fatalf("another program's %s left the host's table", upper.Destination)
 	}
 	if got, want := rig.reconcile.plat.(*routePlatform).holder(upper.Destination), upper.Destination.String()+" on "+other; got != want {
 		t.Errorf("the refusal names %q as the holder, want %q", got, want)
@@ -354,7 +359,7 @@ func TestDarwinRefusedRouteAtAMemberKeyKeepsItsWholeFamilyOut(t *testing.T) {
 		t.Errorf("the pass reports the cover %v, want IPv6 alone", got)
 	}
 	if _, ok := heldOn(t, interfaceIndex(t, other))[upper.Destination]; !ok {
-		t.Errorf("another program's %s left the host's table", upper.Destination)
+		t.Fatalf("another program's %s left the host's table", upper.Destination)
 	}
 
 	if err := blocker.DelRoute(upper); err != nil {
