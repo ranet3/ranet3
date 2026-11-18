@@ -29,12 +29,17 @@ type Retired struct {
 // Leftovers is each object of old, an owner's retired names, that Table
 // holds, its chains, then its sets, then its ct timeouts, each in old's order,
 // with what holds it once a transaction has flushed every chain of owner's
-// scope and of old. A table that holds none is read by one dump of the tables
-// and one of each kind old names.
-func Leftovers(conn *Conn, old, owner Scope) ([]Retired, error) {
-	tables, err := Tables(conn, Table)
-	if err != nil {
-		return nil, err
+// scope and of old. tables is the map Tables gave for Table earlier in its
+// owner's pass, nil where the owner did not read them. Leftovers dumps the
+// tables where tables is nil, nothing more where NFPROTO_INET holds no Table,
+// and otherwise one dump of each kind old names, and the table's rules and
+// verdict maps where it finds any object.
+func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired, error) {
+	var err error
+	if tables == nil {
+		if tables, err = Tables(conn, Table); err != nil {
+			return nil, err
+		}
 	}
 	if _, held := tables[unix.NFPROTO_INET]; !held {
 		return nil, nil

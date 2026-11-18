@@ -123,11 +123,11 @@ func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chain
 	if sets != nil {
 		contents.Elements = sets.elements()
 	}
-	read, err := readBorderContents(conn, contents)
+	tables, read, err := readBorderContents(conn, contents)
 	if err != nil {
 		return chainReadback{}, err
 	}
-	leftovers, err := nftables.Leftovers(conn, borderRetired, borderScope)
+	leftovers, err := nftables.Leftovers(conn, tables, borderRetired, borderScope)
 	if err != nil {
 		return chainReadback{}, err
 	}
@@ -146,16 +146,16 @@ func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chain
 	return out, nil
 }
 
-func readBorderContents(conn *nftables.Conn, contents nftables.Contents) (nftables.Readback, error) {
+func readBorderContents(conn *nftables.Conn, contents nftables.Contents) (map[uint8]uint32, nftables.Readback, error) {
 	tables, err := nftables.Tables(conn, nftables.Table)
 	if err != nil {
-		return nftables.Readback{}, err
+		return nil, nftables.Readback{}, err
 	}
 	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
-		return nftables.Readback{}, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
+		return nil, nftables.Readback{}, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
-	return read, nil
+	return tables, read, nil
 }
 
 // borderRulesFault names how either chain holds lines other than rules write,
@@ -238,11 +238,11 @@ func intervals(ranges []egress.Range) []nftables.Interval {
 // nf_tables will not change in place, which the transaction deletes and makes
 // again
 func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
-	read, err := readBorderContents(b.conn, borderContents)
+	tables, read, err := readBorderContents(b.conn, borderContents)
 	if err != nil {
 		return err
 	}
-	leftovers, err := nftables.Leftovers(b.conn, borderRetired, borderScope)
+	leftovers, err := nftables.Leftovers(b.conn, tables, borderRetired, borderScope)
 	if err != nil {
 		return err
 	}

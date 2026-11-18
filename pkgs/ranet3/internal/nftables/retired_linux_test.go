@@ -94,7 +94,7 @@ func TestNftablesFindsWhatHoldsARetiredObject(t *testing.T) {
 	}
 	old := Scope{Chains: []string{"loose", "free", "jumped", "mapped", "absent"}, Sets: []string{"freeset", "lookedup", "added", "objects", "absent"}, Timeouts: []string{"freeobj", "attached", "inmap", "absent"}}
 	owner := Scope{Chains: []string{"mine"}}
-	got, err := Leftovers(conn, old, owner)
+	got, err := Leftovers(conn, nil, old, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestNftablesFindsWhatHoldsARetiredObject(t *testing.T) {
 	if err := conn.Batch(append(requests, Retire(got)...)); err != nil {
 		t.Fatalf("the transaction that retires the leftovers: %v", err)
 	}
-	left, err := Leftovers(conn, old, owner)
+	left, err := Leftovers(conn, nil, old, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,9 +121,86 @@ func TestNftablesFindsWhatHoldsARetiredObject(t *testing.T) {
 	if !slices.Equal(left, held) {
 		t.Errorf("after the transaction the leftovers read %+v, want those held, %+v", left, held)
 	}
-	if none, err := Leftovers(conn, Scope{Chains: []string{"absent"}, Sets: []string{"absent"}, Timeouts: []string{"absent"}}, owner); err != nil || none != nil {
+	if none, err := Leftovers(conn, nil, Scope{Chains: []string{"absent"}, Sets: []string{"absent"}, Timeouts: []string{"absent"}}, owner); err != nil || none != nil {
 		t.Errorf("names the table does not hold read as leftovers %+v (%v), want none", none, err)
 	}
+}
+
+// readTable holds under retired names the chain loose, the set freeset and the
+// ct timeout freeobj, which nothing holds
+const readTable = `table inet ranet3 {
+	ct timeout freeobj { protocol udp; l3proto ip; policy = { unreplied: 120s, replied: 120s }; }
+	set freeset { type ipv4_addr; }
+	chain loose { }
+}
+`
+
+// Leftovers finds the same objects whether or not its owner read the tables,
+// dumps the tables only where it did not, then nothing more where the family
+// holds no table, and otherwise one dump of each kind its scope names and none
+// of what holds an object where it finds none
+func TestLeftoversDumpTheTablesOnlyWhereTheOwnerReadNone(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("the table is written through nft, which is not on the path")
+	}
+	load := exec.Command(nft, "-f", "-")
+	load.Stdin = strings.NewReader(readTable)
+	if out, err := load.CombinedOutput(); err != nil {
+		t.Fatalf("nft -f: %v\n%s", err, out)
+	}
+	conn := dial(t)
+	tables, err := Tables(conn, Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := Scope{Chains: []string{"mine"}}
+	retired := Scope{Chains: []string{"loose"}, Sets: []string{"freeset"}, Timeouts: []string{"freeobj"}}
+	want := []Retired{{"chain", "loose", ""}, {"set", "freeset", ""}, {"ct timeout", "freeobj", ""}}
+	for _, read := range []map[uint8]uint32{tables, nil} {
+		if got, err := Leftovers(conn, read, retired, owner); err != nil || !slices.Equal(got, want) {
+			t.Errorf("with tables %v the leftovers read %+v (%v), want %+v", read, got, err, want)
+		}
+	}
+	absent := Scope{Chains: []string{"absent"}, Sets: []string{"absent"}, Timeouts: []string{"absent"}}
+	type count struct {
+		name   string
+		tables map[uint8]uint32
+		old    Scope
+		dumps  uint32
+	}
+	counts := func(cases []count) {
+		for _, c := range cases {
+			// one sequence number for each request the socket sends
+			before := conn.link.Next()
+			none, err := Leftovers(conn, c.tables, c.old, owner)
+			if sent := conn.link.Next() - before - 1; err != nil || none != nil || sent != c.dumps {
+				t.Errorf("%s: names the table does not hold read as leftovers %+v (%v) in %d dumps, want none in %d", c.name, none, err, sent, c.dumps)
+			}
+		}
+	}
+	counts([]count{
+		{"the owner's tables and every kind", tables, absent, 3},
+		{"no tables and every kind", nil, absent, 4},
+		{"the owner's tables and chains", tables, Scope{Chains: absent.Chains}, 1},
+		{"the owner's tables and sets", tables, Scope{Sets: absent.Sets}, 1},
+		{"the owner's tables and ct timeouts", tables, Scope{Timeouts: absent.Timeouts}, 1},
+	})
+	if out, err := exec.Command(nft, "delete", "table", "inet", Table).CombinedOutput(); err != nil {
+		t.Fatalf("nft delete table: %v\n%s", err, out)
+	}
+	gone, err := Tables(conn, Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts([]count{
+		{"the owner's tables without the table", gone, absent, 0},
+		{"no tables without the table", nil, absent, 1},
+	})
 }
 
 // A leftover's fault names its kind, its name and its owner, and what holds

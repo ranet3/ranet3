@@ -167,7 +167,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	if err != nil {
 		return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
-	leftovers, err := nftables.Leftovers(conn, translatorRetired, translatorScope)
+	leftovers, err := nftables.Leftovers(conn, tables, translatorRetired, translatorScope)
 	if err != nil {
 		return nil, err
 	}
@@ -378,10 +378,11 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // new ones do.
 func (n *natTables) Apply(rules []Rule, remake bool) error {
 	contents := translatorContents(n.families, n.limit, rules)
+	var tables map[uint8]uint32
 	var stale nftables.Contents
 	if remake {
-		tables, err := nftables.Tables(n.conn, nftables.Table)
-		if err != nil {
+		var err error
+		if tables, err = nftables.Tables(n.conn, nftables.Table); err != nil {
 			return err
 		}
 		read, err := contents.Read(n.conn, tables, unix.NFPROTO_INET)
@@ -398,7 +399,7 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 	if err != nil {
 		return err
 	}
-	leftovers, err := nftables.Leftovers(n.conn, translatorRetired, translatorScope)
+	leftovers, err := nftables.Leftovers(n.conn, tables, translatorRetired, translatorScope)
 	if err != nil {
 		return err
 	}

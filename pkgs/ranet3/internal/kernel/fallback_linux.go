@@ -377,15 +377,16 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	if err != nil {
 		return err
 	}
+	var tables map[uint8]uint32
 	var stale nftables.Contents
 	if remake {
-		read, err := readFallback(conn, s)
-		if err != nil {
+		var read nftables.Readback
+		if tables, read, err = readFallback(conn, s); err != nil {
 			return err
 		}
 		stale = read.Stale
 	}
-	leftovers, err := nftables.Leftovers(conn, fallbackRetired, fallbackScope)
+	leftovers, err := nftables.Leftovers(conn, tables, fallbackRetired, fallbackScope)
 	if err != nil {
 		return err
 	}
@@ -413,11 +414,11 @@ func (p *netlinkPlatform) readFallback(s fallbackSets) (fallbackRead, error) {
 // fallbackFault reads the switch conn holds against what writeFallback writes
 // for s, and reports whether it found any of the switch's chains or sets
 func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found bool, err error) {
-	read, err := readFallback(conn, s)
+	tables, read, err := readFallback(conn, s)
 	if err != nil {
 		return fallbackRead{}, false, err
 	}
-	leftovers, err := nftables.Leftovers(conn, fallbackRetired, fallbackScope)
+	leftovers, err := nftables.Leftovers(conn, tables, fallbackRetired, fallbackScope)
 	if err != nil {
 		return fallbackRead{}, false, err
 	}
@@ -519,24 +520,24 @@ func ReadFallback() (FallbackDebug, error) {
 	return out, nil
 }
 
-// readFallback reads the switch back, its chains missing from the table or
-// the table missing as a fault
-func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error) {
+// readFallback reads the tables and the switch back, its chains missing from
+// the table or the table missing as a fault
+func readFallback(conn *nftables.Conn, s fallbackSets) (map[uint8]uint32, nftables.Readback, error) {
 	tables, err := nftables.Tables(conn, nftables.Table)
 	if err != nil {
-		return nftables.Readback{}, err
+		return nil, nftables.Readback{}, err
 	}
 	contents := fallbackContents
 	contents.Elements = s.elements()
 	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
-		return nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
+		return nil, nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
 	}
 	// a flag on the table keeps the read's fault, which says whether a rewrite can mend the table
 	if !holdsSwitch(read.Chains) && tables[unix.NFPROTO_INET] == 0 {
 		read.Fault = "its chains are missing"
 	}
-	return read, nil
+	return tables, read, nil
 }
 
 // holdsSwitch is whether chains, a table's, hold either chain of the switch
