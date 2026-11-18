@@ -26,7 +26,8 @@ const (
 	// filterPriority is NF_IP_PRI_FILTER, where the forward hook's chain runs
 	filterPriority = 0
 	// retiredChain is the regular chain an earlier translator held IPv4's lines
-	// at the forward hook in. A pass empties and deletes it.
+	// at the forward hook in. A pass empties it and deletes it once nothing
+	// holds it.
 	retiredChain = LimitChain + "4"
 	// flowsSet starts the name of the set each family's limit line counts each
 	// source's flows in, and untranslatedSet that of the set of the family's
@@ -42,7 +43,7 @@ const (
 )
 
 // The names an earlier version of an owner gave an object the owner now
-// writes under another, which its pass deletes where the table holds one
+// writes under another, which its pass deletes once nothing holds it
 var (
 	// retiredEntry is the entry chain's name in an earlier filter
 	retiredEntry = []string{"mesh_entry"}

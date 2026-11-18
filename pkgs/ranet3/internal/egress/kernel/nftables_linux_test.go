@@ -434,8 +434,7 @@ func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 // A pass over a table holding the timeout objects an earlier translator made
 // sends the transaction it sends over a table without them with their
 // deletions last, after the flush of the chains whose lines attached them, so
-// the commit that writes the objects under their names deletes them, and one
-// another writer's rule attaches stays
+// the commit that writes the objects under their names deletes them
 func TestTranslatorBatchDeletesTheEarlierTimeoutObjectsInItsTransaction(t *testing.T) {
 	rules := everyTranslation()
 	contents := translatorContents([]uint8{egress.FamilyIPv4, egress.FamilyIPv6}, egress.DefaultFlowsPerSource, rules)

@@ -248,8 +248,9 @@ func TestBorderBatchDeletesTheEarlierEntryChainInItsTransaction(t *testing.T) {
 // the translator's only as the chains it creates. Another type, hook,
 // priority or policy, or a regular chain of its name, is a fault, all but the
 // policy one nf_tables will not change in place, and a chain of another name
-// or in another table is none of the filter's business. A class of none's
-// chain held as a base chain is a fault nf_tables will not change in place.
+// or in another table is none of the filter's business. A base chain read
+// under the name of a regular one, here one an earlier translator wrote for a
+// class of none, is a fault nf_tables will not change in place.
 func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
 	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil, nil)

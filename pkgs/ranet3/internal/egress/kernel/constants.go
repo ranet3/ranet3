@@ -23,7 +23,7 @@ const (
 	LimitChain = "forward"
 	// NoneChain starts the name of each regular chain an earlier translator
 	// wrote, one for each class of none, the class's prefix ending it. A pass
-	// empties and deletes each it finds.
+	// empties each it finds and deletes it once nothing holds it.
 	NoneChain = "none_"
 	// BorderChain is the antispoof filter's chain at prerouting
 	BorderChain = "antispoof"
