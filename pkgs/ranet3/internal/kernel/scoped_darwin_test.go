@@ -484,7 +484,43 @@ func installRoute(t *testing.T, on *routePlatform, r Route) {
 	if err := on.AddRoute(r); err != nil {
 		t.Fatalf("install %s on %s: %v", r.Destination, on.rt.Interface, err)
 	}
-	t.Cleanup(func() { _ = on.DelRoute(scoped) })
+	t.Cleanup(func() { deleteOwn(on, scoped) })
+}
+
+// deleteOwn deletes r only while on holds it as installed and not withdrawn,
+// since a delete finds a route by its key alone and the key of a withdrawn
+// route may be another writer's by the time a cleanup runs
+func deleteOwn(on *routePlatform, r Route) {
+	if on.ours[on.owned(r, routeKey{destination: r.Destination, scoped: r.Scoped})] {
+		_ = on.DelRoute(r)
+	}
+}
+
+// The cleanups installRoute and setting register delete a route the test left
+// installed and write nothing for one it withdrew, scoped or not, so none
+// deletes a key another writer may hold by the test's end
+func TestScopedLookupCleanupsDeleteOnlyWhatIsStillInstalled(t *testing.T) {
+	for _, r := range []Route{
+		{Destination: prefix("203.0.113.0/24")},
+		{Destination: prefix("2001:db8:ffff::/48"), Metric: defaultIPv6Metric, Unreachable: true},
+	} {
+		for _, use := range []struct {
+			name string
+			run  func(*testing.T, *routePlatform)
+		}{
+			{"installed", func(t *testing.T, on *routePlatform) { installRoute(t, on, r) }},
+			{"withdrawn", func(t *testing.T, on *routePlatform) { installRoute(t, on, r); withdrawRoute(t, on, r) }},
+			{"setting", func(t *testing.T, on *routePlatform) {
+				(&scopeLookupLab{family: scopeLookupFamilies[0], mesh: on}).setting(t, []Route{r}, nil, func([]Route) {})
+			}},
+		} {
+			plat, sock := testPlatform(t, Table{}, Runtime{})
+			t.Run(use.name+" "+r.Destination.Addr().String(), func(t *testing.T) { use.run(t, plat) })
+			if sent := sock.messages(t); len(sent) != 2 || sent[0].Type != unix.RTM_ADD || sent[1].Type != unix.RTM_DELETE {
+				t.Errorf("%s %s: the test and its cleanups sent %d messages, want its add and one delete", use.name, r.Destination, len(sent))
+			}
+		}
+	}
 }
 
 func withdrawRoute(t *testing.T, on *routePlatform, r Route) {
@@ -519,7 +555,7 @@ func (lab *scopeLookupLab) setting(t *testing.T, routes, table []Route, checks f
 		if err == nil {
 			scoped := r
 			scoped.Scoped = lab.mesh.scopeRoute(r)
-			t.Cleanup(func() { _ = lab.mesh.DelRoute(scoped) })
+			t.Cleanup(func() { deleteOwn(lab.mesh, scoped) })
 			installed = append(installed, r)
 		}
 	}
