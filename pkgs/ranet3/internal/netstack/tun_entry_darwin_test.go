@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
 
@@ -49,7 +50,9 @@ func TestTUNDropsAnUnownedReadTowardAnotherNode(t *testing.T) {
 	m, uplink := openUTUNMesh(t, true), openUTUNMesh(t, false)
 	aliasUTUN(t, m.Name, netip.PrefixFrom(entryOwn, 128))
 	aliasUTUN(t, uplink.Name, netip.PrefixFrom(entryUplink, 128))
-	routeIntoUTUN(t, entryNode, m.Name)
+	if reason := routeIntoUTUN(t, entryNode, m.Name); reason != "" {
+		t.Skip(reason)
+	}
 	link, err := net.InterfaceByName(m.Name)
 	if err != nil {
 		t.Fatalf("look up %s: %v", m.Name, err)
@@ -116,21 +119,140 @@ func aliasUTUN(t *testing.T, name string, prefix netip.Prefix) {
 	})
 }
 
-// routeIntoUTUN routes prefix out of the utun name until the test ends
-func routeIntoUTUN(t *testing.T, prefix netip.Prefix, name string) {
+// routeIntoUTUN routes prefix out of the utun name until the test ends, or answers why the test skips
+// route(8) exits 0 where the kernel refuses an add (newroute in network_cmds' route.c) and a delete names no interface
+// (rnh_deladdr in bsd/net/route.c), so the test adds nothing where another interface's route holds prefix, takes the route
+// as added only once the dump shows it out of the utun, and deletes it by its key only while the dump does
+// the kernel holds one unscoped route at a key, so that one is the test's
+// the caller skips, so that the skip's line is the test's own
+func routeIntoUTUN(t *testing.T, prefix netip.Prefix, name string) string {
 	t.Helper()
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", name, err)
+	}
 	family := "-inet"
 	if prefix.Addr().Is6() {
 		family = "-inet6"
+	}
+	if held, ok := unscopedAt(routeDump(t), prefix); ok && held != link.Index {
+		return fmt.Sprintf("the host routes %s out of interface %d already, and the route this test deletes by its key would be that one", prefix, held)
 	}
 	if err := runTool(routeBin, "-q", "-n", "add", family, prefix.String(), "-interface", name); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := runTool(routeBin, "-q", "-n", "delete", family, prefix.String(), "-interface", name); err != nil {
+		if held, ok := unscopedAt(routeDump(t), prefix); !ok || held != link.Index {
+			return
+		}
+		if err := runTool(routeBin, "-q", "-n", "delete", family, prefix.String()); err != nil {
 			t.Error(err)
 		}
 	})
+	if held, ok := unscopedAt(routeDump(t), prefix); !ok {
+		t.Fatalf("route(8) answered the add of %s out of %s as done and the dump holds no route there", prefix, name)
+	} else if held != link.Index {
+		return fmt.Sprintf("the host routes %s out of interface %d, which took the key before this test's add", prefix, held)
+	}
+	return ""
+}
+
+// unscopedAt is the interface the route at key carrying no scope leaves by, read from the dump, where the kernel holds at
+// most one such route at a key
+// a route the kernel cloned is none, since an add at its key takes its place (rtrequest's RTM_ADD in bsd/net/route.c)
+func unscopedAt(messages []route.Message, key netip.Prefix) (int, bool) {
+	for _, message := range messages {
+		rm, ok := message.(*route.RouteMessage)
+		if !ok || rm.Type != unix.RTM_GET || rm.Flags&(unix.RTF_IFSCOPE|unix.RTF_WASCLONED) != 0 {
+			continue
+		}
+		if held, ok := dumpedKey(rm); ok && held == key {
+			return rm.Index, true
+		}
+	}
+	return 0, false
+}
+
+// dumpedKey is the prefix a dumped route is keyed by: its destination, under its netmask unless it is a host route
+func dumpedKey(rm *route.RouteMessage) (netip.Prefix, bool) {
+	if len(rm.Addrs) <= unix.RTAX_NETMASK {
+		return netip.Prefix{}, false
+	}
+	destination, ok := dumpedAddr(rm.Addrs[unix.RTAX_DST])
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	bits := destination.BitLen()
+	if rm.Flags&unix.RTF_HOST == 0 {
+		mask, ok := dumpedAddr(rm.Addrs[unix.RTAX_NETMASK])
+		if !ok || mask.BitLen() != bits {
+			return netip.Prefix{}, false
+		}
+		ones, total := net.IPMask(mask.AsSlice()).Size()
+		if total == 0 {
+			return netip.Prefix{}, false
+		}
+		bits = ones
+	}
+	return netip.PrefixFrom(destination, bits).Masked(), true
+}
+
+func dumpedAddr(addr route.Addr) (netip.Addr, bool) {
+	switch a := addr.(type) {
+	case *route.Inet4Addr:
+		return netip.AddrFrom4(a.IP), true
+	case *route.Inet6Addr:
+		return netip.AddrFrom16(a.IP), true
+	}
+	return netip.Addr{}, false
+}
+
+// the read routeIntoUTUN takes before it adds and before it deletes: a route scoped to an interface, one at a longer or a
+// shorter key, one with a netmask that is not one, one the kernel cloned and an entry no dump holds are none
+// a host route is keyed by its address, and the unscoped route is told from a scoped one at its key
+func TestUnscopedAtReadsOnlyTheUnscopedRouteAtItsKey(t *testing.T) {
+	entry := func(destination string, mask netip.Addr, flags, index int) *route.RouteMessage {
+		addrs := make([]route.Addr, unix.RTAX_NETMASK+1)
+		for i, address := range map[int]netip.Addr{unix.RTAX_DST: netip.MustParseAddr(destination), unix.RTAX_NETMASK: mask} {
+			switch {
+			case !address.IsValid():
+			case address.Is4():
+				addrs[i] = &route.Inet4Addr{IP: address.As4()}
+			default:
+				addrs[i] = &route.Inet6Addr{IP: address.As16()}
+			}
+		}
+		return &route.RouteMessage{Type: unix.RTM_GET, Flags: unix.RTF_UP | flags, Index: index, Addrs: addrs}
+	}
+	mask24, mask25, mask32 := netip.MustParseAddr("255.255.255.0"), netip.MustParseAddr("255.255.255.128"), netip.MustParseAddr("ffff:ffff::")
+	added := entry("192.0.2.0", mask24, 0, 9)
+	added.Type = unix.RTM_ADD
+	for _, test := range []struct {
+		name, key string
+		dump      []route.Message
+		index     int
+		ok        bool
+	}{
+		{"empty", "192.0.2.0/24", nil, 0, false},
+		{"scoped", "192.0.2.0/24", []route.Message{entry("192.0.2.0", mask24, unix.RTF_IFSCOPE, 7)}, 0, false},
+		{"longer", "192.0.2.0/24", []route.Message{entry("192.0.2.0", mask25, 0, 7)}, 0, false},
+		{"shorter", "192.0.2.0/25", []route.Message{entry("192.0.2.0", mask24, 0, 7)}, 0, false},
+		{"not a mask", "192.0.2.0/24", []route.Message{entry("192.0.2.0", netip.MustParseAddr("255.0.255.0"), 0, 7)}, 0, false},
+		{"not a mask over the default", "0.0.0.0/0", []route.Message{entry("0.0.0.0", netip.MustParseAddr("255.0.255.0"), 0, 7)}, 0, false},
+		{"other family's mask", "192.0.2.0/24", []route.Message{entry("192.0.2.0", netip.MustParseAddr("ffff:ff00::"), 0, 7)}, 0, false},
+		{"host", "3fff:10::1/128", []route.Message{entry("3fff:10::1", netip.Addr{}, unix.RTF_HOST, 4)}, 4, true},
+		{"cloned", "192.0.2.1/32", []route.Message{entry("192.0.2.1", netip.Addr{}, unix.RTF_HOST|unix.RTF_WASCLONED, 7)}, 0, false},
+		{"no dump entry", "192.0.2.0/24", []route.Message{added}, 0, false},
+		{"unscoped", "192.0.2.0/24", []route.Message{entry("192.0.2.0", mask24, 0, 9)}, 9, true},
+		{"beside scoped", "3fff:20::/32", []route.Message{entry("3fff:20::", mask32, unix.RTF_IFSCOPE, 7), entry("3fff:20::", mask32, 0, 9)}, 9, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			index, ok := unscopedAt(test.dump, netip.MustParsePrefix(test.key))
+			if index != test.index || ok != test.ok {
+				t.Errorf("got %d %v, want %d %v", index, ok, test.index, test.ok)
+			}
+		})
+	}
 }
 
 func runTool(name string, args ...string) error {

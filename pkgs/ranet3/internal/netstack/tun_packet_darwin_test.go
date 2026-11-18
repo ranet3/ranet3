@@ -117,16 +117,8 @@ func interfaceIoctl(t *testing.T, request uint, argument []byte) {
 // routes the kernel clones and its ARP and neighbor entries come and go on their own and are left out
 func routesElsewhere(t *testing.T, index int) []string {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
-	if err != nil {
-		t.Fatalf("dump the routing table: %v", err)
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		t.Fatalf("parse the routing table: %v", err)
-	}
 	var routes []string
-	for _, message := range messages {
+	for _, message := range routeDump(t) {
 		rm, ok := message.(*route.RouteMessage)
 		if !ok || rm.Index == index || rm.Flags&(unix.RTF_WASCLONED|unix.RTF_LLINFO) != 0 {
 			continue
@@ -151,6 +143,20 @@ func routesElsewhere(t *testing.T, index int) []string {
 	}
 	slices.Sort(routes)
 	return slices.Compact(routes)
+}
+
+// routeDump is the kernel's routing table of both families
+func routeDump(t *testing.T) []route.Message {
+	t.Helper()
+	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	if err != nil {
+		t.Fatalf("dump the routing table: %v", err)
+	}
+	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	if err != nil {
+		t.Fatalf("parse the routing table: %v", err)
+	}
+	return messages
 }
 
 // missing is every entry of want that got lacks

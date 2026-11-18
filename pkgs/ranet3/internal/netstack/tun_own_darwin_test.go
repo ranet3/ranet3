@@ -87,7 +87,9 @@ func TestTUNHandsAReadToItsOwnAddressBack(t *testing.T) {
 				return
 			}
 			for _, family := range []int{4, 6} {
-				routeIntoUTUN(t, ownPrefixes[family], m.Name)
+				if reason := routeIntoUTUN(t, ownPrefixes[family], m.Name); reason != "" {
+					t.Skip(reason)
+				}
 				m.Routes.Set(netip.Prefix{}, ownPrefixes[family], Local)
 			}
 			for _, family := range []int{4, 6} {
