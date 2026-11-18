@@ -291,14 +291,7 @@ func noneChainsFault(held []string, in holders) string {
 	if len(found) == 0 {
 		return ""
 	}
-	stray := found[0]
-	switch {
-	case strings.HasPrefix(stray.heldBy, "map "):
-		return fmt.Sprintf("its chain %s is not one the translator writes, and %s holds an element going to it, so it stays until that element goes", stray.name, stray.heldBy)
-	case stray.heldBy != "":
-		return fmt.Sprintf("its chain %s is not one the translator writes, and %s holds a rule going to it, so it stays until that rule goes", stray.name, stray.heldBy)
-	}
-	return fmt.Sprintf("its chain %s is not one the translator writes", stray.name)
+	return nftables.Retired{Kind: "chain", Name: found[0].name, HeldBy: found[0].heldBy}.Fault("the translator")
 }
 
 // noneStray is a stray chain, and heldBy what goes to it, which keeps
