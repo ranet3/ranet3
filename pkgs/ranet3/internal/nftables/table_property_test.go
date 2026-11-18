@@ -18,7 +18,8 @@ import (
 
 // owners is the three writers of Table as the model knows them, each chain,
 // chain prefix, named set and ct timeout by the name its owner writes it
-// under, written apart from any Scope
+// under or an earlier version of it wrote it under, written apart from any
+// Scope
 var owners = []struct {
 	name     string
 	chains   []string
@@ -27,7 +28,7 @@ var owners = []struct {
 	timeouts []string
 }{
 	{"translator", []string{"forward", "forward4", "forward6", "postrouting"}, "none_", []string{"flows4", "flows6"}, []string{"translated-udp4", "translated-tcp6"}},
-	{"filter", []string{"antispoof", "mesh_entry"}, "", []string{"carved4", "carved6", "owned4", "owned6", "none4", "none6"}, nil},
+	{"filter", []string{"antispoof", "entry", "mesh_entry"}, "", []string{"carved4", "carved6", "owned4", "owned6", "none4", "none6"}, nil},
 	{"switch", []string{"fallback", "output"}, "", []string{"lan4", "forwarded", "lan6", "own4", "own6", "tcp_ports", "udp_ports"}, nil},
 }
 

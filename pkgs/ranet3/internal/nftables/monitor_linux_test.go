@@ -252,29 +252,29 @@ var (
 		{exit(6, unix.NFT_MSG_DELRULE, "postrouting")},
 		{exit(7, unix.NFT_MSG_DELRULE, "postrouting")},
 		{exit(6, unix.NFT_MSG_DELRULE, "postrouting"), exit(1, unix.NFT_MSG_DELRULE, "antispoof")},
-		{exit(3, unix.NFT_MSG_DELRULE, "antispoof"), exit(8, unix.NFT_MSG_DELRULE, "mesh_entry")},
-		slices.Concat([]notifications{exit(2, unix.NFT_MSG_DELRULE, "mesh_entry"), exit(1, unix.NFT_MSG_DELSET, "flows4"), exit(1, unix.NFT_MSG_DELSET, "flows6")},
+		{exit(3, unix.NFT_MSG_DELRULE, "antispoof"), exit(8, unix.NFT_MSG_DELRULE, "entry")},
+		slices.Concat([]notifications{exit(2, unix.NFT_MSG_DELRULE, "entry"), exit(1, unix.NFT_MSG_DELSET, "flows4"), exit(1, unix.NFT_MSG_DELSET, "flows6")},
 			objects(unix.NFT_MSG_DELSET, antispoofSets...), objects(unix.NFT_MSG_DELOBJ, timeoutObjects...),
-			objects(unix.NFT_MSG_DELCHAIN, "forward", "forward6", "postrouting", "antispoof", "mesh_entry"),
+			objects(unix.NFT_MSG_DELCHAIN, "forward", "forward6", "postrouting", "antispoof", "entry"),
 			[]notifications{exit(1, unix.NFT_MSG_DELTABLE, ""), firewall(1, unix.NFT_MSG_NEWTABLE, ""), firewall(1, unix.NFT_MSG_NEWCHAIN, "input-allow"), firewall(1, unix.NFT_MSG_NEWCHAIN, "input"),
 				firewall(1, unix.NFT_MSG_NEWCHAIN, "forward"), firewall(2, unix.NFT_MSG_NEWRULE, "input-allow"), firewall(1, unix.NFT_MSG_NEWSET, "__set0"), firewall(3, unix.NFT_MSG_NEWSETELEM, "__set0"),
 				firewall(1, unix.NFT_MSG_NEWRULE, "input-allow")}),
 		{firewall(1, unix.NFT_MSG_NEWRULE, "input"), firewall(1, unix.NFT_MSG_NEWSET, "__map0"), firewall(5, unix.NFT_MSG_NEWSETELEM, "__map0"), firewall(1, unix.NFT_MSG_NEWRULE, "input")},
 	}
 	remade = [][]notifications{
-		slices.Concat([]notifications{flagged(0), exit(1, unix.NFT_MSG_NEWCHAIN, "antispoof"), exit(1, unix.NFT_MSG_NEWCHAIN, "mesh_entry")},
-			objects(unix.NFT_MSG_NEWSET, antispoofSets...), []notifications{exit(4, unix.NFT_MSG_NEWRULE, "antispoof"), exit(3, unix.NFT_MSG_NEWRULE, "mesh_entry")}),
-		{exit(7, unix.NFT_MSG_NEWRULE, "mesh_entry")},
+		slices.Concat([]notifications{flagged(0), exit(1, unix.NFT_MSG_NEWCHAIN, "antispoof"), exit(1, unix.NFT_MSG_NEWCHAIN, "entry")},
+			objects(unix.NFT_MSG_NEWSET, antispoofSets...), []notifications{exit(4, unix.NFT_MSG_NEWRULE, "antispoof"), exit(3, unix.NFT_MSG_NEWRULE, "entry")}),
+		{exit(7, unix.NFT_MSG_NEWRULE, "entry")},
 	}
 	// slept is nft add table inet Table setting the flag dormant over both
 	// owners' chains, and woken the filter's pass after it, whose NewTable clears the
 	// flag with a NEWTABLE of flags 0
 	slept = [][]notifications{{flagged(unix.NFT_TABLE_F_DORMANT)}}
 	woken = [][]notifications{
-		{flagged(0), exit(1, unix.NFT_MSG_NEWCHAIN, "antispoof"), exit(4, unix.NFT_MSG_DELRULE, "antispoof"), exit(1, unix.NFT_MSG_NEWCHAIN, "mesh_entry"), exit(6, unix.NFT_MSG_DELRULE, "mesh_entry")},
-		slices.Concat([]notifications{exit(4, unix.NFT_MSG_DELRULE, "mesh_entry")}, objects(unix.NFT_MSG_NEWSET, antispoofSets...),
-			[]notifications{exit(4, unix.NFT_MSG_NEWRULE, "antispoof"), exit(1, unix.NFT_MSG_NEWRULE, "mesh_entry")}),
-		{exit(9, unix.NFT_MSG_NEWRULE, "mesh_entry")},
+		{flagged(0), exit(1, unix.NFT_MSG_NEWCHAIN, "antispoof"), exit(4, unix.NFT_MSG_DELRULE, "antispoof"), exit(1, unix.NFT_MSG_NEWCHAIN, "entry"), exit(6, unix.NFT_MSG_DELRULE, "entry")},
+		slices.Concat([]notifications{exit(4, unix.NFT_MSG_DELRULE, "entry")}, objects(unix.NFT_MSG_NEWSET, antispoofSets...),
+			[]notifications{exit(4, unix.NFT_MSG_NEWRULE, "antispoof"), exit(1, unix.NFT_MSG_NEWRULE, "entry")}),
+		{exit(9, unix.NFT_MSG_NEWRULE, "entry")},
 	}
 	// cleared is nft add table inet Table { } over the table set dormant
 	cleared = [][]notifications{{flagged(0)}}

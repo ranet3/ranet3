@@ -613,8 +613,9 @@ func TestDaemonEndedInItsBuildLeavesTheChainsItFound(t *testing.T) {
 				}
 				chains, err := nftables.TableChains(nft, unix.NFPROTO_INET, nftables.Table)
 				slices.Sort(chains)
-				if err != nil || !slices.Equal(chains, earlier.left) {
-					t.Errorf("a start %s over %s left the chains %q in the table %s (%v), want %q", name, earlier.what, chains, nftables.Table, err, earlier.left)
+				want := slices.Sorted(slices.Values(earlier.left))
+				if err != nil || !slices.Equal(chains, want) {
+					t.Errorf("a start %s over %s left the chains %q in the table %s (%v), want %q", name, earlier.what, chains, nftables.Table, err, want)
 				}
 				if err := nft.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)}); err != nil {
 					t.Errorf("delete the table %s: %v", nftables.Table, err)

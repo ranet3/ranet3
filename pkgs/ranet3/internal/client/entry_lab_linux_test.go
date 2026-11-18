@@ -38,7 +38,7 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// entryDrop is mesh_entry's counted drop of each family, as the border's debug read names it
+// entryDrop is the chain entry's counted drop of each family, as the border's debug read names it
 var entryDrop = map[int]string{4: "drop ipv4 entering the mesh", 6: "drop ipv6 entering the mesh"}
 
 var (
@@ -49,7 +49,7 @@ var (
 	entryNeighbor = netip.MustParseAddr("fe80::5")
 )
 
-// entryProbe is a datagram a host of the lab sends, numbered by its source port, whether mesh_entry lets it into the tun,
+// entryProbe is a datagram a host of the lab sends, numbered by its source port, whether the chain entry lets it into the tun,
 // from source where source is valid, and whether its send fails with EPERM, as a drop on the host's own output path fails it
 type entryProbe struct {
 	name   string
@@ -77,7 +77,7 @@ func entryUDP(name string, host *netnstest.Thread, socket rulesSocket, destinati
 			case rulesUnreachable:
 				return -1, fmt.Errorf("the route to %s refused it", destination)
 			case rulesSwitchRefused:
-				// rulesSend names every EPERM the switch's, and mesh_entry's drop refuses a send with EPERM too
+				// rulesSend names every EPERM the switch's, and the chain entry's drop refuses a send with EPERM too
 				return -1, unix.EPERM
 			}
 			return fd, err
@@ -143,18 +143,18 @@ func entryCheck(t *testing.T, capture int, sent []entrySent) (map[int]uint64, sw
 	return out, seen
 }
 
-// entryDropped is mesh_entry's drops of each family, read now
+// entryDropped is the chain entry's drops of each family, read now
 func entryDropped(t *testing.T, ns *netnstest.Thread, border *kernelexit.BorderFilter) map[int]uint64 {
 	t.Helper()
 	return map[int]uint64{4: borderDropped(t, ns, border, entryDrop[4]), 6: borderDropped(t, ns, border, entryDrop[6])}
 }
 
-// entryMoved fails the test where mesh_entry's drops of a family moved from before by other than want
+// entryMoved fails the test where the chain entry's drops of a family moved from before by other than want
 func entryMoved(t *testing.T, before, after, want map[int]uint64) {
 	t.Helper()
 	for _, family := range []int{4, 6} {
 		if after[family]-before[family] != want[family] {
-			t.Errorf("mesh_entry dropped %d IPv%d packets, want %d", after[family]-before[family], family, want[family])
+			t.Errorf("the chain entry dropped %d IPv%d packets, want %d", after[family]-before[family], family, want[family])
 		}
 	}
 }
@@ -376,7 +376,7 @@ func entryUntracked(t *testing.T, leaf *netnstest.Thread) uint64 {
 
 // a leaf in mode off forwarding for a stranger beyond its uplink, with the lab's notrack chain marking the stranger's datagrams
 // untracked before conntrack: an untracked datagram matches no reply line, so the stranger's datagrams to a mesh peer and a mesh
-// subnet stay out of the tun, each counted by mesh_entry's drop of its family
+// subnet stay out of the tun, each counted by the chain entry's drop of its family
 func TestTUNEntryKeepsAnUntrackedStrangersDatagramOut(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -583,8 +583,8 @@ func entrySolicit(local netip.Addr, index int) error {
 // the LAN host's datagrams to the internet enter the tun from its own address, the exit's replies written into the tun reach its
 // socket as conntrack's replies, the host's unbound socket enters from the tun's own address, its datagram to a neighbor's link-local
 // address and its neighbor solicitation enter from the tun's link-local one, and the stranger's datagrams to the mesh's peer and subnet
-// stay out, counted. The kill switch's chain at postrouting runs after mesh_entry and its chain at output before it, and neither
-// drops anything here: a chain after both counts in the tun what mesh_entry passed alone, and both chains' drops stay as they were.
+// stay out, counted. The kill switch's chain at postrouting runs after the chain entry and its chain at output before it, and neither
+// drops anything here: a chain after both counts in the tun what the chain entry passed alone, and both chains' drops stay as they were.
 func TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch(t *testing.T) {
 	lab := newSwitchLab(t)
 	entryFarRoutes(t, lab.far)
@@ -650,7 +650,7 @@ func TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch(t *test
 		}
 		into := fmt.Sprintf("ipv%d udp into the tun", family)
 		if got := now[into] - counted[into]; got != entered {
-			t.Errorf("past the kill switch the tun took %d IPv%d datagrams, want the %d mesh_entry passed", got, family, entered)
+			t.Errorf("past the kill switch the tun took %d IPv%d datagrams, want the %d that the chain entry passed", got, family, entered)
 		}
 		for direction, want := range map[string]uint64{"original": 0, "reply": 1} {
 			spec := fmt.Sprintf("ipv%d udp to the lan in its %s direction", family, direction)
@@ -660,7 +660,7 @@ func TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch(t *test
 		}
 	}
 	if now := entrySwitchDrops(t, lab.leaf); !maps.Equal(now, switched) {
-		t.Errorf("the kill switch's chains dropped %v, then %v, where mesh_entry alone keeps the stranger out", switched, now)
+		t.Errorf("the kill switch's chains dropped %v, then %v, where the chain entry alone keeps the stranger out", switched, now)
 	}
 	if state := lab.switchStatus(); state != "passing" {
 		t.Errorf("the kill switch reads %s, want passing", state)

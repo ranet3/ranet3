@@ -45,6 +45,13 @@ const (
 	timeoutObject = "translated-"
 )
 
+// The names an earlier version of an owner gave an object the owner now
+// writes under another, which its pass deletes where the table holds one
+var (
+	// retiredEntry is the entry chain's name in an earlier filter
+	retiredEntry = []string{"mesh_entry"}
+)
+
 // The seconds a flow this exit translates is kept idle in each state, by the
 // timeouts its rules attach on the flow's first packet, where the host's would
 // forget a quiet flow before RFC 4787 REQ-5, RFC 5382 REQ-5 and RFC 5508 REQ-2

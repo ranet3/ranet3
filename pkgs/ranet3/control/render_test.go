@@ -426,7 +426,7 @@ func TestUserspaceFlowsLineOpensWithTheFlowsCounted(t *testing.T) {
 func TestStatusPlacesTheUserspaceRowsUnderEgress(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
-	status.Border = &BorderStatus{Where: "nftables table inet ranet3 chain mesh_entry", Ready: true}
+	status.Border = &BorderStatus{Where: "nftables table inet ranet3 chain entry", Ready: true}
 	for _, test := range []struct {
 		egress EgressStatus
 		want   []string
@@ -459,7 +459,7 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
 	status.Border = &BorderStatus{
-		Where:  "nftables table inet ranet3 chains antispoof and mesh_entry",
+		Where:  "nftables table inet ranet3 chains antispoof and entry",
 		Inside: []string{"ranet3", "lo", "dummy0"},
 		Overlay: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
@@ -490,9 +490,9 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	}
 	goldenJSON(t, "status-border-pf.json", pf)
 	out.WriteString("\n")
-	where := "nftables table inet ranet3 chains antispoof and mesh_entry"
+	where := "nftables table inet ranet3 chains antispoof and entry"
 	for _, border := range []BorderStatus{
-		{Where: "nftables table inet ranet3 chain mesh_entry", Inside: []string{"ranet3", "lo"}, Ready: true, Dropped: BorderDrops{"mesh_entry_ipv6": 7}},
+		{Where: "nftables table inet ranet3 chain entry", Inside: []string{"ranet3", "lo"}, Ready: true, Dropped: BorderDrops{"mesh_entry_ipv6": 7}},
 		{Where: where, Unready: "another writer changed its table"},
 		{Where: where, Unready: "the readback differs", Err: "egress: list the rules of nftables table inet ranet3 chain antispoof: operation not permitted"},
 		{UnenforcedOn: "android", Overlay: []netip.Prefix{netip.MustParsePrefix("3fff:a::/36")}},

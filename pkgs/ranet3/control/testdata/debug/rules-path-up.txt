@@ -30,7 +30,7 @@ Steered defaults in table 200, path up
   ipv4    0.0.0.0/0  installed
   ipv6    ::/0       installed
 
-Antispoof filter, nftables table inet ranet3 chains antispoof and mesh_entry, read 3 seconds ago, ready
+Antispoof filter, nftables table inet ranet3 chains antispoof and entry, read 3 seconds ago, ready
   chain antispoof, prerouting at priority -300
     accept  via ranet3
     accept  via lo
@@ -40,7 +40,7 @@ Antispoof filter, nftables table inet ranet3 chains antispoof and mesh_entry, re
     drop    ipv4 source 203.0.113.0/24  12 packets, 720 B
     drop    ipv6 source 3fff:a::/36     0 packets, 0 B
     drop    ipv6 source 3fff:b::/48     not held
-  chain mesh_entry, postrouting at priority 110
+  chain entry, postrouting at priority 110
     return  via other than ranet3
     return  a reply
     return  ipv4 source @owned4

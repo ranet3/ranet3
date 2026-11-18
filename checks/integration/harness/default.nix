@@ -1303,14 +1303,14 @@ testers.runNixOSTest {
 
             # Only this tree's own table exists, holding the translator's two
             # base chains and IPv6's chain, which forward's first line sends
-            # IPv6 on to, and the antispoof filter's, which is chain mesh_entry
+            # IPv6 on to, and the antispoof filter's, which is chain entry
             # alone on a node with no overlay. Anything else here would be a
             # rule written outside what the ownership rules allow.
             client.wait_until_succeeds("nft list chain inet ranet3 postrouting", timeout=timeout)
             tables = sorted(t for t in client.succeed("nft list tables").splitlines() if t.strip())
             assert tables == ["table inet ranet3"], tables
             chains = sorted(line.split()[1] for line in client.succeed("nft list table inet ranet3").splitlines() if line.strip().startswith("chain "))
-            assert chains == ["forward", "forward6", "mesh_entry", "postrouting"], f"table inet ranet3 holds the chains {chains}, where this exit with no overlay holds the translator's three and mesh_entry"
+            assert chains == ["entry", "forward", "forward6", "postrouting"], f"table inet ranet3 holds the chains {chains}, where this exit with no overlay holds the translator's three and entry"
             ruleset = client.succeed("nft list ruleset")
             print(ruleset)
             for want in ["chain postrouting", "type nat hook postrouting", "masquerade",
@@ -1487,7 +1487,7 @@ testers.runNixOSTest {
 
             # behind is on the client's link and outside the mesh, so a mesh source arriving from it is
             # dropped by the client's antispoof filter and counted there. A type 4 routing header from its own
-            # address to a segment the mesh routes takes the tun's route, where mesh_entry drops it, a
+            # address to a segment the mesh routes takes the tun's route, where the chain entry drops it, a
             # source the client does not own, before the tun read sees it, and a packet to the client's
             # own SID meets the hold the mirror keeps for it. So neither moves the tun read's counters,
             # none of it reaches the gateway, and nothing is egressed or refused
@@ -1497,7 +1497,7 @@ testers.runNixOSTest {
                 "ip -6 route add fd00:99::/64 via ${exitV6}",
                 "ip route add 10.99.0.0/24 via ${exitV4}",
                 "ip -6 route add ${clientEgressSID}/128 via ${exitV6}",
-                # the outer header leaves from an address outside the overlay, so the antispoof filter passes it and mesh_entry drops it as a source the client does not own
+                # the outer header leaves from an address outside the overlay, so the antispoof filter passes it and the chain entry drops it as a source the client does not own
                 "ip sr tunsrc set ${behindV6}",
             )
             before = counters()

@@ -196,7 +196,7 @@
     }
   ],
   "antispoof": {
-    "where": "nftables table inet ranet3 chains antispoof and mesh_entry",
+    "where": "nftables table inet ranet3 chains antispoof and entry",
     "read_at": "2026-10-19T09:14:02Z",
     "read_ago": "3s",
     "ready": true,
@@ -279,7 +279,7 @@
         ]
       },
       {
-        "name": "mesh_entry",
+        "name": "entry",
         "hook": "postrouting",
         "priority": 110,
         "rules": [

@@ -131,7 +131,7 @@ func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []b
 		return transitForged, true, 0, 0
 	}
 	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
-	// and under ownedOnly so does every packet entering the mesh but one to an IPv6 link-local destination, which mesh_entry passes too
+	// and under ownedOnly so does every packet entering the mesh but one to an IPv6 link-local destination, which the chain entry passes too
 	// and one an exit's lane lays, which the exit built from a destination its leaf sent to
 	if !answer.owned() && (leaves || m.ownedOnly && !linkLocal6(destination) && !kept.exit) {
 		return transitUnownedSource, true, 0, 0

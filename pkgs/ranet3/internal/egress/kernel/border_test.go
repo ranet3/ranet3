@@ -181,9 +181,9 @@ func (f *fakeBorder) Leave() error { return nil }
 // where, chain and readings read as the linux backend's
 func (f *fakeBorder) where(cfg *egress.Border) string {
 	if cfg == nil {
-		return "nftables table inet ranet3 chain mesh_entry"
+		return "nftables table inet ranet3 chain entry"
 	}
-	return "nftables table inet ranet3 chains antispoof and mesh_entry"
+	return "nftables table inet ranet3 chains antispoof and entry"
 }
 
 func (f *fakeBorder) writes(rule BorderRule) bool {
@@ -851,7 +851,7 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 		named     bool
 		gone      bool
 	}{
-		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: its chains read back other than they were written, and the write failed: no", 1, false, false},
+		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and entry: its chains read back other than they were written, and the write failed: no", 1, false, false},
 		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written", 1, false, true},
 		{"found chains the host will not let be rewritten", &fakeBorder{failApply: true, fault: "its chain antispoof is missing"}, "its chain antispoof is missing, and the write failed: no", 0, true, false},
 		{"a table the first read cannot list", &fakeBorder{failRules: true}, "list rules: no", 0, false, false},
@@ -1326,7 +1326,7 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	be.held = append(be.held, Installed{Spec: "drop ipv4 source 192.0.2.0/24"}, Installed{})
 	be.mu.Unlock()
 	debug := f.Debug()
-	if debug.Where != "nftables table inet ranet3 chains antispoof and mesh_entry" || !debug.Ready {
+	if debug.Where != "nftables table inet ranet3 chains antispoof and entry" || !debug.Ready {
 		t.Errorf("the debug read reports %+v", debug)
 	}
 	var got []string
@@ -1350,7 +1350,7 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 		"accept via lo|accept|inside||false|0",
 		"drop ipv4 source 198.18.0.0/15|drop|overlay_source|ipv4|true|12",
 		"drop ipv6 source 3fff::/20|drop|overlay_source|ipv6|true|0",
-		"chain mesh_entry postrouting 110",
+		"chain entry postrouting 110",
 		"return via other than ranet0|return|outside||true|0",
 		"return a reply|return|reply||true|0",
 		"return ipv6 to fe80::/10|return|link_local|ipv6|true|0",
@@ -1427,7 +1427,7 @@ func TestBorderDebugMatchesTheHeldChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	be.snapshot = []Installed{{Spec: "accept via lo", Chain: "mesh_entry", Packets: 7, Bytes: 700}}
+	be.snapshot = []Installed{{Spec: "accept via lo", Chain: "entry", Packets: 7, Bytes: 700}}
 	want := []egress.BorderChainReading{
 		{Name: BorderChain, Hook: "prerouting", Priority: new(-300), Rules: []egress.BorderReading{
 			{Spec: "accept via lo", Verdict: "accept", Reason: "inside"},

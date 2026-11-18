@@ -209,16 +209,16 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		"eth1": {Exempt: prefixes(t, "2001:db8:1::7/128")}, "wl*": {Exempt: prefixes(t, "192.0.2.128/26")},
 	}}
 	desired, written, _ := newBorderFilter(exempted, rt, &fakeBorder{}).desired()
-	requests, err = borderBatch(desired, written, nftables.Contents{}, nil)
+	requests, err = borderBatch(desired, written, nftables.Contents{}, nil, nil)
 	write("antispoof filter", requests, err)
-	requests, err = borderBatch(desired, written, nftables.Contents{Chains: []nftables.Chain{prerouting}, Sets: borderNamed[2:3]}, []string{BorderChain, EntryChain})
+	requests, err = borderBatch(desired, written, nftables.Contents{Chains: []nftables.Chain{prerouting}, Sets: borderNamed[2:3]}, []string{BorderChain, EntryChain}, nil)
 	write("antispoof filter remaking its antispoof chain and one set", requests, err)
 	// none4 gains a range below its own and grows its own downward, and owned6 empties
 	moved := borderSets{noneSet + "4": ranges("198.51.100.0/24", "203.0.112.0/23"), ownedSet + "6": nil}
 	requests, err = fillBatch(written, moved)
 	write("antispoof filter moving two sets", requests, err)
 	desired, written, _ = newBorderFilter(nil, rt, &fakeBorder{}).desired()
-	requests, err = borderBatch(desired, written, nftables.Contents{}, []string{BorderChain, EntryChain})
+	requests, err = borderBatch(desired, written, nftables.Contents{}, []string{BorderChain, EntryChain}, nil)
 	write("entry chain deleting the antispoof chain it no longer writes", requests, err)
 
 	path := filepath.Join("testdata", "messages.golden")

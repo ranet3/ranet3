@@ -430,7 +430,7 @@ func TestBorderRoundTripRefillsAFlushedSet(t *testing.T) {
 	}{
 		{"the set owned4 flushed", []string{"flush", "set", "inet", nftables.Table, ownedSet + "4"}, "192.0.2.7"},
 		{"the set none6 flushed", []string{"flush", "set", "inet", nftables.Table, noneSet + "6"}, "2001:db8:9::/48"},
-		{"the chain mesh_entry flushed", []string{"flush", "chain", "inet", nftables.Table, EntryChain}, `comment "return a reply"`},
+		{"the chain entry flushed", []string{"flush", "chain", "inet", nftables.Table, EntryChain}, `comment "return a reply"`},
 	} {
 		run(change.args...)
 		if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, change.listed) {

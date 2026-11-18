@@ -20,13 +20,14 @@ import (
 
 // chainOwner and setOwner are which writer of the table a chain or a set of
 // the name belongs to, from the owners' constants, the kill switch's by its
-// names in internal/kernel: 0 for the translator, 1 for the antispoof filter,
-// 2 for the kill switch and -1 for another writer
+// names in internal/kernel, and the names an earlier version of each wrote:
+// 0 for the translator, 1 for the antispoof filter, 2 for the kill switch and
+// -1 for another writer
 func chainOwner(name string) int {
 	switch {
 	case name == ChainName || name == LimitChain || name == retiredChain || name == forward6.Name || strings.HasPrefix(name, NoneChain) && name != NoneChain:
 		return 0
-	case name == BorderChain || name == EntryChain:
+	case name == BorderChain || name == EntryChain || name == "mesh_entry":
 		return 1
 	case name == "fallback" || name == "output":
 		return 2
@@ -52,7 +53,8 @@ func setOwner(name string) int {
 // it or changes it with a flag set or no flags attribute, or names one of that
 // owner's chains or sets, over the nine kinds of message it reads and the
 // rest and the names of the three owners, IPv6's chain, the chains an earlier
-// translator held IPv4's lines and a class of none's in, an anonymous set
+// translator held IPv4's lines and a class of none's in, the names an earlier
+// version of each owner gave its objects, an anonymous set
 // and map and a stranger's, each in every family, the table's name and
 // others, from either port and with a table message's flags absent, 0,
 // dormant, owner and persist. A NEWTABLE whose flags are 0 makes the table or
@@ -69,7 +71,7 @@ func TestEachOwnersMonitorWakesForItsOwnNamesAlone(t *testing.T) {
 		{unix.NFT_MSG_NEWSETELEM, unix.NFTA_SET_ELEM_LIST_TABLE, unix.NFTA_SET_ELEM_LIST_SET}, {unix.NFT_MSG_DELSETELEM, unix.NFTA_SET_ELEM_LIST_TABLE, unix.NFTA_SET_ELEM_LIST_SET},
 		{unix.NFT_MSG_NEWOBJ, unix.NFTA_OBJ_TABLE, unix.NFTA_OBJ_NAME},
 	}
-	names := []string{ChainName, LimitChain, retiredChain, forward6.Name, NoneChain + "192_0_2_0_24", NoneChain, flowsSet + "4", flowsSet + "6", BorderChain, EntryChain,
+	names := []string{ChainName, LimitChain, retiredChain, forward6.Name, NoneChain + "192_0_2_0_24", NoneChain, flowsSet + "4", flowsSet + "6", BorderChain, EntryChain, "mesh_entry",
 		carvedSet + "4", noneSet + "6", "fallback", "output", "lan4", "udp_ports", "__set0", "__map0", "other", timeoutObject + "udp4"}
 	scopes := map[int]nftables.Scope{0: translatorScope, 1: borderScope}
 	const own, other = 7, 9

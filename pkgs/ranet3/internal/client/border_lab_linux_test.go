@@ -54,7 +54,7 @@ type borderLab struct {
 
 // The border in two namespaces. The exit runs a node
 // started through New with cap.table, overlay and an egress segment whose
-// leaves' addresses are a none class, which mesh_entry lets in, with
+// leaves' addresses are a none class, which the chain entry lets in, with
 // the reconciler and the border built as main builds them, and an uplink of a
 // veth pair to a far host in a namespace of its own.
 //   - a packet from the far host with a source outside the overlay, to a
@@ -244,7 +244,7 @@ func startBorderLab(t *testing.T, classes ...egress.Class) *borderLab {
 	lab := &borderLab{exit: netnstest.StartThread(t), far: netnstest.StartThread(t)}
 	labUplink(t, lab.exit, lab.far)
 	cfg := labConfig(t)
-	// the leaves' addresses are a none class, so a packet from beyond the uplink to one passes mesh_entry, and the
+	// the leaves' addresses are a none class, so a packet from beyond the uplink to one passes the chain entry, and the
 	// border or the tun read stops it
 	exit := *cfg.Cap.Egress
 	exit.Translate = slices.Clone(exit.Translate)

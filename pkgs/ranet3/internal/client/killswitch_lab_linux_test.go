@@ -84,7 +84,7 @@ type switchProbe struct {
 	rulesProbe
 	want      switchWant
 	protocols []string
-	// entryDropped is a probe mesh_entry drops on its way into the tun, its source one the leaf does not own
+	// entryDropped is a probe the chain entry drops on its way into the tun, its source one the leaf does not own
 	entryDropped bool
 }
 
@@ -635,7 +635,7 @@ func (lab *switchLab) run(t *testing.T, arm switchArm) {
 
 // exercise sends the arm's probes, flows, replies and asks over the leaf as it stands, and checks where each went. Once the tun is gone, and
 // in the family the arm takes the tun's overlay address of, it leaves out the probes from a socket bound to that address, which the
-// tun no longer holds. Where the leaf's border runs it fails the arm for any packet mesh_entry dropped, since the arms send into
+// tun no longer holds. Where the leaf's border runs it fails the arm for any packet the chain entry dropped, since the arms send into
 // the tun the probes it marks dropped there and otherwise only what the leaf owns.
 func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 	t.Helper()
@@ -661,7 +661,7 @@ func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 		}
 		defer func() {
 			dropped := entryDropped(t, lab.leaf, lab.border)
-			t.Logf("mesh_entry dropped %d IPv4 and %d IPv6 packets of the arm", dropped[4]-entered[4], dropped[6]-entered[6])
+			t.Logf("the chain entry dropped %d IPv4 and %d IPv6 packets of the arm", dropped[4]-entered[4], dropped[6]-entered[6])
 			entryMoved(t, entered, dropped, want)
 		}()
 	}
@@ -698,7 +698,7 @@ func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 					return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
 				}
 				switch {
-				// a connect left open sends its SYN again a second later, which mesh_entry would drop and count a second time
+				// a connect left open sends its SYN again a second later, which the chain entry would drop and count a second time
 				case fd >= 0 && protocol == "tcp":
 					_ = unix.Close(fd)
 				case fd >= 0:
@@ -1452,7 +1452,7 @@ func switchUplinkProbes(state switchState) []switchProbe {
 }
 
 // switchEntryHeld is probes beside the table inet ranet3: what a socket bound to the uplink's address sends into the tun comes from
-// a source the leaf does not own, which mesh_entry drops
+// a source the leaf does not own, which the chain entry drops
 func switchEntryHeld(probes []switchProbe) []switchProbe {
 	out := slices.Clone(probes)
 	for i, p := range out {
@@ -1472,7 +1472,7 @@ func switchEntryHeld(probes []switchProbe) []switchProbe {
 // internet host by the uplink. With fallback = "uplink" written the reconciler holds no chain, a node killed with SIGKILL or
 // stopped for the mesh's failure leaves none, and the internet host leaves by the uplink, by main, once the path is down or the
 // tun is gone. The leaf's border runs as
-// the command runs it while the leaf's node does, and mesh_entry drops what a socket bound to the uplink's address sends to a
+// the command runs it while the leaf's node does, and the chain entry drops what a socket bound to the uplink's address sends to a
 // peer, from a source the leaf does not own, and nothing else an arm sends into the tun.
 func TestTUNKillSwitchHoldsInModeThree(t *testing.T) {
 	// pathState names state as mode 3 reaches it, the path's SID resolved where the mesh's defaults are present and held where they are retracted

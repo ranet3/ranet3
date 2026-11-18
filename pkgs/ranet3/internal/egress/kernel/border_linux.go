@@ -127,7 +127,14 @@ func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chain
 	if err != nil {
 		return chainReadback{}, err
 	}
+	leftovers, err := nftables.Leftovers(conn, borderRetired, borderScope)
+	if err != nil {
+		return chainReadback{}, err
+	}
 	out := chainReadback{fault: read.Fault, remake: read.Remake(), held: read.Held}
+	if out.fault == "" && len(leftovers) > 0 {
+		out.fault = leftovers[0].Fault("the filter")
+	}
 	for _, rule := range read.Rules {
 		out.rules = append(out.rules, Installed{Spec: rule.Spec, Chain: rule.Chain, Counted: rule.Counted, Packets: rule.Packets, Bytes: rule.Bytes})
 	}
@@ -193,7 +200,16 @@ var borderNamed = []nftables.Set{
 // borderContents is the filter's chains and sets as a readback reads them
 var borderContents = nftables.Contents{Chains: []nftables.Chain{prerouting, entry}, Sets: borderNamed}
 
-var borderScope = borderContents.Scope()
+// borderRetired is the filter's chains under the names an earlier filter gave
+// them
+var borderRetired = nftables.Scope{Chains: retiredEntry}
+
+// borderScope is the filter's chains and sets and borderRetired
+var borderScope = func() nftables.Scope {
+	scope := borderContents.Scope()
+	scope.Chains = append(scope.Chains, borderRetired.Chains...)
+	return scope
+}()
 
 func borderSet(name string) nftables.Set {
 	return borderNamed[slices.IndexFunc(borderNamed, func(set nftables.Set) bool { return set.Name == name })]
@@ -226,7 +242,11 @@ func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 	if err != nil {
 		return err
 	}
-	requests, err := borderBatch(rules, sets, read.Stale, read.Chains)
+	leftovers, err := nftables.Leftovers(b.conn, borderRetired, borderScope)
+	if err != nil {
+		return err
+	}
+	requests, err := borderBatch(rules, sets, read.Stale, read.Chains, leftovers)
 	if err != nil {
 		return err
 	}
@@ -234,11 +254,12 @@ func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 }
 
 // borderBatch is the transaction Apply sends over the chains the table holds,
-// held, and those of the filter's chains and sets stale names: the table with
-// no owner flag, so it outlives this process, the chains the rules sit in made
-// and emptied, a chain of the filter's no rule sits in deleted where it is
-// held, the sets made, emptied and filled, and the rules
-func borderBatch(rules []BorderRule, sets borderSets, stale nftables.Contents, held []string) ([]nftables.Request, error) {
+// held, those of the filter's chains and sets stale names, and leftovers: the
+// table with no owner flag, so it outlives this process, the chains the rules
+// sit in made and emptied, a chain of the filter's no rule sits in deleted
+// where it is held, a chain of borderRetired emptied where it is held, the sets
+// made, emptied and filled, the rules, and leftovers retired
+func borderBatch(rules []BorderRule, sets borderSets, stale nftables.Contents, held []string, leftovers []nftables.Retired) ([]nftables.Request, error) {
 	var written nftables.Contents
 	for _, chain := range borderContents.Chains {
 		switch {
@@ -248,7 +269,8 @@ func borderBatch(rules []BorderRule, sets borderSets, stale nftables.Contents, h
 			stale.Chains = append(stale.Chains, chain)
 		}
 	}
-	requests := written.Rewrite(unix.NFPROTO_INET, stale, nil)
+	strays := slices.DeleteFunc(slices.Clone(borderRetired.Chains), func(name string) bool { return !slices.Contains(held, name) })
+	requests := written.Rewrite(unix.NFPROTO_INET, stale, strays)
 	elements := sets.elements()
 	for _, set := range borderNamed {
 		replaced, err := set.Replace(unix.NFPROTO_INET, elements[set.Name])
@@ -264,7 +286,7 @@ func borderBatch(rules []BorderRule, sets borderSets, stale nftables.Contents, h
 		}
 		requests = append(requests, request)
 	}
-	return requests, nil
+	return append(requests, nftables.Retire(leftovers)...), nil
 }
 
 // Fill sends the sets' changed ranges in one transaction, which nf_tables

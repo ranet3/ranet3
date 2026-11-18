@@ -29,7 +29,7 @@ const (
 	BorderChain = "antispoof"
 	// EntryChain is the chain beside it that lets into the mesh's tun only
 	// the packets it lists (antispoof.md, "The entry chain")
-	EntryChain = "mesh_entry"
+	EntryChain = "entry"
 	// carvedSet, ownedSet and noneSet start the names of the filter's sets,
 	// the family's digit ending each
 	carvedSet = "carved"

@@ -55,7 +55,7 @@ func rulesFixture() RulesInfo {
 			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Source: netip.MustParseAddr("2001:db8:b::10"), Answer: "table main dev eth0"},
 		},
 		Border: &BorderTable{
-			Where:   "nftables table inet ranet3 chains antispoof and mesh_entry",
+			Where:   "nftables table inet ranet3 chains antispoof and entry",
 			ReadAt:  time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
 			ReadAgo: Duration(3 * time.Second),
 			Ready:   true,
@@ -70,7 +70,7 @@ func rulesFixture() RulesInfo {
 					{Spec: "drop ipv6 source 3fff:a::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
 					{Spec: "drop ipv6 source 3fff:b::/48", Verdict: "drop", Reason: "overlay_source", Family: "ipv6"},
 				}},
-				{Name: "mesh_entry", Hook: "postrouting", Priority: new(110), Rules: []BorderChainRule{
+				{Name: "entry", Hook: "postrouting", Priority: new(110), Rules: []BorderChainRule{
 					{Spec: "return via other than ranet3", Verdict: "return", Reason: "outside", Held: true},
 					{Spec: "return a reply", Verdict: "return", Reason: "reply", Held: true},
 					{Spec: "return ipv4 source @owned4", Verdict: "return", Reason: "owned", Family: "ipv4", Held: true},

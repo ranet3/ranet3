@@ -53,12 +53,12 @@
 //
 // An exit's allow list says which sources it carries out of the mesh, and
 // it is authorization rather than a filter: a host on any link of a forwarding
-// node can send that node a packet with a mesh source, which chain mesh_entry
+// node can send that node a packet with a mesh source, which chain entry
 // keeps out of the mesh on every Linux node and chain antispoof keeps off the
 // host's own services. BorderFilter owns two chains of the same table on every
 // Linux node: chain antispoof, written wherever overlay is, drops a source in
 // the overlay or a carved one arriving from outside the mesh that no exemption
-// passes, before conntrack, and chain mesh_entry, written with or without an
+// passes, before conntrack, and chain entry, written with or without an
 // overlay, lets into the tun from another device only the packets it lists
 // (antispoof.md, "The entry chain"). desired lists each chain's rules in
 // order. On macOS, where

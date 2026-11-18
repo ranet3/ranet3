@@ -294,7 +294,7 @@ type pathSent struct {
 
 // send sends echo, UDP and TCP of both families to the internet from the leaf's unbound sockets and from the ones bound to its overlay address,
 // numbered from *next, and answers where each first packet left: out of a's uplink, b's or the leaf's own, nowhere, or, for a send the kernel
-// refused and nothing left of, what the send met. It fails the test where mesh_entry at the leaf dropped any of them, since every
+// refused and nothing left of, what the send met. It fails the test where the chain entry at the leaf dropped any of them, since every
 // packet the steered defaults route into the tun is the host's own.
 func (lab *pathLab) send(t *testing.T, next *int) map[pathSent]string {
 	t.Helper()
@@ -333,7 +333,7 @@ func (lab *pathLab) send(t *testing.T, next *int) map[pathSent]string {
 		_ = unix.Close(fd)
 	}
 	dropped := entryDropped(t, leaf.ns, lab.borders[pathLeaf])
-	t.Logf("mesh_entry at the leaf dropped %d IPv4 and %d IPv6 packets of the probes", dropped[4]-entered[4], dropped[6]-entered[6])
+	t.Logf("the chain entry at the leaf dropped %d IPv4 and %d IPv6 packets of the probes", dropped[4]-entered[4], dropped[6]-entered[6])
 	entryMoved(t, entered, dropped, map[int]uint64{4: 0, 6: 0})
 	out := map[pathSent]string{}
 	for _, p := range probes {
@@ -525,13 +525,13 @@ func (lab *pathLab) lastPathEvent() string {
 // and the table inet ranet3 written at each, as the command writes it
 // the leaf's reconciler installs the steered defaults, and echo, UDP and TCP of both families from its unbound sockets and from the ones bound to its overlay address
 // leave a's uplink and none leaves b's, though b's default is the leaf's better, while status reads the path up with both defaults and its steered count grown,
-// mesh_entry at the leaf dropping none of them
+// the chain entry at the leaf dropping none of them
 // and the switch fallback unwritten asks for in mode 3 passing
 // with a's egress turned off its SID goes, the defaults go with kernel.path naming the SID, status reads the path down at it and the switch holding,
 // and the same sockets leave by no uplink, while under fallback = "uplink" written they leave by the leaf's own
 // with a's egress back the defaults return within the settle of a pass of the table's change, and the sockets leave a's uplink again
 // a neighbor's ping on a link forward does not name leaves the leaf's uplink and reaches neither exit, and one on the link forward names, from a source the leaf does not own,
-// is dropped by mesh_entry on its way into the tun, counted there and never read by the tun
+// is dropped by the chain entry on its way into the tun, counted there and never read by the tun
 // a ping of each family from a host of the LAN the leaf announces on a link forward names leaves a's uplink alone, a's allow holding the LAN outside the overlay
 // a path through the waypoint's End to a, reloaded in, carries the sockets out of a's uplink through the waypoint
 // a path of the waypoint's End alone leaves by no uplink, its packets dropped at the waypoint
@@ -611,7 +611,7 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 			if err := lab.neighbors[pathForwarded].Do(func() (err error) { received, err = exitPing(pathInternet[family], next); return err }); err != nil {
 				t.Fatalf("ping from the forwarded neighbor: %v", err)
 			}
-			// mesh_entry drops them on their way into the tun, so the tun read never judges them
+			// the chain entry drops them on their way into the tun, so the tun read never judges them
 			entryMoved(t, entered, entryDropped(t, leaf.ns, lab.borders[pathLeaf]), map[int]uint64{family: exitPings, 10 - family: 0})
 			if got := leaf.client.Mesh.TransitCounters().UnownedSource; got != unowned || received != 0 {
 				t.Errorf("the forwarded neighbor's %d pings of %s drew %d replies and %d unowned_source drops, want none and none", exitPings, pathInternet[family], received, got-unowned)
@@ -639,7 +639,7 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 			if err := lab.neighbors[pathLAN].Do(func() (err error) { _, err = exitPing(pathInternet[family], next); return err }); err != nil {
 				t.Fatalf("ping from the LAN host: %v", err)
 			}
-			// the leaf announces the LAN, so mesh_entry takes its source for one the leaf owns
+			// the leaf announces the LAN, so the chain entry takes its source for one the leaf owns
 			entryMoved(t, entered, entryDropped(t, leaf.ns, lab.borders[pathLeaf]), map[int]uint64{4: 0, 6: 0})
 			for name, place := range map[string]int{"a": pathExitA, "b": pathExitB, "the leaf": pathLeaf} {
 				if _, got := rulesDrain(lab.captures[place])[rulesKey{"echo", next}]; got != (place == pathExitA) {

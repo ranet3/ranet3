@@ -264,7 +264,7 @@ func startOrderLabIn(t *testing.T, classes []egress.Class, exit bool) *orderLab 
 	return lab
 }
 
-// entryDrops is mesh_entry's IPv4 drops, read now
+// entryDrops is the chain entry's IPv4 drops, read now
 func (l *orderLab) entryDrops() uint64 {
 	l.t.Helper()
 	var debug egress.BorderDebug
@@ -286,7 +286,7 @@ func (l *orderLab) entryDrops() uint64 {
 }
 
 // send has the stranger send one datagram to host and reports whether it came
-// out of the mesh tun and how far mesh_entry's drops moved
+// out of the mesh tun and how far the chain entry's drops moved
 func (l *orderLab) send(host netip.Addr) (entered bool, dropped uint64) {
 	l.t.Helper()
 	return l.sendFrom(l.up, orderStranger, host)
@@ -419,14 +419,14 @@ func orderBlockClasses() []egress.Class {
 // At an exit whose none class covers a block, the route to a LAN another node
 // comes to advertise inside the block enters the kernel only once a pass of the
 // antispoof filter has written the none set without it. With no fault the
-// route lands and a stranger's datagram meets mesh_entry. After one failed
+// route lands and a stranger's datagram meets the chain entry. After one failed
 // read, after one failed fill, over a pass held past the reconciler's settle,
 // and over a held pass while a pass of the reconciler reads the source the
 // moment the LAN comes, as with no settle, the datagram sent once the
 // reconciler reports the hold at the LAN's key and before the pass that writes
 // the set meets that hold and stays out of the tun, the filter reading ready
 // in the two held phases, and the one sent once the route landed meets
-// mesh_entry. While the filter fails, a LAN outside every class lands beside
+// the chain entry. While the filter fails, a LAN outside every class lands beside
 // one inside the class that stays out, and the removal of a LAN lands too.
 func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 	lab := startOrderLab(t, orderBlockClasses())
@@ -460,7 +460,7 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 			ready := lab.filter.Stats().Ready
 			held := lab.installed()
 			entered, dropped := lab.send(host)
-			t.Logf("%s: at %v the reconciler held %d routes (%d before the learn) and a hold at the LAN, the filter ready %v, the stranger's datagram to %s entered the tun %v, mesh_entry dropped %d",
+			t.Logf("%s: at %v the reconciler held %d routes (%d before the learn) and a hold at the LAN, the filter ready %v, the stranger's datagram to %s entered the tun %v, the chain entry dropped %d",
 				phase.name, time.Since(start), held, want, ready, host, entered, dropped)
 			if entered || dropped != 0 || held != want {
 				t.Errorf("%s: before the pass writing the none set, want no entry, no drop and no new route", phase.name)
@@ -474,7 +474,7 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		want++
 		lab.awaitInstalled(phase.name, want)
 		entered, dropped := lab.send(host)
-		t.Logf("%s: the route landed by %v, then the datagram entered the tun %v, mesh_entry dropped %d", phase.name, time.Since(start), entered, dropped)
+		t.Logf("%s: the route landed by %v, then the datagram entered the tun %v, the chain entry dropped %d", phase.name, time.Since(start), entered, dropped)
 		if entered || dropped != 1 {
 			t.Errorf("%s: once the route landed, want no entry and one drop", phase.name)
 		}
@@ -491,7 +491,7 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 	ready := lab.filter.Stats().Ready
 	outEntered, outDropped := lab.send(orderOutside.Addr().Next())
 	inEntered, inDropped := lab.send(inside.Addr().Next())
-	t.Logf("while the filter fails (ready %v): at %v the datagram to the LAN outside every class entered the tun %v, mesh_entry dropped %d, and the one to the LAN inside the class entered %v, dropped %d",
+	t.Logf("while the filter fails (ready %v): at %v the datagram to the LAN outside every class entered the tun %v, the chain entry dropped %d, and the one to the LAN inside the class entered %v, dropped %d",
 		ready, time.Since(start), outEntered, outDropped, inEntered, inDropped)
 	if ready || outEntered || outDropped != 1 || inEntered || inDropped != 0 {
 		t.Error("with the filter failing, want it not ready, one drop outside every class and nothing inside the class")
@@ -503,7 +503,7 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 	lab.awaitInstalled("the removed LAN's route", want)
 	ready = lab.filter.Stats().Ready
 	entered, dropped := lab.send(first.Addr().Next())
-	t.Logf("a removed LAN while the filter fails (ready %v): at %v the datagram entered the tun %v, mesh_entry dropped %d", ready, time.Since(start), entered, dropped)
+	t.Logf("a removed LAN while the filter fails (ready %v): at %v the datagram entered the tun %v, the chain entry dropped %d", ready, time.Since(start), entered, dropped)
 	if ready || entered || dropped != 0 {
 		t.Error("a LAN removed while the filter fails: want the filter not ready, no entry and no drop")
 	}
@@ -512,7 +512,7 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 
 // At an exit with no none class, the route to a LAN another node comes to
 // advertise lands while the antispoof filter fails: a stranger's datagram sent
-// once it landed meets mesh_entry
+// once it landed meets the chain entry
 func TestTUNEntryRoutesEveryLANOfAnExitWithNoNoneClass(t *testing.T) {
 	lab := startOrderLab(t, nil)
 	lab.be.failRules.Store(orderFailing)
@@ -527,7 +527,7 @@ func TestTUNEntryRoutesEveryLANOfAnExitWithNoNoneClass(t *testing.T) {
 	lab.awaitInstalled("the LAN's route", before+1)
 	ready := lab.filter.Stats().Ready
 	entered, dropped := lab.send(lan.Addr().Next())
-	t.Logf("no none class, the filter failing (ready %v): at %v the datagram to %s entered the tun %v, mesh_entry dropped %d", ready, time.Since(start), lan, entered, dropped)
+	t.Logf("no none class, the filter failing (ready %v): at %v the datagram to %s entered the tun %v, the chain entry dropped %d", ready, time.Since(start), lan, entered, dropped)
 	if ready || entered || dropped != 1 {
 		t.Error("with no none class and the filter failing, want the filter not ready, no entry and one drop")
 	}
@@ -537,7 +537,7 @@ func TestTUNEntryRoutesEveryLANOfAnExitWithNoNoneClass(t *testing.T) {
 // mesh's table with no hold and comes back, from another node, while the
 // reconciler still has its route in the kernel, is not reached by a
 // stranger's datagram: the none set leaves the LAN's addresses out while the
-// reconciler says its route is there, so mesh_entry drops the datagram. It
+// reconciler says its route is there, so the chain entry drops the datagram. It
 // holds with the filter's passes failing from the removal's pass on, with the
 // LAN back before the reconciler's pass after the settle, and with the
 // reconciler's writes waiting, so the route stays in the kernel as long as
@@ -567,14 +567,14 @@ func TestTUNEntryKeepsALANThatComesBackOutWhileItsRouteIsThere(t *testing.T) {
 			if !there {
 				t.Fatal("setup: the LAN's route left the kernel before the datagram went")
 			}
-			t.Logf("the LAN back from another node %v after its removal, its route in the kernel: the stranger's datagram to %s entered the tun %v, mesh_entry dropped %d", time.Since(start), host, entered, dropped)
+			t.Logf("the LAN back from another node %v after its removal, its route in the kernel: the stranger's datagram to %s entered the tun %v, the chain entry dropped %d", time.Since(start), host, entered, dropped)
 			if entered || dropped != 1 {
 				t.Error("the LAN back: want no entry and one drop")
 			}
 			if waiting {
 				time.Sleep(orderStand)
 				entered, dropped = lab.send(host)
-				t.Logf("with the reconciler's writes waiting %v on, the reconciler holding %d routes: the datagram entered the tun %v, mesh_entry dropped %d", time.Since(start), lab.installed(), entered, dropped)
+				t.Logf("with the reconciler's writes waiting %v on, the reconciler holding %d routes: the datagram entered the tun %v, the chain entry dropped %d", time.Since(start), lab.installed(), entered, dropped)
 				if entered || dropped != 1 {
 					t.Error("the LAN back while the route's delete waits: want no entry and one drop")
 				}
@@ -603,7 +603,7 @@ func (l *orderLab) noneAdmits(address netip.Addr) bool {
 // mesh's table, the reconciler's writes waiting as in the test above, keeps a
 // narrower LAN inside it out of a stranger's reach when the narrower one comes
 // to be advertised with the filter failing: the none set leaves the wider
-// route's addresses out while the reconciler says it is there, so mesh_entry
+// route's addresses out while the reconciler says it is there, so the chain entry
 // drops the datagram. It fails where the wider route was not in the kernel as
 // the datagram went.
 func TestTUNEntryKeepsALANInsideAWiderRouteThatIsStillThereOut(t *testing.T) {
@@ -625,7 +625,7 @@ func TestTUNEntryKeepsALANInsideAWiderRouteThatIsStillThereOut(t *testing.T) {
 	if !there {
 		t.Fatal("setup: with the reconciler's writes waiting the wider route left the kernel before the datagram went")
 	}
-	t.Logf("the narrower LAN learned %v after the wider one's removal, the wider route in the kernel: the stranger's datagram to %s entered the tun %v, mesh_entry dropped %d", time.Since(start), host, entered, dropped)
+	t.Logf("the narrower LAN learned %v after the wider one's removal, the wider route in the kernel: the stranger's datagram to %s entered the tun %v, the chain entry dropped %d", time.Since(start), host, entered, dropped)
 	if entered || dropped != 1 {
 		t.Error("a narrower LAN learned: want no entry and one drop")
 	}
@@ -647,7 +647,7 @@ func (l *orderLab) sendRouted(host netip.Addr, with int) (there, entered bool, d
 // hold at its key, so a datagram from a host on the forwarded link toward the
 // LAN, sent once the reconciler reports the hold, takes no route into the tun
 // by the mesh's default. Once the filter writes, the LAN's route lands and the
-// datagram meets mesh_entry.
+// datagram meets the chain entry.
 func TestTUNEntryKeepsAForwardedDatagramOutOfAHeldLAN(t *testing.T) {
 	lab := startOrderLabIn(t, orderBlockClasses(), true)
 	before := lab.installed()
@@ -656,7 +656,7 @@ func TestTUNEntryKeepsAForwardedDatagramOutOfAHeldLAN(t *testing.T) {
 	// a host past the uplink's link, which only the mesh's default reaches from the forwarded link
 	entered, dropped := lab.sendFrom(lab.forward, orderForwarded, netip.MustParseAddr("192.0.2.200"))
 	if entered || dropped != 1 {
-		t.Fatalf("setup: a forwarded datagram toward no class entered the tun %v and mesh_entry dropped %d, want it to meet mesh_entry by the mesh's default", entered, dropped)
+		t.Fatalf("setup: a forwarded datagram toward no class entered the tun %v and the chain entry dropped %d, want it to meet the chain entry by the mesh's default", entered, dropped)
 	}
 	lan := netip.MustParsePrefix("198.51.100.16/28")
 	host := lan.Addr().Next()
@@ -669,7 +669,7 @@ func TestTUNEntryKeepsAForwardedDatagramOutOfAHeldLAN(t *testing.T) {
 	// with no hold by orderWait the datagram goes all the same, to show where it lands
 	holding := lab.holdWithin(lan)
 	entered, dropped = lab.sendFrom(lab.forward, orderForwarded, host)
-	t.Logf("%v after the learn, the reconciler reporting a hold at %s %v: the forwarded datagram to %s entered the tun %v, mesh_entry dropped %d", time.Since(start), lan, holding, host, entered, dropped)
+	t.Logf("%v after the learn, the reconciler reporting a hold at %s %v: the forwarded datagram to %s entered the tun %v, the chain entry dropped %d", time.Since(start), lan, holding, host, entered, dropped)
 	if !holding || entered {
 		t.Error("with the filter failing, want a hold at the LAN and the forwarded datagram out of the tun")
 	}
@@ -677,7 +677,7 @@ func TestTUNEntryKeepsAForwardedDatagramOutOfAHeldLAN(t *testing.T) {
 	lab.awaitInstalled("the LAN's route once the filter writes", before+2)
 	entered, dropped = lab.sendFrom(lab.forward, orderForwarded, host)
 	if entered || dropped != 1 {
-		t.Errorf("once the LAN's route landed the forwarded datagram entered the tun %v and mesh_entry dropped %d, want one drop", entered, dropped)
+		t.Errorf("once the LAN's route landed the forwarded datagram entered the tun %v and the chain entry dropped %d, want one drop", entered, dropped)
 	}
 }
 
@@ -699,7 +699,7 @@ func TestTUNEntryTakesARouteOutAtAReloadThatMakesItALAN(t *testing.T) {
 	lab.awaitInstalled("the route after the reload", before)
 	ready, holding := lab.filter.Stats().Ready, lab.holds(lan)
 	entered, dropped := lab.send(host)
-	t.Logf("the route went %v after the reload, the filter ready %v, a hold at the LAN %v: the stranger's datagram to %s entered the tun %v, mesh_entry dropped %d", time.Since(start), ready, holding, host, entered, dropped)
+	t.Logf("the route went %v after the reload, the filter ready %v, a hold at the LAN %v: the stranger's datagram to %s entered the tun %v, the chain entry dropped %d", time.Since(start), ready, holding, host, entered, dropped)
 	if ready || !holding || entered {
 		t.Error("after a reload that made the route a LAN and whose pass fails: want the filter not ready, a hold at the LAN and no entry")
 	}

@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ func encodedTable(t testing.TB, cfg *egress.Border, sets egress.BorderSets) ([]B
 	t.Helper()
 	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func(*egress.Border) egress.BorderSets { return sets }}
 	rules, written, _ := newBorderFilter(cfg, rt, &fakeBorder{}).desired()
-	requests, err := borderBatch(rules, written, nftables.Contents{}, nil)
+	requests, err := borderBatch(rules, written, nftables.Contents{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,12 +136,12 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 // and never deletes the table.
 func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
-	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil)
+	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stale := nftables.Contents{Chains: []nftables.Chain{prerouting}, Sets: borderNamed[:1]}
-	remade, err := borderBatch(rules, sets, stale, []string{BorderChain, EntryChain})
+	remade, err := borderBatch(rules, sets, stale, []string{BorderChain, EntryChain}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,6 +222,27 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 	}
 }
 
+// A pass over a table holding mesh_entry, the entry chain an earlier filter
+// wrote, sends the transaction it sends with no leftovers, the chain's deletion
+// last, so the commit that writes entry deletes mesh_entry and no packet meets
+// both chains or neither
+func TestBorderBatchDeletesTheEarlierEntryChainInItsTransaction(t *testing.T) {
+	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
+	held := []string{BorderChain, EntryChain, "mesh_entry"}
+	without, err := borderBatch(rules, sets, nftables.Contents{}, held, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := borderBatch(rules, sets, nftables.Contents{}, held, []nftables.Retired{{Kind: "chain", Name: "mesh_entry"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(slices.Clone(without), nftables.Chain{Table: nftables.Table, Name: "mesh_entry"}.Delete(unix.NFPROTO_INET))
+	if !reflect.DeepEqual(with, want) {
+		t.Errorf("the batch over the earlier entry chain sends %d requests, want the %d of the batch without it and the chain's deletion last", len(with), len(without))
+	}
+}
+
 // The antispoof chain reads back as written only as the filter chain at
 // prerouting, priority raw, accepting by default, that the batch creates, and
 // the translator's only as the chains it creates. Another type, hook,
@@ -230,7 +252,7 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 // chain held as a base chain is a fault nf_tables will not change in place.
 func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
-	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil)
+	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

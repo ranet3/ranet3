@@ -503,7 +503,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	})
 
 	// a stranger beyond the uplink sends to a leaf from a source the exit does not own, to an address no class leaves
-	// untranslated: mesh_entry drops and counts it
+	// untranslated: the chain entry drops and counts it
 	t.Run("a stranger's datagram to a leaf", func(t *testing.T) {
 		if err := far.Do(func() error {
 			netlink, err := netnstest.OpenNetlink()
@@ -537,13 +537,13 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 				t.Errorf("%q crossed the mesh tun", payload)
 			}
 			if got := borderDropped(t, exit, border, entryDrop[arm.family]); got != before+1 {
-				t.Errorf("mesh_entry counted %d %s packets after %d, want one more", got, arm.name, before)
+				t.Errorf("the chain entry counted %d %s packets after %d, want one more", got, arm.name, before)
 			}
 		}
 	})
 
 	// a router beyond the exit answers a leaf's egressed datagram with an ICMP error about it, which conntrack relates to the
-	// flow as its reply and translates back to the leaf, so mesh_entry passes it into the tun though no set holds its source
+	// flow as its reply and translates back to the leaf, so the chain entry passes it into the tun though no set holds its source
 	// or its destination
 	t.Run("an ICMP error about an egressed flow", func(t *testing.T) {
 		for _, arm := range arms {

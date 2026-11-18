@@ -769,7 +769,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			ht.Fatalf("drew exemptions Validate refuses: %v", err)
 		}
 		all, sets, _ := newBorderFilter(&cfg, egress.BorderRuntime{Tun: "ranet3", Inside: inside, Sets: drawn.borderSets}, &fakeBorder{}).desired()
-		requests, err := borderBatch(all, sets, nftables.Contents{}, nil)
+		requests, err := borderBatch(all, sets, nftables.Contents{}, nil, nil)
 		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= unix.IFNAMSIZ })
 		if refused != (err != nil) {
 			ht.Fatalf("the chain over inside %q encoded with %v, want refused %v", inside, err, refused)
@@ -931,7 +931,7 @@ func TestEntryChainReturnsWhatTheModelReturns(t *testing.T) {
 			cfg = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
 		}
 		all, sets, _ := newBorderFilter(cfg, egress.BorderRuntime{Tun: tun, Inside: []string{tun, "lo"}, Sets: drawn.borderSets}, &fakeBorder{}).desired()
-		requests, err := borderBatch(all, sets, nftables.Contents{}, nil)
+		requests, err := borderBatch(all, sets, nftables.Contents{}, nil, nil)
 		if err != nil {
 			ht.Fatalf("encode the table: %v", err)
 		}

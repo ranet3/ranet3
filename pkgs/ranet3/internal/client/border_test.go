@@ -917,7 +917,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 
 	passed := time.Now().Add(-3 * time.Second)
 	c.SetBorder(&borderRecord{debug: egress.BorderDebug{
-		Where: "nftables table inet ranet3 chains antispoof and mesh_entry", PassAt: passed, Ready: true,
+		Where: "nftables table inet ranet3 chains antispoof and entry", PassAt: passed, Ready: true,
 		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "prerouting", Priority: new(-300),
 			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
 		Sets: []egress.BorderSetReading{{Kind: "set", Name: "owned4", Elements: []egress.Range{{First: netip.MustParseAddr("192.0.2.7"), Last: netip.MustParseAddr("192.0.2.7")}}}},

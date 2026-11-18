@@ -244,7 +244,7 @@ func benchFamily(family string) (uplink netip.Prefix, far netip.Addr) {
 
 // Arm A: a datagram from a host beyond the uplink to the uplink's own
 // address, written into the uplink's tun b.N times, meeting prerouting, in
-// each family: with no table, with conntrack alone, with mesh_entry alone
+// each family: with no table, with conntrack alone, with the chain entry alone
 // (conntrack on), with the antispoof chain over the overlay and no carve-out,
 // so no carved drop, and with the uplink's network carved out in each family
 // and two of the mesh's prefixes inside each. A source outside the overlay
@@ -263,7 +263,7 @@ func BenchmarkBorderChainOnAnUnderlayPacket(b *testing.B) {
 		}{
 			{"no table", false, false, nil, egress.BorderSets{}},
 			{"conntrack alone", true, false, nil, egress.BorderSets{}},
-			{"mesh_entry alone", false, true, nil, egress.BorderSets{}},
+			{"entry alone", false, true, nil, egress.BorderSets{}},
 			{"overlay with no carve-out", false, true, benchOverlay(), egress.BorderSets{}},
 			{"two carve-outs", false, true, benchOverlay(), carved},
 		} {
@@ -347,9 +347,9 @@ func benchSocket(b *testing.B, family string, to netip.Addr) int {
 // Arm B: the host's own datagram from the uplink's address into the mesh,
 // routed into the tun, which the benchmark drains, b.N times in each family,
 // unmarked and in its flow's original direction: with no table, with
-// conntrack alone, through mesh_entry with an owned set of 1, 100 and 10,000
+// conntrack alone, through the chain entry with an owned set of 1, 100 and 10,000
 // ranges, one of which holds the source, which passes after the set's lookup,
-// and with 10,000 that do not hold it, which mesh_entry drops with EPERM
+// and with 10,000 that do not hold it, which the chain entry drops with EPERM
 func BenchmarkEntryChainSendIntoTheTun(b *testing.B) {
 	for _, family := range benchFamilies {
 		for _, arm := range []struct {
@@ -380,7 +380,7 @@ func BenchmarkEntryChainSendIntoTheTun(b *testing.B) {
 					_, err := unix.Write(fd, payload)
 					switch {
 					case err == nil && arm.owned > 0 && !arm.held:
-						b.Fatal("mesh_entry passed a source no owned range holds")
+						b.Fatal("the chain entry passed a source no owned range holds")
 					case err != nil && !(errors.Is(err, unix.EPERM) && !arm.held && arm.owned > 0):
 						b.Fatalf("send into the tun: %v", err)
 					}
@@ -395,7 +395,7 @@ func BenchmarkEntryChainSendIntoTheTun(b *testing.B) {
 // far host out of the uplink, which the benchmark drains, b.N times in each
 // family, as one datagram and as 8 segments of 1,200 bytes by UDP_SEGMENT:
 // with no filter, with conntrack on beforehand, and with the filter, whose
-// mesh_entry returns it at its first line
+// chain entry returns it at its first line
 func BenchmarkUplinkSend(b *testing.B) {
 	for _, family := range benchFamilies {
 		for _, segments := range []int{1, 8} {

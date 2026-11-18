@@ -731,7 +731,7 @@ type EgressClass struct {
 
 // BorderStatus is the antispoof filter: the chain antispoof dropping what
 // arrives from outside the mesh carrying a mesh source no exemption passes,
-// wherever overlay is written, and the chain mesh_entry dropping a packet into
+// wherever overlay is written, and the chain entry dropping a packet into
 // the tun that none of its lines passes, a reply, an IPv6 link-local or
 // multicast destination, a source this node owns or a destination a none class
 // takes. Status carries one wherever the filter runs, and where overlay is

@@ -731,7 +731,7 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = filter.Close() })
-	entry := nftables.Chain{Table: nftables.Table, Name: "mesh_entry", Hook: nftables.NoHook}
+	entry := nftables.Chain{Table: nftables.Table, Name: "entry", Hook: nftables.NoHook}
 	if err := filter.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, nftables.Table), entry.Create(unix.NFPROTO_INET)}); err != nil {
 		t.Fatal(err)
 	}
