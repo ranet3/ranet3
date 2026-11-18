@@ -1750,7 +1750,7 @@ testers.runNixOSTest {
                         raise AssertionError(f"the gateway's {family} pings from {source} are not answered through the exit")
 
             dropped = status()["egress"]["dropped"]
-            # a table of the script's own, which the translator neither reads nor removes
+            # a table of the script's own, which the translator does not report as a conflict and leaves in place
             client.succeed(
                 "nft add table inet exempt",
                 "nft add chain inet exempt prerouting '{ type filter hook prerouting priority raw; }'",
