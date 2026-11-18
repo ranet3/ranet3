@@ -403,9 +403,15 @@ func createFeth(t *testing.T) (string, func() error) {
 // already exists, which XNU reports by a kernel event alone, and a utun's later IPv6 addresses, which it reports by a routing message alone
 // a route out of a link, an address on a second utun standing in for the mesh, and an IPv6 address found duplicated signal nothing
 // an IPv6 address on a broadcast link joins the links only once duplicate address detection ends, by the event that ends it
-// the default route is never touched
+// the default route is never touched, and the route out of utun A is at a key the host holds no unscoped route at, which the test reads
+// before it makes anything and skips where it does, since route(8) answers a refused add as done and a delete names no interface
 func TestDarwinNetworkWatchOnRealKernel(t *testing.T) {
 	requireNetTest(t)
+	routed := netip.MustParsePrefix("198.51.100.0/24")
+	keepUnscopedAt(t, routed)
+	if index, ok := unscopedRouteAt(dumpRoutes(t), routed); ok {
+		t.Skipf("the host routes %s out of interface %d already, and the route this test deletes by its key would be that one", routed, index)
+	}
 	mesh := createUTUN(t)
 	shared, err := ShareWatcher(nil, mesh)
 	if err != nil {
@@ -431,8 +437,19 @@ func TestDarwinNetworkWatchOnRealKernel(t *testing.T) {
 	r.step("utun A 198.18.77.3 to the same far end, which sends no routing message", q,
 		ifconfig(a, "inet", "198.18.77.3", "198.18.77.2", "netmask", "255.255.255.0", "alias"),
 		wantLink(a, "198.18.77.1/32 198.18.77.3/32", "198.18.77.2/32", "", ""))
-	r.step("a route out of utun A", q, commandStep("route", "-n", "add", "-net", "198.51.100.0/24", "-interface", a), nil)
-	r.step("the route gone", q, commandStep("route", "-n", "delete", "-net", "198.51.100.0/24", "-interface", a), nil)
+	r.step("a route out of utun A", q, commandStep("route", "-n", "add", "-net", routed.String(), "-interface", a), nil)
+	aIndex := interfaceIndex(t, a)
+	if index, ok := unscopedRouteAt(dumpRoutes(t), routed); !ok {
+		t.Fatalf("route(8) answered the add of %s out of %s as done and the dump holds no route there", routed, a)
+	} else if index != aIndex {
+		t.Skipf("the host routes %s out of interface %d, which took the key before this test's add", routed, index)
+	}
+	r.step("the route gone", q, func() error {
+		if index, ok := unscopedRouteAt(dumpRoutes(t), routed); !ok || index != aIndex {
+			return fmt.Errorf("the route at %s is no longer the one out of %s, so the test leaves it", routed, a)
+		}
+		return commandStep("route", "-n", "delete", "-net", routed.String())()
+	}, nil)
 	r.step("utun A 198.18.79.1/24 with itself as far end", q, ifconfig(a, "inet", "198.18.79.1/24", "198.18.79.1", "alias"),
 		wantLink(a, "198.18.77.1/32 198.18.77.3/32 198.18.79.1/32", "198.18.77.2/32", "", ""))
 	r.step("utun A 198.18.79.5/24 with itself as far end", q, ifconfig(a, "inet", "198.18.79.5/24", "198.18.79.5", "alias"),
