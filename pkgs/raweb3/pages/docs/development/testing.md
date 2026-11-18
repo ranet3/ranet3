@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-12
+updated: 2026-11-18
 order: 20
 ---
 
@@ -544,6 +544,7 @@ nix build .#checks.x86_64-linux.integration-kernel -L
 nix build .#checks.x86_64-linux.integration-segments -L
 nix build .#checks.x86_64-linux.integration-egress -L
 nix build .#checks.x86_64-linux.integration-egress-segment -L
+nix build .#checks.x86_64-linux.integration-egress-none -L
 nix build .#checks.x86_64-linux.integration-suites-meet -L
 nix build .#checks.x86_64-linux.integration-suites-meet-responder -L
 nix build .#checks.x86_64-linux.integration-suites-apart -L
