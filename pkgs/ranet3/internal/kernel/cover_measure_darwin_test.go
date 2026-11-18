@@ -137,38 +137,19 @@ func TestZMeasureTheZeroFreeCoverKeepsABoundSocket(t *testing.T) {
 }
 
 // hostDefault6 is the interface the host's unscoped ::/0 leaves by. A host
-// with none gets one built on a second test utun, which goes away with the
-// test.
+// with none gets one built on a second test utun (uplinkWithDefault6). The
+// test fails where the host's unscoped ::/0 differs between this call and the
+// guard's read, which comes before the cleanups the caller registered first,
+// its mesh utun's close or killLeavesTheHost's (keepUnscopedAt).
 func hostDefault6(t *testing.T, mesh int) int {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if index, ok := unscopedDefaultIndex(messages, netip.PrefixFrom(netip.IPv6Unspecified(), 0)); ok && index != mesh {
+	keepUnscopedAt(t, defaultPrefixes[1])
+	if index, ok := unscopedDefaultIndex(dumpRoutes(t), defaultPrefixes[1]); ok && index != mesh {
 		return index
 	}
-	uplink, _ := createUTUNWithFD(t)
-	setInterfaceUp(t, uplink)
-	if err := testTUNPlatform(t, uplink).AddAddr(prefix("2001:db8:aa::1/64")); err != nil {
-		t.Fatal(err)
-	}
-	out, err := exec.Command("route", "-n", "add", "-inet6", "-net", "::/0", "-interface", uplink).CombinedOutput()
-	if err != nil {
-		t.Skipf("this host will not take an unscoped ::/0: %v %s", err, out)
-	}
-	t.Cleanup(func() {
-		if out, err := exec.Command("route", "-n", "delete", "-inet6", "-net", "::/0", "-interface", uplink).CombinedOutput(); err != nil {
-			t.Errorf("the ::/0 this test added was left behind: %v %s", err, out)
-		}
-	})
-	index := interfaceIndex(t, uplink)
-	if !unscopedDefaultOn(t, index) {
-		t.Skip("the ::/0 this test added was scoped by the kernel")
+	uplink, index, reason := uplinkWithDefault6(t)
+	if reason != "" {
+		t.Skip(reason)
 	}
 	t.Logf("this host has no IPv6 default, so %s carries one for the test", uplink)
 	return index
@@ -177,14 +158,7 @@ func hostDefault6(t *testing.T, mesh int) int {
 // scopedDefaultOn reports a default of one family scoped to that interface.
 func scopedDefaultOn(t *testing.T, index int, is4 bool) bool {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		t.Fatal(err)
-	}
+	messages := dumpRoutes(t)
 	destination := defaultPrefixes[1]
 	if is4 {
 		destination = defaultPrefixes[0]

@@ -49,6 +49,9 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 	if plat.index == host {
 		t.Skip("the test utun is the interface the host's own traffic leaves by")
 	}
+	if index, ok := routedElsewhere(dumpRoutes(t), prefix("192.0.2.0/24"), plat.index); ok {
+		t.Skipf("the host routes 192.0.2.0/24 unscoped out of interface %d, so its route for %s is that one and not the default this test measures against", index, target)
+	}
 	if err := plat.AddAddr(prefix("198.51.100.1/24")); err != nil {
 		t.Fatal(err)
 	}
