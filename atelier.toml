@@ -24,6 +24,7 @@ exclude = [
   "checks.aarch64-linux.integration-suites-apart",
   "checks.aarch64-linux.integration-suites-apart-responder",
   "checks.aarch64-linux.integration-egress-segment",
+  "checks.aarch64-linux.integration-egress-none",
   "checks.aarch64-linux.integration-mlkem-meet",
   "checks.aarch64-linux.integration-mlkem-meet-responder",
   "checks.aarch64-linux.integration-mlkem-apart",

@@ -33,6 +33,14 @@
   # a kernel leaf's bytes are checked against the exit that has to act on them.
   # It goes with egress and segments, and only the SID is announced.
   egressSegment ? false,
+  # none makes the exit advertise the defaults and gives it an overlay and
+  # classes of none in both families inside the gateway's tunnel prefixes, two a
+  # family with a class that translates nested in the first. Beside the table's
+  # listing, a third machine's capture checks the translator's pass line and its
+  # sets on packets no flow is tracked for, which only that line and the screens
+  # decide, and its pings into the mesh check the antispoof filter's sets. It
+  # goes with egress alone.
+  none ? false,
   # fqdn names both ends by an FQDN in place of a DN, strongSwan by its own id
   # and ranet3 by auth.aliases, so an ID of another type than a DN is checked
   # against the implementation it has to interoperate with.
@@ -63,6 +71,19 @@ assert lib.elem beside [
 # a program beside ranet3 meets the plain dialing client, and Docker the exit
 assert beside != null -> suites == null && mlkem == null && !segments && !responder && !fqdn;
 assert beside != null -> egress == (beside == "docker");
+assert
+  none
+  ->
+    egress
+    && !segments
+    && !egressSegment
+    && !responder
+    && !kernel
+    && !fqdn
+    && !profile
+    && suites == null
+    && mlkem == null
+    && beside == null;
 # strongSwan dials in "optional" and "none" and ranet3 in "fallback" and "fragment"
 assert
   lib.elem mlkem [
@@ -131,6 +152,41 @@ let
   behindV6 = "fd00:aa::1";
   exitV4 = "198.51.100.2";
   exitV6 = "fd00:aa::2";
+  # Inside the prefixes the gateway announces, so the mesh routes a reply to
+  # each class's sources. In each family the second class of none starts where
+  # the first ends, so the sets join the two, and the class that translates cuts
+  # the first in two. The gateway sends from the first and the nested class
+  # alone, and the second shows in the sets.
+  noneClasses = [
+    {
+      from = "10.99.0.0/25";
+      to = "none";
+    }
+    {
+      from = "10.99.0.32/27";
+      to = "auto";
+    }
+    {
+      from = "10.99.0.128/26";
+      to = "none";
+    }
+    {
+      from = "fd00:99::/112";
+      to = "none";
+    }
+    {
+      from = "fd00:99::100/120";
+      to = "auto";
+    }
+    {
+      from = "fd00:99::1:0/112";
+      to = "none";
+    }
+  ];
+  # The gateway's sources in the class that translates. Its tunnel addresses
+  # are in the first class of none.
+  nestedV4 = "10.99.0.33";
+  nestedV6 = "fd00:99::101";
   gatewayFQDN = "server.testorg.example";
   clientFQDN = "client.testorg.example";
   publicKey = builtins.readFile ../../fixtures/org-pub.pem;
@@ -404,6 +460,8 @@ testers.runNixOSTest {
       "ranet3-mlkem-${mlkem}${lib.optionalString responder "-responder"}"
     else if responder then
       "ranet3-responder${lib.optionalString fqdn "-fqdn"}"
+    else if none then
+      "ranet3-egress-none"
     else if egressSegment then
       "ranet3-egress-segment"
     else if kernel then
@@ -494,7 +552,11 @@ testers.runNixOSTest {
               # inside it that is not assigned locally is one the gateway
               # sends straight back to the client.
               ++ pkgs.lib.optionals segments [ { Address = "${gatewayBehind}/128"; } ]
-              ++ pkgs.lib.optionals egressSegment [ { Address = "${gatewayOutside}/128"; } ];
+              ++ pkgs.lib.optionals egressSegment [ { Address = "${gatewayOutside}/128"; } ]
+              ++ pkgs.lib.optionals none [
+                { Address = "${nestedV4}/32"; }
+                { Address = "${nestedV6}/128"; }
+              ];
             };
             "05-lo" = lib.mkIf exitArm {
               matchConfig.Name = "lo";
@@ -769,18 +831,19 @@ testers.runNixOSTest {
             }
           ];
           # An exit routes every other destination out of its uplink. An exit
-          # for an egress segment alone advertises nothing, so the translator
-          # judges each family by the kernel's lookup of a translated packet to
-          # an address of the family's default, which needs this route to be
+          # for an egress segment alone advertises nothing, and an exit with
+          # classes of none advertises the defaults, so the translator judges
+          # each family by the kernel's lookup of a translated packet to an
+          # address of the family's default, which needs this route to be
           # ready.
-          ipv4.routes = pkgs.lib.optionals egressSegment [
+          ipv4.routes = pkgs.lib.optionals (egressSegment || none) [
             {
               address = "0.0.0.0";
               prefixLength = 0;
               via = behindV4;
             }
           ];
-          ipv6.routes = pkgs.lib.optionals egressSegment [
+          ipv6.routes = pkgs.lib.optionals (egressSegment || none) [
             {
               address = "::";
               prefixLength = 0;
@@ -893,7 +956,8 @@ testers.runNixOSTest {
             # prefixes, so every outer source the gateway sends from and the
             # egress segment's allow list
             # and beside another program the reconciler holds each overlay prefix and looks up an address of it
-            overlay = pkgs.lib.mkIf (segments || beside != null) [
+            # and a class of none needs it to tell the mesh's node addresses from the LANs other nodes advertise
+            overlay = pkgs.lib.mkIf (segments || beside != null || none) [
               "fd00:88::/32"
               "fd00:99::/32"
               "10.88.0.0/16"
@@ -958,12 +1022,23 @@ testers.runNixOSTest {
               };
               # an exit for an egress segment alone advertises nothing, so the
               # gateway reaches the far side through the segment or not at all
+              # and an exit with classes of none advertises the defaults, so
+              # behind is a host of the internet to it rather than a network
+              # it originates, whose sources the entry chain would pass as its own
               egress = pkgs.lib.mkIf egress {
-                advertise = pkgs.lib.optionals (!egressSegment) [
-                  exitNetV4
-                  exitNetV6
-                ];
+                advertise =
+                  if none then
+                    [
+                      "0.0.0.0/0"
+                      "::/0"
+                    ]
+                  else
+                    pkgs.lib.optionals (!egressSegment) [
+                      exitNetV4
+                      exitNetV6
+                    ];
                 sweep = "2s";
+                translate = pkgs.lib.mkIf none noneClasses;
               };
               table = pkgs.lib.mkIf (kernel || egress || beside != null) {
                 id = kernelTable;
@@ -1562,6 +1637,191 @@ testers.runNixOSTest {
             print(client.execute("ranet3 status")[1])
             print(client.execute("nft list ruleset")[1])
             print(client.execute("ip -6 rule show; ip -4 rule show")[1])
+            print(gateway.execute("birdc show route")[1])
+      '';
+
+      # The client is an exit for the defaults with an overlay and classes of
+      # none, and the gateway sends from the first class of none and from the
+      # class that translates. behind stands for a host of the internet and holds
+      # the route into the mesh through the exit that the upstream of a class of
+      # none holds. An echo request a flow is tracked for passes the forward
+      # hook's screens whatever its class, so only one no flow is tracked for
+      # shows the pass line and its sets: a table of the script's own exempts the
+      # gateway's echo requests from tracking, and behind sees the first class's
+      # leave as they are and none of the nested class's.
+      noneScript = exitTranslates + ''
+        import json
+
+        # the antispoof filter's counters reach the status at its next pass, 30 s apart
+        entry_timeout = dt.timedelta(seconds=90)
+
+        def status():
+            return json.loads(client.succeed("ranet3 status --json"))
+
+        def lines(command):
+            """the lines nft prints for command, each stripped and with its counter's values left out"""
+            listing = re.sub(r"counter packets \d+ bytes \d+", "counter", client.succeed(command))
+            return [line.strip() for line in listing.splitlines() if line.strip()]
+
+        def elements(name):
+            """the elements of the set name of the table as nft prints them, or the whole listing where it prints none"""
+            listing = " ".join(client.succeed(f"nft list set inet ranet3 {name}").split())
+            found = re.search(r"elements = \{[^}]*\}", listing)
+            return found.group(0) if found else listing
+
+        def untracked_seen(digit, echo, far, sources):
+            """what behind's capture under echo saw of the first three echo requests to leave the exit while the gateway sent three to far from each of sources in turn, whether answered or not"""
+            def act():
+                for source in sources:
+                    print(gateway.execute(f"ping -c 3 -i 0.3 -W 1 -I {source} {far}")[1])
+
+            return capture_while(behind, "eth1", f"untracked{digit}", echo, 3, act)
+
+        families = [
+            # family, its digit, behind's filter for an echo request, behind, the exit's uplink address, and the gateway's
+            # sources in the first class of none and in the class that translates
+            ("ipv4", "4", "icmp[icmptype] = icmp-echo", "${behindV4}", "${exitV4}", "${gatewayTunnelV4}", "${nestedV4}"),
+            ("ipv6", "6", "icmp6 and ip6[40] = 128", "${behindV6}", "${exitV6}", "${gatewayTunnel}", "${nestedV6}"),
+        ]
+        # each family's classes of none less the class that translates, as nft prints the translator's set of
+        # untranslated sources and the antispoof filter's set of none
+        untranslated = {
+            "4": "elements = { 10.99.0.0/27, 10.99.0.64-10.99.0.191 }",
+            "6": "elements = { fd00:99::/120, fd00:99::200-fd00:99::1:ffff }",
+        }
+        forward = {
+            "forward": [
+                "table inet ranet3 {",
+                "chain forward {",
+                "type filter hook forward priority filter; policy accept;",
+                'meta nfproto ipv6 goto forward6 comment "ipv6 to forward6"',
+                'iifname "${clientDevice}" oifname != "${clientDevice}" icmp type source-quench counter drop comment "out via ${clientDevice} ipv4 icmp source quench dropped"',
+                'iifname "${clientDevice}" oifname != "${clientDevice}" icmp type 15-16 counter drop comment "out via ${clientDevice} ipv4 icmp information dropped"',
+                'iif != 0 iifname != "${clientDevice}" oifname "${clientDevice}" icmp type source-quench counter drop comment "in via ${clientDevice} ipv4 icmp source quench dropped"',
+                'iif != 0 iifname != "${clientDevice}" oifname "${clientDevice}" icmp type 15-16 counter drop comment "in via ${clientDevice} ipv4 icmp information dropped"',
+                'iifname "${clientDevice}" oifname != "${clientDevice}" ip saddr @untranslated4 accept comment "out via ${clientDevice} ipv4 untranslated passed"',
+                'ct state invalid,untracked iifname "${clientDevice}" oifname != "${clientDevice}" counter drop comment "out via ${clientDevice} ipv4 untracked dropped"',
+                'meta l4proto dccp ct direction original iifname "${clientDevice}" oifname != "${clientDevice}" counter reject with icmpx admin-prohibited comment "out via ${clientDevice} ipv4 dccp refused"',
+                'meta l4proto udplite ct direction original iifname "${clientDevice}" oifname != "${clientDevice}" counter reject with icmpx admin-prohibited comment "out via ${clientDevice} ipv4 udplite refused"',
+                'ct state new ct status ! confirmed iifname "${clientDevice}" oifname != "${clientDevice}" add @flows4 { ip saddr ct count over 4096 } counter reject with icmpx host-unreachable comment "out via ${clientDevice} ipv4 limit 4096"',
+                "}",
+                "}",
+            ],
+            "forward6": [
+                "table inet ranet3 {",
+                "chain forward6 {",
+                'iifname "${clientDevice}" oifname != "${clientDevice}" ip6 saddr @untranslated6 accept comment "out via ${clientDevice} ipv6 untranslated passed"',
+                'ct state invalid,untracked iifname "${clientDevice}" oifname != "${clientDevice}" counter drop comment "out via ${clientDevice} ipv6 untracked dropped"',
+                'meta l4proto dccp ct direction original iifname "${clientDevice}" oifname != "${clientDevice}" counter reject with icmpx admin-prohibited comment "out via ${clientDevice} ipv6 dccp refused"',
+                'meta l4proto udplite ct direction original iifname "${clientDevice}" oifname != "${clientDevice}" counter reject with icmpx admin-prohibited comment "out via ${clientDevice} ipv6 udplite refused"',
+                'ct state new ct status ! confirmed iifname "${clientDevice}" oifname != "${clientDevice}" add @flows6 { ip6 saddr ct count over 4096 } counter reject with icmpx admin-prohibited comment "out via ${clientDevice} ipv6 limit 4096"',
+                "}",
+                "}",
+            ],
+        }
+
+        try:
+            gateway.wait_for_unit("systemd-networkd-wait-online.service")
+            gateway.wait_for_unit("strongswan-swanctl.service")
+            gateway.wait_for_unit("bird.service")
+            for address in ["${behindV4}", "${behindV6}"]:
+                behind.wait_until_succeeds(f"ip addr show dev eth1 | grep -qF {address}", timeout=timeout)
+            for address in ["${nestedV4}", "${nestedV6}"]:
+                gateway.wait_until_succeeds(f"ip -o addr show dev swan0 | grep -F ' {address}/' | grep -qv tentative", timeout=timeout)
+            client.wait_for_unit("ranet3.service")
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+
+            # the lookups read from a member of each family once a sweep after the gateway's routes has run
+            client.wait_until_succeeds(
+                "ranet3 status --json | jq -e '.egress.skipped == null and .egress.ready == [\"ipv4\", \"ipv6\"]'", timeout=timeout)
+            client.wait_until_succeeds("ranet3 status --json | jq -e '.antispoof.ready'", timeout=timeout)
+            gateway.wait_until_succeeds("ip -4 route show default | grep -q swan0", timeout=timeout)
+            gateway.wait_until_succeeds("ip -6 route show default | grep -q swan0", timeout=timeout)
+            table = client.succeed("nft list table inet ranet3")
+            print(table)
+
+            # the route the upstream of a class of none holds into the mesh, through the exit
+            behind.succeed("ip -4 route add 10.99.0.0/24 via ${exitV4}", "ip -6 route add fd00:99::/64 via ${exitV6}")
+            for family, digit, echo, far, uplink, first, nested in families:
+                for source in [first, nested]:
+                    try:
+                        gateway.wait_until_succeeds(f"ping -c 1 -W 2 -I {source} {far}", timeout=timeout)
+                    except Exception:
+                        raise AssertionError(f"the gateway's {family} pings from {source} are not answered through the exit")
+
+            dropped = status()["egress"]["dropped"]
+            # a table of the script's own, which the translator neither reads nor removes
+            client.succeed(
+                "nft add table inet exempt",
+                "nft add chain inet exempt prerouting '{ type filter hook prerouting priority raw; }'",
+                "nft add rule inet exempt prerouting iifname ${clientDevice} ip saddr '{ ${gatewayTunnelV4}, ${nestedV4} }' icmp type echo-request notrack",
+                "nft add rule inet exempt prerouting iifname ${clientDevice} ip6 saddr '{ ${gatewayTunnel}, ${nestedV6} }' icmpv6 type echo-request notrack",
+            )
+            print(client.succeed("nft list table inet exempt"))
+            for family, digit, echo, far, uplink, first, nested in families:
+                # the nested class's go first, so the three seen are the first class's where the screen drops the others
+                try:
+                    capture = untracked_seen(digit, echo, far, [nested, first])
+                except Exception:
+                    behind.execute("pkill -x tcpdump")
+                    raise AssertionError(
+                        f"behind did not see three of the gateway's untracked {family} echo requests, so those from {first}, of a class of none, did not leave the exit")
+                print(capture)
+                assert nested not in capture, f"the untracked echo requests from {nested}, of the class that translates, left the exit:\n{capture}"
+                assert f"{first} > {far}" in capture and uplink not in capture, (
+                    f"behind did not see the untracked echo requests from {first}, of a class of none, untranslated:\n{capture}")
+            client.succeed("nft delete table inet exempt")
+            dropped4, dropped6 = dropped["ipv4"] + 3, dropped["ipv6"] + 3
+            try:
+                client.wait_until_succeeds(
+                    f"ranet3 status --json | jq -e '.egress.dropped.ipv4 >= {dropped4} and .egress.dropped.ipv6 >= {dropped6}'", timeout=timeout)
+            except Exception:
+                raise AssertionError(f"the forward hook did not count the untracked echo requests from the class that translates as dropped: {status()['egress']}")
+
+            chains = sorted(line.split()[1] for line in table.splitlines() if line.strip().startswith("chain "))
+            assert chains == ["antispoof", "entry", "forward", "forward6", "postrouting"], f"table inet ranet3 holds the chains {chains}"
+            timeouts = sorted(line.split()[2] for line in table.splitlines() if line.strip().startswith("ct timeout "))
+            assert timeouts == ["icmp4", "icmp6", "tcp4", "tcp6", "udp4", "udp6"], f"table inet ranet3 holds the timeout objects {timeouts}"
+            for chain, rules in forward.items():
+                held = lines(f"nft list chain inet ranet3 {chain}")
+                assert held == rules, f"{chain} holds:\n" + "\n".join(held)
+            for digit in ["4", "6"]:
+                for name in [f"untranslated{digit}", f"none{digit}"]:
+                    listed = elements(name)
+                    assert listed == untranslated[digit], f"{name} holds {listed}, want {untranslated[digit]}"
+
+            entered = status()["antispoof"]["dropped"]
+            for family, digit, echo, far, uplink, first, nested in families:
+                # tracked, the class that translates leaves under the uplink's address, and a class of none's exchange
+                # completes untranslated both ways
+                for name, source, seen, unseen in [(f"nested{digit}", nested, uplink, nested), (f"first{digit}", first, first, uplink)]:
+                    try:
+                        capture = carried(name, echo, source, far)
+                    except Exception:
+                        behind.execute("pkill -x tcpdump")
+                        raise AssertionError(f"behind did not see three of the gateway's pings from {source}, or none was answered")
+                    print(capture)
+                    assert f"{seen} > {far}" in capture and unseen not in capture, f"behind did not see the gateway's pings from {source} leave from {seen} alone:\n{capture}"
+
+                # behind sends from its address on the exit's network, since the gateway answers its vlan address directly
+                try:
+                    behind.wait_until_succeeds(f"ping -c 1 -W 2 -I {far} {first}", timeout=timeout)
+                except Exception:
+                    raise AssertionError(f"behind's pings to {first}, of a class of none, did not enter the mesh through the exit")
+                code, output = behind.execute(f"ping -c 3 -i 0.3 -W 1 -I {far} {nested}")
+                print(output)
+                assert code != 0, f"behind's pings to {nested}, of the class that translates, were answered through the exit"
+            entry4, entry6 = entered.get("mesh_entry_ipv4", 0) + 3, entered.get("mesh_entry_ipv6", 0) + 3
+            try:
+                client.wait_until_succeeds(
+                    f"ranet3 status --json | jq -e '.antispoof.dropped.mesh_entry_ipv4 >= {entry4} and .antispoof.dropped.mesh_entry_ipv6 >= {entry6}'",
+                    timeout=entry_timeout)
+            except Exception:
+                raise AssertionError(f"the entry chain did not count behind's pings to the class that translates as dropped: {status()['antispoof']}")
+        finally:
+            print(client.execute("ranet3 status")[1])
+            print(client.execute("nft list ruleset")[1])
+            print(client.execute("ip -4 rule show; ip -6 rule show")[1])
             print(gateway.execute("birdc show route")[1])
       '';
 
@@ -2740,6 +3000,8 @@ testers.runNixOSTest {
         egressSegmentScript
       else if segments then
         segmentRouted
+      else if none then
+        noneScript
       else if egress then
         exitTranslates + exitNode
       else
