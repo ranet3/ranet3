@@ -54,6 +54,16 @@ func TestUserspaceExitHostOverTheCarrier(t *testing.T) {
 	if os.Getenv(rigNetTest) == "" {
 		t.Skipf("%s is unset, so no rig runs this host", rigNetTest)
 	}
+	for _, class := range rigClasses {
+		if class.Addr().Is6() {
+			keepLoopbackAddress(t, class.Addr())
+		}
+	}
+	for _, class := range rigClasses {
+		if class.Addr().Is6() && loopbackHolds(t, class.Addr()) {
+			t.Skipf("lo0 holds %s already, and the class address this test removes would be its owner's", class.Addr())
+		}
+	}
 	ethernet, peer, port, controlPort := rigVariables(t)
 	link, err := net.InterfaceByName(ethernet)
 	if err != nil {
@@ -93,6 +103,43 @@ func TestUserspaceExitHostOverTheCarrier(t *testing.T) {
 		t.Errorf("take the class addresses off lo0: %v", err)
 	}
 	t.Log("rig: utun and routes removed")
+}
+
+// loopbackHolds reports whether lo0 holds address, which an alias add answers
+// as done and its removal would then take from the program that put it there
+func loopbackHolds(t *testing.T, address netip.Addr) bool {
+	t.Helper()
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := loopback.Addrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, one := range held {
+		if network, ok := one.(*net.IPNet); ok {
+			if found, ok := netip.AddrFromSlice(network.IP); ok && found.Unmap() == address {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// keepLoopbackAddress fails the test where lo0 holds address when it is
+// called and not when the cleanup it registers runs. The carrier host calls
+// it before it makes anything, so it reads after every other cleanup.
+func keepLoopbackAddress(t *testing.T, address netip.Addr) {
+	t.Helper()
+	if !loopbackHolds(t, address) {
+		return
+	}
+	t.Cleanup(func() {
+		if !loopbackHolds(t, address) {
+			t.Errorf("lo0 held %s at the test's start and does not at its end", address)
+		}
+	})
 }
 
 // rigCarrier is the carrier's datagram socket on port, scoped to link, read
