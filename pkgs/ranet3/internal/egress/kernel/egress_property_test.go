@@ -167,8 +167,8 @@ func takesMessage(message Message, kind uint8) bool {
 }
 
 // meant is which packets a rule takes by its definition, each of its family
-// and from a source its From or a prefix of its Sources covers where it has
-// one: out of the mesh what
+// and from a source its From covers where it has one, or for a pass a prefix
+// of its Sources does: out of the mesh what
 // arrives on the mesh device and leaves by another, into the mesh what arrives
 // from elsewhere, not from this host, and leaves by the mesh device, and for
 // this node's own address what leaves by another link. A timeout rule takes
@@ -179,7 +179,7 @@ func takesMessage(message Message, kind uint8) bool {
 // tracked for has none of.
 func meant(rule Rule, packet crossing) bool {
 	if egress.AddressFamily(packet.source) != rule.Family || rule.From.IsValid() && !rule.From.Contains(packet.source) || rule.Untracked && !packet.untracked ||
-		rule.Sources != "" && !rule.Sources.Contains(packet.source) {
+		rule.Passes && !rule.Sources.Contains(packet.source) {
 		return false
 	}
 	if rule.Drops != NoMessage && (packet.protocol != unix.IPPROTO_ICMP || !takesMessage(rule.Drops, packet.first)) ||
@@ -262,16 +262,12 @@ func translatedTimeouts(packet crossing) Timeouts {
 
 // forwardWalk is the rules of the chain the lines of a packet's family at the
 // forward hook sit in, forward for IPv4 past the first line, which sends IPv6
-// on to IPv6's chain, and of its classes of none's chains that the packet
-// meets in order, as nf_tables reads them: that chain's from its first, then
-// the rules of the chain a pass meant for it names in place of the rest, up to
-// the first drop or screen meant for it, which ends the walk
+// on to IPv6's chain, that the packet meets in order, as nf_tables reads them,
+// up to the first pass, drop or screen meant for it, which ends the walk
 func forwardWalk(desired []Rule, packet crossing) []Rule {
 	var met []Rule
-	chain := familyChain(egress.AddressFamily(packet.source))
-	for i := 0; i < len(desired); i++ {
-		rule := desired[i]
-		if rule.Family != egress.AddressFamily(packet.source) || rule.chain() != chain {
+	for _, rule := range desired {
+		if rule.Family != egress.AddressFamily(packet.source) || rule.chain() != familyChain(rule.Family) {
 			continue
 		}
 		met = append(met, rule)
@@ -279,26 +275,21 @@ func forwardWalk(desired []Rule, packet crossing) []Rule {
 			continue
 		}
 		switch rule.kind() {
-		case passing:
-			chain, i = noneChain(rule.From), -1
-		case dropping, screening:
+		case passing, dropping, screening:
 			return met
 		}
 	}
 	return met
 }
 
-// An established IPv4 packet out of the mesh meets one rule for a class of none
-// outside it, its pass, whatever classes it holds, one for each class of none
-// it is under, and in the chain of the class of none nearest it one screen of
-// each kind for the classes that translate inside that class, whatever their
-// count. So a packet under the default or under one class of none meets as many
-// rules whatever the count of classes that translate inside it. No packet meets
-// more rules than it would with every class's rules in the forward chain
-// itself: the ICMP drops, a rule taking what no flow is tracked for
-// from each class down to the last of none and from every source, the limit,
-// then the same walk for DCCP and again for UDP-Lite.
-func TestPacketsMeetOneRuleForEachClassOfNoneOutsideThem(t *testing.T) {
+// An established IPv4 packet out of the mesh meets one rule for the classes of
+// none, the pass, whatever their count and however they nest: the ICMP drops
+// and the pass where its class is none, and past them the screens where it
+// translates. No packet meets more rules than it would with every class's
+// rules in the forward chain itself: the ICMP drops, a rule taking what no
+// flow is tracked for from each class down to the last of none and from every
+// source, the limit, then the same walk for DCCP and again for UDP-Lite.
+func TestPacketsMeetOneRuleForTheClassesOfNone(t *testing.T) {
 	auto, none := egress.Translation{Auto: true}, egress.Translation{None: true}
 	class := func(from string, to egress.Translation) egress.Class {
 		return egress.Class{From: schema.MustPrefix(from), To: to}
@@ -320,16 +311,16 @@ func TestPacketsMeetOneRuleForEachClassOfNoneOutsideThem(t *testing.T) {
 		{"under the default, outside one of none holding three that translate", nested, "203.0.113.9", 9},
 		{"under the first of three that translate inside one of none", nested, "192.0.2.9", 9},
 		{"under the last of three that translate inside one of none", nested, "192.0.2.137", 9},
-		{"under one of none holding three that translate", nested, "192.0.2.200", 9},
+		{"under one of none holding three that translate", nested, "192.0.2.200", 5},
 		{"under the default, outside one of none", beside, "203.0.113.9", 9},
 		{"under one of none beside the default", beside, "192.0.2.9", 5},
 		{"under the default alone", alone, "203.0.113.9", 8},
 		{"under the default, outside one of none holding another", noneInNone, "203.0.113.9", 9},
-		{"under one of none inside another", noneInNone, "192.0.2.9", 6},
-		{"under one of none holding another, outside that one", noneInNone, "192.0.2.200", 6},
+		{"under one of none inside another", noneInNone, "192.0.2.9", 5},
+		{"under one of none holding another, outside that one", noneInNone, "192.0.2.200", 5},
 		{"under one that translates inside another inside one of none", twice, "192.0.2.9", 9},
-		{"under one of none inside one that translates inside one of none", noneInAuto, "192.0.2.9", 6},
-		{"under one that translates holding one of none, outside that one", noneInAuto, "192.0.2.100", 10},
+		{"under one of none inside one that translates inside one of none", noneInAuto, "192.0.2.9", 5},
+		{"under one that translates holding one of none, outside that one", noneInAuto, "192.0.2.100", 9},
 	}
 	for k := 1; k <= 31; k++ {
 		classes := slices.Clone(beside)
@@ -340,7 +331,7 @@ func TestPacketsMeetOneRuleForEachClassOfNoneOutsideThem(t *testing.T) {
 			walk{fmt.Sprintf("under the default, outside one of none holding %d that translate", k), classes, "203.0.113.9", 9},
 			walk{fmt.Sprintf("under the first of %d that translate inside one of none", k), classes, "192.0.2.1", 9},
 			walk{fmt.Sprintf("under the last of %d that translate inside one of none", k), classes, fmt.Sprintf("192.0.2.%d", 8*(k-1)+1), 9},
-			walk{fmt.Sprintf("under one of none holding %d that translate", k), classes, "192.0.2.250", 9},
+			walk{fmt.Sprintf("under one of none holding %d that translate", k), classes, "192.0.2.250", 5},
 		)
 	}
 	for _, c := range walks {
@@ -363,32 +354,27 @@ func TestPacketsMeetOneRuleForEachClassOfNoneOutsideThem(t *testing.T) {
 	}
 }
 
-// The set of a class of none's chain holds the classes that translate directly
-// inside that class alone, never those inside another class of none: under
+// The pass's set holds each class of none less the classes that translate
+// inside it, with each class of none inside those put back: under
 // 192.0.2.0/24 none, 192.0.2.0/25 auto, 192.0.2.0/26 none and 192.0.2.32/27
-// auto, the /24's chain takes the /25 and the /26's the /27. A source under
-// either class of none meets no limit, and one under either class that
-// translates meets one limit meant for it.
-func TestEachClassOfNonesSetHoldsTheClassesDirectlyInsideIt(t *testing.T) {
+// auto, the /24's upper half and the /26's lower half. A source under either
+// class of none meets no limit, and one under either class that translates
+// meets one limit meant for it.
+func TestPassHoldsTheSourcesWhoseClassIsNone(t *testing.T) {
 	auto, none := egress.Translation{Auto: true}, egress.Translation{None: true}
 	class := func(from string, to egress.Translation) egress.Class {
 		return egress.Class{From: schema.MustPrefix(from), To: to}
 	}
 	cfg := egress.Egress{Translate: []egress.Class{class("192.0.2.0/24", none), class("192.0.2.0/25", auto), class("192.0.2.0/26", none), class("192.0.2.32/27", auto)}}
 	desired := newTranslator(cfg, Runtime{Interface: "ranet0", Steered: true}, &fakeBackend{}).desired()
-	members := map[string]PrefixSet{"none_192_0_2_0_24": "192.0.2.0/25", "none_192_0_2_0_26": "192.0.2.32/27"}
-	taken := map[string]int{}
+	var passes []PrefixSet
 	for _, rule := range desired {
-		if rule.Sources == "" {
-			continue
-		}
-		taken[rule.chain()]++
-		if rule.Sources != members[rule.chain()] {
-			t.Errorf("the chain %s holds %s taking the sources %q, want %q", rule.chain(), rule, rule.Sources, members[rule.chain()])
+		if rule.Passes {
+			passes = append(passes, rule.Sources)
 		}
 	}
-	if want := map[string]int{"none_192_0_2_0_24": 4, "none_192_0_2_0_26": 4}; !maps.Equal(taken, want) {
-		t.Errorf("the chains hold %v screens taking a set, want %v", taken, want)
+	if want := []PrefixSet{"192.0.2.0/27 192.0.2.128/25"}; !slices.Equal(passes, want) {
+		t.Errorf("the passes take the sources %q, want %q", passes, want)
 	}
 	for source, want := range map[string]int{"192.0.2.0": 0, "192.0.2.200": 0, "192.0.2.64": 1, "192.0.2.32": 1} {
 		packet := crossing{"ranet0", "eth0", netip.MustParseAddr(source), unix.IPPROTO_TCP, 443, 0, false, false}
@@ -414,8 +400,8 @@ func TestEachClassOfNonesSetHoldsTheClassesDirectlyInsideIt(t *testing.T) {
 // and one under a class of none takes none. With return, one entering the mesh from an
 // advertised prefix leaves under the return source, and every other packet
 // entering the mesh, or crossing it, is taken by no rule. Read as nf_tables
-// reads the family's lines at the forward hook and the chain each pass sends a packet on to, in
-// IPv4 translated, a Source Quench or
+// reads the family's lines at the forward hook, in IPv4 translated, a Source
+// Quench or
 // an Information Request or Reply out of the mesh or into it is dropped under
 // every class, whether or not a flow is tracked for it. Past that, a packet out
 // of the mesh under a class of none is passed, whatever it is, and meets no
@@ -469,12 +455,11 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			return Rule{}, false, attached
 		}
 		// decides is the decision of the first rule ending the walk forwardWalk
-		// takes a packet on, or of the last pass on the way where none does, and
-		// the limits it meets ahead of that, which take a flow by the flows its
-		// source holds, each of which has to be the share the capability names
+		// takes a packet on, and the limits it meets ahead of that, which take a
+		// flow by the flows its source holds, each of which has to be the share
+		// the capability names
 		decides := func(packet crossing) (Rule, decision, int) {
 			limits := 0
-			var sent *Rule
 			for _, rule := range forwardWalk(desired, packet) {
 				switch kind := rule.kind(); {
 				case !meant(rule, packet):
@@ -484,20 +469,16 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 					}
 					limits++
 				case kind == passing:
-					sent = &rule
+					return rule, decision{passes: true}, limits
 				case kind == dropping, kind == screening:
 					return rule, decision{drops: rule.Drops != NoMessage, untracked: rule.Untracked, protocol: rule.Protocol.Number}, limits
 				}
 			}
-			if sent != nil {
-				return *sent, decision{passes: true}, limits
-			}
 			return Rule{}, decision{}, limits
 		}
 		// among each family's lines at the forward hook the ICMP drops come
-		// first, ahead of every other of those lines and every rule of its
-		// classes of none's chains, which come ahead of every rule of the
-		// translation's chain
+		// first, ahead of every other of those lines, which come ahead of every
+		// rule of the translation's chain
 		rank := func(rule Rule) int {
 			switch {
 			case rule.Drops != NoMessage:
@@ -543,9 +524,6 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 				} {
 					forwarded := c.what == "out of the mesh" || c.what == "into the mesh"
 					outUnderNone := c.what == "out of the mesh" && translated && cfg.ClassOf(source).To.None
-					insideNone := c.what == "out of the mesh" && translated && slices.ContainsFunc(cfg.Translate, func(class egress.Class) bool {
-						return class.To.None && class.From.Contains(source)
-					})
 					untracked, reply := c.packet, c.packet
 					untracked.untracked, reply.reply = true, true
 					for _, packet := range []crossing{c.packet, untracked, reply} {
@@ -561,9 +539,6 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 						case packet.untracked:
 						case coversAddresses && !packet.reply && (c.what == "out of the mesh" && translated || c.what == "into the mesh" && returned):
 							want.protocol = carry.protocol
-						case insideNone:
-							// a class that translates inside a class of none, past its limit
-							want.passes = true
 						}
 						if rule, got, _ := decides(packet); got != want {
 							ht.Fatalf("%+v under %+v decides a packet %s from %s of protocol %d with first octet %d, no flow tracked %v, a reply %v, by %v as %+v, want %+v, in %v",

@@ -438,9 +438,9 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 		share.holds(3)
 	})
 	if inside {
-		// the limit of a class that translates inside a class of none sits in the
-		// chain that class's pass goes on to, and counts none of that class's
-		// sources
+		// a class that translates inside a class of none meets the limit as every
+		// translating class does, and the sources of the class of none around it
+		// pass ahead of the limit uncounted
 		top.run("a class that translates inside one of none", func(t *testing.T) {
 			network := build(t)
 			exit := start(t, network, arm, Inside, namedLimit)

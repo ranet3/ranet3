@@ -21,8 +21,9 @@ const (
 	ChainName = "postrouting"
 	// LimitChain is the translator's filter forward base chain beside it
 	LimitChain = "forward"
-	// NoneChain starts the name of each of the translator's regular chains, one
-	// for each class of none, the class's prefix ending it
+	// NoneChain starts the name of each regular chain an earlier translator
+	// wrote, one for each class of none, the class's prefix ending it. A pass
+	// empties and deletes each it finds.
 	NoneChain = "none_"
 	// BorderChain is the antispoof filter's chain at prerouting
 	BorderChain = "antispoof"

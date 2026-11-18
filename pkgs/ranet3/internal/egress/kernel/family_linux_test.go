@@ -28,7 +28,7 @@ import (
 // Datagrams written into the mesh tun, which another table's notrack leaves
 // untracked, each cross their own family's lines alone. One IPv6 datagram
 // from a class of none in IPv6 goes on by forward's first line to IPv6's
-// chain, leaves it by its class's pass and is forwarded. A second, from
+// chain, leaves it by IPv6's pass and is forwarded. A second, from
 // outside the class, is dropped by IPv6's screen of untracked packets from
 // every source, which counts it alone. Two IPv4 datagrams go on past that
 // first line to IPv4's lines in forward and are dropped by IPv4's screen,

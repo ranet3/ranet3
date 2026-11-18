@@ -78,8 +78,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 60 {
-		t.Fatalf("the configuration asks for %d rules, want 60", len(desired))
+	if len(desired) != 56 {
+		t.Fatalf("the configuration asks for %d rules, want 56", len(desired))
 	}
 	if err := be.Apply(desired, false); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
@@ -143,8 +143,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	for _, rule := range withOther {
 		got = append(got, rule.Spec)
 	}
-	// behind the ip rules of the forward chain and its classes of none's
-	// chains, which read back first
+	// behind the ip rules of the forward chain, which read back first
 	forwardRules := 0
 	for _, rule := range desired {
 		if rule.Family == egress.FamilyIPv4 && rule.chain() != ChainName {
@@ -418,9 +417,8 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	}
 	// each chain holds the lines desired writes in it, in desired's order, and
 	// forward its one line
-	chains := translatorChains(tr.desired())
 	var want []string
-	for _, written := range chains {
+	for _, written := range translatorChains {
 		if written.Name == LimitChain {
 			want = append(want, dispatchSpec)
 		}
@@ -436,7 +434,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		t.Fatalf("dump the rules: %v", err)
 	}
 	var got []string
-	for _, written := range chains {
+	for _, written := range translatorChains {
 		for _, reply := range replies {
 			if table, chain, spec, _, _, _ := nftables.DecodeRule(reply); table == nftables.Table && chain == written.Name {
 				got = append(got, spec)
@@ -681,7 +679,7 @@ func TestNftablesRemakesTheTableAnEarlierLayoutWrote(t *testing.T) {
 		if rule.chain() != LimitChain {
 			continue
 		}
-		line, err := translatorLine(rule, 0)
+		line, err := translatorLine(rule)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -727,10 +725,9 @@ func TestNftablesRemakesTheTableAnEarlierLayoutWrote(t *testing.T) {
 	}
 }
 
-// A chain named as a class of none's that no class writes, which the table
+// A chain an earlier translator wrote for a class of none, which the table
 // lists ahead of the chain an earlier translator held IPv4's lines in and
-// which a goto of that chain holds, as a class's chain is held once the class
-// has gone from the configuration, reads back with a fault in both families.
+// which a goto of that chain holds, reads back with a fault in both families.
 // The next pass, in one transaction, empties both chains before it deletes
 // either, so nf_tables lets the goto go and deletes both, and both families
 // read ready.
@@ -783,16 +780,15 @@ func TestNftablesDeletesTheRetiredChainBesideAStrayItGoesTo(t *testing.T) {
 	}
 }
 
-// The chain of a class of none is read back as the base chains are. Its set of
-// the 2 classes that translate inside it reads back ready, and a second pass
-// rewrites nothing. Its line another writer makes an accept under its comment,
-// its line written again under its comment over a set holding an element more
-// or missing its second, a chain named as a class of none's that no class
-// writes, and a class's chain deleted once its pass is made an accept each read
-// back as a fault of every family naming the line or the chain, and the
-// next pass writes the line back, deletes the stray chain or writes the missing
-// one, and reads both families ready
-func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
+// The pass's line and each family's set of untranslated sources read back as
+// written under nested classes of none in each family, and a second pass
+// rewrites nothing. The pass's line another writer makes an accept under its
+// comment reads back as a fault of every family naming the line, since
+// forward meets every family, and a source another writer adds to a family's
+// set or takes from it as a fault of that family alone naming the set, with
+// what it holds and what was written. The next pass writes the line or the
+// set back and reads both families ready.
+func TestNftablesReadsTheUntranslatedSetsBack(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
@@ -801,8 +797,10 @@ func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 	cfg := egress.Egress{Translate: []egress.Class{
 		{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
 		{From: schema.MustPrefix("192.0.2.0/26"), To: egress.Translation{Auto: true}},
-		{From: schema.MustPrefix("192.0.2.128/26"), To: egress.Translation{Auto: true}},
+		{From: schema.MustPrefix("192.0.2.0/27"), To: egress.Translation{None: true}},
 		{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
+		{From: schema.MustPrefix("2001:db8::/32"), To: egress.Translation{None: true}},
+		{From: schema.MustPrefix("2001:db8:1::/48"), To: egress.Translation{Auto: true}},
 	}}
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
 	be, err := newBackend(cfg, rt)
@@ -825,87 +823,36 @@ func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 		t.Errorf("after the second pass the translator reads %+v, the table's handles %v then %v, want both families ready and no rewrite", s, before, after)
 	}
 	desired := tr.desired()
-	// replace makes the line of chain commented spec an accept under that comment
-	replace := func(chain, spec string) {
-		t.Helper()
-		listing := run("-a", "list", "chain", "inet", nftables.Table, chain)
-		handle := regexp.MustCompile(`comment "` + regexp.QuoteMeta(spec) + `" # handle (\d+)`).FindStringSubmatch(listing)
-		if handle == nil {
-			t.Fatalf("no line of the chain %s is commented %q in:\n%s", chain, spec, listing)
-		}
-		run(append([]string{"replace", "rule", "inet", nftables.Table, chain, "handle", handle[1]}, strings.Fields(fmt.Sprintf("counter accept comment %q", spec))...)...)
-	}
-	// elsewhere writes rule's line again under its comment, its set holding
-	// members in place of Sources
-	conn, err := nftables.Dial()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	elsewhere := func(rule Rule, members ...string) {
-		t.Helper()
-		listing := run("-a", "list", "chain", "inet", nftables.Table, rule.chain())
-		handle := regexp.MustCompile(`comment "` + regexp.QuoteMeta(rule.String()) + `" # handle (\d+)`).FindStringSubmatch(listing)
-		if handle == nil {
-			t.Fatalf("no line of the chain %s is commented %q in:\n%s", rule.chain(), rule, listing)
-		}
-		number, err := strconv.ParseUint(handle[1], 10, 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		edited := rule
-		var prefixes []netip.Prefix
-		for _, member := range members {
-			prefixes = append(prefixes, netip.MustParsePrefix(member))
-		}
-		edited.Sources = prefixSet(prefixes)
-		requests, err := sourceRequests(edited, 7)
-		if err != nil {
-			t.Fatal(err)
-		}
-		replaced, err := newRule(edited, 7)
-		if err != nil {
-			t.Fatal(err)
-		}
-		replaced.Flags = unix.NLM_F_REPLACE
-		replaced.Body = netlink.PutAttr(replaced.Body, unix.NFTA_RULE_HANDLE, binary.BigEndian.AppendUint64(nil, number))
-		if err := conn.Batch(append(requests, replaced)); err != nil {
-			t.Fatalf("write %s again over %v: %v", rule, members, err)
-		}
-	}
-	inside := Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0",
-		Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/26"), netip.MustParsePrefix("192.0.2.128/26")}),
-		Limit:   egress.DefaultFlowsPerSource, Under: netip.MustParsePrefix("192.0.2.0/24")}
-	untracked := inside
-	untracked.Limit, untracked.Untracked = 0, true
-	empty := Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("198.51.100.0/24"), Passes: true}
-	for _, rule := range []Rule{inside, untracked, empty} {
-		if !slices.ContainsFunc(desired, func(held Rule) bool { return held == rule }) {
-			t.Fatalf("the translator writes no line %s in the chain %s", rule, rule.chain())
-		}
-	}
+	pass := desired[slices.IndexFunc(desired, func(rule Rule) bool { return rule.Family == egress.FamilyIPv4 && rule.Passes })]
+	written := "{ 192.0.2.0/27, 192.0.2.64-192.0.2.255, 198.51.100.0/24 }"
 	for _, edit := range []struct {
 		name string
-		// edit changes the host, and named is the line or the chain the fault names
-		edit  func()
-		named string
-		// after is whether nft lists the chain named after the pass
-		after bool
+		// edit changes the host, family is the family the fault holds not
+		// ready, 0 for both, and named what the fault names
+		edit   func()
+		family uint8
+		named  string
 	}{
-		{"a line of a class's chain made an accept", func() { replace(inside.chain(), inside.String()) }, inside.String(), true},
-		{"a line of a class's chain written again over a set holding an element more", func() { elsewhere(inside, "192.0.2.0/26", "192.0.2.64/26", "192.0.2.128/26") }, inside.String(), true},
-		{"a line of a class's chain written again over a set missing its second element", func() { elsewhere(untracked, "192.0.2.0/26") }, untracked.String(), true},
-		{"a chain no class writes", func() { run("add", "chain", "inet", nftables.Table, "none_203_0_113_0_24") }, "none_203_0_113_0_24", false},
-		{"a class's chain deleted once its pass is an accept", func() {
-			replace(empty.chain(), empty.String())
-			run("delete", "chain", "inet", nftables.Table, noneChain(empty.From))
-		}, noneChain(empty.From) + " is missing", true},
+		{"the pass made an accept", func() {
+			handle := regexp.MustCompile(`comment "` + regexp.QuoteMeta(pass.String()) + `" # handle (\d+)`).FindStringSubmatch(run("-a", "list", "chain", "inet", nftables.Table, LimitChain))
+			if handle == nil {
+				t.Fatalf("no line of forward is commented %q", pass)
+			}
+			run(append([]string{"replace", "rule", "inet", nftables.Table, LimitChain, "handle", handle[1]}, strings.Fields(fmt.Sprintf("counter accept comment %q", pass))...)...)
+		}, 0, pass.String()},
+		{"a source added to untranslated4", func() { run("add", "element", "inet", nftables.Table, untranslatedSet+"4", "{", "203.0.113.0/24", "}") },
+			egress.FamilyIPv4, "its set untranslated4 holds { 192.0.2.0/27, 192.0.2.64-192.0.2.255, 198.51.100.0/24, 203.0.113.0/24 }, where " + written + " was written"},
+		{"a source taken from untranslated6", func() {
+			run("delete", "element", "inet", nftables.Table, untranslatedSet+"6", "{", "2001:db8::/48", "}")
+		},
+			egress.FamilyIPv6, "its set untranslated6 holds { 2001:db8:2::-2001:db8:ffff:ffff:ffff:ffff:ffff:ffff }, where { 2001:db8::/48, 2001:db8:2::-2001:db8:ffff:ffff:ffff:ffff:ffff:ffff } was written"},
 	} {
 		edit.edit()
 		read, err := be.Rules(desired)
-		if err != nil || !strings.Contains(read[egress.FamilyIPv4].fault, edit.named) || read[egress.FamilyIPv4].remake || !strings.Contains(read[egress.FamilyIPv6].fault, edit.named) {
-			t.Errorf("%s: the ip family reads the fault %q, remake %v, and the ip6 one the fault %q (%v), want both at a fault naming %q",
-				edit.name, read[egress.FamilyIPv4].fault, read[egress.FamilyIPv4].remake, read[egress.FamilyIPv6].fault, err, edit.named)
+		for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+			if faulted := edit.family == 0 || edit.family == family; err != nil || strings.Contains(read[family].fault, edit.named) != faulted || !faulted && read[family].fault != "" {
+				t.Errorf("%s: the %s family reads the fault %q (%v), want one naming %q: %v", edit.name, familyLabel(family), read[family].fault, err, edit.named, faulted)
+			}
 		}
 		if err := tr.reconcile(); err != nil {
 			t.Fatalf("%s: the pass: %v", edit.name, err)
@@ -913,17 +860,100 @@ func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 		if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
 			t.Errorf("%s: after the pass the translator reads %+v, want both families ready", edit.name, s)
 		}
-		listing := run("list", "table", "inet", nftables.Table)
-		if chain := strings.Fields(edit.named)[0]; strings.HasPrefix(chain, NoneChain) && strings.Contains(listing, "chain "+chain+" {") != edit.after {
-			t.Errorf("%s: after the pass nft lists the chain %s: %v, want %v:\n%s", edit.name, chain, !edit.after, edit.after, listing)
+		if listing := run("list", "set", "inet", nftables.Table, untranslatedSet+"4"); !strings.Contains(listing, "elements = { 192.0.2.0/27, 192.0.2.64-192.0.2.255,") {
+			t.Errorf("%s: after the pass nft lists, want %s as written:\n%s", edit.name, written, listing)
 		}
-		if strings.Contains(listing, "accept comment") {
+		if listing := run("list", "table", "inet", nftables.Table); regexp.MustCompile(`bytes \d+ accept comment`).MatchString(listing) {
 			t.Errorf("%s: after the pass nft still lists an accept another writer made:\n%s", edit.name, listing)
 		}
 	}
 }
 
-// A chain named as a class of none's that no class writes, which a rule of
+// The chains an earlier translator wrote for two classes of none, one nested
+// in the other, with the pass to the outer one in forward and the inner one's
+// pass in the outer one's chain, read back as a fault of every family. The
+// next pass empties both, deletes the outer one, which only chains it empties
+// went to, and keeps the inner one, which another writer's chain goes to too,
+// naming that chain while it stays, with every family not ready. Once that
+// rule goes, the next pass deletes the inner chain and reads both families
+// ready, and a withdrawal leaves nothing of the translator's, its sets of
+// untranslated sources and a chain an earlier translator wrote among them,
+// and the other writer's chain in place.
+func TestNftablesRetiresTheChainsAnEarlierTranslatorWroteForClassesOfNone(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	run := nftRun(t)
+	cfg := egress.Egress{Translate: []egress.Class{
+		{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
+		{From: schema.MustPrefix("192.0.2.0/25"), To: egress.Translation{None: true}},
+	}}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
+	be, err := newBackend(cfg, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	requireEmptyRuleset(t, be)
+	tr := newTranslator(cfg, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	outer, inner := NoneChain+"192_0_2_0_24", NoneChain+"192_0_2_0_25"
+	match := []string{"iifname", "ranet0", "oifname", "!=", "ranet0", "ip", "saddr"}
+	run("add", "chain", "inet", nftables.Table, outer)
+	run("add", "chain", "inet", nftables.Table, inner)
+	run(slices.Concat([]string{"add", "rule", "inet", nftables.Table, outer}, match, []string{"192.0.2.0/25", "goto", inner, "comment", `"out via ranet0 ipv4 from 192.0.2.0/25 passed"`})...)
+	run(slices.Concat([]string{"insert", "rule", "inet", nftables.Table, LimitChain}, match, []string{"192.0.2.0/24", "goto", outer, "comment", `"out via ranet0 ipv4 from 192.0.2.0/24 passed"`})...)
+	run("add", "chain", "inet", nftables.Table, "other")
+	run("add", "rule", "inet", nftables.Table, "other", "goto", inner)
+	read, err := be.Rules(tr.desired())
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		if err != nil || read[family].fault == "" {
+			t.Errorf("beside the earlier translator's chains the %s family reads the fault %q (%v), want one", familyLabel(family), read[family].fault, err)
+		}
+	}
+
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the pass beside the earlier translator's chains: %v", err)
+	}
+	held := "its chain " + inner + " is not one the translator writes, and chain other holds a rule going to it, so it stays until that rule goes"
+	if s := tr.lastPass(); s.Ready4 || s.Ready6 || !strings.Contains(s.Unready, held) {
+		t.Errorf("after the pass beside the earlier translator's chains the translator reads %+v, want both families not ready for %q", s, held)
+	}
+	listing := run("list", "table", "inet", nftables.Table)
+	if strings.Contains(listing, "chain "+outer+" {") || !strings.Contains(listing, "chain "+inner+" {") || strings.Contains(listing, "goto "+outer) ||
+		strings.Count(listing, "goto "+inner) != 1 || !strings.Contains(listing, "untranslated passed") {
+		t.Errorf("after the pass beside the earlier translator's chains nft lists, want %s deleted, %s empty and kept, other's goto to it and the pass written:\n%s", outer, inner, listing)
+	}
+
+	run("flush", "chain", "inet", nftables.Table, "other")
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the pass once other's rule is gone: %v", err)
+	}
+	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
+		t.Errorf("once other's rule is gone the translator reads %+v, want both families ready", s)
+	}
+	if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, "chain "+inner+" {") || !strings.Contains(listing, "chain other {") {
+		t.Errorf("once other's rule is gone nft lists, want %s deleted and chain other left:\n%s", inner, listing)
+	}
+	run("add", "chain", "inet", nftables.Table, outer)
+	if err := be.Withdraw(); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	listing = run("list", "table", "inet", nftables.Table)
+	for _, gone := range []string{"chain " + ChainName + " {", "chain " + LimitChain + " {", "chain " + forward6.Name + " {", "chain " + outer + " {", untranslatedSet + "4", untranslatedSet + "6", flowsSet + "4"} {
+		if strings.Contains(listing, gone) {
+			t.Errorf("after the withdrawal nft lists %q, want it withdrawn:\n%s", gone, listing)
+		}
+	}
+	if !strings.Contains(listing, "chain other {") {
+		t.Errorf("after the withdrawal nft lists, want chain other left:\n%s", listing)
+	}
+}
+
+// A chain an earlier translator wrote for a class of none, which a rule of
 // another writer's chain goes to, by a goto or by its vmap, or an element of a
 // named map goes to, so nf_tables will not delete it, holds every family not
 // ready with a fault naming that chain or map, while the pass writes the
@@ -973,11 +1003,11 @@ func TestNftablesNamesTheChainThatKeepsAStrayChainOfNone(t *testing.T) {
 		if err := tr.reconcile(); err != nil {
 			t.Fatalf("%s: the pass beside it going to %s: %v", c.name, stray, err)
 		}
-		held := "its chain " + stray + " is not one a class of none writes, " + c.held
+		held := "its chain " + stray + " is not one the translator writes, " + c.held
 		if s := tr.lastPass(); s.Ready4 || s.Ready6 || !strings.Contains(s.Unready, held) {
 			t.Errorf("%s: beside it going to %s the translator reads %+v, want both families not ready for %q", c.name, stray, s, held)
 		}
-		if listing := run("list", "table", "inet", nftables.Table); !strings.Contains(listing, "chain "+stray+" {") || !strings.Contains(listing, "from 192.0.2.0/24 passed") {
+		if listing := run("list", "table", "inet", nftables.Table); !strings.Contains(listing, "chain "+stray+" {") || !strings.Contains(listing, "untranslated passed") {
 			t.Errorf("%s: after the pass beside it going to %s nft lists, want that chain and the pass written:\n%s", c.name, stray, listing)
 		}
 		c.release()
@@ -998,7 +1028,7 @@ func TestNftablesNamesTheChainThatKeepsAStrayChainOfNone(t *testing.T) {
 		t.Fatalf("the withdrawal beside a goto of chain other to %s: %v", stray, err)
 	}
 	listing := run("list", "table", "inet", nftables.Table)
-	for _, gone := range []string{"chain " + ChainName + " {", "chain " + LimitChain + " {", "chain " + forward6.Name + " {", "chain none_192_0_2_0_24 {", "flows4", "translated-udp4"} {
+	for _, gone := range []string{"chain " + ChainName + " {", "chain " + LimitChain + " {", "chain " + forward6.Name + " {", untranslatedSet + "4", "flows4", "translated-udp4"} {
 		if strings.Contains(listing, gone) {
 			t.Errorf("after the withdrawal beside a goto to %s nft lists %q, want it withdrawn:\n%s", stray, gone, listing)
 		}
@@ -1008,14 +1038,14 @@ func TestNftablesNamesTheChainThatKeepsAStrayChainOfNone(t *testing.T) {
 	}
 }
 
-// An instance killed under a share of 64 with a class of none holding a class
-// that translates leaves that class of none's chain, whose limit line counts
-// flows in flows4. The next instance, under the default share and no class,
-// reads flows4 and flows6 stale and that chain stray. Its first pass flushes
-// the stray chain before it deletes the stale sets that chain's line uses, so
-// nf_tables takes the transaction, both families read ready, and nothing of
-// the killed instance's is left: neither its chain nor a set or line under its
-// share.
+// An earlier translator killed under a share of 64 with a class of none
+// holding a class that translates leaves that class of none's chain, whose
+// limit line counts flows in flows4. The next instance, under the default
+// share and no class, reads flows4 and flows6 stale and that chain stray. Its
+// first pass flushes the stray chain before it deletes the stale sets that
+// chain's line uses, so nf_tables takes the transaction, both families read
+// ready, and nothing of the killed instance's is left: neither its chain nor a
+// set or line under its share.
 func TestNftablesRemakesBesideAKilledInstancesChainOfNone(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -1023,10 +1053,7 @@ func TestNftablesRemakesBesideAKilledInstancesChainOfNone(t *testing.T) {
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing, Hooks: unheard}
-	killed := egress.Egress{FlowsPerSource: 64, Translate: []egress.Class{
-		{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
-		{From: schema.MustPrefix("192.0.2.0/26"), To: egress.Translation{Auto: true}},
-	}}
+	killed := egress.Egress{FlowsPerSource: 64}
 	before, err := newBackend(killed, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -1035,7 +1062,25 @@ func TestNftablesRemakesBesideAKilledInstancesChainOfNone(t *testing.T) {
 	if err := newTranslator(killed, rt, before).reconcile(); err != nil {
 		t.Fatalf("the killed instance's pass: %v", err)
 	}
-	stray := "none_192_0_2_0_24"
+	// the earlier translator's chain of the class of none, holding the limit
+	// of the class that translates inside it under the killed share
+	stray := NoneChain + "192_0_2_0_24"
+	limit, err := translatorLine(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("192.0.2.0/26"), Limit: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := regularChain(stray).Rule(unix.NFPROTO_INET, limit.Spec, limit.Expressions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	if err := another.Batch([]nftables.Request{regularChain(stray).Create(unix.NFPROTO_INET), line}); err != nil {
+		t.Fatalf("write the chain %s: %v", stray, err)
+	}
 	if chain := run("list", "chain", "inet", nftables.Table, stray); !strings.Contains(chain, "@flows4") {
 		t.Fatalf("the killed instance's chain %s holds no line counting flows in flows4:\n%s", stray, chain)
 	}

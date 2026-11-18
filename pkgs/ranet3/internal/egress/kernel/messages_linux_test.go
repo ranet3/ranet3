@@ -37,11 +37,9 @@ var golden []byte
 // under none, into the mesh from a prefix with a timeout rule, from one host and from anywhere,
 // and from this node's own address under the host's address and under none,
 // with a timeout rule of each protocol keyed out of the mesh and from this
-// node's own address, each family's limit from every source and in the chain of
-// a class of none from the classes inside it as one set, a class of none's pass
-// to its chain ahead of the limit and one inside it in that chain, the rules
-// taking what no flow is tracked for, out of the mesh a drop from a class, from
-// the classes inside a class of none and from every source, and
+// node's own address, each family's limit from every source, each family's
+// pass of the sources whose class is none, the rules taking what no flow is
+// tracked for, out of the mesh a drop from a class and from every source, and
 // into it a drop from a prefix and from every source, the ICMP drops of each
 // message out of the mesh and into it, and the refusals of each protocol out of
 // the mesh, from a class and from every source, and into it from a prefix and
@@ -49,13 +47,8 @@ var golden []byte
 func everyTranslation() []Rule {
 	v4, v6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	return []Rule{
-		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/26"), Passes: true,
-			Under: netip.MustParsePrefix("198.51.100.128/25")},
-		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("198.51.100.192/27"), netip.MustParsePrefix("198.51.100.224/27")}),
-			Limit: egress.DefaultFlowsPerSource, Under: netip.MustParsePrefix("198.51.100.128/25")},
-		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("198.51.100.192/27")}),
-			Untracked: true, Under: netip.MustParsePrefix("198.51.100.128/25")},
-		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), Passes: true},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Passes: true,
+			Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("198.51.100.128/26"), netip.MustParsePrefix("198.51.100.224/27")})},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Untracked: true},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Untracked: true},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Drops: SourceQuench},
@@ -75,6 +68,7 @@ func everyTranslation() []Rule {
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Timeouts: UDPTimeouts},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Timeouts: TCPTimeouts},
 		{Family: egress.FamilyIPv4, Direction: Local, Interface: "ranet3", From: netip.MustParsePrefix("192.0.2.1/32"), Timeouts: ICMPTimeouts},
+		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", Passes: true, Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("3fff:800::/21")})},
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("3fff::/20"), Untracked: true},
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", Untracked: true},
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", Limit: egress.DefaultFlowsPerSource},
@@ -96,7 +90,7 @@ func everyTranslation() []Rule {
 func TestLimitLineCountsToItsRulesLimit(t *testing.T) {
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		for _, limit := range []int{1, 300, egress.DefaultFlowsPerSource} {
-			line, err := translatorLine(Rule{Family: family, Direction: Out, Interface: "ranet3", Limit: limit}, 1)
+			line, err := translatorLine(Rule{Family: family, Direction: Out, Interface: "ranet3", Limit: limit})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -169,12 +163,12 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 	ipv4 := translatorContents([]uint8{egress.FamilyIPv4}, limit, nil)
 	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, nil)
 	write("translator in ipv4 with no rule", requests, err)
-	// a table holding three chains of classes of none no rule names, one of
-	// which a goto of another names and one a rule of another writer's chain
-	// goes to, which stays
+	// a table holding three chains an earlier translator wrote for classes of
+	// none, one of which a goto of another names and one a rule of another
+	// writer's chain goes to, which stays
 	stray := []noneStray{{name: "none_198_51_100_0_24"}, {name: "none_198_51_100_0_25"}, {name: "none_203_0_113_0_24", heldBy: "chain other"}}
 	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, stray)
-	write("translator in ipv4 deleting the chains of classes of none it no longer writes", requests, err)
+	write("translator in ipv4 deleting the chains an earlier translator wrote", requests, err)
 	// what a pass writes for the default capability and for one of each kind of
 	// class, one that translates inside one of none among them, without return
 	// and under it

@@ -26,12 +26,13 @@ const (
 	// filterPriority is NF_IP_PRI_FILTER, where the forward hook's chain runs
 	filterPriority = 0
 	// retiredChain is the regular chain an earlier translator held IPv4's lines
-	// at the forward hook in, which a pass empties and deletes as it does a
-	// stray chain of a class of none
+	// at the forward hook in. A pass empties and deletes it.
 	retiredChain = LimitChain + "4"
 	// flowsSet starts the name of the set each family's limit line counts each
-	// source's flows in, the family's digit ending it
-	flowsSet = "flows"
+	// source's flows in, and untranslatedSet that of the set of the family's
+	// sources whose class is none, the family's digit ending each
+	flowsSet        = "flows"
+	untranslatedSet = "untranslated"
 	// setSize is the most sources a family's set of flows holds. The set then
 	// takes no new one, and the limit line leaves that source's flows
 	// uncounted.

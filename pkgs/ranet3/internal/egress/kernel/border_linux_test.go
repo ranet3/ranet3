@@ -239,11 +239,9 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 			t.Errorf("the chain %s the batch writes reads back with the fault %q, remade %v", chain.Name, fault, remake)
 		}
 	}
-	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
-		for _, written := range translatorChains(underNone(family)) {
-			if fault, remake := written.Fault(netlink.Message{Data: written.Create(unix.NFPROTO_INET).Body}); fault != "" || remake {
-				t.Errorf("the translator's %s chain %s reads back with the fault %q, remade %v", egress.FamilyName(family), written.Name, fault, remake)
-			}
+	for _, written := range translatorChains {
+		if fault, remake := written.Fault(netlink.Message{Data: written.Create(unix.NFPROTO_INET).Body}); fault != "" || remake {
+			t.Errorf("the translator's chain %s reads back with the fault %q, remade %v", written.Name, fault, remake)
 		}
 	}
 	chain := func(table, name, kind string, hook uint32, priority int32, policy uint32) netlink.Message {

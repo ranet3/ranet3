@@ -324,12 +324,11 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 }
 
 // Each family's rules open, in IPv4, with the drops of Source Quench and
-// Information Request and Reply out of the mesh and into it. A class of none's
-// pass follows, then from every source the rule taking what no flow is tracked
-// for, the refusals of DCCP and UDP-Lite and the limit. The chain of the class
-// of none comes next, with the same rules from the sources of the classes
-// that translate inside it, matched as one set. Each class's translation rules come
-// together, the longest From first since the first translation ends the chain.
+// Information Request and Reply out of the mesh and into it. The pass of the
+// sources whose class is none follows, then from every source the rule taking
+// what no flow is tracked for, the refusals of DCCP and UDP-Lite and the
+// limit. Each class's translation rules come together, the longest From first
+// since the first translation ends the chain.
 // A class that translates attaches the exit's timeouts first, by a rule for
 // UDP, for TCP and for the family's ICMP, keyed as its translation is, and a
 // class of none binds its sources to themselves alone, so its flows keep the
@@ -358,15 +357,11 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		"out via ranet0 ipv4 icmp information dropped",
 		"in via ranet0 ipv4 icmp source quench dropped",
 		"in via ranet0 ipv4 icmp information dropped",
-		"out via ranet0 ipv4 from 192.0.2.0/24 passed",
+		"out via ranet0 ipv4 untranslated passed",
 		"out via ranet0 ipv4 untracked dropped",
 		"out via ranet0 ipv4 dccp refused",
 		"out via ranet0 ipv4 udplite refused",
 		"out via ranet0 ipv4 limit 4096",
-		"out via ranet0 ipv4 translated inside 192.0.2.0/24 untracked dropped",
-		"out via ranet0 ipv4 translated inside 192.0.2.0/24 dccp refused",
-		"out via ranet0 ipv4 translated inside 192.0.2.0/24 udplite refused",
-		"out via ranet0 ipv4 translated inside 192.0.2.0/24 limit 4096",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts udp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts tcp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts icmp",
@@ -403,13 +398,10 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 	}
 }
 
-// The limit counts the flows of a class that translates alone. A class of none
-// sends its sources on to its own chain ahead of every limit of the limit's
-// chain, a class that translates inside it counts its flows in that chain, by
-// the rules taking the sources of every such class as one set, one inside
-// that class at that class's limit alone, so the set holds the class and not
-// the one inside it, and one inside no class of none, as a source no class
-// takes, at the limit from every source.
+// The limit counts the flows of a class that translates alone. The pass takes
+// the sources of a class of none ahead of every screen, less those of the
+// classes that translate inside it, one inside another that translates inside
+// it among them, which count their flows at the limit from every source.
 func TestOnlyTranslatedClassesCountAgainstTheLimit(t *testing.T) {
 	cfg := egress.Egress{
 		Advertise: prefixes(t, "0.0.0.0/0"),
@@ -426,27 +418,18 @@ func TestOnlyTranslatedClassesCountAgainstTheLimit(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	members := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/26"), netip.MustParsePrefix("192.0.2.128/25")}
 	for _, rule := range tr.desired() {
-		got := rule.Sources.Prefixes()
-		same := len(got) == len(members) && !slices.ContainsFunc(members, func(p netip.Prefix) bool { return !slices.Contains(got, p) })
-		if rule.chain() == "none_192_0_2_0_24" && !same {
-			t.Errorf("the chain of the class of none holds %s taking the sources %v, want %v", rule, got, members)
+		if want := PrefixSet("192.0.2.64/26"); rule.Passes && rule.Sources != want {
+			t.Errorf("the pass %s takes the sources %q, want %q", rule, rule.Sources, want)
 		}
 	}
 	want := map[string][]string{
 		LimitChain: {
-			"out via ranet0 ipv4 from 192.0.2.0/24 passed",
+			"out via ranet0 ipv4 untranslated passed",
 			"out via ranet0 ipv4 untracked dropped",
 			"out via ranet0 ipv4 dccp refused",
 			"out via ranet0 ipv4 udplite refused",
 			"out via ranet0 ipv4 limit 4096",
-		},
-		"none_192_0_2_0_24": {
-			"out via ranet0 ipv4 translated inside 192.0.2.0/24 untracked dropped",
-			"out via ranet0 ipv4 translated inside 192.0.2.0/24 dccp refused",
-			"out via ranet0 ipv4 translated inside 192.0.2.0/24 udplite refused",
-			"out via ranet0 ipv4 translated inside 192.0.2.0/24 limit 4096",
 		},
 	}
 	got := map[string][]string{}
@@ -456,7 +439,7 @@ func TestOnlyTranslatedClassesCountAgainstTheLimit(t *testing.T) {
 		}
 	}
 	if !maps.EqualFunc(got, want, slices.Equal) {
-		t.Errorf("installed the limit's chain and the class of none's %q, want %q", got, want)
+		t.Errorf("installed the limit's chain %q, want %q", got, want)
 	}
 }
 

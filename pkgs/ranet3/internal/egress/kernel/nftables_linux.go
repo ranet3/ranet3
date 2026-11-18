@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -88,10 +89,10 @@ func (n *natTables) Changed() <-chan struct{} { return n.monitor.Changed() }
 
 func (n *natTables) Missed() <-chan struct{} { return n.monitor.Missed() }
 
-// translatorScope is the translator's chains, those of the classes of none
-// among them, the retired chain, and the sets and timeout objects of both
-// families, whatever the configuration translates, so a withdrawal takes what
-// an instance under another configuration left
+// translatorScope is the translator's chains, the stray chains, and the sets
+// and timeout objects of both families, whatever the configuration
+// translates, so a withdrawal takes what an instance under another
+// configuration left
 var translatorScope = func() nftables.Scope {
 	scope := translatorContents([]uint8{egress.FamilyIPv4, egress.FamilyIPv6}, 0, nil).Scope()
 	scope.Chains = append(scope.Chains, retiredChain)
@@ -100,8 +101,7 @@ var translatorScope = func() nftables.Scope {
 }()
 
 func (n *natTables) where() string {
-	return fmt.Sprintf("nftables table inet %s chains %s, %s and %s and a %s chain for each class of none", nftables.Table, LimitChain,
-		familyChain(egress.FamilyIPv6), ChainName, NoneChain)
+	return fmt.Sprintf("nftables table inet %s chains %s, %s and %s", nftables.Table, LimitChain, familyChain(egress.FamilyIPv6), ChainName)
 }
 
 // nftFamily is the NFPROTO_ value for one of this package's families.
@@ -122,18 +122,15 @@ func nftFamily(family uint8) uint8 {
 // changes what the chain does to a packet, so it is read back too, one with no
 // comment as an empty spec. In IPv6's chain it holds IPv6 not ready, and in
 // another every family, while it stays, and the next pass rewrites the chain
-// without it. IPv6's chain missing holds IPv6 not ready the same way. A chain
-// whose name starts as a class of none's that desired does not write, or one
-// it writes that is missing, and the retired chain, hold every family not
-// ready the same way, and the next pass deletes or writes it, but for a stray
-// one a rule of another writer's chain or an element of a named map goes to,
-// which the fault names and which stays until that rule or element goes. A
-// set or an object holds its own family not ready. The elements of the set a
-// line looks its sources up in are read with the line. A rule in any other
-// table or chain is skipped, and never removed.
-// It counts the translator among the table's holders where it finds any of
-// the translator's chains, sets or objects, as a start that takes them over
-// keeps them.
+// without it. IPv6's chain missing holds IPv6 not ready the same way. A stray
+// chain holds every family not ready the same way, and the next pass deletes
+// it, but for one a rule of another writer's chain or an element of a named
+// map goes to, which the fault names and which stays until that rule or
+// element goes. A set or an object holds its own family not ready, a set of
+// untranslated sources holding other elements than were written among them. A
+// rule in any other table or chain is skipped, and never removed. It counts the
+// translator among the table's holders where it finds any of the translator's
+// chains, sets or objects, as a start that takes them over keeps them.
 func (n *natTables) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	out, err := n.read(n.conn, desired, true)
 	if err == nil && (out[egress.FamilyIPv4].held || out[egress.FamilyIPv6].held) {
@@ -160,20 +157,19 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		return nil, err
 	}
 	_, there := tables[unix.NFPROTO_INET]
-	chains := translatorChains(desired)
-	common := slices.DeleteFunc(slices.Clone(chains), func(chain nftables.Chain) bool { return chain.Name == forward6.Name })
+	common := slices.DeleteFunc(slices.Clone(translatorChains), func(chain nftables.Chain) bool { return chain.Name == forward6.Name })
 	shared, err := nftables.Contents{Chains: common}.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
 		return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
 	fault := shared.Fault
 	if there && fault == "" {
-		if fault, err = noneChainsRead(conn, chains, shared.Chains); err != nil {
+		if fault, err = noneChainsRead(conn, shared.Chains); err != nil {
 			return nil, err
 		}
 	}
 	if lines && fault == "" {
-		if fault, err = translatorRulesFault(conn, common, desired, shared.Rules); err != nil {
+		if fault, err = translatorRulesFault(common, desired, shared.Rules); err != nil {
 			return nil, err
 		}
 	}
@@ -186,7 +182,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		ownFault = fmt.Sprintf("its chain %s is missing", forward6.Name)
 	}
 	if lines && ownFault == "" {
-		if ownFault, err = translatorRulesFault(conn, []nftables.Chain{forward6}, desired, own.Rules); err != nil {
+		if ownFault, err = translatorRulesFault([]nftables.Chain{forward6}, desired, own.Rules); err != nil {
 			return nil, err
 		}
 	}
@@ -205,8 +201,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		}
 		var objects nftables.Readback
 		if slices.Contains(n.families, family) {
-			contents := nftables.Contents{Sets: []nftables.Set{flowSet(family, n.limit)}, Timeouts: timeoutObjects(family)}
-			if objects, err = contents.Read(conn, tables, unix.NFPROTO_INET); err != nil {
+			if objects, err = familyContents(family, n.limit, desired).Read(conn, tables, unix.NFPROTO_INET); err != nil {
 				return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 			}
 		}
@@ -216,17 +211,14 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 }
 
 // placeRules is each rule of held in the family of the rule of desired written
-// under its comment, or else of IPv6's chain or the chain of a class of none it
-// was read from, and a rule another writer put in a chain every family shares
-// in the first of families. The forward hook's first line, which every family
-// meets, is no rule of desired's and is left out.
+// under its comment, or else in IPv6's where it was read from IPv6's chain, and
+// a rule another writer put in a chain every family shares in the first of
+// families. The forward hook's first line, which every family meets, is no
+// rule of desired's and is left out.
 func placeRules(held []nftables.Installed, desired []Rule, families []uint8) map[uint8][]Installed {
-	bySpec, byChain := make(map[string]uint8, len(desired)), map[string]uint8{forward6.Name: egress.FamilyIPv6}
+	bySpec := make(map[string]uint8, len(desired))
 	for _, rule := range desired {
 		bySpec[rule.String()] = rule.Family
-		if rule.Under.IsValid() {
-			byChain[rule.chain()] = rule.Family
-		}
 	}
 	out := make(map[uint8][]Installed, len(families))
 	for _, rule := range held {
@@ -234,10 +226,12 @@ func placeRules(held []nftables.Installed, desired []Rule, families []uint8) map
 			continue
 		}
 		family, ok := bySpec[rule.Spec]
-		if !ok {
-			if family, ok = byChain[rule.Chain]; !ok && len(families) > 0 {
-				family = families[0]
-			}
+		switch {
+		case ok:
+		case rule.Chain == forward6.Name:
+			family = egress.FamilyIPv6
+		case len(families) > 0:
+			family = families[0]
 		}
 		out[family] = append(out[family], Installed{Spec: rule.Spec, Family: family, Chain: rule.Chain, Counted: rule.Counted, Packets: rule.Packets, Bytes: rule.Bytes})
 	}
@@ -246,12 +240,12 @@ func placeRules(held []nftables.Installed, desired []Rule, families []uint8) map
 
 // noneChainsRead is noneChainsFault of the table, whose chains are held,
 // reading the table's rules and verdict maps where a chain is stray
-func noneChainsRead(conn *nftables.Conn, chains []nftables.Chain, held []string) (string, error) {
-	in, err := strayHolders(conn, chains, held)
+func noneChainsRead(conn *nftables.Conn, held []string) (string, error) {
+	in, err := strayHolders(conn, held)
 	if err != nil {
 		return "", err
 	}
-	return noneChainsFault(chains, held, in), nil
+	return noneChainsFault(held, in), nil
 }
 
 // holders is the rules and the verdict maps of the table, each map with the
@@ -263,8 +257,8 @@ type holders struct {
 
 // strayHolders is the rules and the verdict maps of the table where it holds a
 // stray chain, so strays can name what holds one, and none where it holds none
-func strayHolders(conn *nftables.Conn, chains []nftables.Chain, held []string) (holders, error) {
-	if len(strays(chains, held, holders{})) == 0 {
+func strayHolders(conn *nftables.Conn, held []string) (holders, error) {
+	if len(strays(held, holders{})) == 0 {
 		return holders{}, nil
 	}
 	rules, err := nftables.TableRules(conn, unix.NFPROTO_INET, nftables.Table)
@@ -278,54 +272,42 @@ func strayHolders(conn *nftables.Conn, chains []nftables.Chain, held []string) (
 	return holders{rules, maps}, nil
 }
 
-// noneChainsFault names a chain of a class of none that chains holds and the
-// table, held, does not, or one held that chains does not hold, with what of
-// in, the table's, goes to it, empty where neither is
-func noneChainsFault(chains []nftables.Chain, held []string, in holders) string {
-	for _, chain := range chains {
-		if strings.HasPrefix(chain.Name, NoneChain) && !slices.Contains(held, chain.Name) {
-			return fmt.Sprintf("its chain %s is missing", chain.Name)
-		}
-	}
-	found := strays(chains, held, in)
+// noneChainsFault names a stray chain the table, held, holds, with what of
+// in, the table's, goes to it, empty where it holds none
+func noneChainsFault(held []string, in holders) string {
+	found := strays(held, in)
 	if len(found) == 0 {
 		return ""
 	}
 	stray := found[0]
-	writer := "a class of none"
-	if stray.name == retiredChain {
-		writer = "the translator"
-	}
 	switch {
 	case strings.HasPrefix(stray.heldBy, "map "):
-		return fmt.Sprintf("its chain %s is not one %s writes, and %s holds an element going to it, so it stays until that element goes", stray.name, writer, stray.heldBy)
+		return fmt.Sprintf("its chain %s is not one the translator writes, and %s holds an element going to it, so it stays until that element goes", stray.name, stray.heldBy)
 	case stray.heldBy != "":
-		return fmt.Sprintf("its chain %s is not one %s writes, and %s holds a rule going to it, so it stays until that rule goes", stray.name, writer, stray.heldBy)
+		return fmt.Sprintf("its chain %s is not one the translator writes, and %s holds a rule going to it, so it stays until that rule goes", stray.name, stray.heldBy)
 	}
-	return fmt.Sprintf("its chain %s is not one %s writes", stray.name, writer)
+	return fmt.Sprintf("its chain %s is not one the translator writes", stray.name)
 }
 
-// noneStray is a chain named as a class of none's that no class writes, or
-// the retired chain, and heldBy what goes to it, which keeps nf_tables from
-// deleting it: "chain c" for chain c's rule, by a goto, a jump or its vmap,
-// "map m" for an element of the named map m, empty where nothing does
+// noneStray is a stray chain, and heldBy what goes to it, which keeps
+// nf_tables from deleting it: "chain c" for chain c's rule, by a goto, a jump
+// or its vmap, "map m" for an element of the named map m, empty where nothing
+// does
 type noneStray struct{ name, heldBy string }
 
-// strays is each chain held whose name starts as a class of none's does that
-// chains does not hold, and the retired chain where it is held, with what of
-// in, the table's, goes to it, past the chains a pass flushes, the stray
-// chains and chains
-func strays(chains []nftables.Chain, held []string, in holders) []noneStray {
-	written := func(name string) bool {
-		return slices.ContainsFunc(chains, func(chain nftables.Chain) bool { return chain.Name == name })
-	}
+// strays is each chain of held that is retiredChain or that NoneChain starts,
+// with what of in, the table's, goes to it, past the chains a pass flushes,
+// the stray chains and the translator's
+func strays(held []string, in holders) []noneStray {
 	var names []string
 	for _, name := range held {
-		if name == retiredChain || len(name) > len(NoneChain) && strings.HasPrefix(name, NoneChain) && !written(name) {
+		if name == retiredChain || len(name) > len(NoneChain) && strings.HasPrefix(name, NoneChain) {
 			names = append(names, name)
 		}
 	}
-	flushed := func(chain string) bool { return slices.Contains(names, chain) || written(chain) }
+	flushed := func(chain string) bool {
+		return slices.Contains(names, chain) || slices.ContainsFunc(translatorChains, func(own nftables.Chain) bool { return own.Name == chain })
+	}
 	out := make([]noneStray, 0, len(names))
 	for _, name := range names {
 		out = append(out, noneStray{name: name, heldBy: nftables.Holder(name, in.rules, in.maps, flushed)})
@@ -334,10 +316,9 @@ func strays(chains []nftables.Chain, held []string, in holders) []noneStray {
 }
 
 // translatorRulesFault names how a chain holds lines other than desired
-// writes there, the forward hook's first its line to IPv6's chain, reading the
-// elements of a set a line looks its sources up in through conn, empty where
+// writes there, the forward hook's first its line to IPv6's chain, empty where
 // none does
-func translatorRulesFault(conn *nftables.Conn, chains []nftables.Chain, desired []Rule, held []nftables.Installed) (string, error) {
+func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftables.Installed) (string, error) {
 	for _, chain := range chains {
 		var want []nftables.Line
 		if chain.Name == LimitChain {
@@ -347,12 +328,9 @@ func translatorRulesFault(conn *nftables.Conn, chains []nftables.Chain, desired 
 			if rule.chain() != chain.Name {
 				continue
 			}
-			line, err := translatorLine(rule, 0)
+			line, err := translatorLine(rule)
 			if err != nil {
 				return "", err
-			}
-			if rule.Sources != "" {
-				line.Then = sourcesFault(conn, rule)
 			}
 			want = append(want, line)
 		}
@@ -363,26 +341,6 @@ func translatorRulesFault(conn *nftables.Conn, chains []nftables.Chain, desired 
 	return "", nil
 }
 
-// sourcesFault reads the elements of the one set the line of rule held looks
-// its sources up in through conn, and names how they differ from Sources,
-// empty where they do not. The set lives and dies with its line, so a set
-// missing or another beside it is a line edited, which its expressions read.
-func sourcesFault(conn *nftables.Conn, rule Rule) func(nftables.Installed) (string, error) {
-	return func(held nftables.Installed) (string, error) {
-		sets := nftables.LookupSets(held.Expressions)
-		if len(sets) != 1 {
-			return fmt.Sprintf("its chain %s's line %s looks up %v, where one set was written", rule.chain(), rule, sets), nil
-		}
-		set := sourceSet(rule.Family, 0)
-		set.Name = sets[0]
-		fault, err := set.ElementFault(conn, unix.NFPROTO_INET, nftables.Prefixes(rule.Sources.Prefixes()))
-		if err != nil || fault == "" {
-			return "", err
-		}
-		return fmt.Sprintf("its chain %s's line %s: %s", rule.chain(), rule, fault), nil
-	}
-}
-
 // Apply brings the translator's chains to rules, in one transaction. Each chain
 // is emptied and rewritten rather than edited rule by rule, because a batch
 // commits atomically: no packet is ever evaluated against half a ruleset, and
@@ -390,19 +348,20 @@ func sourcesFault(conn *nftables.Conn, rule Rule) func(nftables.Installed) (stri
 // conntrack then holds that decision for its whole lifetime. Where remake, it
 // reads its chains, sets and objects again and deletes first in the same
 // transaction each that nf_tables will not change in place, then makes it
-// again. A chain whose name starts as a class of none's that rules does not
-// write, and the retired chain, is emptied after every chain rules writes, and
-// deleted unless a rule of a chain another writer holds or an element of a
-// named map goes to it, which nf_tables would refuse the whole transaction
-// for, so the readback names that chain or map until it goes.
+// again. A stray chain is emptied after every chain rules writes, and deleted
+// unless a rule of a chain another writer holds or an element of a named map
+// goes to it, which nf_tables would refuse the whole transaction for, so the
+// readback names that chain or map until it goes.
 //
-// The timeout objects and the sets are written on every apply and changed by
-// none. nf_tables has no update for a ct timeout, so a write of an object that
-// exists leaves it as it is, and a set keeps its elements, each source's count
-// of flows. A deleted object detaches from every flow it timed, which then
-// takes the host's timeouts, and a deleted set forgets every count, so only a
-// remake deletes one, the one that reads back other than written, and leaves
-// the other family's.
+// The timeout objects and the sets of flows are written on every apply and
+// changed by none. nf_tables has no update for a ct timeout, so a write of an
+// object that exists leaves it as it is, and a set keeps its elements, each
+// source's count of flows. A deleted object detaches from every flow it timed,
+// which then takes the host's timeouts, and a deleted set forgets every count,
+// so only a remake deletes one, the one that reads back other than written,
+// and leaves the other family's. The sets of untranslated sources are emptied
+// and filled in the transaction, so a lookup meets the sources the old rules
+// pass or those the new ones do.
 func (n *natTables) Apply(rules []Rule, remake bool) error {
 	contents := translatorContents(n.families, n.limit, rules)
 	var stale nftables.Contents
@@ -421,33 +380,49 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 	if err != nil {
 		return err
 	}
-	in, err := strayHolders(n.conn, contents.Chains, held)
+	in, err := strayHolders(n.conn, held)
 	if err != nil {
 		return err
 	}
-	requests, err := translatorBatch(contents, rules, stale, strays(contents.Chains, held, in))
+	requests, err := translatorBatch(contents, rules, stale, strays(held, in))
 	if err != nil {
 		return err
 	}
 	return n.holder.Write(n.conn, requests)
 }
 
-// translatorContents is the translator's objects for families: the chains
-// translatorChains names for rules, and each family's set, made under limit,
-// and timeout objects
+// translatorContents is the translator's chains and the sets and timeout
+// objects of families, as familyContents gives each family's
 func translatorContents(families []uint8, limit int, rules []Rule) nftables.Contents {
-	contents := nftables.Contents{Chains: translatorChains(rules)}
+	contents := nftables.Contents{Chains: translatorChains, Elements: map[string][]nftables.Interval{}}
 	for _, family := range families {
-		contents.Sets = append(contents.Sets, flowSet(family, limit))
-		contents.Timeouts = append(contents.Timeouts, timeoutObjects(family)...)
+		own := familyContents(family, limit, rules)
+		contents.Sets = append(contents.Sets, own.Sets...)
+		contents.Timeouts = append(contents.Timeouts, own.Timeouts...)
+		maps.Copy(contents.Elements, own.Elements)
 	}
 	return contents
 }
 
+// familyContents is family's sets and timeout objects: its set of flows, made
+// under limit, and its set of untranslated sources, holding those of its pass
+// among rules, none where rules hold none
+func familyContents(family uint8, limit int, rules []Rule) nftables.Contents {
+	untranslated := untranslatedSources(family)
+	var sources []nftables.Interval
+	if i := slices.IndexFunc(rules, func(rule Rule) bool { return rule.Family == family && rule.Passes }); i >= 0 {
+		sources = nftables.Prefixes(rules[i].Sources.Prefixes())
+	}
+	return nftables.Contents{
+		Sets: []nftables.Set{flowSet(family, limit), untranslated}, Timeouts: timeoutObjects(family),
+		Elements: map[string][]nftables.Interval{untranslated.Name: sources},
+	}
+}
+
 // translatorBatch is the transaction Apply sends: contents over the stale
 // chains, sets and objects of stale, the stray chains as stray names them, the
-// forward hook's first line, and rules in their order. Each set a rule looks
-// its sources up in takes an ID of its own past the flows' sets', 1 and 2.
+// forward hook's first line, and rules in their order. A set contents fills is
+// emptied and filled, and the others made, keeping their elements.
 func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Contents, stray []noneStray) ([]nftables.Request, error) {
 	names := make([]string, 0, len(stray))
 	for _, chain := range stray {
@@ -462,11 +437,20 @@ func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Co
 		requests = append(requests, object.Create(unix.NFPROTO_INET))
 	}
 	for _, set := range contents.Sets {
-		made, err := set.Create(unix.NFPROTO_INET)
+		sources, filled := contents.Elements[set.Name]
+		if !filled {
+			made, err := set.Create(unix.NFPROTO_INET)
+			if err != nil {
+				return nil, err
+			}
+			requests = append(requests, made)
+			continue
+		}
+		replaced, err := set.Replace(unix.NFPROTO_INET, sources)
 		if err != nil {
 			return nil, err
 		}
-		requests = append(requests, made)
+		requests = append(requests, replaced...)
 	}
 	for _, chain := range stray {
 		if chain.heldBy == "" {
@@ -479,17 +463,8 @@ func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Co
 		return nil, err
 	}
 	requests = append(requests, dispatch)
-	id := uint32(2)
 	for _, rule := range rules {
-		if rule.Sources != "" {
-			id++
-			sets, err := sourceRequests(rule, id)
-			if err != nil {
-				return nil, err
-			}
-			requests = append(requests, sets...)
-		}
-		request, err := newRule(rule, id)
+		request, err := newRule(rule)
 		if err != nil {
 			return nil, err
 		}
@@ -578,24 +553,14 @@ func dispatchLine() nftables.Line {
 	return nftables.Line{Spec: dispatchSpec, Expressions: append(nftables.NFProto(unix.NFPROTO_IPV6), nftables.Goto(forward6.Name))}
 }
 
-// translatorChains is the chains in the order rules writes their rules: the
-// forward hook's, IPv6's, the chain of each class of none in the order of
-// their passes, then the translation's. IPv6's chain is written whether or
-// not IPv6 is translated, so forward's first line is the same under every
-// configuration.
-func translatorChains(rules []Rule) []nftables.Chain {
-	out := []nftables.Chain{forward, forward6}
-	for _, rule := range rules {
-		if rule.Passes {
-			out = append(out, regularChain(noneChain(rule.From)))
-		}
-	}
-	return append(out, postrouting)
-}
+// translatorChains is the chains in the order desired writes their rules: the
+// forward hook's, IPv6's, then the translation's. IPv6's chain is written
+// whether or not IPv6 is translated, so forward's first line is the same under
+// every configuration.
+var translatorChains = []nftables.Chain{forward, forward6, postrouting}
 
 // regularChain is a regular chain by its name, which a packet enters by a
-// goto alone: IPv6's, by forward's first line, or a class of none's, by its
-// class's pass
+// goto alone: IPv6's, by forward's first line, or a stray one
 func regularChain(name string) nftables.Chain {
 	return nftables.Chain{Table: nftables.Table, Name: name, Hook: nftables.NoHook}
 }
@@ -613,43 +578,28 @@ func flowSet(family uint8, limit int) nftables.Set {
 	return set
 }
 
-// newRule is the request writing rule, which a rule taking Sources sends
-// after sourceRequests of the same id
-func newRule(rule Rule, id uint32) (nftables.Request, error) {
-	line, err := translatorLine(rule, id)
+// untranslatedSources is the interval set of family's sources whose class is
+// none, which its pass looks a source up in
+func untranslatedSources(family uint8) nftables.Set {
+	set := nftables.Set{Table: nftables.Table, Name: untranslatedSet + digit(family), ID: 4, KeyType: nftables.TypeIPv6Addr, KeyLen: net.IPv6len, Flags: unix.NFT_SET_INTERVAL}
+	if family == egress.FamilyIPv4 {
+		set.ID, set.KeyType, set.KeyLen = 3, nftables.TypeIPv4Addr, net.IPv4len
+	}
+	return set
+}
+
+// newRule is the request writing rule
+func newRule(rule Rule) (nftables.Request, error) {
+	line, err := translatorLine(rule)
 	if err != nil {
 		return nftables.Request{}, err
 	}
 	return nftables.Chain{Table: nftables.Table, Name: rule.chain()}.Rule(unix.NFPROTO_INET, line.Spec, line.Expressions)
 }
 
-// sourceSet is the anonymous set a rule taking Sources of family looks them up
-// in, numbered id in its transaction
-func sourceSet(family uint8, id uint32) nftables.Set {
-	if family == egress.FamilyIPv4 {
-		return nftables.Anonymous(nftables.Table, id, nftables.TypeIPv4Addr, net.IPv4len, unix.NFT_SET_INTERVAL)
-	}
-	return nftables.Anonymous(nftables.Table, id, nftables.TypeIPv6Addr, net.IPv6len, unix.NFT_SET_INTERVAL)
-}
-
-// sourceRequests makes and fills the set of rule's Sources, numbered id, which
-// the kernel takes no change to once the rule holds it
-func sourceRequests(rule Rule, id uint32) ([]nftables.Request, error) {
-	set := sourceSet(rule.Family, id)
-	made, err := set.Create(unix.NFPROTO_INET)
-	if err != nil {
-		return nil, err
-	}
-	filled, err := set.Fill(unix.NFPROTO_INET, nftables.Prefixes(rule.Sources.Prefixes()))
-	if err != nil {
-		return nil, err
-	}
-	return append([]nftables.Request{made}, filled...), nil
-}
-
 // translatorLine's expressions come in the order `nft list ruleset` prints
-// them, a rule taking Sources looking them up in the set numbered id
-func translatorLine(rule Rule, id uint32) (nftables.Line, error) {
+// them
+func translatorLine(rule Rule) (nftables.Line, error) {
 	if err := nftables.DeviceName(rule.Interface); err != nil {
 		return nftables.Line{}, err
 	}
@@ -659,7 +609,7 @@ func translatorLine(rule Rule, id uint32) (nftables.Line, error) {
 	// translation's chain meets both families, so a rule there reads the
 	// family ahead of that. A rule of the forward hook's meets its own
 	// family's packets alone: IPv4's past forward's first line, which sends
-	// IPv6's on to IPv6's chain, and a class of none's by its class's pass.
+	// IPv6's on to IPv6's chain.
 	head, match, action := protocolRule(rule)
 	expressions, family := head, nftables.NFProto(proto)
 	if rule.chain() == ChainName {
@@ -714,8 +664,8 @@ func translatorLine(rule Rule, id uint32) (nftables.Line, error) {
 	// otherwise as the key of a set of addresses, so the listing of such a
 	// line would not load back.
 	switch {
-	case rule.Sources != "":
-		expressions = slices.Concat(expressions, family, [][]byte{nftables.SourceLoad(proto), nftables.Lookup(sourceSet(rule.Family, id), false)})
+	case rule.Passes:
+		expressions = slices.Concat(expressions, family, [][]byte{nftables.SourceLoad(proto), nftables.Lookup(untranslatedSources(rule.Family), false)})
 		family = nil
 	case rule.From.IsValid():
 		expressions = append(expressions, nftables.SourcePrefix(rule.From)...)
@@ -745,10 +695,7 @@ func translatorLine(rule Rule, id uint32) (nftables.Line, error) {
 		}
 		expressions = append(expressions, nftables.RejectICMPX(code))
 	case passing:
-		// a class of none's packet goes on to its class's chain and none after
-		// this one, past the screens and the limit of the shorter classes, and
-		// the forward chain's policy passes it at that chain's end
-		expressions = append(expressions, nftables.Goto(noneChain(rule.From)))
+		expressions = append(expressions, nftables.Verdict(nftables.Accept))
 	case dropping:
 		expressions = append(expressions, nftables.Verdict(nftables.Drop))
 	case translating:

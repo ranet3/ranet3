@@ -54,14 +54,14 @@ type tracking struct {
 // drop. An IPv4 drop takes the ICMP types of its message in any state and
 // either way with a counted drop, and a refusal its protocol in its flow's
 // original direction with a counted reject of code 13 in IPv4 and 1 in IPv6,
-// and neither a reply nor a packet no flow is tracked for. A class of none's
-// pass out of the mesh takes every packet in any state and either way with no
-// count. The packets arrive on
-// and leave by the mesh device, two devices whose names start like it, a drawn
-// link whose name often shares a prefix with it, another link and this host
-// itself, from sources on either side of each edge of the rule's From, or of
-// each prefix of the set a screen of a class of none's chain takes in its place,
-// and one drawn anywhere in its family, carrying each protocol and first octet carried
+// and neither a reply nor a packet no flow is tracked for. The pass out of the
+// mesh takes every packet from a source its family's set of untranslated
+// sources holds, in any state and either way, with no count. The packets
+// arrive on and leave by the mesh device, two devices whose names start like
+// it, a drawn link whose name often shares a prefix with it, another link and
+// this host itself, from sources on either side of each edge of the rule's
+// From, or of each prefix of the pass's set, and one drawn anywhere in its
+// family, carrying each protocol and first octet carried
 // names, in a state ct state reads, each of them and the reply way of an
 // established and a related flow for a rule taking what no flow is tracked
 // for, a drop or a refusal. A rule is refused exactly when its name is too long
@@ -96,7 +96,7 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 			rule.Direction = hegel.Draw(ht, hegel.SampledFrom([]Direction{Out, In}))
 			rule.Protocol = hegel.Draw(ht, hegel.SampledFrom(checksummed))
 		case 7:
-			// only a class of none out of the mesh passes
+			// only out of the mesh does a source whose class is none pass
 			rule.Direction, rule.Passes = Out, true
 		}
 		if rule.Family == egress.FamilyIPv4 {
@@ -112,25 +112,25 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 				states = append(states, tracking{state, true})
 			}
 		}
-		if hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
-			rule.From = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked()
-		}
-		// the screens of a class of none's chain take the classes inside it as one set
+		// a pass takes the sources of its set in place of a prefix
 		var sets map[string][]nftables.Interval
-		if rule.Direction == Out && (rule.Untracked || rule.Protocol.Number != 0) && hegel.Draw(ht, hegel.WeightedBooleans(1.0/3)) {
+		switch {
+		case rule.Passes:
 			var members []netip.Prefix
 			for range hegel.Draw(ht, pbt.Spanning(1, 3)) {
 				members = append(members, netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked())
 			}
-			rule.From, rule.Sources, rule.Under = netip.Prefix{}, prefixSet(members), netip.PrefixFrom(members[0].Addr(), 1).Masked()
-			made, err := sourceRequests(rule, 2)
+			rule.Sources = prefixSet(members)
+			filled, err := untranslatedSources(rule.Family).Fill(unix.NFPROTO_INET, nftables.Prefixes(members))
 			if err != nil {
 				ht.Fatal(err)
 			}
-			sets = encodedSets(ht, made)
+			sets = encodedSets(ht, filled)
+		case hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)):
+			rule.From = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked()
 		}
 
-		request, err := newRule(rule, 2)
+		request, err := newRule(rule)
 		refused := len(rule.Interface) >= unix.IFNAMSIZ
 		if refused != (err != nil) {
 			ht.Fatalf("%s encoded with %v, want refused %v", rule, err, refused)
@@ -189,43 +189,6 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 					}
 				}
 			}
-		}
-	})
-}
-
-// Two prefixes of one family, masked as a class's is, never share the name of
-// a class of none's chain, two lengths over one address among them, and every
-// name fits a chain's name in nf_tables, NFT_CHAIN_MAXNAMELEN of 256 bytes with
-// its terminator. Two lengths over a long address part only at the end of a
-// long name, which a draw seldom meets, so two such pairs are held as written.
-func TestEachPrefixNamesAChainOfItsOwn(t *testing.T) {
-	for _, pair := range [][2]string{
-		{"2001:db8:1234:5678::/64", "2001:db8:1234:5678::/65"},
-		{"2001:db8:aaaa:bbbb:cccc:dddd:eeee:ff00/120", "2001:db8:aaaa:bbbb:cccc:dddd:eeee:ff00/121"},
-	} {
-		a, b := netip.MustParsePrefix(pair[0]), netip.MustParsePrefix(pair[1])
-		if noneChain(a) == noneChain(b) {
-			t.Errorf("%s and %s both name the chain %s", a, b, noneChain(a))
-		}
-	}
-	pbt.Check(t, func(ht *hegel.T) {
-		var addresses hegel.Generator[netip.Addr] = hegel.IPAddresses().IPv4()
-		bits := 32
-		if hegel.Draw(ht, hegel.Booleans()) {
-			addresses, bits = unmappedIPv6(), 128
-		}
-		a := netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(0, bits))).Masked()
-		// a's address at a length no shorter keeps that address, so the two
-		// names part only at the length after it
-		b := netip.PrefixFrom(a.Addr(), hegel.Draw(ht, pbt.Spanning(a.Bits(), bits)))
-		if hegel.Draw(ht, hegel.Booleans()) {
-			b = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(0, bits))).Masked()
-		}
-		if a != b && noneChain(a) == noneChain(b) {
-			ht.Fatalf("%s and %s both name the chain %s", a, b, noneChain(a))
-		}
-		if len(noneChain(a)) >= unix.NFT_CHAIN_MAXNAMELEN {
-			ht.Fatalf("%s names the chain %s of %d bytes, past the %d nf_tables takes with the terminator", a, noneChain(a), len(noneChain(a)), unix.NFT_CHAIN_MAXNAMELEN)
 		}
 	})
 }

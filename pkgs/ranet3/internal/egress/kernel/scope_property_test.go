@@ -51,8 +51,8 @@ func setOwner(name string) int {
 // it, in the inet table of this tool's name, and it deletes the table, makes
 // it or changes it with a flag set or no flags attribute, or names one of that
 // owner's chains or sets, over the nine kinds of message it reads and the
-// rest and the names of the three owners, IPv6's chain, the chain an earlier
-// translator held IPv4's lines in, a class of none's chain, an anonymous set
+// rest and the names of the three owners, IPv6's chain, the chains an earlier
+// translator held IPv4's lines and a class of none's in, an anonymous set
 // and map and a stranger's, each in every family, the table's name and
 // others, from either port and with a table message's flags absent, 0,
 // dormant, owner and persist. A NEWTABLE whose flags are 0 makes the table or

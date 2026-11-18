@@ -13,11 +13,11 @@
 // this tool, nftables.Table, which the antispoof filter and internal/kernel's
 // kill switch write their own chains in: a nat postrouting chain that
 // translates, a filter forward chain, which sends IPv6's packets on to a
-// regular chain of IPv6's and holds IPv4's lines itself, a regular chain for
-// each class of none, which that class's pass goes to, and for each family the
-// timeout objects the translation attaches and a set that holds each mesh
+// regular chain of IPv6's and holds IPv4's lines itself, and for each family
+// the timeout objects the translation attaches, a set that holds each mesh
 // source under a class that translates to its share of the flows
-// (exit-nodes.md, "Each source's share of the flows"). Their names are the
+// (exit-nodes.md, "Each source's share of the flows"), and a set of the sources
+// whose class is none, which the forward chain passes. Their names are the
 // ownership marker, the way Table.Proto is the reconciler's in
 // internal/kernel. This package writes only those, and withdraws them at
 // shutdown, with the table as nftables.Hold.Withdraw says.
@@ -226,10 +226,8 @@ type Rule struct {
 	// invalid for a prefix covering every address, which selects nothing
 	// extra.
 	From netip.Prefix
-	// Sources narrows a rule of a class of none's chain, with From left
-	// invalid, to the sources of the classes that translate directly inside
-	// that class, matched as one set, so the chain holds one rule of each kind
-	// whatever their count
+	// Sources is the prefixes a pass looks a source up in, those whose class is
+	// none, which its family's set of them holds
 	Sources PrefixSet
 	// Timeouts makes the rule one that attaches this exit's timeouts to a new
 	// flow of its protocol and translates nothing, with Source and None left
@@ -239,16 +237,10 @@ type Rule struct {
 	// Limit makes the rule an Out rule of the limit's chain that refuses a new
 	// flow from From while its source holds Limit
 	Limit int
-	// Passes makes the rule an Out rule that sends every packet from From on to
-	// the chain of that class of none, whose end passes it on. It sits in the
-	// limit's chain, or under Under in the chain of the nearest class of none
-	// covering it, ahead of every limit of that chain, so no limit counts its
-	// flows and a packet outside the class meets this one rule for it.
+	// Passes makes the rule an Out rule of the forward hook, ahead of every
+	// screen, that accepts a packet from a source Sources holds, with From left
+	// invalid, so no screen or limit meets a packet whose class is none
 	Passes bool
-	// Under places a rule of the limit's chain in the chain of the class of
-	// none from that prefix, the nearest of none covering the rule's sources,
-	// and is left invalid for the hook's own chain
-	Under netip.Prefix
 	// Untracked makes the rule an Out or In rule of the limit's chain, ahead of
 	// the limit, that takes a packet from From no flow is tracked for and drops
 	// it. nf_nat leaves such a packet as it is, so a rule that translates would
@@ -273,9 +265,8 @@ type Rule struct {
 // by its protocol first, an ICMP drop or a protocol's refusal
 func (r Rule) byProtocol() bool { return r.Drops != NoMessage || r.Protocol.Number != 0 }
 
-// PrefixSet is prefixes of one family as one value, their text joined in the
-// order Classes gives them, so a Rule holding them stays comparable, and empty
-// for none
+// PrefixSet is prefixes of one family as one value, their text joined in
+// order, so a Rule holding them stays comparable, and empty for none
 type PrefixSet string
 
 func prefixSet(prefixes []netip.Prefix) PrefixSet {
@@ -351,8 +342,8 @@ const (
 	limiting
 	// dropping drops a packet no flow is tracked for, counting the packets
 	dropping
-	// passing sends every packet of a class of none on to its class's chain,
-	// past the limit and the rules after it, keeping no counter
+	// passing accepts every packet from a source whose class is none, past the
+	// screens and the limit after it, keeping no counter
 	passing
 	// screening drops an ICMP message of a kind or refuses a packet by its
 	// protocol, at the forward hook, counting the packets
@@ -383,13 +374,10 @@ func (k ruleKind) chain() string {
 	return LimitChain
 }
 
-// chain is the chain the rule sits in: the one Under names, else its family's
-// for a kind of the forward hook's, else the translation's
+// chain is the chain the rule sits in: its family's for a kind of the forward
+// hook's, else the translation's
 func (r Rule) chain() string {
-	switch {
-	case r.Under.IsValid():
-		return noneChain(r.Under)
-	case r.kind().chain() == LimitChain:
+	if r.kind().chain() == LimitChain {
 		return familyChain(r.Family)
 	}
 	return ChainName
@@ -414,12 +402,6 @@ func digit(family uint8) string {
 	return "6"
 }
 
-// noneChain names the chain of the class of none from prefix in letters,
-// digits and underscores, which nft lists and reads back as they are written
-func noneChain(prefix netip.Prefix) string {
-	return NoneChain + strings.NewReplacer(".", "_", ":", "_", "/", "_").Replace(prefix.String())
-}
-
 // counted is whether a rule of the kind keeps a counter
 func (k ruleKind) counted() bool { return k != timing && k != passing }
 
@@ -438,9 +420,8 @@ func counterUnit(chain string, counted bool) string {
 
 // String is the rule as an operator reads it in `nft list ruleset`. Every
 // field that changes what the rule does is in it, so two lines of a chain never
-// share a comment, but Sources, which would not fit nft's comment: a rule
-// taking them names the class of none whose chain it sits in, and its set's
-// elements are read back apart.
+// share a comment, but Sources, which would not fit nft's comment: a pass is
+// its family's one, and its set's elements are read back apart.
 func (r Rule) String() string {
 	action := "masquerade"
 	switch kind := r.kind(); {
@@ -463,8 +444,8 @@ func (r Rule) String() string {
 	}
 	parts := []string{r.Direction.String(), "via", r.Interface, egress.FamilyName(r.Family)}
 	switch {
-	case r.Sources != "":
-		parts = append(parts, "translated inside", r.Under.String())
+	case r.Passes:
+		parts = append(parts, "untranslated")
 	case r.From.IsValid():
 		parts = append(parts, "from", r.From.String())
 	}
@@ -966,7 +947,7 @@ func flatten(read map[uint8]chainReadback) (held []Installed, faulted, remake bo
 func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
-		// ahead of the pass under none, which ends the chain
+		// the ICMP drops hold under every class, so they lead the pass
 		if family == egress.FamilyIPv4 {
 			for _, direction := range []Direction{Out, In} {
 				for _, message := range []Message{SourceQuench, Information} {
@@ -1018,64 +999,21 @@ func (t *Translator) classRules(family uint8, direction Direction, from netip.Pr
 	return append(out, translation)
 }
 
-// screens is the limit chain's rules past the ICMP drops, then the rules of
-// each class of none's chain, the chains in the order their passes come. A
-// class of none has its pass, in the chain of the nearest class of none
-// covering it or in the limit chain where none does. The chain of a class of
-// none holds the passes of the classes of none it is nearest to, then where a
-// class that translates has it as its nearest shorter class covering it, one
-// rule of each kind of screen from the sources of every such class, matched as
-// one set. One that translates inside another that translates meets the
-// screens that one meets, every source's where no class of none covers it.
-// The passes of each chain come in the order Classes gives, and the limit
-// chain's are followed by the screens from every source, then those into the
-// mesh from each prefix an In rule translates. So a packet under a class that
-// translates meets one limit, one under a class of none meets none, one
-// outside a class of none meets its pass alone, and one under a class of none
-// that directly holds a class that translates meets one rule of each kind of
-// screen there, whatever their count, and none under one that directly holds
-// none.
+// screens is the forward hook's rules past the ICMP drops. The pass of the
+// sources whose class is none leads them, so a packet out of the mesh from
+// such a source meets no screen, and every other meets each screen once.
 func (t *Translator) screens(family uint8) []Rule {
-	classes := t.cfg.Classes(family)
 	var out []Rule
-	passes := map[netip.Prefix][]Rule{}
-	inside := map[netip.Prefix][]netip.Prefix{}
-	for i, class := range classes {
-		later := classes[i+1:]
-		// the shorter class nearest it that covers it, whose rules its packets
-		// meet next, and the nearest of none
-		covering := slices.IndexFunc(later, func(c egress.Class) bool { return c.From.Overlaps(class.From.Prefix) })
-		var under netip.Prefix
-		if none := slices.IndexFunc(later, func(c egress.Class) bool { return c.To.None && c.From.Overlaps(class.From.Prefix) }); none >= 0 {
-			under = later[none].From.Prefix
-		}
-		switch {
-		case class.To.None && under.IsValid():
-			passes[under] = append(passes[under], Rule{Family: family, Direction: Out, Interface: t.rt.Interface, From: class.From.Prefix, Passes: true, Under: under})
-		case class.To.None:
-			out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, From: class.From.Prefix, Passes: true})
-		case covering >= 0 && later[covering].To.None:
-			inside[under] = append(inside[under], class.From.Prefix)
-		}
+	// the addresses of the filter's sets of none before it leaves out the
+	// prefixes the mesh's table learned, which no table given here holds
+	untranslated := meshkernel.NoneDestinations(t.cfg.Classes(family), nil, nil)
+	if sources := prefixSet(meshkernel.RangePrefixes(untranslated...)); sources != "" {
+		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Sources: sources, Passes: true})
 	}
 	out = append(out, t.screen(family, Out, netip.Prefix{})...)
 	for _, rule := range t.inbound(family) {
 		if rule.Timeouts == NoTimeouts {
 			out = append(out, t.screen(family, In, rule.From)...)
-		}
-	}
-	for i := 0; i < len(out); i++ {
-		if !out[i].Passes {
-			continue
-		}
-		none := out[i].From
-		out = append(out, passes[none]...)
-		if len(inside[none]) == 0 {
-			continue
-		}
-		for _, rule := range t.screen(family, Out, netip.Prefix{}) {
-			rule.Sources, rule.Under = prefixSet(inside[none]), none
-			out = append(out, rule)
 		}
 	}
 	return out
