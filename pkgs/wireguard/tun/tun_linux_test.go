@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"ranet3.com/pkgs/wireguard/conn"
+	"ranet3.com/pkgs/wireguard/rwcancel"
 )
 
 const testMTU = 1420
@@ -228,6 +229,41 @@ func TestTUNLifecycle(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestCloseAfterNetlinkListenerExit runs the netlink listener to its end, where
+// it closes the pipe that Close cancels it through, and only then calls Close.
+// Recvmsg on an eventfd fails with ENOTSOCK, and the listener exits on it as
+// on any error of Recvmsg but EAGAIN and EINTR, which it retries.
+func TestCloseAfterNetlinkListenerExit(t *testing.T) {
+	fd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, err := rwcancel.NewRWCancel(fd)
+	if err != nil {
+		unix.Close(fd)
+		t.Fatal(err)
+	}
+	tun := &NativeTun{
+		events:                  make(chan Event, 5),
+		errors:                  make(chan error, 5),
+		statusListenersShutdown: make(chan struct{}),
+		netlinkSock:             fd,
+		netlinkCancel:           cancel,
+	}
+	tun.routineNetlinkListener()
+	select {
+	case err := <-tun.errors:
+		if !errors.Is(err, unix.ENOTSOCK) {
+			t.Fatalf("the listener exited on %v, want ENOTSOCK", err)
+		}
+	default:
+		t.Fatal("the listener returned without sending the error it exited on")
+	}
+	if err := tun.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

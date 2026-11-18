@@ -12,6 +12,7 @@ package rwcancel
 import (
 	"errors"
 	"os"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -21,6 +22,9 @@ type RWCancel struct {
 	fd            int
 	closingReader *os.File
 	closingWriter *os.File
+	// cancelOnce is taken by whichever of Cancel and Close comes first, so
+	// Cancel's write either precedes the pipe's close or does not happen
+	cancelOnce sync.Once
 }
 
 func NewRWCancel(fd int) (*RWCancel, error) {
@@ -106,12 +110,18 @@ func (rw *RWCancel) Write(p []byte) (n int, err error) {
 	}
 }
 
+// Cancel makes ReadyRead and ReadyWrite return false until Close, unless it
+// returns an error. It may be called concurrently with Close, and after Close
+// it does nothing and returns nil.
 func (rw *RWCancel) Cancel() (err error) {
-	_, err = rw.closingWriter.Write([]byte{0})
+	rw.cancelOnce.Do(func() {
+		_, err = rw.closingWriter.Write([]byte{0})
+	})
 	return
 }
 
 func (rw *RWCancel) Close() {
+	rw.cancelOnce.Do(func() {})
 	rw.closingReader.Close()
 	rw.closingWriter.Close()
 }
