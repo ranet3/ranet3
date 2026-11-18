@@ -585,16 +585,29 @@ those and reads them back as
 another writer puts in one of its chains or edits there, or a table it sets
 dormant, which changes what the chain does to a packet, is undone by the next
 pass, as is a source another writer adds to or takes from a set of untranslated
-sources. It does not read back the sets' counts, so a count another writer
-changes or removes stays as that writer left it. The chains and timeout objects
-an earlier version wrote are its own, as
-[refusing to advertise](exit-nodes.md#refusing-to-advertise) names them. Another
-chain in the table is neither read nor removed. It reads other writers' tables,
-chains and rules to find its own and to report conflicts, and writes, replaces
-or deletes nothing but its own. It replaces the chains' rules in 1 transaction,
-so no packet is ever evaluated against half a ruleset, and deletes and makes
-again in that transaction a chain, set or timeout object of its own that
-nf_tables will not change in place, and nothing else.
+sources. It does not read back the sets' counts.
+
+The chains and timeout objects an earlier version wrote in the table
+`inet ranet3` are its own, as
+[refusing to advertise](exit-nodes.md#refusing-to-advertise) names them, and a
+chain of the table under any other name is another writer's. A pass writes,
+replaces or deletes nothing but its own. It replaces the chains' rules in 1
+transaction, so no packet is ever evaluated against half a ruleset, and deletes
+and makes again in that transaction a chain, set or timeout object of its own
+that nf_tables will not change in place. The withdrawal of `cap.egress` removes
+another writer's chain only with the table, in the case
+[the nftables table](#the-nftables-table) gives.
+
+Another writer's chain holds a family [not ready](exit-nodes.md#readiness) only
+where a rule of it goes to or uses a chain, set or object of the translator's
+that a pass must delete. Where that is one an earlier version wrote, the pass
+keeps it, and both families stay not ready with a reason that names it and what
+holds it, as [the nftables table](#the-nftables-table) gives. Where that is one
+the translator writes and it reads back otherwise than written, such as a set of
+flows read back under another share, nf_tables refuses the whole transaction of
+each pass that must delete it, so that pass changes nothing. Each family whose
+chains, sets or objects read back otherwise then stays not ready, and the reason
+names what of the translator's reads back otherwise, not what holds it.
 
 It removes its chains, sets and timeout objects at shutdown and at
 `ranet3 down`, and the table with them as
@@ -821,10 +834,11 @@ An older ranet3 wrote the translator's chains in the tables `ip ranet3` and
 `ip6 ranet3`, and the kill switch's in `inet ranet3_fallback`. Its clean stop
 withdraws them, so they outlive an upgrade only where the older daemon was
 killed or crashed, and the kill switch's also where it stopped for the mesh's
-failure. No later instance reads or removes them: the old nat chain at priority
-99 shows as a conflict in `status`, while the old forward chain and kill switch
-go on refusing and dropping by the configuration they were written for. Delete
-them with `nft delete table ip ranet3`, `nft delete table ip6 ranet3` and
+failure. No later instance writes or removes them. The old nat chain at priority
+99 shows as a conflict in `status` on an exit that translates its family, while
+the old forward chain and kill switch go on refusing and dropping by the
+configuration they were written for. Delete them with
+`nft delete table ip ranet3`, `nft delete table ip6 ranet3` and
 `nft delete table inet ranet3_fallback`, or reboot.
 
 ### pf on macOS

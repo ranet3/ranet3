@@ -513,22 +513,23 @@ names. `forward4` held IPv4's lines at the forward hook, and each `none_` chain
 the lines of one class of `none`. A pass deletes each such object it finds in
 the transaction that writes the chains. One that a rule or a map element of
 another writer's holds stays, and keeps both families not ready, as
-[sharing a host](coexistence.md#the-nftables-table) gives. Another chain in the
-table is neither read nor removed, and a nat chain at the source translation
-hook at priority 99 or below is named as a [conflict](#watching-it). Each pass
-first rewrites a chain that reads back otherwise, such as one missing a rule,
-holding another writer's, a rule edited under the comment it was written with or
-in a dormant table, and fills again a set of untranslated sources whose elements
-read back otherwise. nf_tables clears no table flag in place but dormant, and
-changes no chain's type, hook or priority, no set's key, flags or comment and no
-timeout object's values, so when a chain, set or object of the translator's
-differs in one of those the pass deletes that one and makes it again in the same
-transaction, leaving everything else in the table as it is. Another table flag
-holds both families not ready, with the reason
-[sharing a host](coexistence.md#the-nftables-table) gives. When the chains still
-do not read back as written, the host stops forwarding the family or a lookup
-fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
-seconds by default).
+[sharing a host](coexistence.md#the-nftables-table) gives.
+[The packet filter](coexistence.md#the-packet-filter) section of sharing a host
+gives what the translator does with a chain of the table under any other name,
+and a nat chain at the source translation hook at priority 99 or below is named
+as a [conflict](#watching-it). Each pass first rewrites a chain that reads back
+otherwise, such as one missing a rule, holding another writer's, a rule edited
+under the comment it was written with or in a dormant table, and fills again a
+set of untranslated sources whose elements read back otherwise. nf_tables clears
+no table flag in place but dormant, and changes no chain's type, hook or
+priority, no set's key, flags or comment and no timeout object's values, so when
+a chain, set or object of the translator's differs in one of those the pass
+deletes that one and makes it again in the same transaction, leaving everything
+else in the table as it is. Another table flag holds both families not ready,
+with the reason [sharing a host](coexistence.md#the-nftables-table) gives. When
+the chains still do not read back as written, the host stops forwarding the
+family or a lookup fails, that pass retracts the prefix. A pass runs at least
+every `sweep` (30 seconds by default).
 
 On Linux the node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on.
@@ -649,22 +650,26 @@ adding, changing or deleting one of the translator's chains, rules, sets or set
 elements in it, such as a `nftables.service` reload that flushes the ruleset, a
 rule put in one of the translator's chains or a table set dormant, holds both
 families not ready until the pass it wakes restores them, rather than until the
-next sweep. A chain another writer adds to the table is not read unless it is
-one an earlier version wrote, as [refusing to advertise](#refusing-to-advertise)
-names. That pass reads the family ready with the chain still in place. The
-translator's own writes wake no pass of its own, and the antispoof filter's and
-the kill switch's writes of their chains, rules and sets in the same table wake
-none either. A flush of the ruleset deletes the table and another program
-setting it dormant sets a flag on it, so each wakes every writer once. The first
-writer's pass after it makes the table again or clears the flag, which wakes no
-other: the table it makes holds none of their chains, and with the flag cleared
-it bypasses none. Notifications the daemon lost, which another table's large
-transaction can overflow its socket with, wake a pass too and leave readiness as
-it was, since that pass reads the rules back. A pass that reads another writer's
-change back and cannot undo it holds the family the change is in not ready, IPv6
-alone for a change to `forward6`, and both families for a change to another
-chain, `forward` among them, since it holds IPv6's goto ahead of IPv4's lines,
-with the change named, and withholds its prefixes until a later pass does.
+next sweep. A chain another writer adds to the table wakes no pass unless it
+carries one of the translator's names or one an earlier version wrote, as
+[refusing to advertise](#refusing-to-advertise) names. A chain under any other
+name holds a family not ready only where a rule of it goes to or uses a chain,
+set or object of the translator's that a pass must delete, as
+[sharing a host](coexistence.md#the-packet-filter) gives. The translator's own
+writes wake no pass of its own, and the antispoof filter's and the kill switch's
+writes of their chains, rules and sets in the same table wake none either. A
+flush of the ruleset deletes the table and another program setting it dormant
+sets a flag on it, so each wakes every writer once. The first writer's pass
+after it makes the table again or clears the flag, which wakes no other: the
+table it makes holds none of their chains, and with the flag cleared it bypasses
+none. Notifications the daemon lost, which another table's large transaction can
+overflow its socket with, wake a pass too and leave readiness as it was, since
+that pass reads the rules back. A pass that reads another writer's change back
+and cannot undo it holds the family the change is in not ready, IPv6 alone for a
+change to `forward6`, and both families for a change to another chain, `forward`
+among them, since it holds IPv6's goto ahead of IPv4's lines, with a reason that
+names what of the translator's reads back otherwise, and withholds its prefixes
+until a later pass does.
 
 ## The exit on macOS
 
@@ -1073,11 +1078,12 @@ what it does:
 so `forward6` goes missing only with that line, and the pass and the stop empty
 `forward` in the transaction that deletes `forward6`. A pass that finds a chain
 an earlier version wrote, as [refusing to advertise](#refusing-to-advertise)
-names, empties it, every other such chain and `forward` in its transaction
-before it deletes it, since a line of one of them may go to it by a goto or a
-map and
+names, empties it, every other such chain and `forward` in its transaction,
+since a line of one of them may go to it by a goto or a map and
 [the gotos of a line's map go with the line](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n6016).
-A line at the forward hook tests no family ahead of its prefix, so
+The same transaction then deletes each such chain that no rule or map element of
+another writer's goes to, as [refusing to advertise](#refusing-to-advertise)
+gives. A line at the forward hook tests no family ahead of its prefix, so
 `nft list ruleset` prints the prefix as the bytes the line reads, such as
 `@nh,96,32 & 0xffffff00 == 0xc0000200` for `192.0.2.0/24`, and its comment names
 it. A refusal reads `reject with icmpx admin-prohibited`, which the kernel
