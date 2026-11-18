@@ -172,7 +172,7 @@
     "sets": [
       {
         "kind": "table",
-        "name": "ranet3_carved",
+        "name": "carved",
         "elements": [
           "192.0.2.200",
           "3fff:10::/48"

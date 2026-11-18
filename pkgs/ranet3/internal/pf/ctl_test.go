@@ -23,17 +23,17 @@ func TestTableLoadWritesEveryTableItNames(t *testing.T) {
 		return "", nil
 	}}
 	err := c.LoadTables("com.apple/ranet3", []Table{
-		{Name: "ranet3_carved", Const: true},
-		{Name: "ranet3_overlay", Const: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("3fff:10::/32"), netip.MustParsePrefix("192.0.2.0/24")}},
+		{Name: "carved", Const: true},
+		{Name: "overlay", Const: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("3fff:10::/32"), netip.MustParsePrefix("192.0.2.0/24")}},
 	})
-	if want := "table <ranet3_carved> const { }\ntable <ranet3_overlay> const { 192.0.2.0/24, 3fff:10::/32 }\n"; err != nil || stdin != want {
+	if want := "table <carved> const { }\ntable <overlay> const { 192.0.2.0/24, 3fff:10::/32 }\n"; err != nil || stdin != want {
 		t.Errorf("the load sent %q (%v), want %q", stdin, err, want)
 	}
 	if want := []string{"-a", "com.apple/ranet3", "-T", "load", "-f", "-"}; !slices.Equal(args, want) {
 		t.Errorf("the load ran pfctl %q, want %q", args, want)
 	}
 	args = nil
-	if err := c.LoadTables("com.apple/ranet3", []Table{{Name: "ranet3_carved", Prefixes: []netip.Prefix{netip.MustParsePrefix("fe80:1:2::/48")}}}); err == nil || args != nil {
+	if err := c.LoadTables("com.apple/ranet3", []Table{{Name: "carved", Prefixes: []netip.Prefix{netip.MustParsePrefix("fe80:1:2::/48")}}}); err == nil || args != nil {
 		t.Errorf("a table pf would hold otherwise loaded: %v, ran %q", err, args)
 	}
 }
@@ -55,12 +55,12 @@ func tableListing(anchor string, tables ...Table) string {
 	return b.String()
 }
 
-// overlayOnly is an anchor of one table, ranet3_overlay, and the rule that
+// overlayOnly is an anchor of one table, overlay, and the rule that
 // reads it
 func overlayOnly() Ruleset {
 	return Ruleset{
-		Tables: []Table{{Name: "ranet3_overlay", Const: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}},
-		Rules:  []Rule{{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "ranet3_overlay"}, Label: "accept via lo0"}},
+		Tables: []Table{{Name: "overlay", Const: true, Prefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}},
+		Rules:  []Rule{{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "overlay"}, Label: "accept via lo0"}},
 	}
 }
 
@@ -73,14 +73,14 @@ func TestLoadRemovesEachTableItDoesNotDefine(t *testing.T) {
 	c := Ctl{run: func(_ string, args ...string) (string, error) {
 		calls = append(calls, strings.Join(args, " "))
 		if slices.Equal(args, []string{"-a", "com.apple/ranet3", "-s", "Tables", "-vv"}) {
-			return tableListing("com.apple/ranet3", Table{Name: "ranet3_overlay", Const: true}, Table{Name: "stray"}, Table{Name: "ranet3_overlay2"}), nil
+			return tableListing("com.apple/ranet3", Table{Name: "overlay", Const: true}, Table{Name: "stray"}, Table{Name: "overlay2"}), nil
 		}
 		return "", nil
 	}}
 	if err := c.Load("com.apple/ranet3", overlayOnly()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"-a com.apple/ranet3 -f -", "-a com.apple/ranet3 -s Tables -vv", "-a com.apple/ranet3 -t stray -T kill", "-a com.apple/ranet3 -t ranet3_overlay2 -T kill"}
+	want := []string{"-a com.apple/ranet3 -f -", "-a com.apple/ranet3 -s Tables -vv", "-a com.apple/ranet3 -t stray -T kill", "-a com.apple/ranet3 -t overlay2 -T kill"}
 	if !slices.Equal(calls, want) {
 		t.Errorf("the load ran pfctl %q, want %q", calls, want)
 	}
@@ -156,10 +156,10 @@ func TestTableOfAnyNameReadsBackWholeAndALoadRemovesIt(t *testing.T) {
 }
 
 // tableOfAnyName reads back an anchor holding the table name beside
-// ranet3_overlay, loads it with ranet3_overlay alone and reads it back again
+// overlay, loads it with overlay alone and reads it back again
 func tableOfAnyName(t *testing.T, anchor, name string) {
 	t.Helper()
-	h := &heldTables{anchor: anchor, held: []Table{{Name: "ranet3_overlay", Const: true}, {Name: name}}}
+	h := &heldTables{anchor: anchor, held: []Table{{Name: "overlay", Const: true}, {Name: name}}}
 	c := Ctl{run: h.run}
 	read, err := c.Read(anchor)
 	if err != nil || len(read.Tables) != 2 || read.Tables[1].Name != name {
@@ -168,7 +168,7 @@ func tableOfAnyName(t *testing.T, anchor, name string) {
 	if err := c.Load(anchor, overlayOnly()); err != nil || !slices.Equal(h.kills, []string{name}) {
 		t.Errorf("in %s the load over a table named %q returned %v and removed %q", anchor, name, err, h.kills)
 	}
-	if read, err := c.Read(anchor); err != nil || len(read.Tables) != 1 || read.Tables[0].Name != "ranet3_overlay" {
+	if read, err := c.Read(anchor); err != nil || len(read.Tables) != 1 || read.Tables[0].Name != "overlay" {
 		t.Errorf("in %s after the load over a table named %q the anchor reads %+v (%v)", anchor, name, read.Tables, err)
 	}
 }
@@ -181,11 +181,11 @@ func TestTableListingNotAsPfctlPrintsItIsUnreadable(t *testing.T) {
 	const anchor = "com.apple/ranet3"
 	good := tableListing(anchor, Table{Name: "stray"})
 	for _, printed := range []string{
-		"c-a-r-\tranet3_overlay\t" + anchor + "\n" + good,
-		"c-a-r-\tranet3_overlay\t" + anchor + "\n\tAddresses:   1\n" + good,
-		"c-a-r-\tranet3_overlay\t" + anchor + "\n\tAddresses:   \n\tCleared:     Wed Oct 28 15:51:10 2026\n",
-		"c-a-r\tranet3_overlay\t" + anchor + "\n\tAddresses:   1\n\tCleared:     Wed Oct 28 15:51:10 2026\n",
-		"ranet3_overlay\n",
+		"c-a-r-\toverlay\t" + anchor + "\n" + good,
+		"c-a-r-\toverlay\t" + anchor + "\n\tAddresses:   1\n" + good,
+		"c-a-r-\toverlay\t" + anchor + "\n\tAddresses:   \n\tCleared:     Wed Oct 28 15:51:10 2026\n",
+		"c-a-r\toverlay\t" + anchor + "\n\tAddresses:   1\n\tCleared:     Wed Oct 28 15:51:10 2026\n",
+		"overlay\n",
 	} {
 		c := Ctl{run: func(_ string, args ...string) (string, error) {
 			if slices.Equal(args, []string{"-a", anchor, "-s", "Tables", "-vv"}) {
@@ -291,7 +291,7 @@ func TestWithdrawalFlushesEveryRulesetAndGoesOnPastAFailure(t *testing.T) {
 // the main ruleset's call and the skipped interfaces, and 4 for the anchor's
 // readback and 1 more for each of its tables
 func TestReadsOfASteadyPassStartSevenPfctlAndOnePerTable(t *testing.T) {
-	overlay, carved := Table{Name: "ranet3_overlay", Const: true}, Table{Name: "ranet3_carved", Const: true}
+	overlay, carved := Table{Name: "overlay", Const: true}, Table{Name: "carved", Const: true}
 	listings := []string{"", tableListing("com.apple/ranet3", overlay), tableListing("com.apple/ranet3", overlay, carved)}
 	for tables, listing := range listings {
 		started := 0
@@ -328,7 +328,7 @@ func TestReadsOfASteadyPassStartSevenPfctlAndOnePerTable(t *testing.T) {
 // anchor's tables, and 1 more for each table it does not define
 func TestOtherCallsOfAPassStartTheirPfctlProcesses(t *testing.T) {
 	for strays := range 3 {
-		held := []Table{{Name: "ranet3_overlay", Const: true}}
+		held := []Table{{Name: "overlay", Const: true}}
 		for i := range strays {
 			held = append(held, Table{Name: fmt.Sprintf("stray%d", i)})
 		}

@@ -213,7 +213,7 @@ func drawPFFilter(tc hegel.TestCase, tun string) *BorderFilter {
 // and its carved sets, rendered, printed back as pfctl prints it and parsed,
 // gives back the rules the pass asks for in order, a carve-out told from an
 // exemption on the same link and prefix by its label, the overlay in
-// <ranet3_overlay> and the carved sets of both families in <ranet3_carved>,
+// <overlay> and the carved sets of both families in <carved>,
 // whatever the drawing. An anchor holding a prefix pf would hold as another is
 // refused, naming fe80::/10.
 func TestPfAnchorReadsBackAsTheRulesAndSets(t *testing.T) {

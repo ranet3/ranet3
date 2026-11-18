@@ -165,7 +165,7 @@ func darwinBorderFixture() *BorderTable {
 			}},
 		},
 		Sets: []BorderSet{
-			{Kind: "table", Name: "ranet3_carved", Elements: []string{"192.0.2.200", "3fff:10::/48"}},
+			{Kind: "table", Name: "carved", Elements: []string{"192.0.2.200", "3fff:10::/48"}},
 		},
 		PF:       &BorderPF{Anchor: "com.apple/ranet3", Token: 9223372036854775809, PID: 4242, Listed: true, Called: true},
 		Enablers: []BorderEnabler{{PID: 4242, Name: "ranet3"}, {PID: 377, Name: "othervpn"}},

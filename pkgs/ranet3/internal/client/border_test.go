@@ -948,7 +948,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		Where: "pf anchor com.apple/ranet3", PassAt: passed, Ready: true,
 		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "in",
 			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
-		Sets: []egress.BorderSetReading{{Kind: "table", Name: "ranet3_carved"}},
+		Sets: []egress.BorderSetReading{{Kind: "table", Name: "carved"}},
 		PF: &egress.BorderPF{Anchor: "com.apple/ranet3", Token: 1 << 63, PID: 4242, Listed: true, Called: true,
 			Enablers: []pf.Enabler{{PID: 4242, Name: "ranet3", Token: 1 << 63}, {PID: 77, Name: "othervpn", Token: 9}}},
 	}})

@@ -1,4 +1,4 @@
-@0 pass in quick on lo0 from <ranet3_overlay:2> to any no state label "accept via lo0"
+@0 pass in quick on lo0 from <overlay:2> to any no state label "accept via lo0"
   [ Owner : nil          Priority : 0     ]
   [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
   [ Inserted: uid 0 pid 57939 ]

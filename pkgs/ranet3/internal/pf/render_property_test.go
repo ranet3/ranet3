@@ -73,7 +73,7 @@ func refusedForTheScope(t *hegel.T, rs Ruleset) bool {
 // but it, or every one, each rule's label unique and of up to 63 bytes
 func drawRuleset(tc hegel.TestCase) Ruleset {
 	var tables []Table
-	for _, name := range pbt.Subset(tc, []string{"ranet3_overlay", "ranet3_carved"}, 0, 2) {
+	for _, name := range pbt.Subset(tc, []string{"overlay", "carved"}, 0, 2) {
 		t := Table{Name: name, Const: hegel.Draw(tc, hegel.Booleans())}
 		for range hegel.Draw(tc, pbt.Spanning(0, 64)) {
 			p := drawPrefix(tc, hegel.Draw(tc, hegel.SampledFrom([]Family{Inet, Inet6})), 0)

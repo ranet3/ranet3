@@ -95,14 +95,14 @@ func TestPfLoadedAnchorReadsBackAsRendered(t *testing.T) {
 			}
 		}
 	})
-	// an IPv4-compatible address in <ranet3_overlay> and as a drop's source,
+	// an IPv4-compatible address in <overlay> and as a drop's source,
 	// which pfctl prints with its last 32 bits dotted, reads back as written
 	compatible := Ruleset{
-		Tables: []Table{{Name: "ranet3_overlay", Const: true, Prefixes: []netip.Prefix{
+		Tables: []Table{{Name: "overlay", Const: true, Prefixes: []netip.Prefix{
 			netip.MustParsePrefix("192.0.2.1/32"), netip.MustParsePrefix("::c000:201/128"),
 		}}},
 		Rules: []Rule{
-			{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "ranet3_overlay"}, Label: "accept via lo0"},
+			{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "overlay"}, Label: "accept via lo0"},
 			{Action: Block, Quick: true, Interface: "utun250", NotInterface: true, Family: Inet6,
 				From: Address{Prefix: netip.MustParsePrefix("::c000:201/128")}, Label: "drop ipv6 source ::c000:201/128"},
 		},

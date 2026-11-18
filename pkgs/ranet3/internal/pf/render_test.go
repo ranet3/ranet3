@@ -40,10 +40,10 @@ func prefixes(s ...string) []netip.Prefix {
 // names, are of a form the filter does not write.
 var sample = Ruleset{
 	Tables: []Table{
-		{Name: "ranet3_overlay", Const: true, Prefixes: prefixes("3fff:0010:0000::/32", "192.0.2.0/24")},
+		{Name: "overlay", Const: true, Prefixes: prefixes("3fff:0010:0000::/32", "192.0.2.0/24")},
 	},
 	Rules: []Rule{
-		{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "ranet3_overlay"}, Label: "accept via lo0"},
+		{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "overlay"}, Label: "accept via lo0"},
 		{Action: Block, Quick: true, Interface: "utun250", NotInterface: true, Family: Inet,
 			From: Address{Prefix: netip.MustParsePrefix("192.0.2.0/24")}, Label: "drop ipv4 source 192.0.2.0/24"},
 		{Action: Block, Quick: true, Interface: "utun250", NotInterface: true, Family: Inet6,
@@ -113,8 +113,8 @@ func TestHostEntryRendersAsPfctlPrintsIt(t *testing.T) {
 	for entry := range strings.SplitSeq(strings.TrimSpace(golden(t, "show-owned.txt")), "\n") {
 		entries = append(entries, strings.TrimSpace(entry))
 	}
-	table := Table{Name: "ranet3_carved", Const: true, Prefixes: prefixes("3fff:10::1/128", "198.51.100.0/24", "192.0.2.1/32")}
-	if got, want := table.String(), "table <ranet3_carved> const { "+strings.Join(entries, ", ")+" }"; got != want {
+	table := Table{Name: "carved", Const: true, Prefixes: prefixes("3fff:10::1/128", "198.51.100.0/24", "192.0.2.1/32")}
+	if got, want := table.String(), "table <carved> const { "+strings.Join(entries, ", ")+" }"; got != want {
 		t.Errorf("%v renders %q, want %q", table.Prefixes, got, want)
 	}
 }
@@ -162,9 +162,9 @@ func TestPfctlsReadbackParsesAsTheSample(t *testing.T) {
 // written in a table and as a rule's source
 func TestIPv4CompatibleAddressReadsBackAsWritten(t *testing.T) {
 	rs := Ruleset{
-		Tables: []Table{{Name: "ranet3_overlay", Const: true, Prefixes: prefixes("192.0.2.1/32", "::c000:201/128")}},
+		Tables: []Table{{Name: "overlay", Const: true, Prefixes: prefixes("192.0.2.1/32", "::c000:201/128")}},
 		Rules: []Rule{
-			{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "ranet3_overlay"}, Label: "accept via lo0"},
+			{Action: Pass, Quick: true, Interface: "lo0", From: Address{Table: "overlay"}, Label: "accept via lo0"},
 			{Action: Block, Quick: true, Interface: "utun7", NotInterface: true, Family: Inet6,
 				From: Address{Prefix: netip.MustParsePrefix("::c000:201/128")}, Label: "drop ipv6 source ::c000:201/128"},
 		},
@@ -176,7 +176,7 @@ func TestIPv4CompatibleAddressReadsBackAsWritten(t *testing.T) {
 	if strings.Count(text, "::c000:201") != 3 {
 		t.Errorf("the rendering writes the address otherwise:\n%s", text)
 	}
-	rules, err := ParseRules("@0 pass in quick on lo0 from <ranet3_overlay:2> to any no state label \"accept via lo0\"\n" +
+	rules, err := ParseRules("@0 pass in quick on lo0 from <overlay:2> to any no state label \"accept via lo0\"\n" +
 		"  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]\n" +
 		"@1 block drop in quick on ! utun7 inet6 from ::192.0.2.1 to any label \"drop ipv6 source ::c000:201/128\"\n" +
 		"  [ Owner : nil          Priority : 0     ]\n" +
@@ -185,7 +185,7 @@ func TestIPv4CompatibleAddressReadsBackAsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tables, err := ParseTables(tableListing("com.apple/ranet3", Table{Name: "ranet3_overlay", Const: true}), "com.apple/ranet3")
+	tables, err := ParseTables(tableListing("com.apple/ranet3", Table{Name: "overlay", Const: true}), "com.apple/ranet3")
 	if err != nil || len(tables) != 1 {
 		t.Fatalf("the table listing parses as %+v (%v)", tables, err)
 	}
@@ -238,9 +238,9 @@ func TestRuleTheFilterDoesNotWriteIsRefused(t *testing.T) {
 		`block return in quick on ! utun7 inet from 192.0.2.0/24 to any label "returned"`,
 		`block drop in quick on ! utun7 inet from ! 192.0.2.0/24 to any label "negated"`,
 		`block drop in quick on ! utun7 inet from 192.0.2.0/24 to 198.51.100.0/24 label "toward"`,
-		`block drop in quick on ! utun7 inet from ! <ranet3_carved:1> to any label "negated table"`,
+		`block drop in quick on ! utun7 inet from ! <carved:1> to any label "negated table"`,
 		`block drop in quick on ! utun7 inet from (en0) to any label "an interface's address"`,
-		`pass in quick on lo0 from <ranet3_overlay:2> to any no state tagged mesh label "tagged"`,
+		`pass in quick on lo0 from <overlay:2> to any no state tagged mesh label "tagged"`,
 	)
 	for i, line := range lines {
 		out := fmt.Sprintf("@%d %s\n  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]\n", i, line)

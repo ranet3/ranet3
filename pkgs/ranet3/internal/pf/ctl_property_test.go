@@ -35,7 +35,7 @@ func TestEveryWriteStaysInsideOneChildOfComApple(t *testing.T) {
 		"com.apple/" + strings.Repeat("r", 64), "com.apple", "com.apple/", "com.apple/*", "com.apple/ranet3/inner",
 		"ranet3", "", "/", "other/ranet3", "com.apple/ranet3 -F all",
 	}
-	listings := [][]Table{nil, {{Name: "ranet3_overlay", Const: true}}, {{Name: "stray"}, {Name: "x\ty"}, {Name: "x\ny"}, {Name: "ranet3_carved", Const: true}}}
+	listings := [][]Table{nil, {{Name: "overlay", Const: true}}, {{Name: "stray"}, {Name: "x\ty"}, {Name: "x\ny"}, {Name: "carved", Const: true}}}
 	pbt.Check(t, func(ht *hegel.T) {
 		var calls [][]string
 		held := hegel.Draw(ht, hegel.SampledFrom(listings))

@@ -310,11 +310,11 @@ func gatewaySets() egress.BorderSets {
 // folds. It holds no rule of the entry chain, and reads ready.
 func TestPfBorderWritesTheAntispoofChain(t *testing.T) {
 	f, p, _ := pfFilter(t, nil, gateway(t), gatewaySets)
-	want := `table <ranet3_overlay> const { 192.0.2.0/24, 3fff:10::/32 }
-table <ranet3_carved> const { 192.0.2.160/28, 3fff:10:1:2::/64 }
-pass in quick on lo0 from <ranet3_overlay> to any no state label "accept via lo0"
-block drop in quick on ! utun7 inet from <ranet3_carved> to any label "drop ipv4 source @carved4"
-block drop in quick on ! utun7 inet6 from <ranet3_carved> to any label "drop ipv6 source @carved6"
+	want := `table <overlay> const { 192.0.2.0/24, 3fff:10::/32 }
+table <carved> const { 192.0.2.160/28, 3fff:10:1:2::/64 }
+pass in quick on lo0 from <overlay> to any no state label "accept via lo0"
+block drop in quick on ! utun7 inet from <carved> to any label "drop ipv4 source @carved4"
+block drop in quick on ! utun7 inet6 from <carved> to any label "drop ipv6 source @carved6"
 pass in quick on en0 inet from 192.0.2.128/25 to any no state label "accept via en0 source 192.0.2.128/25"
 pass in quick on ! utun7 inet from 192.0.2.32/27 to any no state label "accept exempt source 192.0.2.32/27"
 pass in quick on en0 inet6 from 3fff:10:1::/48 to any no state label "accept exempt via en0 source 3fff:10:1::/48"
@@ -463,7 +463,7 @@ func TestPfBorderMovesTheSetsByATableLoad(t *testing.T) {
 		p.mu.Lock()
 		last, packets := p.log[len(p.log)-1], p.rules[1].Packets
 		p.mu.Unlock()
-		if got := table(pfCarvedTable); !slices.Equal(got, step.want) || last != "tables com.apple/ranet3 ranet3_overlay ranet3_carved" {
+		if got := table(pfCarvedTable); !slices.Equal(got, step.want) || last != "tables com.apple/ranet3 overlay carved" {
 			t.Errorf("carving %v the anchor's <%s> holds %v after %q, want %v", step.carved, pfCarvedTable, got, last, step.want)
 		}
 		if p.loads() != 1 || packets != 5 || !f.Stats().Ready {
@@ -507,7 +507,8 @@ func TestPfBorderLoadsNothingForASetItDoesNotHold(t *testing.T) {
 // the next pass rewrites, the anchor then reading back as written: among them
 // a pass moved after the drops, an exemption's pass under the carve-out's
 // label it shares a link and a prefix with, which only the label tells apart,
-// and a table holding another overlay
+// a table holding another overlay, and the tables and the rules reading them
+// under the names an earlier filter gave them
 func TestPfBorderRewritesEveryAnchorThatReadsBackOtherwise(t *testing.T) {
 	for name, change := range map[string]func(p *fakePF){
 		"a rule of the same label that is not quick": func(p *fakePF) {
@@ -538,6 +539,16 @@ func TestPfBorderRewritesEveryAnchorThatReadsBackOtherwise(t *testing.T) {
 		},
 		"a table the filter does not write": func(p *fakePF) {
 			p.tables = append(p.tables, pf.Table{Name: "other", Const: true})
+		},
+		"the tables under the names an earlier filter gave them": func(p *fakePF) {
+			for i := range p.tables {
+				p.tables[i].Name = "ranet3_" + p.tables[i].Name
+			}
+			for i := range p.rules {
+				if p.rules[i].Rule.From.Table != "" {
+					p.rules[i].Rule.From.Table = "ranet3_" + p.rules[i].Rule.From.Table
+				}
+			}
 		},
 		"a table holding another overlay": func(p *fakePF) {
 			p.tables[0].Prefixes = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("3fff:10::/32")}
