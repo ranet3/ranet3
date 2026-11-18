@@ -105,8 +105,8 @@ func TestFallbackPassesACarvedLeaseLessTheMeshsPrefixes(t *testing.T) {
 	if want := []netip.Prefix{p("3fff:0:0:8000::/49")}; !slices.Equal(sets.lan6, want) {
 		t.Errorf("lan6 holds %v, want %v", sets.lan6, want)
 	}
-	if len(sets.own4) != 0 || len(sets.own6) != 0 {
-		t.Errorf("own holds %v and %v, want neither lease", sets.own4, sets.own6)
+	if len(sets.self4) != 0 || len(sets.self6) != 0 {
+		t.Errorf("self holds %v and %v, want neither lease", sets.self4, sets.self6)
 	}
 }
 

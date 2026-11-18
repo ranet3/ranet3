@@ -55,14 +55,14 @@ Fallback, nftables table inet ranet3 chains fallback and output, postrouting at 
   ip6 daddr @lan6 accept
   ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
   ip6 daddr { fe80::/10, ff00::/8 } accept
-  ip daddr @own4 accept
-  ip6 daddr @own6 accept
-  ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
+  ip daddr @self4 accept
+  ip6 daddr @self6 accept
+  ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
   counter drop   12 packets, 720 B
   set forwarded  empty
   set lan4       198.51.100.0/25, 203.0.113.64-203.0.113.70
   set lan6       2001:db8:a::/64
-  set own4       203.0.113.0/26
-  set own6       empty
-  set tcp_ports  22, 60000-61000
-  set udp_ports  empty
+  set self4      203.0.113.0/26
+  set self6      empty
+  set tcpports   22, 60000-61000
+  set udpports   empty

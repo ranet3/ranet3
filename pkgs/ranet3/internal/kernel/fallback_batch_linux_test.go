@@ -37,12 +37,12 @@ func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
 		}
 	}
-	whole, err := fallbackBatch(fallbackSample, nftables.Contents{})
+	whole, err := fallbackBatch(fallbackSample, nftables.Contents{}, nil)
 	write("the switch of every line", whole, err)
-	requests, err := fallbackBatch(fallbackSets{tun: "ranetsw0"}, nftables.Contents{})
+	requests, err := fallbackBatch(fallbackSets{tun: "ranetsw0"}, nftables.Contents{}, nil)
 	write("the switch with nothing forwarded, no LAN, no own prefix and no service", requests, err)
 	stale := nftables.Contents{Chains: fallbackChains[:1], Sets: fallbackNamed[:1]}
-	remade, err := fallbackBatch(fallbackSample, stale)
+	remade, err := fallbackBatch(fallbackSample, stale, nil)
 	write("the switch remaking its first chain and its first set", remade, err)
 	goldentest.Check(t, "./internal/kernel", "testdata/fallback.golden", out.Bytes())
 	deletions := slices.DeleteFunc(slices.Clone(remade), func(r nftables.Request) bool {
@@ -64,8 +64,32 @@ func TestFallbackBatchTakesAnyNumberOfServices(t *testing.T) {
 		many.tcp = append(many.tcp, Service{Protocol: "tcp", First: port, Last: port})
 		many.udp = append(many.udp, Service{Protocol: "udp", First: port, Last: port})
 	}
-	if _, err := fallbackBatch(many, nftables.Contents{}); err != nil {
+	if _, err := fallbackBatch(many, nftables.Contents{}, nil); err != nil {
 		t.Fatalf("the table of a hundred services of each protocol: %v", err)
+	}
+}
+
+// A pass over a table holding own4, own6, tcp_ports and udp_ports, the sets an
+// earlier switch wrote, sends the transaction it sends over a table without
+// them with their deletions last, after the flush of the chains whose lines
+// read them, so the commit that writes the switch's sets deletes them, and one
+// another writer's rule reads stays
+func TestFallbackBatchDeletesTheEarlierSetsInItsTransaction(t *testing.T) {
+	without, err := fallbackBatch(fallbackSample, nftables.Contents{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftovers := []nftables.Retired{{Kind: "set", Name: "own4"}, {Kind: "set", Name: "own6"}, {Kind: "set", Name: "tcp_ports", HeldBy: "chain other"}, {Kind: "set", Name: "udp_ports"}}
+	with, err := fallbackBatch(fallbackSample, nftables.Contents{}, leftovers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Clone(without)
+	for _, name := range []string{"own4", "own6", "udp_ports"} {
+		want = append(want, nftables.Set{Table: nftables.Table, Name: name}.Delete(unix.NFPROTO_INET))
+	}
+	if !reflect.DeepEqual(with, want) {
+		t.Errorf("the batch over the earlier sets sends %d requests, want the %d of the batch without them and the three free sets' deletions last", len(with), len(without))
 	}
 }
 
@@ -89,8 +113,8 @@ func TestIntervalTextSpellsEachElementAsNftDoes(t *testing.T) {
 		{"lan4", nftables.Interval{First: address("198.51.100.0"), Last: address("198.51.100.128")}, "198.51.100.0-198.51.100.128"},
 		{"lan4", nftables.Interval{First: address("198.51.100.1"), Last: address("198.51.100.2")}, "198.51.100.1-198.51.100.2"},
 		{"lan6", nftables.Interval{First: address("2001:db8:a::"), Last: address("2001:db8:a::ffff:ffff:ffff:ffff")}, "2001:db8:a::/64"},
-		{"tcp_ports", nftables.Interval{First: []byte{0, 22}, Last: []byte{0, 22}}, "22"},
-		{"udp_ports", nftables.Interval{First: []byte{0xea, 0x60}, Last: []byte{0xee, 0x48}}, "60000-61000"},
+		{"tcpports", nftables.Interval{First: []byte{0, 22}, Last: []byte{0, 22}}, "22"},
+		{"udpports", nftables.Interval{First: []byte{0xea, 0x60}, Last: []byte{0xee, 0x48}}, "60000-61000"},
 	} {
 		if got := named(c.set).Text(c.interval); got != c.want {
 			t.Errorf("%s's element %x-%x reads %q, want %q", c.set, c.interval.First, c.interval.Last, got, c.want)

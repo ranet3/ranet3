@@ -42,7 +42,7 @@ func setOwner(name string) int {
 		return 0
 	case slices.Contains(slices.Concat(sets(carvedSet), sets(ownedSet), sets(noneSet)), name):
 		return 1
-	case slices.Contains([]string{"forwarded", "lan4", "lan6", "own4", "own6", "tcp_ports", "udp_ports"}, name):
+	case slices.Contains([]string{"forwarded", "lan4", "lan6", "self4", "self6", "tcpports", "udpports", "own4", "own6", "tcp_ports", "udp_ports"}, name):
 		return 2
 	}
 	return -1
@@ -72,7 +72,7 @@ func TestEachOwnersMonitorWakesForItsOwnNamesAlone(t *testing.T) {
 		{unix.NFT_MSG_NEWOBJ, unix.NFTA_OBJ_TABLE, unix.NFTA_OBJ_NAME},
 	}
 	names := []string{ChainName, LimitChain, retiredChain, forward6.Name, NoneChain + "192_0_2_0_24", NoneChain, flowsSet + "4", flowsSet + "6", BorderChain, EntryChain, "mesh_entry",
-		carvedSet + "4", noneSet + "6", "fallback", "output", "lan4", "udp_ports", "__set0", "__map0", "other", timeoutObject + "udp4"}
+		carvedSet + "4", noneSet + "6", "fallback", "output", "lan4", "udpports", "own4", "__set0", "__map0", "other", timeoutObject + "udp4"}
 	scopes := map[int]nftables.Scope{0: translatorScope, 1: borderScope}
 	const own, other = 7, 9
 	// flags are a table message's NFTA_TABLE_FLAGS, absent where negative

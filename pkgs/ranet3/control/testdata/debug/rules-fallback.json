@@ -41,17 +41,17 @@
       "bytes": 0
     },
     {
-      "spec": "ip daddr @own4 accept",
+      "spec": "ip daddr @self4 accept",
       "packets": 0,
       "bytes": 0
     },
     {
-      "spec": "ip6 daddr @own6 accept",
+      "spec": "ip6 daddr @self6 accept",
       "packets": 0,
       "bytes": 0
     },
     {
-      "spec": "ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept",
+      "spec": "ct direction reply ct protocol tcp ct original proto-dst @tcpports accept",
       "packets": 0,
       "bytes": 0
     },
@@ -80,24 +80,24 @@
       ]
     },
     {
-      "name": "own4",
+      "name": "self4",
       "elements": [
         "203.0.113.0/26"
       ]
     },
     {
-      "name": "own6",
+      "name": "self6",
       "elements": null
     },
     {
-      "name": "tcp_ports",
+      "name": "tcpports",
       "elements": [
         "22",
         "60000-61000"
       ]
     },
     {
-      "name": "udp_ports",
+      "name": "udpports",
       "elements": null
     }
   ]

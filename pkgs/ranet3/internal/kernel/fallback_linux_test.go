@@ -46,10 +46,10 @@ const fallbackLines = `		oifname { "lo", "ranetsw0" } accept
 		icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
 		meta iif 0 icmpv6 type packet-too-big accept
 		meta iif 0 icmp type destination-unreachable icmp code 4 accept
-		ip daddr @own4 accept
-		ip6 daddr @own6 accept
-		ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
-		ct direction reply ct protocol udp ct original proto-dst @udp_ports accept
+		ip daddr @self4 accept
+		ip6 daddr @self6 accept
+		ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
+		ct direction reply ct protocol udp ct original proto-dst @udpports accept
 		counter drop
 `
 
@@ -61,10 +61,10 @@ func fallbackText(t *testing.T) string {
 	set forwarded { type ifname; elements = { "lo", "ranetfw0" } }
 	set lan4 { type ipv4_addr; flags interval; elements = { 198.51.100.0/25 } }
 	set lan6 { type ipv6_addr; flags interval; elements = { 2001:db8:a::/64 } }
-	set own4 { type ipv4_addr; flags interval; elements = { 203.0.113.0/24 } }
-	set own6 { type ipv6_addr; flags interval; }
-	set tcp_ports { type inet_service; flags interval; elements = { 22, 2222 } }
-	set udp_ports { type inet_service; flags interval; elements = { 53, 60000-61000 } }
+	set self4 { type ipv4_addr; flags interval; elements = { 203.0.113.0/24 } }
+	set self6 { type ipv6_addr; flags interval; }
+	set tcpports { type inet_service; flags interval; elements = { 22, 2222 } }
+	set udpports { type inet_service; flags interval; elements = { 53, 60000-61000 } }
 `
 	postrouting := strings.Split(strings.TrimSuffix(fallbackLines, "\n"), "\n")
 	output := slices.Insert(slices.Clone(postrouting), len(postrouting)-1, "\t\tfib daddr type local accept")
@@ -176,9 +176,9 @@ add ct timeout inet %[1]s translated-udp4 { protocol udp; l3proto ip; policy = {
 var fallbackSample = fallbackSets{
 	tun: "ranetsw0", forwarded: []string{"ranetfw0"},
 	lan4: []netip.Prefix{prefix("198.51.100.0/25")}, lan6: []netip.Prefix{prefix("2001:db8:a::/64")},
-	own4: []netip.Prefix{prefix("203.0.113.0/24")},
-	tcp:  []Service{{Protocol: "tcp", First: 22, Last: 22}, {Protocol: "tcp", First: 2222, Last: 2222}},
-	udp:  []Service{{Protocol: "udp", First: 53, Last: 53}, {Protocol: "udp", First: 60000, Last: 61000}},
+	self4: []netip.Prefix{prefix("203.0.113.0/24")},
+	tcp:   []Service{{Protocol: "tcp", First: 22, Last: 22}, {Protocol: "tcp", First: 2222, Last: 2222}},
+	udp:   []Service{{Protocol: "udp", First: 53, Last: 53}, {Protocol: "udp", First: 60000, Last: 61000}},
 }
 
 // nft 1.1.7's own table of the same text reads back as the platform writes
@@ -334,8 +334,8 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	}
 	if routed, output := debug.Rules[14], debug.Rules[30]; routed.Spec != fallbackDrop || routed.Chain != "fallback" || routed.Packets != 4 ||
 		output.Spec != fallbackDrop || output.Chain != "output" || output.Packets != 1 ||
-		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"lo", "ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "own4": {"203.0.113.0/24"}, "own6": {},
-			"tcp_ports": {"22", "2222"}, "udp_ports": {"53", "60000-61000"}}) {
+		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"lo", "ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "self4": {"203.0.113.0/24"}, "self6": {},
+			"tcpports": {"22", "2222"}, "udpports": {"53", "60000-61000"}}) {
 		t.Errorf("the debug read finds %+v", debug)
 	}
 
@@ -887,7 +887,7 @@ func flaggedTable(t *testing.T, flags uint32, live bool, held *fallbackSets) {
 	requests := []nftables.Request{{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
 		Body: nftables.PutAttrBE32(netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, nftables.Table), unix.NFTA_TABLE_FLAGS, flags)}}
 	if held != nil {
-		batch, err := fallbackBatch(*held, nftables.Contents{})
+		batch, err := fallbackBatch(*held, nftables.Contents{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

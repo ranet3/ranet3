@@ -29,7 +29,7 @@ var owners = []struct {
 }{
 	{"translator", []string{"forward", "forward4", "forward6", "postrouting"}, "none_", []string{"flows4", "flows6"}, []string{"translated-udp4", "translated-tcp6"}},
 	{"filter", []string{"antispoof", "entry", "mesh_entry"}, "", []string{"carved4", "carved6", "owned4", "owned6", "none4", "none6"}, nil},
-	{"switch", []string{"fallback", "output"}, "", []string{"lan4", "forwarded", "lan6", "own4", "own6", "tcp_ports", "udp_ports"}, nil},
+	{"switch", []string{"fallback", "output"}, "", []string{"lan4", "forwarded", "lan6", "self4", "self6", "tcpports", "udpports", "own4", "tcp_ports"}, nil},
 }
 
 // ownerOf is the owner the model gives a chain, set or object name, -1 for a

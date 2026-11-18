@@ -58,8 +58,8 @@ func TestFallbackTableFollowsTheMode(t *testing.T) {
 	want := fallbackSets{
 		tun: "ranet3", forwarded: []string{"docker0"},
 		lan4: []netip.Prefix{prefix("198.51.100.0/24")}, lan6: []netip.Prefix{prefix("2001:db8:a::/64")},
-		own4: []netip.Prefix{prefix("203.0.113.0/24")},
-		tcp:  []Service{{Protocol: "tcp", First: 22, Last: 22}}, udp: []Service{{Protocol: "udp", First: 60000, Last: 61000}},
+		self4: []netip.Prefix{prefix("203.0.113.0/24")},
+		tcp:   []Service{{Protocol: "tcp", First: 22, Last: 22}}, udp: []Service{{Protocol: "udp", First: 60000, Last: 61000}},
 	}
 	if fake.fallback == nil || !reflect.DeepEqual(*fake.fallback, want) {
 		t.Fatalf("the pass wrote %+v, want %+v", fake.fallback, want)

@@ -55,14 +55,18 @@ var fallbackNamed = []nftables.Set{
 	{Table: nftables.Table, Name: "forwarded", ID: 1, KeyType: nftables.TypeIfname, KeyLen: unix.IFNAMSIZ},
 	{Table: nftables.Table, Name: "lan4", ID: 2, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
 	{Table: nftables.Table, Name: "lan6", ID: 3, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
-	{Table: nftables.Table, Name: "own4", ID: 4, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
-	{Table: nftables.Table, Name: "own6", ID: 5, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "self4", ID: 4, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "self6", ID: 5, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
 	// inbound's ports of each protocol, named so the line reading them is
 	// spelled the same however many inbound lists, within the comment's 128
 	// bytes. nft reads tcp and udp as keywords, so neither names a set.
-	{Table: nftables.Table, Name: "tcp_ports", ID: 6, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
-	{Table: nftables.Table, Name: "udp_ports", ID: 7, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "tcpports", ID: 6, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "udpports", ID: 7, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
 }
+
+// fallbackRetired is the names an earlier switch gave the sets self4, self6,
+// tcpports and udpports, in that order
+var fallbackRetired = nftables.Scope{Sets: []string{"own4", "own6", "tcp_ports", "udp_ports"}}
 
 // fallbackContents is the switch's chains and sets as a readback reads them
 var fallbackContents = nftables.Contents{Chains: fallbackChains, Sets: fallbackNamed}
@@ -84,10 +88,10 @@ func (s fallbackSets) elements() map[string][]nftables.Interval {
 		"forwarded": forwarded,
 		"lan4":      nftables.Prefixes(s.lan4),
 		"lan6":      nftables.Prefixes(s.lan6),
-		"own4":      nftables.Prefixes(s.own4),
-		"own6":      nftables.Prefixes(s.own6),
-		"tcp_ports": ports(s.tcp),
-		"udp_ports": ports(s.udp),
+		"self4":     nftables.Prefixes(s.self4),
+		"self6":     nftables.Prefixes(s.self6),
+		"tcpports":  ports(s.tcp),
+		"udpports":  ports(s.udp),
 	}
 }
 
@@ -203,7 +207,7 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 	for _, line := range []struct {
 		proto uint8
 		set   string
-	}{{unix.NFPROTO_IPV4, "own4"}, {unix.NFPROTO_IPV6, "own6"}} {
+	}{{unix.NFPROTO_IPV4, "self4"}, {unix.NFPROTO_IPV6, "self6"}} {
 		out = append(out, addressLine(line.proto, "@"+line.set, nftables.Lookup(named(line.set), false), nil, nil))
 	}
 	for _, line := range []struct {
@@ -215,10 +219,10 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 			continue
 		}
 		out = append(out, fallbackRule{
-			spec: fmt.Sprintf("ct direction reply ct protocol %s ct original proto-dst @%s_ports accept", line.name, line.name),
+			spec: fmt.Sprintf("ct direction reply ct protocol %s ct original proto-dst @%sports accept", line.name, line.name),
 			expressions: append(nftables.CTReplyMatch(),
 				nftables.CTLoad(unix.NFT_CT_PROTOCOL), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{line.protocol})),
-				nftables.CTLoadDirection(unix.NFT_CT_PROTO_DST, nftables.CTOriginal), nftables.Lookup(named(line.name+"_ports"), false), accept,
+				nftables.CTLoadDirection(unix.NFT_CT_PROTO_DST, nftables.CTOriginal), nftables.Lookup(named(line.name+"ports"), false), accept,
 			),
 		})
 	}
@@ -255,8 +259,9 @@ func addressLine(proto uint8, set string, lookup []byte, anonymous *nftables.Set
 // fallbackBatch is the switch in one transaction: the table with no owner
 // flag, each chain made and flushed, its named sets made, flushed and filled,
 // and each line behind the anonymous set it reads, deleting first each chain
-// and set of stale, which nf_tables will not change in place
-func fallbackBatch(s fallbackSets, stale nftables.Contents) ([]nftables.Request, error) {
+// and set of stale, which nf_tables will not change in place, and leftovers
+// retired last
+func fallbackBatch(s fallbackSets, stale nftables.Contents, leftovers []nftables.Retired) ([]nftables.Request, error) {
 	requests := nftables.Contents{Chains: fallbackChains}.Rewrite(unix.NFPROTO_INET, stale, nil)
 	elements := s.elements()
 	for _, set := range fallbackNamed {
@@ -290,7 +295,7 @@ func fallbackBatch(s fallbackSets, stale nftables.Contents) ([]nftables.Request,
 			requests = append(requests, request)
 		}
 	}
-	return requests, nil
+	return append(requests, nftables.Retire(leftovers)...), nil
 }
 
 // chainFirstSet is the ID of the first anonymous set the lines of the chain
@@ -298,10 +303,14 @@ func fallbackBatch(s fallbackSets, stale nftables.Contents) ([]nftables.Request,
 // chains before it
 func chainFirstSet(i int) uint32 { return uint32(fallbackSetIDs * (i + 1)) }
 
-// fallbackScope is the switch's chains and sets, whose change by another
-// writer wakes the reconciler, as the table's deletion or a flag set on it
-// does
-var fallbackScope = fallbackContents.Scope()
+// fallbackScope is the switch's chains and sets and fallbackRetired, whose
+// change by another writer wakes the reconciler, as the table's deletion or a
+// flag set on it does
+var fallbackScope = func() nftables.Scope {
+	scope := fallbackContents.Scope()
+	scope.Sets = append(scope.Sets, fallbackRetired.Sets...)
+	return scope
+}()
 
 // fallbackWatch is the socket the switch is written through and the monitor
 // of every other writer's change to it. A pass that finds the switch changed
@@ -376,7 +385,11 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 		}
 		stale = read.Stale
 	}
-	requests, err := fallbackBatch(s, stale)
+	leftovers, err := nftables.Leftovers(conn, fallbackRetired, fallbackScope)
+	if err != nil {
+		return err
+	}
+	requests, err := fallbackBatch(s, stale, leftovers)
 	if err != nil {
 		return err
 	}
@@ -404,15 +417,24 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found
 	if err != nil {
 		return fallbackRead{}, false, err
 	}
+	leftovers, err := nftables.Leftovers(conn, fallbackRetired, fallbackScope)
+	if err != nil {
+		return fallbackRead{}, false, err
+	}
+	found = read.Held
 	out = fallbackRead{remake: read.Remake()}
 	for _, rule := range read.Rules {
 		if rule.Spec == fallbackDrop {
 			out.dropped, out.bytes = out.dropped+rule.Packets, out.bytes+rule.Bytes
 		}
 	}
-	if read.Fault != "" {
+	switch {
+	case read.Fault != "":
 		out.fault = read.Fault
-		return out, read.Held, nil
+		return out, found, nil
+	case len(leftovers) > 0:
+		out.fault = leftovers[0].Fault("the kill switch")
+		return out, found, nil
 	}
 	for i := range fallbackChains {
 		if out.fault, err = chainFault(conn, s, i, read.Rules); err != nil {
@@ -422,7 +444,7 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found
 			break
 		}
 	}
-	return out, read.Held, nil
+	return out, found, nil
 }
 
 // chainFault names how the chain at index chain of fallbackChains holds lines

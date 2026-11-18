@@ -110,10 +110,10 @@ type fallbackSets struct {
 	// lan is each family's LAN, as routing.md's "The kill switch on Linux"
 	// lists it
 	lan4, lan6 []netip.Prefix
-	// own is this node's own prefixes the mesh's table throws, as 5445 reads
+	// self is this node's own prefixes the mesh's table throws, as 5445 reads
 	// them, less the carve-outs, which lan holds less the mesh's prefixes
 	// inside them
-	own4, own6 []netip.Prefix
+	self4, self6 []netip.Prefix
 	// tcp and udp are inbound's services of each protocol, joined
 	tcp, udp []Service
 	// captured is each connected network left out of lan because it counts as
@@ -168,8 +168,8 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 	}
 	lan = append(lan, carveOuts...)
 	out.lan4, out.lan6 = familyPrefixes(FamilyIPv4, lan), familyPrefixes(FamilyIPv6, lan)
-	own := slices.DeleteFunc(slices.Clone(v.own), func(prefix netip.Prefix) bool { return schema.InsideOverlay(prefix, overlay) })
-	out.own4, out.own6 = familyPrefixes(FamilyIPv4, own), familyPrefixes(FamilyIPv6, own)
+	self := slices.DeleteFunc(slices.Clone(v.own), func(prefix netip.Prefix) bool { return schema.InsideOverlay(prefix, overlay) })
+	out.self4, out.self6 = familyPrefixes(FamilyIPv4, self), familyPrefixes(FamilyIPv6, self)
 	out.captured = slices.Compact(slices.SortedFunc(slices.Values(out.captured), comparePrefixes))
 	out.public = slices.Compact(slices.SortedFunc(slices.Values(out.public), comparePrefixes))
 	for _, service := range inbound {
@@ -289,7 +289,7 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 	}
 	status := &FallbackStatus{
 		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes, DropsRead: r.fallbackDropsRead, Uncounted: form.uncounted,
-		Captured: sets.captured, Public: sets.public, tun: sets.tun, passed: slices.Concat(sets.lan4, sets.lan6, sets.own4, sets.own6),
+		Captured: sets.captured, Public: sets.public, tun: sets.tun, passed: slices.Concat(sets.lan4, sets.lan6, sets.self4, sets.self6),
 	}
 	switch {
 	case read.fault != "":
