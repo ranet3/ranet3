@@ -506,7 +506,10 @@ type backend interface {
 	// socket
 	Read(desired []Rule) (map[uint8]chainReadback, error)
 	// Apply brings the translator's own chains to rules, deleting first where
-	// remake each chain, set or object that cannot change in place. It
+	// remake each chain, set or object that cannot change in place, and on
+	// nftables, where nf_tables refuses that transaction with EEXIST, every
+	// set of its own the table holds, its sets of flows and their counts
+	// among them, as nftables.Hold.Rewrite says. It
 	// replaces the chains' contents in one transaction rather than editing
 	// them, because nftables commits a batch atomically and a chain rewritten
 	// rule by rule has a window in which a packet leaves untranslated.

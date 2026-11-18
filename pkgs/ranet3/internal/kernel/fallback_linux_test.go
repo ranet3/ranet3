@@ -171,6 +171,89 @@ add ct timeout inet %[1]s udp4 { protocol udp; l3proto ip; policy = { unreplied:
 	}
 }
 
+// oneField is set's Create with a description of one concatenated field as
+// long as its key, NFTA_SET_DESC_CONCAT holding one NFTA_SET_FIELD_LEN, after
+// Create's own description, which nf_tables takes the last of. A dump shows
+// the set as Create makes it, and nf_tables refuses Create over it.
+func oneField(t *testing.T, set nftables.Set) nftables.Request {
+	t.Helper()
+	made, err := set.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, 1, set.KeyLen))
+	desc := netlink.PutAttr(nftables.PutAttrBE32(nil, unix.NFTA_SET_DESC_SIZE, set.Size), 2|unix.NLA_F_NESTED, field)
+	made.Body = netlink.PutAttr(made.Body, unix.NFTA_SET_DESC|unix.NLA_F_NESTED, desc)
+	return made
+}
+
+// The switch's set forwarded made again by another writer with one
+// concatenated field, which nf_tables refuses the switch's create for, and
+// the switch's chains flushed, which its read finds as a fault that remakes
+// nothing, is made again by the switch's pass once nothing else uses it,
+// after which the switch holds and reads back as written. While another
+// writer's rule looks the set up the pass is refused with EBUSY, and the
+// switch is not holding with a fault that says so.
+func TestNetlinkFallbackMakesAgainASetItsCreateIsRefusedFor(t *testing.T) {
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	tbl, rt := fallbackNoneOverUplink(t, device, uplink)
+	plat.retable(tbl)
+	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
+	sets, asked := reconciler.fallbackFor(exit)
+	if !asked {
+		t.Fatal("the mode does not ask for the switch")
+	}
+	if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackHolding {
+		t.Fatalf("the switch's first pass reports %+v (%v), want holding", status, err)
+	}
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	forwarded := fallbackNamed[slices.IndexFunc(fallbackNamed, func(set nftables.Set) bool { return set.Name == "forwarded" })]
+	requests := []nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), forwarded.Delete(unix.NFPROTO_INET), oneField(t, forwarded)}
+	if err := another.Batch(requests); err != nil {
+		t.Fatalf("another writer makes forwarded again: %v", err)
+	}
+	made, err := forwarded.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := another.Batch([]nftables.Request{made}); !errors.Is(err, unix.EEXIST) {
+		t.Fatalf("the switch's create of forwarded made again: %v, want %v", err, unix.EEXIST)
+	}
+	if read, err := plat.readFallback(sets); err != nil || read.fault == "" || read.remake {
+		t.Fatalf("with forwarded made again the switch reads back as %+v (%v), want a fault that remakes nothing", read, err)
+	}
+	other := nftables.Chain{Table: nftables.Table, Name: "other", Hook: nftables.NoHook}
+	rule, err := other.Rule(unix.NFPROTO_INET, "other", [][]byte{nftables.MetaLoad(unix.NFT_META_IIFNAME), nftables.Lookup(forwarded, false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := another.Batch([]nftables.Request{other.Create(unix.NFPROTO_INET), rule}); err != nil {
+		t.Fatalf("another writer's rule that looks forwarded up: %v", err)
+	}
+	status, err := reconciler.applyFallback(sets, true)
+	if !errors.Is(err, unix.EBUSY) {
+		t.Errorf("the switch's pass while another writer's rule looks forwarded up: %v, want %v", err, unix.EBUSY)
+	}
+	if status == nil || status.State != FallbackNotHolding || !strings.Contains(status.Fault, unix.EBUSY.Error()) {
+		t.Errorf("the refused pass reports %+v, want not holding with %q", status, unix.EBUSY.Error())
+	}
+	if err := another.Batch([]nftables.Request{other.Flush(unix.NFPROTO_INET), other.Delete(unix.NFPROTO_INET)}); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackHolding {
+		t.Errorf("the switch's pass reports %+v (%v), want holding", status, err)
+	}
+	if read, err := plat.readFallback(sets); read.fault != "" || err != nil {
+		t.Errorf("after the switch's pass it reads back with %q (%v)", read.fault, err)
+	}
+}
+
 // fallbackSample is a switch of every line, on the tun ranetsw0, each port set
 // holding a port beside another port or a range
 var fallbackSample = fallbackSets{

@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sync"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // holders is, in each network namespace, the Holds of this process that hold
@@ -136,6 +139,39 @@ func (h *Hold) Write(conn *Conn, requests []Request) error {
 	}
 	h.hold(ns, pin)
 	return nil
+}
+
+// Rewrite writes through conn as Write does the transaction build makes over
+// stale, sets being the owner's. nf_tables refuses with EEXIST to make a set
+// of a name its table holds in a shape no dump shows, a concatenation of one
+// field, so where it refuses the transaction so, build makes it once more over
+// stale with its sets replaced by each of sets the table holds, and its result
+// is the pass's.
+func (h *Hold) Rewrite(conn *Conn, sets []Set, stale Contents, build func(stale Contents) ([]Request, error)) error {
+	requests, err := build(stale)
+	if err != nil {
+		return err
+	}
+	if err := h.Write(conn, requests); !errors.Is(err, unix.EEXIST) {
+		return err
+	}
+	dumped, err := conn.Dump(Command(unix.NFT_MSG_GETSET), netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table))
+	if err != nil {
+		return fmt.Errorf("nftables: dump sets: %w", err)
+	}
+	stale.Sets = heldSets(sets, dumped)
+	if requests, err = build(stale); err != nil {
+		return err
+	}
+	return h.Write(conn, requests)
+}
+
+// heldSets is each of sets a dump of Table's sets under inet holds by name,
+// which nf_tables answers with that table's alone
+func heldSets(sets []Set, dumped []netlink.Message) []Set {
+	return slices.DeleteFunc(slices.Clone(sets), func(set Set) bool {
+		return !slices.ContainsFunc(dumped, func(reply netlink.Message) bool { return DecodeSet(reply).Name == set.Name })
+	})
 }
 
 // Found makes h hold the table, as a write does, where its owner's read

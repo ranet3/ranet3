@@ -41,7 +41,8 @@ type Set struct {
 
 // Create makes the set, or takes one of its name holding the same key, flags,
 // expressions and fields and gives it any size but none, leaving its comment
-// as it was. One that differs in any of those fails the transaction.
+// as it was. One that differs in any of those fails the transaction with
+// EEXIST, which Hold.Rewrite answers.
 func (s Set) Create(proto uint8) (Request, error) {
 	// a longer comment still lists in `nft list ruleset`, but nft -f will not load that listing back
 	if len(s.Comment) > udataCommentMax {
@@ -109,7 +110,9 @@ func DecodeSet(message netlink.Message) Set {
 }
 
 // Fault names how the set a dump holds differs from s as Create writes it,
-// empty for s as written and for any other set. remake holds where its key,
+// empty for s as written and for any other set. A dump shows the fields of a
+// concatenation from two up, so a set of one field reads as s, though Create
+// fails on it. remake holds where its key,
 // flags, comment or expressions differ, which nf_tables will not change in
 // place, or where it holds a size and s none, which Create cannot set, and
 // another size alone the next Create sets.

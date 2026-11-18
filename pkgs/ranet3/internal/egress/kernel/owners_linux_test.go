@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -20,6 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
@@ -250,6 +252,122 @@ func TestEachOwnersRemakeKeepsTheOthers(t *testing.T) {
 	}
 	if read, err := kernelSwitch(switchConn); err != nil || read != "" {
 		t.Errorf("after every pass the kill switch reads back with %q (%v)", read, err)
+	}
+}
+
+// oneField is set's Create with a description of one concatenated field as
+// long as its key, NFTA_SET_DESC_CONCAT holding one NFTA_SET_FIELD_LEN, after
+// Create's own description, which nf_tables takes the last of. A dump shows
+// the set as Create makes it, and nf_tables refuses Create over it.
+func oneField(t *testing.T, set nftables.Set) nftables.Request {
+	t.Helper()
+	made, err := set.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, 1, set.KeyLen))
+	desc := netlink.PutAttr(nftables.PutAttrBE32(nil, unix.NFTA_SET_DESC_SIZE, set.Size), 2|unix.NLA_F_NESTED, field)
+	made.Body = netlink.PutAttr(made.Body, unix.NFTA_SET_DESC|unix.NLA_F_NESTED, desc)
+	return made
+}
+
+// A set of the antispoof filter's, carved4, and one of the translator's,
+// flows4, each made again by another writer with one concatenated field, which
+// nf_tables refuses the owner's create for, and the owner's chains flushed,
+// which its pass reads as a fault, are made again by that pass once nothing
+// else uses them. While another writer's rule looks the set up the pass is
+// refused with EBUSY, and the owner is not ready with a reason that says so.
+// The translator's retry makes its other set of flows again too, which loses
+// that set's counts.
+func TestEachOwnerMakesAgainASetItsCreateIsRefusedFor(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	flows6 := flowSet(egress.FamilyIPv6, egress.DefaultFlowsPerSource)
+	for _, c := range []struct {
+		name   string
+		set    nftables.Set
+		chains []nftables.Chain
+		pass   func(*Translator, *BorderFilter) error
+		// state is the owner's readiness and the text that says why it is not
+		state func(*Translator, *BorderFilter) (bool, string)
+		// counted is whether flows6 holds a count the pass's retry takes
+		counted bool
+	}{
+		{
+			"the antispoof filter", borderSet(carvedSet + "4"), borderContents.Chains,
+			func(_ *Translator, f *BorderFilter) error { return f.reconcile() },
+			func(_ *Translator, f *BorderFilter) (bool, string) { return f.ready, f.unready }, false,
+		},
+		{
+			"the translator", flowSet(egress.FamilyIPv4, egress.DefaultFlowsPerSource), translatorChains,
+			func(tr *Translator, _ *BorderFilter) error { return tr.reconcile() },
+			func(tr *Translator, _ *BorderFilter) (bool, string) {
+				s := tr.lastPass()
+				return s.Ready4 && s.Ready6, s.Err
+			}, true,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			netnstest.EnterEmpty(t)
+			tr, _, _, f, another := startOwners(t)
+			counts := []nftables.Interval{nftables.Key(netip.MustParseAddr("3fff::2").AsSlice())}
+			if c.counted {
+				filled, err := flows6.Fill(unix.NFPROTO_INET, counts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := another.Batch(filled); err != nil {
+					t.Fatalf("a count in %s: %v", flows6.Name, err)
+				}
+				if held, err := flows6.Elements(another, unix.NFPROTO_INET); err != nil || len(held) != 1 {
+					t.Fatalf("with a count %s holds %v (%v), want it", flows6.Name, held, err)
+				}
+			}
+			var requests []nftables.Request
+			for _, chain := range c.chains {
+				requests = append(requests, chain.Flush(unix.NFPROTO_INET))
+			}
+			if err := another.Batch(append(requests, c.set.Delete(unix.NFPROTO_INET), oneField(t, c.set))); err != nil {
+				t.Fatalf("another writer makes %s again: %v", c.set.Name, err)
+			}
+			made, err := c.set.Create(unix.NFPROTO_INET)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := another.Batch([]nftables.Request{made}); !errors.Is(err, unix.EEXIST) {
+				t.Fatalf("the owner's create of %s made again: %v, want %v", c.set.Name, err, unix.EEXIST)
+			}
+			other := nftables.Chain{Table: nftables.Table, Name: "other", Hook: nftables.NoHook}
+			rule, err := other.Rule(unix.NFPROTO_INET, "other", [][]byte{nftables.SourceLoad(unix.NFPROTO_IPV4), nftables.Lookup(c.set, false)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := another.Batch([]nftables.Request{other.Create(unix.NFPROTO_INET), rule}); err != nil {
+				t.Fatalf("another writer's rule that looks %s up: %v", c.set.Name, err)
+			}
+			if err := c.pass(tr, f); !errors.Is(err, unix.EBUSY) {
+				t.Errorf("the owner's pass while another writer's rule looks %s up: %v, want %v", c.set.Name, err, unix.EBUSY)
+			}
+			if ready, why := c.state(tr, f); ready || !strings.Contains(why, unix.EBUSY.Error()) {
+				t.Errorf("after the refused pass the owner reads ready %v with %q, want not ready with %q", ready, why, unix.EBUSY.Error())
+			}
+			if err := another.Batch([]nftables.Request{other.Flush(unix.NFPROTO_INET), other.Delete(unix.NFPROTO_INET)}); err != nil {
+				t.Fatalf("another writer deletes its rule: %v", err)
+			}
+			if err := c.pass(tr, f); err != nil {
+				t.Fatalf("the owner's pass: %v", err)
+			}
+			if ready, why := c.state(tr, f); !ready {
+				t.Errorf("after the owner's pass the owner is not ready: %q", why)
+			}
+			if !c.counted {
+				return
+			}
+			if held, err := flows6.Elements(another, unix.NFPROTO_INET); err != nil || len(held) != 0 {
+				t.Errorf("after the pass's retry %s holds %v (%v), want no count", flows6.Name, held, err)
+			}
+		})
 	}
 }
 

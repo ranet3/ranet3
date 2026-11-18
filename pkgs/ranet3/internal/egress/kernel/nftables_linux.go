@@ -364,7 +364,9 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // source's count of flows. A deleted object detaches from every flow it timed,
 // which then takes the host's timeouts, and a deleted set forgets every count,
 // so of those the pass writes only a remake deletes one, the one that reads
-// back other than written, and leaves the other family's. The flows an object
+// back other than written, and leaves the other family's, or a transaction
+// nf_tables refuses as nftables.Hold.Rewrite says, which deletes every set the
+// table holds of those the pass writes. The flows an object
 // of translatorRetired timed take the host's timeouts when the pass deletes
 // it. The sets of untranslated sources are emptied and filled in the
 // transaction, so a lookup meets the sources the old rules pass or those the
@@ -396,11 +398,9 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 	if err != nil {
 		return err
 	}
-	requests, err := translatorBatch(contents, rules, stale, strays(held, in), leftovers)
-	if err != nil {
-		return err
-	}
-	return n.holder.Write(n.conn, requests)
+	return n.holder.Rewrite(n.conn, contents.Sets, stale, func(stale nftables.Contents) ([]nftables.Request, error) {
+		return translatorBatch(contents, rules, stale, strays(held, in), leftovers)
+	})
 }
 
 // translatorContents is the translator's chains and the sets and timeout

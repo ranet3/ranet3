@@ -537,6 +537,309 @@ func TestNftablesSetMadeAgainOtherwiseIsMadeAgainByItsOwner(t *testing.T) {
 	}
 }
 
+// oneField is set's Create with a description of one concatenated field of
+// length bytes, NFTA_SET_DESC_CONCAT holding one NFTA_SET_FIELD_LEN, after
+// Create's own description, which nf_tables takes the last of
+func oneField(t *testing.T, set Set, length uint32) Request {
+	t.Helper()
+	made, err := set.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, PutAttrBE32(nil, 1, length))
+	desc := netlink.PutAttr(PutAttrBE32(nil, unix.NFTA_SET_DESC_SIZE, set.Size), 2|unix.NLA_F_NESTED, field)
+	made.Body = netlink.PutAttr(made.Body, unix.NFTA_SET_DESC|unix.NLA_F_NESTED, desc)
+	return made
+}
+
+// Another writer's set made again under the owner's name, flags, key and
+// elements with a concatenation of one field, of an interval set or of a set
+// of single keys, reads back as the owner's own, since a dump shows the fields
+// of two or more alone, and its change of an element after that has the line
+// pass a key the owner put in the set. The owner's pass, refused with EEXIST
+// by nf_tables, which compares the fields, makes the set again within that
+// pass, so the line drops as written and the set reads back as written. Where
+// another writer's rule looks the set up, the pass is refused once more, with
+// EBUSY, until that rule goes.
+func TestNftablesSetNoDumpTellsFromTheOwnersIsMadeAgainByItsOwner(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	chain := Chain{Table: Table, Name: "post", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
+	lan4 := Set{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	single4 := Set{Table: Table, Name: "single4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4}
+	to := netip.MustParseAddrPort("127.0.0.2:9")
+	for _, c := range []struct {
+		name          string
+		set           Set
+		length        uint32
+		owned, theirs []Interval
+		// looked is whether another writer's rule looks the set up
+		looked bool
+	}{
+		{"an interval set, a field of its key's length", lan4, 4, Prefixes(prefixList("127.0.0.0/30")), Prefixes(prefixList("127.0.0.0/31")), false},
+		{"a set of single keys, a field of one byte", single4, 1, []Interval{Key([]byte{127, 0, 0, 2}), Key([]byte{127, 0, 0, 3})}, []Interval{Key([]byte{127, 0, 0, 3})}, false},
+		{"an interval set another writer's rule looks up", lan4, 4, Prefixes(prefixList("127.0.0.0/30")), Prefixes(prefixList("127.0.0.0/31")), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			netnstest.EnterEmpty(t)
+			conn, another := dial(t), dial(t)
+			contents := Contents{Chains: []Chain{chain}, Sets: []Set{c.set}, Elements: map[string][]Interval{c.set.Name: c.owned}}
+			line, err := chain.Rule(unix.NFPROTO_INET, "rule", slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(c.set, false)}, CountedDrop()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := func() Readback {
+				t.Helper()
+				tables, err := Tables(conn, Table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return read
+			}
+			// build is the owner's transaction over stale
+			build := func(stale Contents) ([]Request, error) {
+				replaced, err := c.set.Replace(unix.NFPROTO_INET, c.owned)
+				if err != nil {
+					return nil, err
+				}
+				return slices.Concat(contents.Rewrite(unix.NFPROTO_INET, stale, nil), replaced, []Request{line}), nil
+			}
+			var hold Hold
+			// pass is the owner's: the table written over what its read found stale
+			pass := func() error {
+				t.Helper()
+				return hold.Rewrite(conn, contents.Sets, read().Stale, build)
+			}
+			dropped := func() bool {
+				t.Helper()
+				err := sendUDP(to, 0)
+				if err != nil && !errors.Is(err, unix.EPERM) {
+					t.Fatalf("send to %s: %v", to, err)
+				}
+				return err != nil
+			}
+			if err := pass(); err != nil {
+				t.Fatalf("the owner's first pass: %v", err)
+			}
+			if !dropped() {
+				t.Fatalf("as written the line passes the datagram to %s", to)
+			}
+			filled, err := c.set.Fill(unix.NFPROTO_INET, c.owned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := another.Batch(slices.Concat([]Request{chain.Flush(unix.NFPROTO_INET), c.set.Delete(unix.NFPROTO_INET), oneField(t, c.set, c.length)}, filled, []Request{line})); err != nil {
+				t.Fatalf("another writer makes the set again: %v", err)
+			}
+			if got, drops := read(), dropped(); got.Fault != "" || !drops {
+				t.Fatalf("with the set made again it reads back with the fault %q, and the line drops the datagram to %s %v, want no fault and dropped", got.Fault, to, drops)
+			}
+			other := Chain{Table: Table, Name: "other", Hook: NoHook}
+			if c.looked {
+				rule, err := other.Rule(unix.NFPROTO_INET, "other", [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(c.set, false)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := another.Batch([]Request{other.Create(unix.NFPROTO_INET), rule}); err != nil {
+					t.Fatalf("another writer's rule that looks the set up: %v", err)
+				}
+			}
+			updated, err := c.set.Update(unix.NFPROTO_INET, c.owned, c.theirs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := another.Batch(updated); err != nil {
+				t.Fatalf("another writer changes the set's elements: %v", err)
+			}
+			if got, drops := read(), dropped(); got.Fault == "" || got.Remake() || drops {
+				t.Fatalf("with an element changed it reads back with the fault %q, remade %v, and the line drops the datagram to %s %v, want a fault, not remade, and passed", got.Fault, got.Remake(), to, drops)
+			}
+			written, err := build(read().Stale)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.Batch(written); !errors.Is(err, unix.EEXIST) {
+				t.Fatalf("the owner's transaction over the read alone: %v, want %v", err, unix.EEXIST)
+			}
+			if c.looked {
+				if err := pass(); !errors.Is(err, unix.EBUSY) {
+					t.Errorf("the owner's pass with another writer's rule looking the set up: %v, want %v", err, unix.EBUSY)
+				}
+				if dropped() {
+					t.Errorf("the owner's pass refused, the line drops the datagram to %s", to)
+				}
+				if err := another.Batch([]Request{other.Flush(unix.NFPROTO_INET), other.Delete(unix.NFPROTO_INET)}); err != nil {
+					t.Fatalf("another writer deletes its rule: %v", err)
+				}
+			}
+			if err := pass(); err != nil {
+				t.Fatalf("the owner's pass over the set made again: %v", err)
+			}
+			if !dropped() {
+				t.Errorf("after the owner's pass the line passes the datagram to %s", to)
+			}
+			if got := read(); got.Fault != "" {
+				t.Errorf("after the owner's pass the set reads back with the fault %q", got.Fault)
+			}
+		})
+	}
+}
+
+// rewriteTable is a namespace of the test's own holding Table, under inet,
+// with sets made through another socket than the one it answers
+func rewriteTable(t *testing.T, made ...Request) *Conn {
+	t.Helper()
+	netnstest.EnterEmpty(t)
+	if err := dial(t).Batch(append([]Request{NewTable(unix.NFPROTO_INET, Table)}, made...)); err != nil {
+		t.Fatalf("another writer's table: %v", err)
+	}
+	return dial(t)
+}
+
+// tableSets is the names of the sets Table holds under inet
+func tableSets(t *testing.T, conn *Conn) []string {
+	t.Helper()
+	dumped, err := conn.Dump(Command(unix.NFT_MSG_GETSET), netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, reply := range dumped {
+		names = append(names, DecodeSet(reply).Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// A transaction nf_tables refuses with another error than EEXIST, here ENOENT
+// for a stale set the table lacks, is built once and sent once, so the pass
+// returns that error and leaves the table as it was
+func TestNftablesRewriteRefusedOtherwiseIsSentOnce(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	x := Set{Table: Table, Name: "x", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4}
+	y := Set{Table: Table, Name: "y", ID: 2, KeyType: TypeIPv4Addr, KeyLen: 4}
+	madeY, err := y.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := rewriteTable(t, madeY)
+	contents := Contents{Sets: []Set{x, y}}
+	built := 0
+	var hold Hold
+	err = hold.Rewrite(conn, contents.Sets, Contents{Sets: []Set{x}}, func(stale Contents) ([]Request, error) {
+		built++
+		made, err := x.Create(unix.NFPROTO_INET)
+		return append(contents.Rewrite(unix.NFPROTO_INET, stale, nil), made), err
+	})
+	if !errors.Is(err, unix.ENOENT) || built != 1 {
+		t.Errorf("a transaction deleting a set the table lacks: %v, built %d times, want %v and once", err, built, unix.ENOENT)
+	}
+	if got := tableSets(t, conn); !slices.Equal(got, []string{"y"}) {
+		t.Errorf("after the refused transaction the table holds the sets %v, want [y]", got)
+	}
+}
+
+// A retry nf_tables refuses with EEXIST again, where none of the owner's sets
+// is held so none is deleted, ends the pass with EEXIST after two builds
+func TestNftablesRewriteWritesAtMostTwice(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	held := Set{Table: Table, Name: "x", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4}
+	other := Set{Table: Table, Name: "x", ID: 1, KeyType: TypeIPv6Addr, KeyLen: 16}
+	made, err := held.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := rewriteTable(t, made)
+	built := 0
+	var hold Hold
+	err = hold.Rewrite(conn, nil, Contents{}, func(stale Contents) ([]Request, error) {
+		built++
+		if built > 2 {
+			return nil, errors.New("built a third time")
+		}
+		made, err := other.Create(unix.NFPROTO_INET)
+		return []Request{NewTable(unix.NFPROTO_INET, Table), made}, err
+	})
+	if !errors.Is(err, unix.EEXIST) || built != 2 {
+		t.Errorf("a transaction refused with EEXIST twice: %v, built %d times, want %v and twice", err, built, unix.EEXIST)
+	}
+}
+
+// The retry deletes those of the owner's sets the table holds and none it
+// lacks, so with one set made again with one field and another set absent the
+// pass goes through, the second build over the held set alone
+func TestNftablesRewriteDeletesOnlyTheOwnersSetsTheTableHolds(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	x := Set{Table: Table, Name: "x", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4}
+	y := Set{Table: Table, Name: "y", ID: 2, KeyType: TypeIPv4Addr, KeyLen: 4}
+	conn := rewriteTable(t, oneField(t, x, 4))
+	contents := Contents{Sets: []Set{x, y}}
+	var stales [][]Set
+	var hold Hold
+	err := hold.Rewrite(conn, contents.Sets, Contents{}, func(stale Contents) ([]Request, error) {
+		stales = append(stales, slices.Clone(stale.Sets))
+		requests := contents.Rewrite(unix.NFPROTO_INET, stale, nil)
+		for _, set := range contents.Sets {
+			made, err := set.Create(unix.NFPROTO_INET)
+			if err != nil {
+				return nil, err
+			}
+			requests = append(requests, made)
+		}
+		return requests, nil
+	})
+	if err != nil || !slices.EqualFunc(stales, [][]Set{nil, {x}}, slices.Equal) {
+		t.Errorf("the owner's pass over x made again with one field and y absent: %v, stale sets per build %v, want none and [x]", err, stales)
+	}
+	if got := tableSets(t, conn); !slices.Equal(got, []string{"x", "y"}) {
+		t.Errorf("after the pass the table holds the sets %v, want [x y]", got)
+	}
+}
+
+// The retry keeps the chains the read found stale beside the sets the table
+// holds, so a chain of the owner's another writer made a regular one and a set
+// made again with one field are both mended in the one pass
+func TestNftablesRewriteKeepsTheReadsStaleChains(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	x := Set{Table: Table, Name: "x", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4}
+	regular := Chain{Table: Table, Name: "c", Hook: NoHook}
+	based := Chain{Table: Table, Name: "c", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
+	conn := rewriteTable(t, regular.Create(unix.NFPROTO_INET), oneField(t, x, 4))
+	contents := Contents{Chains: []Chain{based}, Sets: []Set{x}}
+	tables, err := Tables(conn, Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+	if err != nil || !slices.Equal(read.Stale.Chains, []Chain{based}) || len(read.Stale.Sets) != 0 {
+		t.Fatalf("the read over a regular chain c and x made again finds stale %+v (%v), want the chain c alone", read.Stale, err)
+	}
+	var hold Hold
+	err = hold.Rewrite(conn, contents.Sets, read.Stale, func(stale Contents) ([]Request, error) {
+		made, err := x.Create(unix.NFPROTO_INET)
+		return append(contents.Rewrite(unix.NFPROTO_INET, stale, nil), made), err
+	})
+	if err != nil {
+		t.Errorf("the owner's pass over a stale chain and x made again with one field: %v", err)
+	}
+	if read, err := contents.Read(conn, tables, unix.NFPROTO_INET); err != nil || read.Fault != "" {
+		t.Errorf("after the pass the owner reads back with the fault %q (%v)", read.Fault, err)
+	}
+}
+
 // largeSetIntervals is how many intervals the large set's one transaction
 // fills, two elements each
 const largeSetIntervals = 10000

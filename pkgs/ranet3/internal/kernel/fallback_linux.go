@@ -371,7 +371,7 @@ func (p *netlinkPlatform) unwatchFallback() error {
 }
 
 // writeFallback reads the switch again where remake, for the chains and sets
-// the batch deletes first
+// the batch deletes first, and writes it as nftables.Hold.Rewrite does
 func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	conn, err := p.watchFallback()
 	if err != nil {
@@ -390,11 +390,9 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	if err != nil {
 		return err
 	}
-	requests, err := fallbackBatch(s, stale, leftovers)
-	if err != nil {
-		return err
-	}
-	return p.fallbackHeld.Write(conn, requests)
+	return p.fallbackHeld.Rewrite(conn, fallbackNamed, stale, func(stale nftables.Contents) ([]nftables.Request, error) {
+		return fallbackBatch(s, stale, leftovers)
+	})
 }
 
 // readFallback counts the switch among the table's holders where it finds any

@@ -390,7 +390,9 @@ type switcher interface {
 	// writeFallback writes the switch whole, on linux in one transaction with
 	// its sets flushed and filled and its chains rewritten, each chain or set
 	// that cannot change in place deleted first where remake, as the read
-	// before it found
+	// before it found, and where nf_tables refuses that transaction with
+	// EEXIST, every set of the switch's the table holds, as
+	// nftables.Hold.Rewrite says
 	writeFallback(sets fallbackSets, remake bool) error
 	// readFallback reads the switch back against what writeFallback writes for sets, the zero fallbackRead where the read fails
 	readFallback(fallbackSets) (fallbackRead, error)

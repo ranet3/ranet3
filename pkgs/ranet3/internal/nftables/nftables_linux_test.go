@@ -628,6 +628,27 @@ func TestSetsDeclaredOtherwiseReadBackToBeMadeAgain(t *testing.T) {
 	}
 }
 
+// heldSets is each of the owner's sets a dump of the table names, in the
+// owner's order: none the dump lacks, and none of the dump's the owner does
+// not write
+func TestHeldSetsAreTheOwnersTheDumpNames(t *testing.T) {
+	owners := []Set{
+		{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+		{Table: Table, Name: "lan6", ID: 2, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+		{Table: Table, Name: "forwarded", ID: 3, KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ},
+	}
+	dumped := func(name string) netlink.Message {
+		return netlink.Message{Data: netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table), unix.NFTA_SET_NAME, name)}
+	}
+	dump := []netlink.Message{dumped("forwarded"), dumped("flows4"), dumped("lan4")}
+	if got, want := heldSets(owners, dump), []Set{owners[0], owners[2]}; !slices.Equal(got, want) {
+		t.Errorf("heldSets is %+v, want %+v", got, want)
+	}
+	if got := heldSets(owners, nil); len(got) != 0 {
+		t.Errorf("over an empty dump heldSets is %+v, want none", got)
+	}
+}
+
 // Fill refuses a key of another length than the set's and an interval in a
 // set that holds single keys, which the kernel would take as two keys or
 // refuse with an error naming neither

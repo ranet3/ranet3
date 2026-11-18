@@ -236,7 +236,7 @@ func intervals(ranges []egress.Range) []nftables.Interval {
 // Apply writes the filter's chains and sets in one transaction, so no packet
 // meets half a chain or a set half filled, reading them first for each that
 // nf_tables will not change in place, which the transaction deletes and makes
-// again
+// again, as nftables.Hold.Rewrite does
 func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 	tables, read, err := readBorderContents(b.conn, borderContents)
 	if err != nil {
@@ -246,11 +246,9 @@ func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 	if err != nil {
 		return err
 	}
-	requests, err := borderBatch(rules, sets, read.Stale, read.Chains, leftovers)
-	if err != nil {
-		return err
-	}
-	return b.holder.Write(b.conn, requests)
+	return b.holder.Rewrite(b.conn, borderNamed, read.Stale, func(stale nftables.Contents) ([]nftables.Request, error) {
+		return borderBatch(rules, sets, stale, read.Chains, leftovers)
+	})
 }
 
 // borderBatch is the transaction Apply sends over the chains the table holds,
