@@ -334,6 +334,8 @@ type testTUN struct {
 	fd     int
 	v4, v6 netip.Addr
 	once   sync.Once
+	// destroyed is whether destroy has run
+	destroyed bool
 }
 
 // openUTUN makes a utun and answers its control descriptor
@@ -388,24 +390,39 @@ func newTestTUN(t *testing.T, v4, v6 string) *testTUN {
 }
 
 // destroy removes u with every route and address on it
-func (u *testTUN) destroy() { u.once.Do(func() { _ = unix.Close(u.fd) }) }
+func (u *testTUN) destroy() {
+	u.once.Do(func() {
+		_ = unix.Close(u.fd)
+		u.destroyed = true
+	})
+}
 
 // route adds a route to destination out of u, scoped to u where scoped is set and carrying the modifiers of route(8) in modifiers,
 // and answers its removal, which the test's end runs too
+// an unscoped one goes in through ownRoute, and a scoped one's key is the test's alone, since no route of the host's is scoped
+// to a utun the test made. Neither removal names u once it is destroyed, which took the route with it.
 func (u *testTUN) route(t *testing.T, destination string, scoped bool, modifiers ...string) func() {
 	t.Helper()
+	if !scoped {
+		remove, reason := ownRoute(t, netip.MustParsePrefix(destination), u.index, append([]string{"-interface", u.name}, modifiers...)...)
+		if reason != "" {
+			t.Skip(reason)
+		}
+		return remove
+	}
 	family := "-inet"
 	if netip.MustParsePrefix(destination).Addr().Is6() {
 		family = "-inet6"
 	}
-	args := []string{family, "-net", destination, "-interface", u.name}
-	if scoped {
-		args = append(args, "-ifscope", u.name)
-	}
+	args := []string{family, "-net", destination, "-interface", u.name, "-ifscope", u.name}
 	hostCommand(t, append(append([]string{"route", "-n", "add"}, args...), modifiers...)...)
 	var once sync.Once
 	remove := func() {
-		once.Do(func() { _ = exec.Command("route", append([]string{"-n", "delete"}, args...)...).Run() })
+		once.Do(func() {
+			if !u.destroyed {
+				_ = exec.Command("route", append([]string{"-n", "delete"}, args...)...).Run()
+			}
+		})
 	}
 	t.Cleanup(remove)
 	return remove

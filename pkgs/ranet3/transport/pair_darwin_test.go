@@ -102,7 +102,8 @@ func TestPairSocketFollowsItsFamilysDontFragment(t *testing.T) {
 	}
 }
 
-// hostRoute adds a route through route(8) and deletes it as the test ends
+// hostRoute adds a route scoped to a feth of the test's through route(8) and deletes it as the test ends
+// no route of the host's is scoped to an interface the test made, so the key is the test's alone
 func hostRoute(t *testing.T, args ...string) {
 	t.Helper()
 	hostCommand(t, append([]string{"route", "-n", "add"}, args...)...)
@@ -117,6 +118,10 @@ func TestPairTakesItsSourceFromTheSelectedInterface(t *testing.T) {
 	requireHostNet(t, "a feth pair")
 	fethPath(t)
 	near, err := net.InterfaceByName(fethNear)
+	if err != nil {
+		t.Fatal(err)
+	}
+	far, err := net.InterfaceByName(fethFar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +142,9 @@ func TestPairTakesItsSourceFromTheSelectedInterface(t *testing.T) {
 	}
 	waitDAD(t, fethFar)
 	for _, path := range paths {
-		hostRoute(t, path.family, "-net", path.peers, path.via)
+		if _, reason := ownRoute(t, netip.MustParsePrefix(path.peers), far.Index, path.via); reason != "" {
+			t.Skip(reason)
+		}
 		hostRoute(t, path.family, "-net", path.peers, path.scoped, "-ifscope", fethNear)
 		conn, err := net.Dial("udp", net.JoinHostPort(path.peer, "4500"))
 		if err != nil {
