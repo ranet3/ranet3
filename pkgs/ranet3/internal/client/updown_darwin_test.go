@@ -198,6 +198,9 @@ func TestDarwinNodeStartingDownWritesNothingToItsMeshDevice(t *testing.T) {
 }
 
 // requireRealUTUN skips unless the run asked for the real kernel and runs as root, which a utun and its routes need
+// it skips where lo0 holds a reject the node's reconciler would delete: one in the switch's shape at a key of the switch's,
+// which its first pass deletes whoever wrote it (deleteFallback), as kernel.ReadFallback lists them. The node writes no
+// overlay, so its reconciler takes no hold on lo0 for its own.
 func requireRealUTUN(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
@@ -206,6 +209,38 @@ func requireRealUTUN(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("RANET3_DARWIN_NETTEST=1 but this process is not root, and a utun and its routes need root")
 	}
+	if rejects := switchRejects(t); len(rejects) > 0 {
+		t.Skipf("lo0 holds the reject %s already, which the node's reconciler would delete as an earlier instance's kill switch", rejects[0])
+	}
+}
+
+// switchRejects is each reject on lo0 the node's reconciler would delete, as the platform reads them
+func switchRejects(t *testing.T) []string {
+	t.Helper()
+	held, err := kernel.ReadFallback()
+	if err != nil {
+		t.Fatalf("read lo0's rejects: %v", err)
+	}
+	var rejects []string
+	for _, rule := range held.Rules {
+		rejects = append(rejects, rule.Spec)
+	}
+	return rejects
+}
+
+// keepSwitchRejects fails the test where a reject switchRejects reads at its start is gone at its end. Registered before
+// the node starts, so it reads the end after the node and its reconciler have stopped.
+func keepSwitchRejects(t *testing.T) {
+	t.Helper()
+	before := switchRejects(t)
+	t.Cleanup(func() {
+		after := switchRejects(t)
+		for _, reject := range before {
+			if !slices.Contains(after, reject) {
+				t.Errorf("lo0 held the reject %s at the test's start and does not at its end", reject)
+			}
+		}
+	})
 }
 
 // utunNode is one node on a real utun with its reconciler, built as the daemon builds one, dialing nobody and dialed by nobody
@@ -219,8 +254,10 @@ type utunNode struct {
 // startUTUN runs a node announcing utunAddress on the next free utun, with the state directory stateDir
 // its mesh holds utunRoute before its reconciler runs, so the first pass that installs anything installs that too
 // its file turns link.listen on, since the loader refuses a node that neither dials nor answers
+// the test fails where lo0 lost a reject the node's reconciler would delete (keepSwitchRejects)
 func startUTUN(t *testing.T, stateDir string) *utunNode {
 	t.Helper()
+	keepSwitchRejects(t)
 	dir := t.TempDir()
 	keyPath, trustPath, path := filepath.Join(dir, "key.pem"), filepath.Join(dir, "registry.json"), filepath.Join(dir, "config.yaml")
 	port := freeUDPPort(t)
