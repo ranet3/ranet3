@@ -585,17 +585,21 @@ those and reads them back as
 another writer puts in one of its chains or edits there, or a table it sets
 dormant, which changes what the chain does to a packet, is undone by the next
 pass, as is a source another writer adds to or takes from a set of untranslated
-sources. It does not read back the sets' counts.
+sources. A catchall element is the element a lookup in a set falls back to where
+it finds no other. The next pass also undoes one that another writer adds and
+that widens such a set, and an expression another writer puts on one of the
+set's elements. It does not read back the sets' counts.
 
 The chains and timeout objects an earlier version wrote in the table
 `inet ranet3` are its own, as
 [refusing to advertise](exit-nodes.md#refusing-to-advertise) names them, and a
 chain of the table under any other name is another writer's. A pass writes,
 replaces or deletes nothing but its own. It replaces the chains' rules in 1
-transaction, so no packet is ever evaluated against half a ruleset, and deletes
-and makes again in that transaction a chain, set or timeout object of its own
-that nf_tables will not change in place. The withdrawal of `cap.egress` removes
-another writer's chain only with the table, in the case
+transaction, so no packet is ever evaluated against half a ruleset. When a
+chain, set or timeout object of the translator's reads back otherwise than
+written and the difference is one nf_tables will not change in place, the pass
+deletes it and makes it again in that transaction. The withdrawal of
+`cap.egress` removes another writer's chain only with the table, in the case
 [the nftables table](#the-nftables-table) gives.
 
 Another writer's chain holds a family [not ready](exit-nodes.md#readiness) only
@@ -695,9 +699,16 @@ are filter chains and translate nothing. Another base chain at the same hook,
 such as a firewall's own raw chain, runs beside it: both see every packet, and
 only a drop in either ends the hook. A firewall reload that flushes the whole
 ruleset deletes the table with every writer's chains, and each puts its own back
-on the pass the deletion wakes. A chain or set of the filter's that another
-writer changed in a way nf_tables will not undo in place is deleted and made
-again in 1 transaction, and nothing else in the table goes with it.
+on the pass the deletion wakes. When a chain or set of the filter's reads back
+otherwise than written and the difference is one nf_tables will not change in
+place, the pass deletes it and makes it again in 1 transaction, and no chain,
+set or object of another writer's goes with it. Where a rule in a chain that is
+not the filter's uses that set, or a rule or a map element of another writer's
+goes to that chain, nf_tables refuses the whole transaction of each pass that
+must delete it, so that pass writes nothing of the filter's. The filter then
+reads [not ready](antispoof.md#readiness), and the reason names what of the
+filter's reads back otherwise and that the write failed, not what holds it,
+until the first pass after that rule or element is gone.
 
 For a firewall's author, `entry` reads the source a packet leaves by the tun
 with, after every source translation: each NAT chain at postrouting runs inside

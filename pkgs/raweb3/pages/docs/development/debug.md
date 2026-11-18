@@ -187,8 +187,8 @@ These commands take flags of their own:
   under `cap.exit.fallback = "none"`, the kill switch's chains and sets in
   `inet ranet3` as `Fallback` with its two chains, their hooks and priority and
   the switch's state, each line of each chain with the packets and bytes the
-  drop counted, and each named set with its elements, or `not held` where the
-  kernel holds none of its chains. On macOS it is
+  drop counted, and each named set with what a lookup in it finds, or `not held`
+  where the kernel holds none of its chains. On macOS it is
   `Fallback, rejects on lo0, holding`, or another state of the switch, and each
   of [the rejects](../routing.md#the-kill-switch-on-macos) `lo0` holds, with no
   count. The dump and the chains are each read now through a socket of their

@@ -546,35 +546,44 @@ packet too, so it runs wherever `overlay` is written.
 
 A pass reads its chains and sets back: every rule of both chains in order,
 whoever wrote it, the table's flags, each chain's type, hook, priority and
-policy, and each set's elements as ranges. When anything differs from what the
-configuration asks for, a rule another writer added, a flushed set, a dormant
-table or a policy of drop among it, the pass rewrites both chains and every set
-in 1 transaction, deleting first a chain or set nf_tables will not change in
-place, and leaves the table's other chains as they are, then reads them back
-again. The same transaction deletes `mesh_entry`, the entry chain an earlier
-version wrote, and a stop withdraws it with the filter's chains. A regular chain
-another writer made under that name stays while a rule or a map element goes to
-it, as [sharing a host](coexistence.md#the-nftables-table) gives. A change of
-the mesh's table or the host's interfaces that moves only a set deletes each
-range that set no longer holds and adds each new one, a range's start and end
-together, in 1 transaction, the chains left alone, so a lookup meets the set
-before the change or after it. One LAN coming or going sends every nf_tables
-listener a notification for each element of the ranges that differ: 2 to 6 for a
-LAN enclosing no other, and more for one that does, since the ranges of the LANs
-inside it go or come with it. A pass runs every 30 seconds, and a failed one is
-retried after 1 second, doubling up to the 30. Another writer deleting the table
-or setting a flag on it, or adding, changing or deleting one of the filter's
-chains, a rule in one or an element of one of its sets, wakes a pass at once,
-and the filter reads not ready until that pass puts them back in 1 transaction.
-Between the change and that transaction forged packets may pass. The filter's
-own writes wake nothing, nor do the translator's and the kill switch's writes of
-their chains, rules and sets. A flush of the ruleset deletes the table and
-another program setting it dormant sets a flag on it, so each wakes every writer
-once. The first writer's pass after it makes the table again or clears the flag,
-which wakes no other: the table it makes holds none of their chains, and with
-the flag cleared it bypasses none. Notifications the daemon lost, which another
-table's large transaction can overflow its socket with, wake a pass too and
-leave readiness as it was, since that pass reads the chains back.
+policy, and each set's elements as the ranges a lookup in the set finds. A
+catchall element, the element a lookup in the set falls back to where it finds
+no other, reads as every address. An element that carries an expression reads as
+a fault. When anything differs from what the configuration asks for, a rule
+another writer added, a flushed set, a dormant table or a policy of drop among
+it, the pass rewrites both chains and every set in 1 transaction and leaves the
+table's other chains as they are, then reads them back again. When a chain or
+set of the filter's reads back otherwise than written and the difference is one
+nf_tables will not change in place, that transaction deletes it and makes it
+again, unless another writer holds it, as
+[sharing a host](coexistence.md#the-packet-filter) gives. The same transaction
+deletes `mesh_entry`, the entry chain an earlier version wrote, and a stop
+withdraws it with the filter's chains. A regular chain another writer made under
+that name stays while a rule or a map element goes to it, as
+[sharing a host](coexistence.md#the-nftables-table) gives.
+
+A change of the mesh's table or the host's interfaces that moves only a set
+deletes each range that set no longer holds and adds each new one, a range's
+start and end together, in 1 transaction, the chains left alone, so a lookup
+meets the set before the change or after it. One LAN coming or going sends every
+nf_tables listener a notification for each element of the ranges that differ: 2
+to 6 for a LAN enclosing no other, and more for one that does, since the ranges
+of the LANs inside it go or come with it.
+
+A pass runs every 30 seconds, and a failed one is retried after 1 second,
+doubling up to the 30. Another writer deleting the table or setting a flag on
+it, or adding, changing or deleting one of the filter's chains, a rule in one or
+an element of one of its sets, wakes a pass at once, and the filter reads not
+ready until that pass puts them back in 1 transaction. Between the change and
+that transaction forged packets may pass. The filter's own writes wake nothing,
+nor do the translator's and the kill switch's writes of their chains, rules and
+sets. A flush of the ruleset deletes the table and another program setting it
+dormant sets a flag on it, so each wakes every writer once. The first writer's
+pass after it makes the table again or clears the flag, which wakes no other:
+the table it makes holds none of their chains, and with the flag cleared it
+bypasses none. Notifications the daemon lost, which another table's large
+transaction can overflow its socket with, wake a pass too and leave readiness as
+it was, since that pass reads the chains back.
 
 The lifetime of its chains and sets:
 
@@ -710,6 +719,10 @@ policies, in a table with no flags. Readiness holds nothing back: an
 [egress segment](exit-nodes.md#readiness) follows the translator alone. While
 the filter is not ready the pass retries, the log warns,
 `ranet3_antispoof_ready` reads 0, and `status` and `ranet3 debug rules` say why.
+Where the reason is a set's, a catchall element shows as every address, as in
+`its set carved4 holds { 0.0.0.0/0 }, where { 192.0.2.0/24 } was written`, and
+an expression on an element shows as `an element's expression` after the ranges
+the set holds.
 
 At startup the daemon refuses to start on Linux when the first pass cannot
 install its chains and sets and read them back, which on a host means a kernel

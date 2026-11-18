@@ -808,14 +808,26 @@ which for a flag another writer set on the table reads as
 [sharing a host](coexistence.md#the-nftables-table) gives, and the services on
 the uplink's address answer only where 5410 or 5445 routes the reply, or the
 mark 0x72 sends it past them to main, until the chains read back. The reconciler
-watches the notifications of the table and of its chains and sets, so another
-writer's flush or deleted line starts a pass at once, and the antispoof filter's
-and the translator's writes of their chains, rules and sets start none. A flush
-of the ruleset deletes the table and another program setting it dormant sets a
-flag on it, so each starts a pass in every writer once. The first writer's pass
-after it makes the table again or clears the flag, which starts none in another
-writer: the table it makes holds none of their chains, and with the flag cleared
-it bypasses none.
+watches the notifications of the table and of its chains and sets, so a line
+another writer adds to or deletes from one of its chains, a flush of one of its
+chains or sets, and an element another writer adds to or deletes from one of its
+sets each start a pass at once, and the antispoof filter's and the translator's
+writes of their chains, rules and sets start none. A flush of the ruleset
+deletes the table and another program setting it dormant sets a flag on it, so
+each starts a pass in every writer once. The first writer's pass after it makes
+the table again or clears the flag, which starts none in another writer: the
+table it makes holds none of their chains, and with the flag cleared it bypasses
+none.
+
+A rule in a chain of another writer's own in the table `inet ranet3` that adds
+elements to the set `forwarded` leaves the switch reading that set back under a
+size it did not write. nf_tables then refuses every write of the switch while
+that rule stays. Neither the rule nor an element a packet adds through it starts
+a pass: the rule's chain is not one the reconciler watches, and such an element
+sends no notification. The switch finds the set at a pass that runs for another
+reason, such as the periodic pass every `cap.table.reconcile`. A pass whose
+write nf_tables refused is retried as [a failed pass](#when-a-pass-runs) is, and
+the first write of the switch after the rule is gone makes the set again.
 
 #### Mode 3 on Linux
 
@@ -1781,7 +1793,10 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   steered defaults with the path's state, and under `fallback = "none"` the kill
   switch as the kernel holds it now, on Linux its chains and sets with each
   line's drop count and each set's elements, and on macOS each reject with no
-  count.
+  count. On Linux a catchall element in a set, the element a lookup in the set
+  falls back to where it finds no other, shows as the whole range of the set's
+  key, `0.0.0.0/0`, `::/0`, `0-65535` or `*` for a set of names, and an
+  expression on an element shows as `an element's expression`.
 - Under `fallback = "none"` a scrape carries the switch, and on Linux its drops,
   as [metrics](metrics.md#series) lists.
 
