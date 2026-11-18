@@ -90,8 +90,8 @@ type FallbackDebugRule struct {
 	Packets, Bytes uint64
 }
 
-// FallbackDebugSet is one named set with its elements, a range that is no
-// prefix written as its first and last address
+// FallbackDebugSet is one named set with what a lookup in it finds, each entry
+// as nftables.Set.Text spells it
 type FallbackDebugSet struct {
 	Name     string
 	Elements []string

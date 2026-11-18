@@ -31,9 +31,11 @@ const (
 	deviceName    = 1
 )
 
-// Creating an inet flowtable can request nf_flow_table_inet, so absence must
-// be decided from the module lists without asking the kernel to create one
-func requireFlowtableSupport(t *testing.T) {
+// requireModule skips t where the netfilter module is neither loaded nor
+// built in. A request naming a flowtable, expression or set type the kernel
+// lacks has it load the module, so absence is decided from the module lists
+// without asking the kernel.
+func requireModule(t *testing.T, module string) {
 	t.Helper()
 	var uts unix.Utsname
 	if err := unix.Uname(&uts); err != nil {
@@ -48,30 +50,33 @@ func requireFlowtableSupport(t *testing.T) {
 			break
 		}
 	}
-	if !flowtableSupportPresent(loaded, builtin) {
-		t.Skipf("inet flowtable support is neither loaded nor known built in (loaded list: %v, built-in list: %v)", loadedErr, builtinErr)
+	if !modulePresent(loaded, builtin, module) {
+		t.Skipf("%s is neither loaded nor known built in (loaded list: %v, built-in list: %v)", module, loadedErr, builtinErr)
 	}
 }
 
-// nf_flow_table_inet registers the inet flowtable type and depends on nf_flow_table
-func flowtableSupportPresent(loaded, builtin []byte) bool {
+// modulePresent is whether the netfilter module is live in loaded, as
+// /proc/modules lists modules, or in builtin, as modules.builtin does
+func modulePresent(loaded, builtin []byte, module string) bool {
 	for line := range bytes.Lines(loaded) {
 		fields := bytes.Fields(line)
-		if len(fields) >= 5 && bytes.Equal(fields[0], []byte("nf_flow_table_inet")) && bytes.Equal(fields[4], []byte("Live")) {
+		if len(fields) >= 5 && string(fields[0]) == module && bytes.Equal(fields[4], []byte("Live")) {
 			return true
 		}
 	}
 	for line := range bytes.Lines(builtin) {
-		if bytes.Equal(bytes.TrimSpace(line), []byte("kernel/net/netfilter/nf_flow_table_inet.ko")) {
+		if string(bytes.TrimSpace(line)) == "kernel/net/netfilter/"+module+".ko" {
 			return true
 		}
 	}
 	return false
 }
 
-// An absent or unready inet module must not permit a creation request, while
-// loaded and built-in support both permit the namespace test
-func TestFlowtableSupportRequiresTheInetModule(t *testing.T) {
+// An absent or unready module must not permit a request that names what it
+// registers, while loaded and built-in support both permit the namespace test.
+// nf_flow_table_inet registers the inet flowtable type and depends on
+// nf_flow_table.
+func TestModulePresentWhereLoadedLiveOrBuiltIn(t *testing.T) {
 	for _, tt := range []struct {
 		name, loaded, builtin string
 		want                  bool
@@ -86,8 +91,8 @@ func TestFlowtableSupportRequiresTheInetModule(t *testing.T) {
 		{name: "similar_names", loaded: "nf_flow_table_inet_extra 12288 0 - Live 0\n", builtin: "kernel/net/netfilter/nf_flow_table_inet_extra.ko\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := flowtableSupportPresent([]byte(tt.loaded), []byte(tt.builtin)); got != tt.want {
-				t.Fatalf("flowtable support present: %v, want %v", got, tt.want)
+			if got := modulePresent([]byte(tt.loaded), []byte(tt.builtin), "nf_flow_table_inet"); got != tt.want {
+				t.Fatalf("nf_flow_table_inet present: %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -103,7 +108,7 @@ func TestNftablesWithdrawalKeepsTheTableOfAForeignFlowtable(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			netnstest.EnterEmptyLoopbackDown(t)
-			requireFlowtableSupport(t)
+			requireModule(t, "nf_flow_table_inet")
 			conn, other := dial(t), dial(t)
 			var h Hold
 			t.Cleanup(h.Release)
@@ -173,7 +178,7 @@ func TestNftablesLastWithdrawalDeletesTheTableBesideAFlowtableElsewhere(t *testi
 	} {
 		t.Run(place.name, func(t *testing.T) {
 			netnstest.EnterEmptyLoopbackDown(t)
-			requireFlowtableSupport(t)
+			requireModule(t, "nf_flow_table_inet")
 			conn, other := dial(t), dial(t)
 			var h Hold
 			t.Cleanup(h.Release)

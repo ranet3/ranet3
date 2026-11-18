@@ -21,7 +21,8 @@ filter's chains in the nftables table inet ranet3 on every Linux node, with the
 packets each rule counted, and its sets. Under cap.exit.fallback = "none" it
 also covers the kill switch: on Linux its chains in the same table, each line
 of each chain with the packets and bytes the drop counted, and each named set
-with its elements, and on macOS each reject route on lo0, with no count.`,
+with what a lookup in it finds, and on macOS each reject route on lo0, with no
+count.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {

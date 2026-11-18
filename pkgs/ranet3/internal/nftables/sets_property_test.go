@@ -512,3 +512,149 @@ func edgeToggled(ht *hegel.T, held []Interval) []Interval {
 func describeIntervals(intervals []Interval) string {
 	return Set{KeyType: TypeIPv6Addr}.describe(intervals)
 }
+
+// Elements of a set of ports, an interval set or one of single keys, with or
+// without a catchall, beside them or in a message of its own as the kernel
+// dumps it, some carrying one expression or several, the catchall among them,
+// and each nest flagged as nested or not, as the kernel sends it, read back as
+// the keys a lookup finds: every key where the set holds a catchall, and an
+// interval with no key behind them where any element carries an expression
+func TestElementsBesideACatchallOrAnExpressionReadBackAsALookupFindsThem(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		ranged := hegel.Draw(ht, hegel.Booleans())
+		s := Set{Table: "t", Name: "ports", KeyType: TypeInetService, KeyLen: 2}
+		if ranged {
+			s.Flags = unix.NFT_SET_INTERVAL
+		}
+		element := drawnElement(ht, hegel.Draw(ht, hegel.Booleans()))
+		var keyed [][]byte
+		var text []string
+		held := make([]bool, 1<<16)
+		starts := map[uint16]bool{}
+		var keys []uint16
+		carried := false
+		for range hegel.Draw(ht, hegel.Integers(0, 12)) {
+			key := hegel.Draw(ht, hegel.SampledFrom([]uint16{0, 1, 2, 0x8000, 0xfffe, 0xffff}))
+			end := ranged && hegel.Draw(ht, hegel.Booleans())
+			var flags uint32
+			if end {
+				flags = unix.NFT_SET_ELEM_INTERVAL_END
+			}
+			item, carries := element(binary.BigEndian.AppendUint16(nil, key), flags)
+			keyed, carried = append(keyed, item), carried || carries
+			keys, starts[key] = append(keys, key), starts[key] || !end
+			text = append(text, fmt.Sprintf("%04x end %v expression %v", key, end, carries))
+		}
+		// 0 is no catchall, 1 one among the elements, 2 one in a message of its own
+		place := hegel.Draw(ht, pbt.Spanning(0, 2))
+		var own []byte
+		if place > 0 {
+			// NFT_SET_ELEM_CATCHALL, with no key
+			item, carries := element(nil, 0x2)
+			carried = carried || carries
+			text = append(text, fmt.Sprintf("catchall in message %d expression %v", place, carries))
+			if place == 1 {
+				at := hegel.Draw(ht, hegel.Integers(0, len(keyed)))
+				keyed = slices.Insert(keyed, at, item)
+			} else {
+				own = item
+			}
+		}
+		// the elements go over one message or two, as a dump of many does
+		split := hegel.Draw(ht, hegel.Integers(0, len(keyed)))
+		var dump []netlink.Message
+		for _, items := range [][][]byte{keyed[:split], keyed[split:], {own}} {
+			if body := slices.Concat(items...); len(body) > 0 {
+				dump = append(dump, netlink.Message{Data: slices.Concat(PutNfgenmsg(nil, unix.NFPROTO_INET), drawnNest(ht, unix.NFTA_SET_ELEM_LIST_ELEMENTS, body))})
+			}
+		}
+
+		slices.Sort(keys)
+		keys = slices.Compact(keys)
+		for i, key := range keys {
+			last := key
+			if ranged {
+				if !starts[key] {
+					continue
+				}
+				last = 0xffff
+				if i+1 < len(keys) {
+					last = keys[i+1] - 1
+				}
+			}
+			for k := int(key); k <= int(last); k++ {
+				held[k] = true
+			}
+		}
+		if place > 0 {
+			for k := range held {
+				held[k] = true
+			}
+		}
+		var want []Interval
+		for k := 0; k < len(held); k++ {
+			if !held[k] {
+				continue
+			}
+			first := k
+			for (ranged || place > 0) && k+1 < len(held) && held[k+1] {
+				k++
+			}
+			want = append(want, Interval{First: binary.BigEndian.AppendUint16(nil, uint16(first)), Last: binary.BigEndian.AppendUint16(nil, uint16(k))})
+		}
+		if carried {
+			want = append(want, Interval{})
+		}
+		got := s.decodeElements(dump)
+		same := slices.EqualFunc(got, want, func(a, b Interval) bool {
+			return (a.First == nil) == (b.First == nil) && bytes.Equal(a.First, b.First) && bytes.Equal(a.Last, b.Last)
+		})
+		if !same {
+			ht.Fatalf("%v in a set ranged %v read back as %s, want %s", text, ranged, s.describe(got), s.describe(want))
+		}
+	})
+}
+
+// drawnElement encodes one element of a dump with key, none for a catchall,
+// and flags, which carries an expression where expressed and the draw say so
+func drawnElement(ht *hegel.T, expressed bool) func(key []byte, flags uint32) (item []byte, carries bool) {
+	counter := func() []byte {
+		return slices.Concat(netlink.PutAttrString(nil, unix.NFTA_EXPR_NAME, "counter"), drawnNest(ht, unix.NFTA_EXPR_DATA, nil))
+	}
+	return func(key []byte, flags uint32) ([]byte, bool) {
+		var body []byte
+		if key != nil {
+			body = drawnNest(ht, unix.NFTA_SET_ELEM_KEY, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, key))
+		}
+		if flags != 0 {
+			body = PutAttrBE32(body, unix.NFTA_SET_ELEM_FLAGS, flags)
+		}
+		if !expressed {
+			return drawnNest(ht, unix.NFTA_LIST_ELEM, body), false
+		}
+		// 0 is none, 1 one under NFTA_SET_ELEM_EXPR, 7, and 2 one to three under
+		// NFTA_SET_ELEM_EXPRESSIONS, 11
+		switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
+		case 1:
+			body = append(body, drawnNest(ht, 7, counter())...)
+		case 2:
+			var list []byte
+			for range hegel.Draw(ht, hegel.Integers(1, 3)) {
+				list = append(list, drawnNest(ht, unix.NFTA_LIST_ELEM, counter())...)
+			}
+			body = append(body, drawnNest(ht, 11, list)...)
+		default:
+			return drawnNest(ht, unix.NFTA_LIST_ELEM, body), false
+		}
+		return drawnNest(ht, unix.NFTA_LIST_ELEM, body), true
+	}
+}
+
+// drawnNest is the attribute kind holding body, flagged NLA_F_NESTED or not as
+// drawn, since the kernel's dumps flag no nest and a request flags each
+func drawnNest(ht *hegel.T, kind uint16, body []byte) []byte {
+	if hegel.Draw(ht, hegel.Booleans()) {
+		kind |= unix.NLA_F_NESTED
+	}
+	return netlink.PutAttr(nil, kind, body)
+}

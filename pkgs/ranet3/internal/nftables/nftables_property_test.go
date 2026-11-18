@@ -263,15 +263,17 @@ func TestSetsAndTimeoutsReadBackAsWritten(t *testing.T) {
 			ht.Fatalf("%+v reads back against itself with the fault %q, remade %v", s, fault, remake)
 		}
 		other := hegel.Draw(ht, sets(table, name))
-		kept := other.KeyType != s.KeyType || other.KeyLen != s.KeyLen || other.Flags != s.Flags || other.Comment != s.Comment
+		// a size Create cannot take away
+		sized := func(held Set) bool { return held.Size != s.Size && s.Size == 0 }
+		kept := other.KeyType != s.KeyType || other.KeyLen != s.KeyLen || other.Flags != s.Flags || other.Comment != s.Comment || sized(other)
 		if fault, remake := s.Fault(madeSet(other)); (fault != "") != (kept || other.Size != s.Size) || remake != kept {
 			ht.Fatalf("%+v reads back against %+v with the fault %q, remade %v", other, s, fault, remake)
 		}
 		// a set drawn whole rarely differs in its size alone, the one difference
-		// Fault leaves to the next Create
+		// Fault leaves to the next Create where s has a size
 		resized := s
 		resized.Size = hegel.Draw(ht, pbt.Spanning[uint32](0, math.MaxUint32))
-		if fault, remake := s.Fault(madeSet(resized)); (fault != "") != (resized.Size != s.Size) || remake {
+		if fault, remake := s.Fault(madeSet(resized)); (fault != "") != (resized.Size != s.Size) || remake != sized(resized) {
 			ht.Fatalf("%+v reads back against %+v with the fault %q, remade %v", resized, s, fault, remake)
 		}
 		if fault, _ := (Set{Table: table, Name: name + "x"}).Fault(created); fault != "" {

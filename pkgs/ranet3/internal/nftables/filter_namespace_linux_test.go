@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
@@ -263,6 +264,276 @@ func TestNftablesSetElementsReadBackAndWakeOnAnothersChange(t *testing.T) {
 		if fault := read(); fault != "" {
 			t.Errorf("the sets refilled after another writer %s read back with the fault %q", change.name, fault)
 		}
+	}
+}
+
+// Another writer's catchall element, in an interval set and in a set of names,
+// has the line reading the set match a key the set does not hold, its element
+// carrying a limit of no connections has the line pass a key the set holds,
+// and its element carrying two counters, which the kernel dumps as a list of
+// expressions, leaves the line as it was. Each wakes the owner's monitor and
+// reads back as a fault naming the set, and the owner's fill behind the set's
+// flush takes it out, so the line drops as written and the set reads back as
+// written. A case runs only where the module of its expression is loaded or
+// built in, since sending the expression would load it, and in a namespace of
+// its own.
+func TestNftablesElementsNoOwnerWritesReadBackUntilTheOwnerFillsAgain(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	chain := Chain{Table: Table, Name: "post", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
+	lan4 := Set{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	names := Set{Table: Table, Name: "forwarded", ID: 2, KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ}
+	elements := func(kind int, set Set, attributes ...[]byte) Request {
+		item := netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, slices.Concat(attributes...))
+		body := netlink.PutAttr(set.elementList(unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, item)
+		return Request{Kind: Command(kind), Flags: unix.NLM_F_CREATE, Body: body}
+	}
+	// NFT_SET_ELEM_CATCHALL
+	catchall := PutAttrBE32(nil, unix.NFTA_SET_ELEM_FLAGS, 0x2)
+	start := netlink.PutAttr(nil, unix.NFTA_SET_ELEM_KEY|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, []byte{127, 0, 0, 0}))
+	noConnections := netlink.PutAttr(nil, unix.NFTA_SET_ELEM_EXPR|unix.NLA_F_NESTED, expressionBody("connlimit", PutAttrBE32(nil, connlimitCount, 0)))
+	// NFTA_SET_ELEM_EXPRESSIONS
+	counters := netlink.PutAttr(nil, 11|unix.NLA_F_NESTED, slices.Concat(Expression("counter", nil), Expression("counter", nil)))
+	daddr := slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(lan4, false)}, CountedDrop())
+	oifname := append([][]byte{MetaLoad(unix.NFT_META_OIFNAME), Lookup(names, false)}, CountedDrop()...)
+	loopback := Prefixes(prefixList("127.0.0.0/30"))
+	for _, c := range []struct {
+		name string
+		// module is the one the change's expression needs, empty for none or one built into nf_tables
+		module  string
+		set     Set
+		written []Interval
+		rule    [][]byte
+		to      netip.AddrPort
+		// before and after are whether the line drops the datagram to to as the
+		// owner wrote the set and with the change in place
+		before, after bool
+		change        []Request
+		fault         string
+	}{
+		{
+			"a catchall in an interval set", "", lan4, loopback, daddr, netip.MustParseAddrPort("127.0.0.9:9"), false, true,
+			[]Request{elements(unix.NFT_MSG_NEWSETELEM, lan4, catchall)},
+			"its set lan4 holds { 0.0.0.0/0 }, where { 127.0.0.0/30 } was written",
+		},
+		{
+			"a catchall in a set of names", "", names, []Interval{Key(InterfaceName("br0"))}, oifname, netip.MustParseAddrPort("127.0.0.1:9"), false, true,
+			[]Request{elements(unix.NFT_MSG_NEWSETELEM, names, catchall)},
+			"its set forwarded holds { * }, where { br0 } was written",
+		},
+		{
+			"a limit of no connections on a start", "nft_connlimit", lan4, loopback, daddr, netip.MustParseAddrPort("127.0.0.2:9"), true, false,
+			[]Request{elements(unix.NFT_MSG_DELSETELEM, lan4, start), elements(unix.NFT_MSG_NEWSETELEM, lan4, start, noConnections)},
+			"its set lan4 holds { 127.0.0.0/30, an element's expression }, where { 127.0.0.0/30 } was written",
+		},
+		{
+			"two counters on a start", "", lan4, loopback, daddr, netip.MustParseAddrPort("127.0.0.2:9"), true, true,
+			[]Request{elements(unix.NFT_MSG_DELSETELEM, lan4, start), elements(unix.NFT_MSG_NEWSETELEM, lan4, start, counters)},
+			"its set lan4 holds { 127.0.0.0/30, an element's expression }, where { 127.0.0.0/30 } was written",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.module != "" {
+				requireModule(t, c.module)
+			}
+			netnstest.EnterEmpty(t)
+			conn, another := dial(t), dial(t)
+			if err := conn.Batch([]Request{NewTable(unix.NFPROTO_INET, Table), chain.Create(unix.NFPROTO_INET)}); err != nil {
+				t.Fatalf("make the table: %v", err)
+			}
+			monitor, err := OpenMonitor(conn, Scope{Sets: []string{c.set.Name}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = monitor.Close() })
+			write := func() {
+				t.Helper()
+				replaced, err := c.set.Replace(unix.NFPROTO_INET, c.written)
+				if err != nil {
+					t.Fatal(err)
+				}
+				line, err := chain.Rule(unix.NFPROTO_INET, "rule", c.rule)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.Batch(slices.Concat([]Request{chain.Flush(unix.NFPROTO_INET)}, replaced, []Request{line})); err != nil {
+					t.Fatalf("write the set and its line: %v", err)
+				}
+			}
+			fault := func() string {
+				t.Helper()
+				tables, err := Tables(conn, Table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := Contents{Sets: []Set{c.set}, Elements: map[string][]Interval{c.set.Name: c.written}}.Read(conn, tables, unix.NFPROTO_INET)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return read.Fault
+			}
+			dropped := func() bool {
+				t.Helper()
+				err := sendUDP(c.to, 0)
+				if err != nil && !errors.Is(err, unix.EPERM) {
+					t.Fatalf("send to %s: %v", c.to, err)
+				}
+				return err != nil
+			}
+			write()
+			if got := dropped(); got != c.before {
+				t.Fatalf("as written the line drops the datagram to %s %v, want %v", c.to, got, c.before)
+			}
+			if err := another.Batch(c.change); err != nil {
+				t.Fatalf("another writer's change: %v", err)
+			}
+			select {
+			case <-monitor.Changed():
+			case <-time.After(rootWait):
+				t.Errorf("another writer's change did not wake the owner")
+			}
+			if got := dropped(); got != c.after {
+				t.Errorf("with the change the line drops the datagram to %s %v, want %v", c.to, got, c.after)
+			}
+			if got := fault(); got != c.fault {
+				t.Errorf("with the change the set reads back with the fault %q, want %q", got, c.fault)
+			}
+			write()
+			if got := dropped(); got != c.before {
+				t.Errorf("after the owner's fill the line drops the datagram to %s %v, want %v", c.to, got, c.before)
+			}
+			if got := fault(); got != "" {
+				t.Errorf("after the owner's fill the set reads back with the fault %q", got)
+			}
+		})
+	}
+}
+
+// Another writer's set made again under the owner's name, flags, key and
+// elements, with an expression of its own or with a size where the owner wrote
+// none, reads back as a fault that names the set stale, and the owner's pass,
+// which deletes what is stale, makes the set again, so the line drops as
+// written and the set reads back as written. A limit of no connections as the
+// set's expression, which nf_tables gives each element, has the line pass a
+// key the set holds, and a counter or a size leaves the line as it was. A case
+// runs only where the module of its expression is loaded or built in, and in a
+// namespace of its own.
+func TestNftablesSetMadeAgainOtherwiseIsMadeAgainByItsOwner(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	chain := Chain{Table: Table, Name: "post", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
+	lan4 := Set{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	loopback := Prefixes(prefixList("127.0.0.0/30"))
+	contents := Contents{Chains: []Chain{chain}, Sets: []Set{lan4}, Elements: map[string][]Interval{lan4.Name: loopback}}
+	to := netip.MustParseAddrPort("127.0.0.2:9")
+	// with is lan4 made with set attributes beside the owner's, NFTA_SET_EXPR among them
+	with := func(attributes ...[]byte) func() (Request, error) {
+		return func() (Request, error) {
+			made, err := lan4.Create(unix.NFPROTO_INET)
+			made.Body = slices.Concat(made.Body, slices.Concat(attributes...))
+			return made, err
+		}
+	}
+	sized := lan4
+	sized.Size = 3
+	for _, c := range []struct {
+		name string
+		// module is the one the expression needs, empty for none or one built into nf_tables
+		module string
+		made   func() (Request, error)
+		// after is whether the line drops the datagram to to with the set made again
+		after bool
+		fault string
+	}{
+		{
+			"a limit of no connections as its expression", "nft_connlimit",
+			with(netlink.PutAttr(nil, 17|unix.NLA_F_NESTED, expressionBody("connlimit", PutAttrBE32(nil, connlimitCount, 0)))), false,
+			"its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 0, comment \"\" and 1 expression, where key type 7 of 4 bytes, flags 0x4, size 0 and comment \"\" were written",
+		},
+		{
+			"a counter as its expression", "",
+			with(netlink.PutAttr(nil, 17|unix.NLA_F_NESTED, expressionBody("counter", nil))), true,
+			"its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 0, comment \"\" and 1 expression, where key type 7 of 4 bytes, flags 0x4, size 0 and comment \"\" were written",
+		},
+		{
+			"a size", "", func() (Request, error) { return sized.Create(unix.NFPROTO_INET) }, true,
+			"its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 3 and comment \"\", where key type 7 of 4 bytes, flags 0x4, size 0 and comment \"\" were written",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.module != "" {
+				requireModule(t, c.module)
+			}
+			netnstest.EnterEmpty(t)
+			conn, another := dial(t), dial(t)
+			line, err := chain.Rule(unix.NFPROTO_INET, "rule", slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(lan4, false)}, CountedDrop()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := func() Readback {
+				t.Helper()
+				tables, err := Tables(conn, Table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return read
+			}
+			// pass is the owner's: the table written over what its read found stale
+			pass := func() error {
+				t.Helper()
+				replaced, err := lan4.Replace(unix.NFPROTO_INET, loopback)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return conn.Batch(slices.Concat(contents.Rewrite(unix.NFPROTO_INET, read().Stale, nil), replaced, []Request{line}))
+			}
+			dropped := func() bool {
+				t.Helper()
+				err := sendUDP(to, 0)
+				if err != nil && !errors.Is(err, unix.EPERM) {
+					t.Fatalf("send to %s: %v", to, err)
+				}
+				return err != nil
+			}
+			if err := pass(); err != nil {
+				t.Fatalf("the owner's first pass: %v", err)
+			}
+			if !dropped() {
+				t.Fatalf("as written the line passes the datagram to %s", to)
+			}
+			made, err := c.made()
+			if err != nil {
+				t.Fatal(err)
+			}
+			filled, err := lan4.Fill(unix.NFPROTO_INET, loopback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := another.Batch(slices.Concat([]Request{chain.Flush(unix.NFPROTO_INET), lan4.Delete(unix.NFPROTO_INET), made}, filled, []Request{line})); err != nil {
+				t.Fatalf("another writer makes the set again: %v", err)
+			}
+			if got := dropped(); got != c.after {
+				t.Errorf("with the set made again the line drops the datagram to %s %v, want %v", to, got, c.after)
+			}
+			if got := read(); got.Fault != c.fault || !got.Remake() {
+				t.Errorf("with the set made again it reads back with the fault %q, remade %v, want %q, remade", got.Fault, got.Remake(), c.fault)
+			}
+			if err := pass(); err != nil {
+				t.Fatalf("the owner's pass over the set made again: %v", err)
+			}
+			if !dropped() {
+				t.Errorf("after the owner's pass the line passes the datagram to %s", to)
+			}
+			if got := read(); got.Fault != "" {
+				t.Errorf("after the owner's pass the set reads back with the fault %q", got.Fault)
+			}
+		})
 	}
 }
 

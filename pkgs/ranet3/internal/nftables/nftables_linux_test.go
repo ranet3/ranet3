@@ -535,6 +535,99 @@ func TestElementsReadBackAsALookupFindsThem(t *testing.T) {
 	}
 }
 
+// A catchall element beside what the owner wrote reads back as every key of
+// the set, an interval set's or not, and an element the owner wrote carrying
+// an expression, under either attribute the kernel dumps one in, as an
+// interval with no key, each as a fault naming it. A catchall in a set written
+// whole changes no lookup and reads back as written.
+func TestElementsNoOwnerWritesReadBackAsAFault(t *testing.T) {
+	lan4 := Set{Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	lan6 := Set{Name: "lan6", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL}
+	ports := Set{Name: "tcpports", KeyType: TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL}
+	names := Set{Name: "forwarded", KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ}
+	catchall := netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_SET_ELEM_FLAGS, elementCatchall))
+	expression := netlink.PutAttr(nil, unix.NFTA_SET_ELEM_EXPR|unix.NLA_F_NESTED, expressionBody("counter", nil))
+	expressions := netlink.PutAttr(nil, elementExpressions|unix.NLA_F_NESTED, slices.Concat(Expression("counter", nil), Expression("quota", nil)))
+	lan := Prefixes([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")})
+	for _, c := range []struct {
+		name    string
+		set     Set
+		written []Interval
+		// extra follows the written elements, and carried goes into the
+		// written element at key
+		extra        []byte
+		key, carried []byte
+		want         string
+	}{
+		{"a catchall in an IPv4 set", lan4, lan, catchall, nil, nil, "its set lan4 holds { 0.0.0.0/0 }, where { 192.0.2.0/24 } was written"},
+		{"a catchall in an empty IPv4 set", lan4, nil, catchall, nil, nil, "its set lan4 holds { 0.0.0.0/0 }, where {  } was written"},
+		{"a catchall in an IPv4 set written whole", lan4, Prefixes([]netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}), catchall, nil, nil, ""},
+		{"a catchall in an IPv6 set", lan6, Prefixes([]netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}), catchall, nil, nil, "its set lan6 holds { ::/0 }, where { 2001:db8::/32 } was written"},
+		{"a catchall in a set of ports", ports, []Interval{Key([]byte{0, 22})}, catchall, nil, nil, "its set tcpports holds { 0-65535 }, where { 22 } was written"},
+		{"a catchall in a set of names", names, []Interval{Key(InterfaceName("lo")), Key(InterfaceName("ranet0"))}, catchall, nil, nil, "its set forwarded holds { * }, where { lo, ranet0 } was written"},
+		{"an expression on a start", lan4, lan, nil, []byte{192, 0, 2, 0}, expression, "its set lan4 holds { 192.0.2.0/24, an element's expression }, where { 192.0.2.0/24 } was written"},
+		{"two expressions on a start", lan4, lan, nil, []byte{192, 0, 2, 0}, expressions, "its set lan4 holds { 192.0.2.0/24, an element's expression }, where { 192.0.2.0/24 } was written"},
+		{"an expression on a name", names, []Interval{Key(InterfaceName("lo"))}, nil, InterfaceName("lo"), expression, "its set forwarded holds { lo, an element's expression }, where { lo } was written"},
+	} {
+		elements, err := c.set.elements(c.written)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var list []byte
+		for _, e := range elements {
+			encoded := e.encode()
+			if c.carried != nil && slices.Equal(e.key, c.key) {
+				encoded = netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, slices.Concat(encoded[unix.SizeofRtAttr:], c.carried))
+			}
+			list = append(list, encoded...)
+		}
+		dump := netlink.Message{Data: netlink.PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, append(list, c.extra...))}
+		if got := c.set.elementFault(c.written, c.set.decodeElements([]netlink.Message{dump})); got != c.want {
+			t.Errorf("%s reads back with the fault %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A set of the owner's name another writer made with an expression of its own,
+// under either attribute and as the kernel dumps it or flagged nested, or with
+// a size where the owner wrote none, reads back as a fault that has the owner
+// make it again, and another size where the owner wrote one as a fault the
+// next Create mends. Each half of a fault's text counts the expressions of its
+// set only where it holds any.
+func TestSetsDeclaredOtherwiseReadBackToBeMadeAgain(t *testing.T) {
+	lan4 := Set{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	flows := Set{Table: Table, Name: "flows6", ID: 2, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_EVAL, Size: 65535}
+	// NFTA_SET_EXPR and NFTA_SET_EXPRESSIONS
+	one := netlink.PutAttr(nil, 17, expressionBody("counter", nil))
+	nestedOne := netlink.PutAttr(nil, 17|unix.NLA_F_NESTED, expressionBody("counter", nil))
+	two := netlink.PutAttr(nil, 18, slices.Concat(Expression("counter", nil), Expression("last", nil)))
+	const written = "where key type 7 of 4 bytes, flags 0x4, size 0 and comment \"\" were written"
+	for _, c := range []struct {
+		name    string
+		written Set
+		held    Set
+		extra   []byte
+		fault   string
+		remake  bool
+	}{
+		{"the set as written", lan4, lan4, nil, "", false},
+		{"one expression", lan4, lan4, one, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 0, comment \"\" and 1 expression, " + written, true},
+		{"one expression flagged nested", lan4, lan4, nestedOne, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 0, comment \"\" and 1 expression, " + written, true},
+		{"a list of two expressions", lan4, lan4, two, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 0, comment \"\" and 2 expressions, " + written, true},
+		{"a size where none was written", lan4, Set{Table: Table, Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL, Size: 3}, nil, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 3 and comment \"\", " + written, true},
+		{"another size", flows, Set{Table: Table, Name: "flows6", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_EVAL, Size: 100}, nil, "its set flows6 reads back with key type 8 of 16 bytes, flags 0x20, size 100 and comment \"\", where key type 8 of 16 bytes, flags 0x20, size 65535 and comment \"\" were written", false},
+	} {
+		made, err := c.held.Create(unix.NFPROTO_INET)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fault, remake := c.written.Fault(netlink.Message{Data: append(made.Body, c.extra...)})
+		if fault != c.fault || remake != c.remake {
+			t.Errorf("%s reads back with the fault %q, remade %v, want %q, remade %v", c.name, fault, remake, c.fault, c.remake)
+		}
+	}
+}
+
 // Fill refuses a key of another length than the set's and an interval in a
 // set that holds single keys, which the kernel would take as two keys or
 // refuse with an error naming neither

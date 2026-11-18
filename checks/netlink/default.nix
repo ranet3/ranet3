@@ -79,11 +79,13 @@ testers.runNixOSTest {
   # the machine cannot reach, so a name a test looks up fails at once, as in the go-test check's sandbox
   nodes.machine.networking.useDHCP = false;
 
-  # the kill switch's tunnel lab writes a GRE and a WireGuard tunnel, whose modules nothing else here loads
+  # a root test that would load a module skips where it is not loaded, so each is loaded at boot: the kill switch's tunnel
+  # lab's GRE and WireGuard tunnels, the inet flowtable, and connlimit on a set element
   nodes.machine.boot.kernelModules = [
     "ip_gre"
     "wireguard"
     "nf_flow_table_inet"
+    "nft_connlimit"
   ];
   # ip_gre would add its fallback devices gre0, gretap0 and erspan0 to every namespace, where the labs read each link
   nodes.machine.boot.kernel.sysctl."net.core.fb_tunnels_only_for_init_net" = 2;

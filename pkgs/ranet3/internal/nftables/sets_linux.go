@@ -34,11 +34,14 @@ type Set struct {
 	// Comment is the text `nft list` prints as the set's comment, empty for none.
 	// nf_tables keeps the one the set was made with.
 	Comment string
+	// expressions counts those a set read back carries of its own, which
+	// nf_tables gives each element added to it. Create writes none.
+	expressions int
 }
 
-// Create makes the set, or takes one of its name holding the same key and
-// flags and gives it the size, leaving its comment as it was. One holding
-// another key or other flags fails the transaction.
+// Create makes the set, or takes one of its name holding the same key, flags,
+// expressions and fields and gives it any size but none, leaving its comment
+// as it was. One that differs in any of those fails the transaction.
 func (s Set) Create(proto uint8) (Request, error) {
 	// a longer comment still lists in `nft list ruleset`, but nft -f will not load that listing back
 	if len(s.Comment) > udataCommentMax {
@@ -96,6 +99,10 @@ func DecodeSet(message netlink.Message) Set {
 			}
 		case kind == unix.NFTA_SET_USERDATA:
 			s.Comment = comment(udataSetComment, value)
+		case kind == setExpression:
+			s.expressions = 1
+		case kind == setExpressions:
+			s.expressions = len(Nested(value))
 		}
 	}
 	return s
@@ -103,8 +110,9 @@ func DecodeSet(message netlink.Message) Set {
 
 // Fault names how the set a dump holds differs from s as Create writes it,
 // empty for s as written and for any other set. remake holds where its key,
-// flags or comment differ, which nf_tables will not change in place, and a
-// size alone the next Create sets.
+// flags, comment or expressions differ, which nf_tables will not change in
+// place, or where it holds a size and s none, which Create cannot set, and
+// another size alone the next Create sets.
 func (s Set) Fault(message netlink.Message) (fault string, remake bool) {
 	held := DecodeSet(message)
 	if held.Table != s.Table || held.Name != s.Name {
@@ -114,9 +122,19 @@ func (s Set) Fault(message netlink.Message) (fault string, remake bool) {
 	if held == s {
 		return "", false
 	}
-	return fmt.Sprintf("its set %s reads back with key type %d of %d bytes, flags %#x, size %d and comment %q, where key type %d of %d bytes, flags %#x, size %d and comment %q were written",
-			s.Name, held.KeyType, held.KeyLen, held.Flags, held.Size, held.Comment, s.KeyType, s.KeyLen, s.Flags, s.Size, s.Comment),
-		held.KeyType != s.KeyType || held.KeyLen != s.KeyLen || held.Flags != s.Flags || held.Comment != s.Comment
+	half := func(set Set) string {
+		text := fmt.Sprintf("key type %d of %d bytes, flags %#x, size %d", set.KeyType, set.KeyLen, set.Flags, set.Size)
+		switch set.expressions {
+		case 0:
+			return fmt.Sprintf("%s and comment %q", text, set.Comment)
+		case 1:
+			return fmt.Sprintf("%s, comment %q and 1 expression", text, set.Comment)
+		}
+		return fmt.Sprintf("%s, comment %q and %d expressions", text, set.Comment, set.expressions)
+	}
+	return fmt.Sprintf("its set %s reads back with %s, where %s were written", s.Name, half(held), half(s)),
+		held.KeyType != s.KeyType || held.KeyLen != s.KeyLen || held.Flags != s.Flags || held.Comment != s.Comment ||
+			held.expressions != s.expressions || held.Size != s.Size && s.Size == 0
 }
 
 // Anonymous is a set bound to the one rule whose Lookup names it, made in the
@@ -128,7 +146,8 @@ func Anonymous(table string, id, keyType, keyLen, flags uint32) Set {
 }
 
 // Interval is the keys First to Last of a set, both included, each as long as
-// the set's key and compared as big endian numbers
+// the set's key and compared as big endian numbers. A set read back may hold
+// one with neither, for an element's expression.
 type Interval struct{ First, Last []byte }
 
 func Key(key []byte) Interval { return Interval{First: key, Last: key} }
@@ -290,9 +309,9 @@ func (s Set) elementList(proto uint8) []byte {
 	return netlink.PutAttrString(body, unix.NFTA_SET_ELEM_LIST_SET, s.Name)
 }
 
-// Elements reads the keys the named set s holds through conn, as normal has
-// them, so they equal the intervals Fill was given exactly when the set holds
-// those keys
+// Elements reads through conn what a lookup in the named set s finds, as
+// decodeElements reads a dump, so they equal the intervals Fill was given
+// exactly when a lookup finds those keys and no element carries an expression
 func (s Set) Elements(conn *Conn, proto uint8) ([]Interval, error) {
 	replies, err := conn.Dump(Command(unix.NFT_MSG_GETSETELEM), s.elementList(proto))
 	if err != nil {
@@ -303,9 +322,13 @@ func (s Set) Elements(conn *Conn, proto uint8) ([]Interval, error) {
 
 // decodeElements reads the elements dumps hold, in whatever order, as the
 // keys a lookup finds: one is held while the greatest element at or below it
-// is not an end, a start sorting after an end at one key
+// is not an end, a start sorting after an end at one key. A catchall element,
+// which a lookup finding no other element finds, holds every key. An element
+// carrying an expression, which decides whether a lookup finding it matches,
+// adds an interval with no key.
 func (s Set) decodeElements(replies []netlink.Message) []Interval {
 	var held []element
+	every, decided := false, false
 	for _, reply := range replies {
 		for kind, value := range reply.Attributes(SizeofNfgenmsg) {
 			if kind != unix.NFTA_SET_ELEM_LIST_ELEMENTS {
@@ -319,18 +342,30 @@ func (s Set) decodeElements(replies []netlink.Message) []Interval {
 						e.key = dataValue(field.Value)
 					case field.Kind == unix.NFTA_SET_ELEM_FLAGS && len(field.Value) == 4:
 						e.flags = binary.BigEndian.Uint32(field.Value)
+					case field.Kind == unix.NFTA_SET_ELEM_EXPR || field.Kind == elementExpressions:
+						decided = true
 					}
 				}
+				every = every || e.flags&elementCatchall != 0
 				held = append(held, e)
 			}
 		}
+	}
+	finish := func(out []Interval) []Interval {
+		if decided {
+			return append(out, Interval{})
+		}
+		return out
+	}
+	if every {
+		return finish([]Interval{{First: make([]byte, s.KeyLen), Last: bytes.Repeat([]byte{0xff}, int(s.KeyLen))}})
 	}
 	if s.Flags&unix.NFT_SET_INTERVAL == 0 {
 		keys := make([]Interval, 0, len(held))
 		for _, e := range held {
 			keys = append(keys, Key(e.key))
 		}
-		return s.normal(keys)
+		return finish(s.normal(keys))
 	}
 	end := func(e element) bool { return e.flags&unix.NFT_SET_ELEM_INTERVAL_END != 0 }
 	slices.SortFunc(held, func(a, b element) int {
@@ -361,7 +396,7 @@ func (s Set) decodeElements(replies []netlink.Message) []Interval {
 	if open != nil {
 		out = append(out, Interval{First: open, Last: bytes.Repeat([]byte{0xff}, len(open))})
 	}
-	return union(out)
+	return finish(union(out))
 }
 
 func dataValue(data []byte) []byte {
@@ -445,8 +480,8 @@ func elementChains(replies []netlink.Message) []string {
 	return out
 }
 
-// ElementFault reads the keys s holds through conn and names how they differ
-// from written, empty where they do not
+// ElementFault reads s through conn as Elements does and names how it differs
+// from written, empty where it does not
 func (s Set) ElementFault(conn *Conn, proto uint8, written []Interval) (string, error) {
 	held, err := s.Elements(conn, proto)
 	if err != nil {
@@ -476,12 +511,19 @@ func (s Set) describe(intervals []Interval) string {
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
 
-// Text spells one interval as nft lists an element of s: a link's name, a port
-// or a range of ports, an address, a prefix, or a range's first and last
-// address
+// Text spells one interval as nft lists an element of s: a link's name or a
+// range of names as its first and a star, a port or a range of ports, an
+// address, a prefix, or a range's first and last address. An interval with no
+// key is an element's expression.
 func (s Set) Text(interval Interval) string {
+	if interval.First == nil {
+		return "an element's expression"
+	}
 	switch s.KeyType {
 	case TypeIfname:
+		if !bytes.Equal(interval.First, interval.Last) {
+			return unix.ByteSliceToString(interval.First) + "*"
+		}
 		return unix.ByteSliceToString(interval.First)
 	case TypeInetService:
 		if len(interval.First) == 2 && len(interval.Last) == 2 {

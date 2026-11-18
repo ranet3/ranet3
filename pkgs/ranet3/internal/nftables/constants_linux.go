@@ -56,6 +56,14 @@ const (
 	// rather than its start alone.
 	udataElementFlags = 1
 	elementOpen       = 1
+	// elementCatchall is NFT_SET_ELEM_CATCHALL and elementExpressions
+	// NFTA_SET_ELEM_EXPRESSIONS, which x/sys does not carry
+	elementCatchall    = 0x2
+	elementExpressions = 11
+	// setExpression and setExpressions are NFTA_SET_EXPR and
+	// NFTA_SET_EXPRESSIONS, a set's own expressions, which x/sys does not carry
+	setExpression  = 17
+	setExpressions = 18
 	// elementsMax bounds the attribute of one message's elements below the 64
 	// KiB a netlink attribute's length can say, so a large set fills over
 	// several messages of its transaction

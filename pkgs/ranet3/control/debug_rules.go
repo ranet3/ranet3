@@ -75,8 +75,8 @@ type FallbackTableRule struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// FallbackTableSet is one named set of the switch with its elements, a range
-// that is no prefix written as its first and last address
+// FallbackTableSet is one named set of the switch as kernel.FallbackDebugSet
+// reads it back
 type FallbackTableSet struct {
 	Name     string   `json:"name"`
 	Elements []string `json:"elements"`
@@ -296,7 +296,7 @@ func RenderRules(w io.Writer, info RulesInfo) {
 }
 
 // renderFallback writes the switch: its chains' lines with the drop's count,
-// then each set's elements, or on macOS each reject
+// then each set's entries, or on macOS each reject
 func renderFallback(w io.Writer, table *FallbackTable) {
 	state := table.State
 	if table.Reason != "" {
