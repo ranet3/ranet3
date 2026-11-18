@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
 
@@ -243,6 +245,207 @@ func hostCommand(t *testing.T, args ...string) {
 	if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 		t.Fatalf("%s: %v: %s", strings.Join(args, " "), err, out)
 	}
+}
+
+// ownRoute adds an unscoped route at key out of the interface at index with route(8), args following the key, and answers
+// its removal, which the test's end runs too, or why the test skips. route(8) exits 0 where the kernel refuses an add
+// (newroute in network_cmds' route.c) and a delete names no interface (rnh_deladdr in bsd/net/route.c), so the test adds
+// nothing where another interface's route holds key, takes the route as added only once the dump shows it out of index,
+// and deletes it by its key only while the dump does. The kernel holds one unscoped route at a key, so that one is the
+// test's. The caller skips, so that the skip's line is in the test or in a helper it calls. The test fails where the host
+// routed key out of another interface when ownRoute was called and does not once the removal has run. Cleanups registered
+// before the call, as the close of the test's utun or the destroy of its feths, run after that read, and it sees nothing
+// they delete. It rests on none of them deleting the host's unscoped route at key out of another interface. XNU's close of
+// a utun deletes each of its IPv6 addresses with the host route at it, which sits on lo0 (utun_ctl_disconnect in
+// bsd/net/if_utun.c, in6_purgeif and in6_ifremloop in bsd/netinet6/in6.c).
+func ownRoute(t *testing.T, key netip.Prefix, index int, args ...string) (func(), string) {
+	t.Helper()
+	family, kind := "-inet", "-net"
+	if key.Addr().Is6() {
+		family = "-inet6"
+	}
+	if key.IsSingleIP() {
+		kind = "-host"
+	}
+	at := key.String()
+	if key.IsSingleIP() {
+		at = key.Addr().String()
+	}
+	if host, ok := unscopedAt(routeDump(t), key); ok && host != index {
+		// registered before the removal, so it reads the host's route after it
+		t.Cleanup(func() {
+			if after, still := unscopedAt(routeDump(t), key); !still || after != host {
+				t.Errorf("the host routed %s out of interface %d at the test's start and does not at its end", key, host)
+			}
+		})
+		return func() {}, fmt.Sprintf("the host routes %s out of interface %d already, and the route this test deletes by its key would be that one", key, host)
+	}
+	hostCommand(t, append([]string{"route", "-n", "add", family, kind, at}, args...)...)
+	var once sync.Once
+	remove := func() {
+		once.Do(func() {
+			if held, ok := unscopedAt(routeDump(t), key); ok && held == index {
+				_ = exec.Command("route", "-n", "delete", family, kind, at).Run()
+			}
+		})
+	}
+	t.Cleanup(remove)
+	if held, ok := unscopedAt(routeDump(t), key); !ok {
+		t.Fatalf("route(8) answered the add of %s as done and the dump holds no route there", key)
+	} else if held != index {
+		return remove, fmt.Sprintf("the host routes %s out of interface %d, which took the key before this test's add", key, held)
+	}
+	return remove, ""
+}
+
+// routeDump is the kernel's routing table of both families
+func routeDump(t *testing.T) []route.Message {
+	t.Helper()
+	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	if err != nil {
+		t.Fatalf("dump the routing table: %v", err)
+	}
+	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	if err != nil {
+		t.Fatalf("parse the routing table: %v", err)
+	}
+	return messages
+}
+
+// unscopedAt is the interface the route at key carrying no scope leaves by, read from the dump, where the kernel holds at
+// most one such route at a key. A route the kernel cloned is none, since an add at its key takes its place (rtrequest's
+// RTM_ADD in bsd/net/route.c).
+func unscopedAt(messages []route.Message, key netip.Prefix) (int, bool) {
+	for _, message := range messages {
+		rm, ok := message.(*route.RouteMessage)
+		if !ok || rm.Type != unix.RTM_GET || rm.Flags&(unix.RTF_IFSCOPE|unix.RTF_WASCLONED) != 0 {
+			continue
+		}
+		if held, ok := dumpedKey(rm); ok && held == key {
+			return rm.Index, true
+		}
+	}
+	return 0, false
+}
+
+// dumpedKey is the prefix a dumped route is keyed by: its destination, under its netmask unless it is a host route
+func dumpedKey(rm *route.RouteMessage) (netip.Prefix, bool) {
+	if len(rm.Addrs) <= unix.RTAX_NETMASK {
+		return netip.Prefix{}, false
+	}
+	destination, ok := dumpedAddr(rm.Addrs[unix.RTAX_DST])
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	bits := destination.BitLen()
+	if rm.Flags&unix.RTF_HOST == 0 {
+		mask, ok := dumpedAddr(rm.Addrs[unix.RTAX_NETMASK])
+		if !ok || mask.BitLen() != bits {
+			return netip.Prefix{}, false
+		}
+		ones, total := net.IPMask(mask.AsSlice()).Size()
+		if total == 0 {
+			return netip.Prefix{}, false
+		}
+		bits = ones
+	}
+	return netip.PrefixFrom(destination, bits).Masked(), true
+}
+
+func dumpedAddr(addr route.Addr) (netip.Addr, bool) {
+	switch a := addr.(type) {
+	case *route.Inet4Addr:
+		return netip.AddrFrom4(a.IP), true
+	case *route.Inet6Addr:
+		return netip.AddrFrom16(a.IP), true
+	}
+	return netip.Addr{}, false
+}
+
+// The read a test takes before it deletes a route by its key: a route scoped to an interface, one at a longer or a
+// shorter key, one with a netmask that is not one, one the kernel cloned and an entry no dump holds are none, a host route
+// is keyed by its address, and the unscoped route is told from a scoped one at its key
+func TestUnscopedAtReadsOnlyTheUnscopedRouteAtItsKey(t *testing.T) {
+	entry := func(destination string, mask netip.Addr, flags, index int) *route.RouteMessage {
+		addrs := make([]route.Addr, unix.RTAX_NETMASK+1)
+		for i, address := range map[int]netip.Addr{unix.RTAX_DST: netip.MustParseAddr(destination), unix.RTAX_NETMASK: mask} {
+			switch {
+			case !address.IsValid():
+			case address.Is4():
+				addrs[i] = &route.Inet4Addr{IP: address.As4()}
+			default:
+				addrs[i] = &route.Inet6Addr{IP: address.As16()}
+			}
+		}
+		return &route.RouteMessage{Type: unix.RTM_GET, Flags: unix.RTF_UP | flags, Index: index, Addrs: addrs}
+	}
+	mask24, mask25, mask48 := netip.MustParseAddr("255.255.255.0"), netip.MustParseAddr("255.255.255.128"), netip.MustParseAddr("ffff:ffff:ffff::")
+	added := entry("203.0.113.0", mask24, 0, 9)
+	added.Type = unix.RTM_ADD
+	for _, test := range []struct {
+		name, key string
+		dump      []route.Message
+		index     int
+		ok        bool
+	}{
+		{"empty", "203.0.113.0/24", nil, 0, false},
+		{"scoped", "203.0.113.0/24", []route.Message{entry("203.0.113.0", mask24, unix.RTF_IFSCOPE, 7)}, 0, false},
+		{"longer", "203.0.113.0/24", []route.Message{entry("203.0.113.0", mask25, 0, 7)}, 0, false},
+		{"shorter", "203.0.113.0/25", []route.Message{entry("203.0.113.0", mask24, 0, 7)}, 0, false},
+		{"not a mask", "203.0.113.0/24", []route.Message{entry("203.0.113.0", netip.MustParseAddr("255.0.255.0"), 0, 7)}, 0, false},
+		{"not a mask over the default", "0.0.0.0/0", []route.Message{entry("0.0.0.0", netip.MustParseAddr("255.0.255.0"), 0, 7)}, 0, false},
+		{"other family's mask", "203.0.113.0/24", []route.Message{entry("203.0.113.0", netip.MustParseAddr("ffff:ff00::"), 0, 7)}, 0, false},
+		{"no dump entry", "203.0.113.0/24", []route.Message{added}, 0, false},
+		{"unscoped", "203.0.113.0/24", []route.Message{entry("203.0.113.0", mask24, 0, 9)}, 9, true},
+		{"beside scoped", "203.0.113.0/24", []route.Message{entry("203.0.113.0", mask24, unix.RTF_IFSCOPE, 7), entry("203.0.113.0", mask24, 0, 9)}, 9, true},
+		{"host", "2001:db8:20::20/128", []route.Message{entry("2001:db8:20::20", netip.Addr{}, unix.RTF_HOST, 4)}, 4, true},
+		{"cloned", "203.0.113.20/32", []route.Message{entry("203.0.113.20", netip.Addr{}, unix.RTF_HOST|unix.RTF_WASCLONED, 6)}, 0, false},
+		{"ipv6 net", "2001:db8:e::/48", []route.Message{entry("2001:db8:e::", mask48, unix.RTF_IFSCOPE, 3), entry("2001:db8:e::", mask48, 0, 5)}, 5, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			index, ok := unscopedAt(test.dump, netip.MustParsePrefix(test.key))
+			if index != test.index || ok != test.ok {
+				t.Errorf("got %d %v, want %d %v", index, ok, test.index, test.ok)
+			}
+		})
+	}
+}
+
+// loopbackHolds reports whether lo0 holds address, which an alias add answers
+// as done and its removal would then take from the program that put it there
+func loopbackHolds(t *testing.T, address netip.Addr) bool {
+	t.Helper()
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := loopback.Addrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, one := range held {
+		if network, ok := one.(*net.IPNet); ok {
+			if found, ok := netip.AddrFromSlice(network.IP); ok && found.Unmap() == address {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// keepLoopbackAddress fails the test where lo0 holds address when it is called and not when the cleanup it registers runs,
+// which is after the cleanups registered after it. The alias test calls it after opening its hub, whose close runs after the
+// read and touches no address of lo0.
+func keepLoopbackAddress(t *testing.T, address netip.Addr) {
+	t.Helper()
+	if !loopbackHolds(t, address) {
+		return
+	}
+	t.Cleanup(func() {
+		if !loopbackHolds(t, address) {
+			t.Errorf("lo0 held %s at the test's start and does not at its end", address)
+		}
+	})
 }
 
 // fethPath makes a feth pair whose near end carries fethMTU and an address of each family
@@ -955,10 +1158,14 @@ func TestDarwinReplyFromAGoneSourceFallsBack(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = hub.Close() })
 			unclaimed := hub.Listen()
+			alias, loopback := netip.MustParseAddr(family.alias), netip.MustParseAddr(family.loopback)
+			keepLoopbackAddress(t, alias)
+			if loopbackHolds(t, alias) {
+				t.Skipf("lo0 holds %s already, and the alias this test removes would be its owner's", alias)
+			}
 			hostCommand(t, family.add...)
 			t.Cleanup(func() { _ = exec.Command(family.remove[0], family.remove[1:]...).Run() })
 			waitDAD(t, "lo0")
-			alias, loopback := netip.MustParseAddr(family.alias), netip.MustParseAddr(family.loopback)
 			client := listenPeer(t, family.network, family.loopback)
 			if _, err := client.WriteToUDPAddrPort(markedRequest(), netip.AddrPortFrom(alias, hub.port)); err != nil {
 				t.Fatal(err)
@@ -1062,6 +1269,10 @@ func pinDetour(t *testing.T, scoped bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	far, err := net.InterfaceByName(fethFar)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hostCommand(t, "ifconfig", fethFar, "inet", "198.18.0.1/24")
 	hostCommand(t, "ifconfig", fethFar, "inet6", "2001:db8:e::1", "prefixlen", "64")
 	waitDAD(t, fethFar)
@@ -1069,8 +1280,9 @@ func pinDetour(t *testing.T, scoped bool) {
 	hostCommand(t, "ndp", "-s", "2001:db8:e::9", near.HardwareAddr.String())
 	for _, path := range pinPaths {
 		peer := path.peer.String()
-		hostCommand(t, "route", "-n", "add", path.family, "-host", peer, path.farGateway)
-		t.Cleanup(func() { _ = exec.Command("route", "-n", "delete", path.family, "-host", peer).Run() })
+		if _, reason := ownRoute(t, netip.PrefixFrom(path.peer, path.peer.BitLen()), far.Index, path.farGateway); reason != "" {
+			t.Skip(reason)
+		}
 		if scoped {
 			hostCommand(t, "route", "-n", "add", path.family, "-host", peer, path.nearGateway, "-ifscope", fethNear)
 			t.Cleanup(func() {
