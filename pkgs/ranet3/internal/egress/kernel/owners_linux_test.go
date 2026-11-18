@@ -211,8 +211,9 @@ func TestEachOwnersRemakeKeepsTheOthers(t *testing.T) {
 	netnstest.EnterEmpty(t)
 	run := nftRun(t)
 	tr, _, _, f, switchConn := startOwners(t)
+	objects := slices.Concat(timeoutObjects(egress.FamilyIPv4), timeoutObjects(egress.FamilyIPv6))
 	translates := func(name string) bool {
-		return chainOwner(name) == 0 || setOwner(name) == 0 || strings.HasPrefix(name, timeoutObject)
+		return chainOwner(name) == 0 || setOwner(name) == 0 || slices.ContainsFunc(objects, func(object nftables.Timeout) bool { return object.Name == name })
 	}
 	filters := func(name string) bool { return chainOwner(name) == 1 || setOwner(name) == 1 }
 	for _, c := range []struct {

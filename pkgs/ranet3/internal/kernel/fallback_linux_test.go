@@ -116,7 +116,7 @@ add set inet %[1]s owned4 { type ipv4_addr; flags interval; elements = { 192.0.2
 add chain inet %[1]s postrouting { type nat hook postrouting priority 99; policy accept; }
 add rule inet %[1]s postrouting oifname != "ranet0" counter masquerade comment "ipv4 out via ranet0 masquerade"
 add set inet %[1]s flows4 { type ipv4_addr; size 65535; flags dynamic; }
-add ct timeout inet %[1]s translated-udp4 { protocol udp; l3proto ip; policy = { unreplied: 120s, replied: 120s }; }
+add ct timeout inet %[1]s udp4 { protocol udp; l3proto ip; policy = { unreplied: 120s, replied: 120s }; }
 `, nftables.Table))
 	// every line of the listing outside the switch's chains and sets, which carries its handle
 	others := func() []string {

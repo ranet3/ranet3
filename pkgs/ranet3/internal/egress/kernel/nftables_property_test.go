@@ -164,7 +164,8 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 							switch {
 							case !meant(rule, packet):
 							case rule.Timeouts != NoTimeouts:
-								want.timeouts = timeoutObject + rule.Timeouts.String() + map[uint8]string{egress.FamilyIPv4: "4", egress.FamilyIPv6: "6"}[rule.Family]
+								want.timeouts = map[Timeouts]string{UDPTimeouts: "udp", TCPTimeouts: "tcp", ICMPTimeouts: "icmp", ICMPv6Timeouts: "icmp"}[rule.Timeouts] +
+									map[uint8]string{egress.FamilyIPv4: "4", egress.FamilyIPv6: "6"}[rule.Family]
 							case rule.kind() == passing:
 								want = chainRun{accept: true}
 							case rule.Untracked:

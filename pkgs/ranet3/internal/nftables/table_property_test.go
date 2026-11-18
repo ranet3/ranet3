@@ -27,7 +27,7 @@ var owners = []struct {
 	sets     []string
 	timeouts []string
 }{
-	{"translator", []string{"forward", "forward4", "forward6", "postrouting"}, "none_", []string{"flows4", "flows6"}, []string{"translated-udp4", "translated-tcp6"}},
+	{"translator", []string{"forward", "forward4", "forward6", "postrouting"}, "none_", []string{"flows4", "flows6"}, []string{"udp4", "icmp6", "translated-udp4", "translated-icmpv66"}},
 	{"filter", []string{"antispoof", "entry", "mesh_entry"}, "", []string{"carved4", "carved6", "owned4", "owned6", "none4", "none6"}, nil},
 	{"switch", []string{"fallback", "output"}, "", []string{"lan4", "forwarded", "lan6", "self4", "self6", "tcpports", "udpports", "own4", "tcp_ports"}, nil},
 }

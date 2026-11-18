@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -417,7 +418,7 @@ func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 		if got := noneChainsFault(c.held, c.in); got != c.want {
 			t.Errorf("%s reads back with the fault %q, want %q", name, got, c.want)
 		}
-		requests, err := translatorBatch(translatorContents([]uint8{egress.FamilyIPv4}, egress.DefaultFlowsPerSource, nil), nil, nftables.Contents{}, strays(c.held, c.in))
+		requests, err := translatorBatch(translatorContents([]uint8{egress.FamilyIPv4}, egress.DefaultFlowsPerSource, nil), nil, nftables.Contents{}, strays(c.held, c.in), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -427,6 +428,33 @@ func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 		if deleted != c.deleted {
 			t.Errorf("%s: a pass deletes the chain %s: %v, want %v", name, chain, deleted, c.deleted)
 		}
+	}
+}
+
+// A pass over a table holding the timeout objects an earlier translator made
+// sends the transaction it sends over a table without them with their
+// deletions last, after the flush of the chains whose lines attached them, so
+// the commit that writes the objects under their names deletes them, and one
+// another writer's rule attaches stays
+func TestTranslatorBatchDeletesTheEarlierTimeoutObjectsInItsTransaction(t *testing.T) {
+	rules := everyTranslation()
+	contents := translatorContents([]uint8{egress.FamilyIPv4, egress.FamilyIPv6}, egress.DefaultFlowsPerSource, rules)
+	without, err := translatorBatch(contents, rules, nftables.Contents{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var leftovers []nftables.Retired
+	want := slices.Clone(without)
+	for _, name := range []string{"translated-udp4", "translated-tcp4", "translated-icmp4", "translated-udp6", "translated-tcp6", "translated-icmpv66"} {
+		leftovers = append(leftovers, nftables.Retired{Kind: "ct timeout", Name: name})
+		want = append(want, nftables.Timeout{Table: nftables.Table, Name: name}.Delete(unix.NFPROTO_INET))
+	}
+	with, err := translatorBatch(contents, rules, nftables.Contents{}, nil, leftovers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(with, want) {
+		t.Errorf("the batch over the earlier timeout objects sends %d requests, want the %d of the batch without them and the six deletions last", len(with), len(without))
 	}
 }
 

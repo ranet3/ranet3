@@ -878,7 +878,7 @@ func TestTranslatorRewritesAnObjectReadingBackOtherThanWritten(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	const missing = "its ct timeout translated-udp6 is missing"
+	const missing = "its ct timeout udp6 is missing"
 	for _, change := range []struct {
 		name   string
 		faults map[uint8]string

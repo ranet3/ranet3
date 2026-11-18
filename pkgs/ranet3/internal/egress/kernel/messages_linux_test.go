@@ -153,21 +153,21 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 	}
 	both, rules, limit := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}, everyTranslation(), egress.DefaultFlowsPerSource
 	contents := translatorContents(both, limit, rules)
-	requests, err := translatorBatch(contents, rules, nftables.Contents{}, nil)
+	requests, err := translatorBatch(contents, rules, nftables.Contents{}, nil, nil)
 	write("translator in both families", requests, err)
-	requests, err = translatorBatch(contents, rules, nftables.Contents{Chains: []nftables.Chain{forward}, Sets: contents.Sets, Timeouts: contents.Timeouts}, nil)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{Chains: []nftables.Chain{forward}, Sets: contents.Sets, Timeouts: contents.Timeouts}, nil, nil)
 	write("translator remaking its forward chain and both families' sets and timeout objects", requests, err)
 	ipv6 := translatorContents([]uint8{egress.FamilyIPv6}, limit, nil)
-	requests, err = translatorBatch(contents, rules, nftables.Contents{Sets: ipv6.Sets, Timeouts: ipv6.Timeouts[:1]}, nil)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{Sets: ipv6.Sets, Timeouts: ipv6.Timeouts[:1]}, nil, nil)
 	write("translator remaking the ipv6 set and one ipv6 timeout object alone", requests, err)
 	ipv4 := translatorContents([]uint8{egress.FamilyIPv4}, limit, nil)
-	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, nil)
+	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, nil, nil)
 	write("translator in ipv4 with no rule", requests, err)
 	// a table holding three chains an earlier translator wrote for classes of
 	// none, one of which a goto of another names and one a rule of another
 	// writer's chain goes to, which stays
 	stray := []noneStray{{name: "none_198_51_100_0_24"}, {name: "none_198_51_100_0_25"}, {name: "none_203_0_113_0_24", heldBy: "chain other"}}
-	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, stray)
+	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, stray, nil)
 	write("translator in ipv4 deleting the chains an earlier translator wrote", requests, err)
 	// what a pass writes for the default capability and for one of each kind of
 	// class, one that translates inside one of none among them, without return
@@ -193,7 +193,7 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		{"translator of that capability under return", returned},
 	} {
 		desired := newTranslator(c.cfg, node, &fakeBackend{}).desired()
-		requests, err = translatorBatch(translatorContents(both, limit, desired), desired, nftables.Contents{}, nil)
+		requests, err = translatorBatch(translatorContents(both, limit, desired), desired, nftables.Contents{}, nil, nil)
 		write(c.name, requests, err)
 	}
 

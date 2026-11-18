@@ -158,7 +158,7 @@ func TestExpressionsCarryTheAttributesNftWrites(t *testing.T) {
 		}},
 		{"ip6 saddr", [][]byte{SourceLoad(unix.NFPROTO_IPV6)}, []string{"payload 1=00000001 2=00000001 3=00000008 4=00000010"}},
 		{"reject with icmpx admin-prohibited", [][]byte{RejectICMPX(unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED)}, []string{"reject 1=00000002 2=03"}},
-		{`ct timeout set "translated-udp"`, [][]byte{ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, "translated-udp")}, []string{`objref 1=00000007 2="translated-udp"`}},
+		{`ct timeout set "udp4"`, [][]byte{ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, "udp4")}, []string{`objref 1=00000007 2="udp4"`}},
 		{"udp dport", [][]byte{TransportLoad(2, 2)}, []string{"payload 1=00000001 2=00000002 3=00000002 4=00000002"}},
 		{"snat to ip saddr", [][]byte{SourceNAT(unix.NFPROTO_IPV4)}, []string{"nat 1=00000000 2=00000002 3=00000001"}},
 	} {
@@ -289,7 +289,7 @@ func TestOnlyAnotherWritersChangeToItsNamesWakes(t *testing.T) {
 		"an ip table of its name":               {tableOnly(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, Table, other), false},
 		"an ip6 table of its name":              {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, Table, other), false},
 		"a name it starts":                      {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, Table+"x", other), false},
-		"an object of its table":                {named(unix.NFT_MSG_NEWOBJ, unix.NFTA_OBJ_TABLE, unix.NFTA_OBJ_NAME, Table, "translated-udp4", other), false},
+		"an object of its table":                {named(unix.NFT_MSG_NEWOBJ, unix.NFTA_OBJ_TABLE, unix.NFTA_OBJ_NAME, Table, "udp4", other), false},
 		"another subsystem": {
 			netlink.Message{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table)},
 			false,

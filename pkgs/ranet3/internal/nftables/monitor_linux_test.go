@@ -39,7 +39,7 @@ type monitorRead struct {
 
 // timeoutObjects are the kernel exit's ct timeout objects, in the order the
 // kernel notifies them
-var timeoutObjects = []string{"translated-udp4", "translated-tcp4", "translated-icmp4", "translated-udp6", "translated-tcp6", "translated-icmpv66"}
+var timeoutObjects = []string{"udp4", "tcp4", "icmp4", "udp6", "tcp6", "icmp6"}
 
 // kernelExitNames is the scope the kernel exit's monitor watched where the
 // datagrams below were read

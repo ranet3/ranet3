@@ -39,10 +39,6 @@ const (
 	setSize = 65535
 	// udpDestinationOffset is where the destination port sits in a UDP header
 	udpDestinationOffset = 2
-	// timeoutObject starts the name of each timeout object, which nft lists
-	// unquoted, so a bare tcp, udp or icmp would read back as a keyword nft -f
-	// refuses
-	timeoutObject = "translated-"
 )
 
 // The names an earlier version of an owner gave an object the owner now
@@ -50,6 +46,8 @@ const (
 var (
 	// retiredEntry is the entry chain's name in an earlier filter
 	retiredEntry = []string{"mesh_entry"}
+	// retiredTimeouts is the timeout objects' names in an earlier translator
+	retiredTimeouts = []string{"translated-udp4", "translated-tcp4", "translated-icmp4", "translated-udp6", "translated-tcp6", "translated-icmpv66"}
 )
 
 // The seconds a flow this exit translates is kept idle in each state, by the

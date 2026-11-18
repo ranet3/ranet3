@@ -1028,7 +1028,7 @@ func TestNftablesNamesTheChainThatKeepsAStrayChainOfNone(t *testing.T) {
 		t.Fatalf("the withdrawal beside a goto of chain other to %s: %v", stray, err)
 	}
 	listing := run("list", "table", "inet", nftables.Table)
-	for _, gone := range []string{"chain " + ChainName + " {", "chain " + LimitChain + " {", "chain " + forward6.Name + " {", untranslatedSet + "4", "flows4", "translated-udp4"} {
+	for _, gone := range []string{"chain " + ChainName + " {", "chain " + LimitChain + " {", "chain " + forward6.Name + " {", untranslatedSet + "4", "flows4", "ct timeout " + timeoutName(egress.FamilyIPv4, UDPTimeouts) + " {"} {
 		if strings.Contains(listing, gone) {
 			t.Errorf("after the withdrawal beside a goto to %s nft lists %q, want it withdrawn:\n%s", stray, gone, listing)
 		}
@@ -1137,7 +1137,7 @@ func TestNftablesRemakesAStaleTimeoutAlone(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatalf("the first pass: %v", err)
 	}
-	name := timeoutObject + UDPTimeouts.String() + "4"
+	name := timeoutName(egress.FamilyIPv4, UDPTimeouts)
 	stale := nftables.Timeout{Table: nftables.Table, Name: name, L3Proto: unix.NFPROTO_IPV4, L4Proto: unix.IPPROTO_UDP,
 		Policy: []uint32{2 * udpUnrepliedTimeout, 2 * udpRepliedTimeout}}
 	// the rules that name it go first, as nf_tables will not delete an object a rule uses
@@ -1165,6 +1165,53 @@ func TestNftablesRemakesAStaleTimeoutAlone(t *testing.T) {
 	}
 	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
 		t.Errorf("after the pass the translator reads %+v, want both families ready", s)
+	}
+}
+
+// nft lists a timeout object's name unquoted, and each name the translator
+// gives one, given to a UDP object with a line attaching it, lists as a name
+// nft -f loads back, and the loaded table lists the same again. nft -f takes
+// no ICMP object whatever its name, so each name is read under a UDP object.
+func TestNftablesListingOfEachTimeoutObjectsNameLoadsBack(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	run := nftRun(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	protocol, policy := timeoutPolicy(UDPTimeouts)
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		for _, written := range timeoutObjects(family) {
+			object := nftables.Timeout{Table: nftables.Table, Name: written.Name, L3Proto: written.L3Proto, L4Proto: protocol, Policy: policy}
+			expressions := slices.Concat(nftables.NFProto(nftFamily(family)), nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{protocol}),
+				[][]byte{nftables.ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, object.Name)})
+			rule, err := forward.Rule(unix.NFPROTO_INET, "attach "+object.Name, expressions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, nftables.Table), forward.Create(unix.NFPROTO_INET), object.Create(unix.NFPROTO_INET), rule}); err != nil {
+				t.Fatalf("write the object %s and its line: %v", object.Name, err)
+			}
+			listing := run("list", "table", "inet", nftables.Table)
+			run("delete", "table", "inet", nftables.Table)
+			load := exec.Command(nft, "-f", "-")
+			load.Stdin = strings.NewReader(listing)
+			if out, err := load.CombinedOutput(); err != nil {
+				t.Fatalf("nft -f of the listing of the object %s: %v\n%s\nthe listing:\n%s", object.Name, err, out, listing)
+			}
+			if again := run("list", "table", "inet", nftables.Table); again != listing {
+				t.Errorf("the loaded listing of the object %s lists\n%s\nwant\n%s", object.Name, again, listing)
+			}
+			run("delete", "table", "inet", nftables.Table)
+		}
 	}
 }
 

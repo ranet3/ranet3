@@ -89,16 +89,21 @@ func (n *natTables) Changed() <-chan struct{} { return n.monitor.Changed() }
 
 func (n *natTables) Missed() <-chan struct{} { return n.monitor.Missed() }
 
-// translatorScope is the translator's chains, the stray chains, and the sets
-// and timeout objects of both families, whatever the configuration
-// translates, so a withdrawal takes what an instance under another
-// configuration left
+// translatorScope is the translator's chains, the stray chains,
+// translatorRetired, and the sets and timeout objects of both families,
+// whatever the configuration translates, so a withdrawal takes what an
+// instance under another configuration left
 var translatorScope = func() nftables.Scope {
 	scope := translatorContents([]uint8{egress.FamilyIPv4, egress.FamilyIPv6}, 0, nil).Scope()
 	scope.Chains = append(scope.Chains, retiredChain)
 	scope.Prefix = NoneChain
+	scope.Timeouts = append(scope.Timeouts, translatorRetired.Timeouts...)
 	return scope
 }()
+
+// translatorRetired is the translator's timeout objects under the names an
+// earlier translator gave them
+var translatorRetired = nftables.Scope{Timeouts: retiredTimeouts}
 
 func (n *natTables) where() string {
 	return fmt.Sprintf("nftables table inet %s chains %s, %s and %s", nftables.Table, LimitChain, familyChain(egress.FamilyIPv6), ChainName)
@@ -162,11 +167,18 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	if err != nil {
 		return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
+	leftovers, err := nftables.Leftovers(conn, translatorRetired, translatorScope)
+	if err != nil {
+		return nil, err
+	}
 	fault := shared.Fault
 	if there && fault == "" {
 		if fault, err = noneChainsRead(conn, shared.Chains); err != nil {
 			return nil, err
 		}
+	}
+	if fault == "" && len(leftovers) > 0 {
+		fault = leftovers[0].Fault("the translator")
 	}
 	if lines && fault == "" {
 		if fault, err = translatorRulesFault(common, desired, shared.Rules); err != nil {
@@ -358,10 +370,12 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // object that exists leaves it as it is, and a set keeps its elements, each
 // source's count of flows. A deleted object detaches from every flow it timed,
 // which then takes the host's timeouts, and a deleted set forgets every count,
-// so only a remake deletes one, the one that reads back other than written,
-// and leaves the other family's. The sets of untranslated sources are emptied
-// and filled in the transaction, so a lookup meets the sources the old rules
-// pass or those the new ones do.
+// so of those the pass writes only a remake deletes one, the one that reads
+// back other than written, and leaves the other family's. The flows an object
+// of translatorRetired timed take the host's timeouts when the pass deletes
+// it. The sets of untranslated sources are emptied and filled in the
+// transaction, so a lookup meets the sources the old rules pass or those the
+// new ones do.
 func (n *natTables) Apply(rules []Rule, remake bool) error {
 	contents := translatorContents(n.families, n.limit, rules)
 	var stale nftables.Contents
@@ -384,7 +398,11 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 	if err != nil {
 		return err
 	}
-	requests, err := translatorBatch(contents, rules, stale, strays(held, in))
+	leftovers, err := nftables.Leftovers(n.conn, translatorRetired, translatorScope)
+	if err != nil {
+		return err
+	}
+	requests, err := translatorBatch(contents, rules, stale, strays(held, in), leftovers)
 	if err != nil {
 		return err
 	}
@@ -421,9 +439,10 @@ func familyContents(family uint8, limit int, rules []Rule) nftables.Contents {
 
 // translatorBatch is the transaction Apply sends: contents over the stale
 // chains, sets and objects of stale, the stray chains as stray names them, the
-// forward hook's first line, and rules in their order. A set contents fills is
-// emptied and filled, and the others made, keeping their elements.
-func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Contents, stray []noneStray) ([]nftables.Request, error) {
+// forward hook's first line, rules in their order, and leftovers retired. A
+// set contents fills is emptied and filled, and the others made, keeping their
+// elements.
+func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Contents, stray []noneStray, leftovers []nftables.Retired) ([]nftables.Request, error) {
 	names := make([]string, 0, len(stray))
 	for _, chain := range stray {
 		names = append(names, chain.name)
@@ -470,7 +489,7 @@ func translatorBatch(contents nftables.Contents, rules []Rule, stale nftables.Co
 		}
 		requests = append(requests, request)
 	}
-	return requests, nil
+	return append(requests, nftables.Retire(leftovers)...), nil
 }
 
 // Withdraw removes the translator's chains, sets and timeout objects of both
@@ -758,10 +777,12 @@ func attachTimeouts(family uint8, timeouts Timeouts) [][]byte {
 	return append(out, nftables.ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, timeoutName(family, timeouts)))
 }
 
-// timeoutName names family's object of timeouts, one per family, since an
-// object keeps the family it was made for (nft_ct_timeout_obj_init)
+// timeoutName names family's object of timeouts by its protocol and the
+// family's digit, one per family, since an object keeps the family it was made
+// for (nft_ct_timeout_obj_init). nft lists the name unquoted and reads a bare
+// tcp, udp or icmp back as a keyword nft -f refuses, so the digit always ends it.
 func timeoutName(family uint8, timeouts Timeouts) string {
-	return timeoutObject + timeouts.String() + digit(family)
+	return strings.TrimSuffix(timeouts.String(), "v6") + digit(family)
 }
 
 func timeoutObjects(family uint8) []nftables.Timeout {
