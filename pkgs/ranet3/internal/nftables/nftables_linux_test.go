@@ -589,11 +589,12 @@ func TestElementsNoOwnerWritesReadBackAsAFault(t *testing.T) {
 }
 
 // A set of the owner's name another writer made with an expression of its own,
-// under either attribute and as the kernel dumps it or flagged nested, or with
-// a size where the owner wrote none, reads back as a fault that has the owner
-// make it again, and another size where the owner wrote one as a fault the
-// next Create mends. Each half of a fault's text counts the expressions of its
-// set only where it holds any.
+// under either attribute and as the kernel dumps it or flagged nested, with
+// a size where the owner wrote none, or flagged constant, reads back as a
+// fault that has the owner make it again, and another size where the owner
+// wrote one as a fault the next Create mends. One flagged anonymous reads back
+// as a fault that has nothing made again, whatever else differs. Each half of
+// a fault's text counts the expressions of its set only where it holds any.
 func TestSetsDeclaredOtherwiseReadBackToBeMadeAgain(t *testing.T) {
 	lan4 := Set{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
 	flows := Set{Table: Table, Name: "flows6", ID: 2, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_EVAL, Size: 65535}
@@ -616,6 +617,9 @@ func TestSetsDeclaredOtherwiseReadBackToBeMadeAgain(t *testing.T) {
 		{"a list of two expressions", lan4, lan4, two, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 0, comment \"\" and 2 expressions, " + written, true},
 		{"a size where none was written", lan4, Set{Table: Table, Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL, Size: 3}, nil, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x4, size 3 and comment \"\", " + written, true},
 		{"another size", flows, Set{Table: Table, Name: "flows6", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_EVAL, Size: 100}, nil, "its set flows6 reads back with key type 8 of 16 bytes, flags 0x20, size 100 and comment \"\", where key type 8 of 16 bytes, flags 0x20, size 65535 and comment \"\" were written", false},
+		{"constant", lan4, Set{Table: Table, Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL | unix.NFT_SET_CONSTANT}, nil, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x6, size 0 and comment \"\", " + written, true},
+		{"anonymous", lan4, Set{Table: Table, Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL | unix.NFT_SET_ANONYMOUS}, nil, "its set lan4 reads back with key type 7 of 4 bytes, flags 0x5, size 0 and comment \"\", " + written, false},
+		{"anonymous and constant with another key", lan4, Set{Table: Table, Name: "lan4", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL | unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT}, nil, "its set lan4 reads back with key type 8 of 16 bytes, flags 0x7, size 0 and comment \"\", " + written, false},
 	} {
 		made, err := c.held.Create(unix.NFPROTO_INET)
 		if err != nil {
@@ -629,18 +633,19 @@ func TestSetsDeclaredOtherwiseReadBackToBeMadeAgain(t *testing.T) {
 }
 
 // heldSets is each of the owner's sets a dump of the table names, in the
-// owner's order: none the dump lacks, and none of the dump's the owner does
-// not write
+// owner's order: none the dump lacks, none of the dump's the owner does not
+// write, and none the dump flags anonymous
 func TestHeldSetsAreTheOwnersTheDumpNames(t *testing.T) {
 	owners := []Set{
 		{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
 		{Table: Table, Name: "lan6", ID: 2, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
 		{Table: Table, Name: "forwarded", ID: 3, KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ},
+		{Table: Table, Name: "self4", ID: 4, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
 	}
-	dumped := func(name string) netlink.Message {
-		return netlink.Message{Data: netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table), unix.NFTA_SET_NAME, name)}
+	dumped := func(name string, flags uint32) netlink.Message {
+		return netlink.Message{Data: PutAttrBE32(netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table), unix.NFTA_SET_NAME, name), unix.NFTA_SET_FLAGS, flags)}
 	}
-	dump := []netlink.Message{dumped("forwarded"), dumped("flows4"), dumped("lan4")}
+	dump := []netlink.Message{dumped("forwarded", 0), dumped("flows4", 0), dumped("lan4", unix.NFT_SET_INTERVAL), dumped("self4", unix.NFT_SET_INTERVAL|unix.NFT_SET_ANONYMOUS)}
 	if got, want := heldSets(owners, dump), []Set{owners[0], owners[2]}; !slices.Equal(got, want) {
 		t.Errorf("heldSets is %+v, want %+v", got, want)
 	}

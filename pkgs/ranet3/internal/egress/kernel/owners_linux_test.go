@@ -371,6 +371,74 @@ func TestEachOwnerMakesAgainASetItsCreateIsRefusedFor(t *testing.T) {
 	}
 }
 
+// A set of the antispoof filter's, carved4, and one of the translator's,
+// untranslated4, each made again by another writer as an anonymous set held by
+// a line of that writer's in the owner's chain, are made again by the owner's
+// pass, which flushes that line, after which the owner is ready and the set
+// reads back as written
+func TestEachOwnerMakesAgainASetAnotherWriterMadeAnonymous(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	for _, c := range []struct {
+		name   string
+		set    nftables.Set
+		chains []nftables.Chain
+		pass   func(*Translator, *BorderFilter) error
+		ready  func(*Translator, *BorderFilter) bool
+	}{
+		{
+			"the antispoof filter", borderSet(carvedSet + "4"), borderContents.Chains,
+			func(_ *Translator, f *BorderFilter) error { return f.reconcile() },
+			func(_ *Translator, f *BorderFilter) bool { return f.ready },
+		},
+		{
+			"the translator", untranslatedSources(egress.FamilyIPv4), translatorChains,
+			func(tr *Translator, _ *BorderFilter) error { return tr.reconcile() },
+			func(tr *Translator, _ *BorderFilter) bool { return tr.lastPass().Ready4 && tr.lastPass().Ready6 },
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			netnstest.EnterEmpty(t)
+			tr, _, _, f, another := startOwners(t)
+			made := c.set
+			made.Flags |= unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT
+			create, err := made.Create(unix.NFPROTO_INET)
+			if err != nil {
+				t.Fatal(err)
+			}
+			filled, err := made.Fill(unix.NFPROTO_INET, nftables.Prefixes([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			line, err := c.chains[0].Rule(unix.NFPROTO_INET, "theirs", [][]byte{nftables.SourceLoad(unix.NFPROTO_IPV4), nftables.Lookup(made, false)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var requests []nftables.Request
+			for _, chain := range c.chains {
+				requests = append(requests, chain.Flush(unix.NFPROTO_INET))
+			}
+			if err := another.Batch(slices.Concat(requests, []nftables.Request{c.set.Delete(unix.NFPROTO_INET), create}, filled, []nftables.Request{line})); err != nil {
+				t.Fatalf("another writer makes %s again anonymous: %v", c.set.Name, err)
+			}
+			if err := c.pass(tr, f); err != nil {
+				t.Fatalf("the owner's pass: %v", err)
+			}
+			if !c.ready(tr, f) {
+				t.Errorf("after the owner's pass the owner is not ready")
+			}
+			tables, err := nftables.Tables(another, nftables.Table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if read, err := (nftables.Contents{Sets: []nftables.Set{c.set}}).Read(another, tables, unix.NFPROTO_INET); err != nil || read.Fault != "" {
+				t.Errorf("after the owner's pass %s reads back with the fault %q (%v)", c.set.Name, read.Fault, err)
+			}
+		})
+	}
+}
+
 // kernelSwitch is the fault the kill switch's chains and set read back with
 func kernelSwitch(conn *nftables.Conn) (string, error) {
 	tables, err := nftables.Tables(conn, nftables.Table)

@@ -167,10 +167,14 @@ func (h *Hold) Rewrite(conn *Conn, sets []Set, stale Contents, build func(stale 
 }
 
 // heldSets is each of sets a dump of Table's sets under inet holds by name,
-// which nf_tables answers with that table's alone
+// which nf_tables answers with that table's alone, and not flagged anonymous,
+// which Set.Fault says the owner does not delete
 func heldSets(sets []Set, dumped []netlink.Message) []Set {
 	return slices.DeleteFunc(slices.Clone(sets), func(set Set) bool {
-		return !slices.ContainsFunc(dumped, func(reply netlink.Message) bool { return DecodeSet(reply).Name == set.Name })
+		return !slices.ContainsFunc(dumped, func(reply netlink.Message) bool {
+			held := DecodeSet(reply)
+			return held.Name == set.Name && held.Flags&unix.NFT_SET_ANONYMOUS == 0
+		})
 	})
 }
 

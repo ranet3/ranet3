@@ -690,6 +690,158 @@ func TestNftablesSetNoDumpTellsFromTheOwnersIsMadeAgainByItsOwner(t *testing.T) 
 	}
 }
 
+// Another writer's set made again under the owner's name as an anonymous set,
+// held by a line of that writer's in the owner's chain and holding elements of
+// its choosing, has that line pass a key the owner put in the set. The owner's
+// read finds its flags as a fault that has nothing deleted, since the owner's
+// flush of the chain has nf_tables take an anonymous set out with the line
+// that holds it, and the owner's pass makes the set again, so the line drops
+// as written. A set of the owner's name flagged constant and not anonymous
+// reads as stale, which the pass deletes and makes again. Beside another set
+// of the owner's made again with one field, whose create nf_tables refuses,
+// the pass's second transaction leaves the anonymous set to the flush too. An
+// anonymous set another writer's line holds in a chain of its own refuses the
+// owner's pass with EOPNOTSUPP until that line goes.
+func TestNftablesSetMadeAgainAnonymousUnderTheOwnersNameIsMadeAgainByItsOwner(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	chain := Chain{Table: Table, Name: "post", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
+	other := Chain{Table: Table, Name: "other", Hook: NoHook}
+	lan4 := Set{Table: Table, Name: "lan4", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	single4 := Set{Table: Table, Name: "single4", ID: 2, KeyType: TypeIPv4Addr, KeyLen: 4}
+	owned, theirs := Prefixes(prefixList("127.0.0.0/30")), Prefixes(prefixList("127.0.0.0/31"))
+	to := netip.MustParseAddrPort("127.0.0.2:9")
+	for _, c := range []struct {
+		name  string
+		flags uint32
+		// elsewhere is whether another writer's line holding the set sits in a
+		// chain of its own, and beside whether that writer makes single4 again
+		// with one field
+		elsewhere, beside bool
+		stale             bool
+		refused           error
+	}{
+		{"anonymous", unix.NFT_SET_ANONYMOUS, false, false, false, nil},
+		{"anonymous and constant", unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT, false, false, false, nil},
+		{"anonymous beside a set of one field", unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT, false, true, false, nil},
+		{"constant", unix.NFT_SET_CONSTANT, false, false, true, nil},
+		{"anonymous, held in another writer's chain", unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT, true, false, false, unix.EOPNOTSUPP},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			netnstest.EnterEmpty(t)
+			conn, another := dial(t), dial(t)
+			contents := Contents{Chains: []Chain{chain}, Sets: []Set{lan4, single4}, Elements: map[string][]Interval{lan4.Name: owned}}
+			lookup := func(in Chain, set Set) Request {
+				t.Helper()
+				line, err := in.Rule(unix.NFPROTO_INET, "rule", slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(set, false)}, CountedDrop()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return line
+			}
+			read := func() Readback {
+				t.Helper()
+				tables, err := Tables(conn, Table)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return read
+			}
+			// build is the owner's transaction over stale
+			build := func(stale Contents) ([]Request, error) {
+				replaced, err := lan4.Replace(unix.NFPROTO_INET, owned)
+				if err != nil {
+					return nil, err
+				}
+				single, err := single4.Create(unix.NFPROTO_INET)
+				if err != nil {
+					return nil, err
+				}
+				return slices.Concat(contents.Rewrite(unix.NFPROTO_INET, stale, nil), replaced, []Request{single, lookup(chain, lan4)}), nil
+			}
+			var hold Hold
+			// pass is the owner's: the table written over what its read found stale
+			pass := func() error {
+				t.Helper()
+				return hold.Rewrite(conn, contents.Sets, read().Stale, build)
+			}
+			dropped := func() bool {
+				t.Helper()
+				err := sendUDP(to, 0)
+				if err != nil && !errors.Is(err, unix.EPERM) {
+					t.Fatalf("send to %s: %v", to, err)
+				}
+				return err != nil
+			}
+			if err := pass(); err != nil {
+				t.Fatalf("the owner's first pass: %v", err)
+			}
+			if !dropped() {
+				t.Fatalf("as written the line passes the datagram to %s", to)
+			}
+			made := lan4
+			made.Flags |= c.flags
+			create, err := made.Create(unix.NFPROTO_INET)
+			if err != nil {
+				t.Fatal(err)
+			}
+			filled, err := made.Fill(unix.NFPROTO_INET, theirs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := slices.Concat([]Request{chain.Flush(unix.NFPROTO_INET), lan4.Delete(unix.NFPROTO_INET), create}, filled)
+			if c.beside {
+				requests = append(requests, single4.Delete(unix.NFPROTO_INET), oneField(t, single4, 4))
+			}
+			if c.elsewhere {
+				requests = append(requests, other.Create(unix.NFPROTO_INET), lookup(other, made))
+			} else {
+				requests = append(requests, lookup(chain, made))
+			}
+			if err := another.Batch(requests); err != nil {
+				t.Fatalf("another writer makes the set again flagged %#x: %v", made.Flags, err)
+			}
+			if got, drops := read(), dropped(); got.Fault == "" || got.Remake() != c.stale || drops {
+				t.Errorf("with the set made again it reads back with the fault %q, remade %v, and the line drops the datagram to %s %v, want a fault, remade %v, and passed", got.Fault, got.Remake(), to, drops, c.stale)
+			}
+			if c.beside {
+				written, err := build(read().Stale)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.Batch(written); !errors.Is(err, unix.EEXIST) {
+					t.Fatalf("the owner's transaction over the read alone: %v, want %v", err, unix.EEXIST)
+				}
+			}
+			if c.refused != nil {
+				if err := pass(); !errors.Is(err, c.refused) {
+					t.Errorf("the owner's pass with another writer's chain holding the set: %v, want %v", err, c.refused)
+				}
+				if dropped() {
+					t.Errorf("the owner's pass refused, the line drops the datagram to %s", to)
+				}
+				if err := another.Batch([]Request{other.Flush(unix.NFPROTO_INET), other.Delete(unix.NFPROTO_INET)}); err != nil {
+					t.Fatalf("another writer deletes its line: %v", err)
+				}
+			}
+			if err := pass(); err != nil {
+				t.Fatalf("the owner's pass over the set made again: %v", err)
+			}
+			if !dropped() {
+				t.Errorf("after the owner's pass the line passes the datagram to %s", to)
+			}
+			if got := read(); got.Fault != "" {
+				t.Errorf("after the owner's pass the set reads back with the fault %q", got.Fault)
+			}
+		})
+	}
+}
+
 // rewriteTable is a namespace of the test's own holding Table, under inet,
 // with sets made through another socket than the one it answers
 func rewriteTable(t *testing.T, made ...Request) *Conn {

@@ -115,7 +115,10 @@ func DecodeSet(message netlink.Message) Set {
 // fails on it. remake holds where its key,
 // flags, comment or expressions differ, which nf_tables will not change in
 // place, or where it holds a size and s none, which Create cannot set, and
-// another size alone the next Create sets.
+// another size alone the next Create sets. It never holds for a set flagged
+// anonymous: nf_tables takes one out with the one line that holds it, so the
+// owner's flush of that line frees the name for its Create, and a delete after
+// that flush fails the transaction.
 func (s Set) Fault(message netlink.Message) (fault string, remake bool) {
 	held := DecodeSet(message)
 	if held.Table != s.Table || held.Name != s.Name {
@@ -136,8 +139,8 @@ func (s Set) Fault(message netlink.Message) (fault string, remake bool) {
 		return fmt.Sprintf("%s, comment %q and %d expressions", text, set.Comment, set.expressions)
 	}
 	return fmt.Sprintf("its set %s reads back with %s, where %s were written", s.Name, half(held), half(s)),
-		held.KeyType != s.KeyType || held.KeyLen != s.KeyLen || held.Flags != s.Flags || held.Comment != s.Comment ||
-			held.expressions != s.expressions || held.Size != s.Size && s.Size == 0
+		held.Flags&unix.NFT_SET_ANONYMOUS == 0 && (held.KeyType != s.KeyType || held.KeyLen != s.KeyLen || held.Flags != s.Flags ||
+			held.Comment != s.Comment || held.expressions != s.expressions || held.Size != s.Size && s.Size == 0)
 }
 
 // Anonymous is a set bound to the one rule whose Lookup names it, made in the
