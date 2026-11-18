@@ -654,6 +654,30 @@ func TestHeldSetsAreTheOwnersTheDumpNames(t *testing.T) {
 	}
 }
 
+// A dumped chain is a binding chain where its flags carry NFT_CHAIN_BINDING,
+// beside any other flag, and not where they carry only another, such as
+// NFT_CHAIN_BASE, which every base chain dumps, where they are absent, or where
+// the attribute is not 4 bytes long
+func TestBindingIsTheChainsBindingFlag(t *testing.T) {
+	chain := netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_CHAIN_TABLE, Table), unix.NFTA_CHAIN_NAME, "c")
+	for _, c := range []struct {
+		name  string
+		flags []byte
+		want  bool
+	}{
+		{"binding", PutAttrBE32(nil, chainFlags, 0x4), true},
+		{"binding beside the base flag", PutAttrBE32(nil, chainFlags, 0x5), true},
+		{"the base flag", PutAttrBE32(nil, chainFlags, 0x1), false},
+		{"hardware offload", PutAttrBE32(nil, chainFlags, 0x2), false},
+		{"none", nil, false},
+		{"2 bytes", netlink.PutAttr(nil, chainFlags, []byte{0, 4}), false},
+	} {
+		if got := binding(netlink.Message{Data: append(slices.Clone(chain), c.flags...)}); got != c.want {
+			t.Errorf("%s: binding is %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // Fill refuses a key of another length than the set's and an interval in a
 // set that holds single keys, which the kernel would take as two keys or
 // refuse with an error naming neither

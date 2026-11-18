@@ -209,7 +209,8 @@ func (h *Hold) hold(ns namespace, pin *os.File) {
 
 // Withdraw removes what s names from Table in one transaction and reports
 // whether the table held any of it, a table that is not there being success.
-// It flushes each chain of s's, deletes each but one another writer's rule or
+// It flushes each chain of s's TableChains lists, which takes out each binding
+// chain a rule of one binds, deletes each but one a rule the flush leaves or a
 // map element goes to, which nf_tables refuses to delete and which stays
 // flushed, then deletes s's sets and timeout objects, which a rule of another
 // writer's still using one fails. The table's last holder, as this process's

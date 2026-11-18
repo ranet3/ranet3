@@ -242,16 +242,20 @@ func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 	if err != nil {
 		return err
 	}
+	held, err := nftables.TableChains(b.conn, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		return err
+	}
 	leftovers, err := nftables.Leftovers(b.conn, tables, borderRetired, borderScope)
 	if err != nil {
 		return err
 	}
 	return b.holder.Rewrite(b.conn, borderNamed, read.Stale, func(stale nftables.Contents) ([]nftables.Request, error) {
-		return borderBatch(rules, sets, stale, read.Chains, leftovers)
+		return borderBatch(rules, sets, stale, held, leftovers)
 	})
 }
 
-// borderBatch is the transaction Apply sends over the chains the table holds,
+// borderBatch is the transaction Apply sends over the chains TableChains lists,
 // held, those of the filter's chains and sets stale names, and leftovers: the
 // table with no owner flag, so it outlives this process, the chains the rules
 // sit in made and emptied, a chain of the filter's no rule sits in deleted

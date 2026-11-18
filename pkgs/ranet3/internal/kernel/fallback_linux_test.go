@@ -322,6 +322,314 @@ func TestNetlinkFallbackMakesAgainASetAnotherWriterMadeAnonymous(t *testing.T) {
 	}
 }
 
+// Anonymous sets another writer makes under own4 and udp_ports, the names an
+// earlier switch gave self4 and udpports, holding every IPv4 address and port
+// 9, each read by a line of that writer's that accepts at the head of one of
+// the switch's chains, pass a datagram beyond the LAN. The switch's pass,
+// whose flush of those lines takes the sets out with them, holds and reads
+// back as written, and refuses that datagram while it passes one to the LAN.
+func TestNetlinkFallbackLeavesAnonymousSetsUnderEarlierNamesToItsFlush(t *testing.T) {
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	tbl, rt := fallbackNoneOverUplink(t, device, uplink)
+	plat.retable(tbl)
+	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
+	sets, asked := reconciler.fallbackFor(exit)
+	if !asked {
+		t.Fatal("the mode does not ask for the switch")
+	}
+	if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackHolding {
+		t.Fatalf("the switch's first pass reports %+v (%v), want holding", status, err)
+	}
+	beyond, lan := netip.MustParseAddr("192.0.2.200"), netip.MustParseAddr("198.51.100.5")
+	if err := sendFrom(t, beyond, 9, ""); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("with the switch holding a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	var requests []nftables.Request
+	for _, c := range []struct {
+		chain nftables.Chain
+		set   nftables.Set
+		held  []nftables.Interval
+		load  [][]byte
+	}{
+		{
+			fallbackChain, nftables.Set{Table: nftables.Table, Name: earlierSets["self4"], ID: 1, KeyType: nftables.TypeIPv4Addr, KeyLen: 4},
+			nftables.Prefixes([]netip.Prefix{prefix("0.0.0.0/0")}), slices.Concat(nftables.NFProto(unix.NFPROTO_IPV4), [][]byte{nftables.DestinationLoad(unix.NFPROTO_IPV4)}),
+		},
+		{
+			fallbackOutput, nftables.Set{Table: nftables.Table, Name: earlierSets["udpports"], ID: 2, KeyType: nftables.TypeInetService, KeyLen: 2},
+			[]nftables.Interval{{First: []byte{0, 9}, Last: []byte{0, 9}}}, append(nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{unix.IPPROTO_UDP}), nftables.TransportLoad(2, 2)),
+		},
+	} {
+		c.set.Flags = unix.NFT_SET_INTERVAL | unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT
+		create, err := c.set.Create(unix.NFPROTO_INET)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filled, err := c.set.Fill(unix.NFPROTO_INET, c.held)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line, err := c.chain.Rule(unix.NFPROTO_INET, "theirs", append(c.load, nftables.Lookup(c.set, false), nftables.Verdict(nftables.Accept)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// with no NLM_F_APPEND nf_tables puts the line at the head of the chain
+		line.Flags = unix.NLM_F_CREATE
+		requests = slices.Concat(requests, []nftables.Request{create}, filled, []nftables.Request{line})
+	}
+	if err := another.Batch(requests); err != nil {
+		t.Fatalf("another writer makes the anonymous sets and the lines at the head of the switch's chains that read them: %v", err)
+	}
+	if err := sendFrom(t, beyond, 9, ""); err != nil {
+		t.Fatalf("with those lines a datagram beyond the LAN left with %v, want sent", err)
+	}
+	read, err := plat.readFallback(sets)
+	if err != nil || read.fault == "" {
+		t.Errorf("with those lines the switch reads back with %q (%v), want a fault", read.fault, err)
+	}
+	t.Logf("with those lines the switch reads back with %q", read.fault)
+	status, err := reconciler.applyFallback(sets, true)
+	if err != nil || status == nil || status.State != FallbackHolding {
+		t.Errorf("the switch's pass reports %+v (%v), want holding", status, err)
+	}
+	if read, err := plat.readFallback(sets); read.fault != "" || err != nil {
+		t.Errorf("after the switch's pass it reads back with %q (%v)", read.fault, err)
+	}
+	if err := sendFrom(t, beyond, 9, ""); !errors.Is(err, unix.EPERM) {
+		t.Errorf("after the switch's pass a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+	if err := sendFrom(t, lan, 9, ""); err != nil {
+		t.Errorf("after the switch's pass a datagram to the LAN was refused: %v", err)
+	}
+	// the same set read by a line of a chain of that writer's own, which no flush of the switch's takes out
+	other := nftables.Chain{Table: nftables.Table, Name: "other", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 0}
+	held := nftables.Set{Table: nftables.Table, Name: earlierSets["self4"], ID: 1, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL | unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT}
+	create, err := held.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled, err := held.Fill(unix.NFPROTO_INET, nftables.Prefixes([]netip.Prefix{prefix("0.0.0.0/0")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := other.Rule(unix.NFPROTO_INET, "theirs", slices.Concat(nftables.NFProto(unix.NFPROTO_IPV4), [][]byte{nftables.DestinationLoad(unix.NFPROTO_IPV4), nftables.Lookup(held, false), nftables.Verdict(nftables.Accept)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := another.Batch(slices.Concat([]nftables.Request{other.Create(unix.NFPROTO_INET), create}, filled, []nftables.Request{line})); err != nil {
+		t.Fatalf("another writer makes %s again read by a line of its own chain: %v", held.Name, err)
+	}
+	want := "its set " + held.Name + " is not one the kill switch writes, and chain other holds a rule using it, so it stays until that rule goes"
+	if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackNotHolding || status.Fault != want {
+		t.Errorf("the switch's pass beside the set another writer's chain holds reports %+v (%v), want not holding with %q", status, err, want)
+	}
+	if err := sendFrom(t, beyond, 9, ""); !errors.Is(err, unix.EPERM) {
+		t.Errorf("beside the set another writer's chain holds a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+	if err := sendFrom(t, lan, 9, ""); err != nil {
+		t.Errorf("beside the set another writer's chain holds a datagram to the LAN was refused: %v", err)
+	}
+}
+
+// nftChainFlags and nftChainBinding are NFTA_CHAIN_FLAGS and
+// NFT_CHAIN_BINDING, which x/sys does not carry
+const (
+	nftChainFlags   = 10
+	nftChainBinding = 0x4
+)
+
+// acceptingBinding is another writer's transaction that makes a binding chain
+// named name, holding a line that accepts, and puts a goto to it at the head
+// of from, which binds it
+func acceptingBinding(t *testing.T, from nftables.Chain, name string) []nftables.Request {
+	t.Helper()
+	bound := nftables.Chain{Table: nftables.Table, Name: name, Hook: nftables.NoHook}
+	made := bound.Create(unix.NFPROTO_INET)
+	made.Body = nftables.PutAttrBE32(made.Body, nftChainFlags, nftChainBinding)
+	accept, err := bound.Rule(unix.NFPROTO_INET, "theirs", [][]byte{nftables.Verdict(nftables.Accept)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goes, err := from.Rule(unix.NFPROTO_INET, "theirs", [][]byte{nftables.Goto(name)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// with no NLM_F_APPEND nf_tables puts the line at the head of the chain
+	goes.Flags = unix.NLM_F_CREATE
+	return []nftables.Request{made, accept, goes}
+}
+
+// holdingSwitch is the platform, the reconciler and the sets of the switch
+// over an uplink after a first pass that holds, which refuses a datagram
+// beyond the LAN
+func holdingSwitch(t *testing.T) (*netlinkPlatform, *Reconciler, fallbackSets) {
+	t.Helper()
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	tbl, rt := fallbackNoneOverUplink(t, device, uplink)
+	plat.retable(tbl)
+	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
+	sets, asked := reconciler.fallbackFor(exit)
+	if !asked {
+		t.Fatal("the mode does not ask for the switch")
+	}
+	if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackHolding {
+		t.Fatalf("the switch's first pass reports %+v (%v), want holding", status, err)
+	}
+	if err := sendFrom(t, netip.MustParseAddr("192.0.2.200"), 9, ""); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("with the switch holding a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+	return plat, reconciler, sets
+}
+
+// An anonymous set another writer makes under own4, the name an earlier switch
+// gave self4, holding every IPv4 address and read by an accepting line of a
+// binding chain bound from the head of the switch's chain at postrouting,
+// beside one accepting from the head of output, passes a datagram beyond the
+// LAN. The switch's flush of the chain at postrouting takes the set out with
+// the binding chain, so the read before the pass names the foreign line and
+// not the set, and the pass holds and refuses that datagram.
+func TestNetlinkFallbackReadsNoSetHeldByABindingChainItsFlushTakesOut(t *testing.T) {
+	plat, reconciler, sets := holdingSwitch(t)
+	beyond := netip.MustParseAddr("192.0.2.200")
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	set := nftables.Set{Table: nftables.Table, Name: earlierSets["self4"], ID: 1, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL | unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT}
+	create, err := set.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled, err := set.Fill(unix.NFPROTO_INET, nftables.Prefixes([]netip.Prefix{prefix("0.0.0.0/0")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := nftables.Chain{Table: nftables.Table, Name: "theirs4", Hook: nftables.NoHook}
+	made := bound.Create(unix.NFPROTO_INET)
+	made.Body = nftables.PutAttrBE32(made.Body, nftChainFlags, nftChainBinding)
+	accept, err := bound.Rule(unix.NFPROTO_INET, "theirs", slices.Concat(nftables.NFProto(unix.NFPROTO_IPV4), [][]byte{nftables.DestinationLoad(unix.NFPROTO_IPV4), nftables.Lookup(set, false), nftables.Verdict(nftables.Accept)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goes, err := fallbackChain.Rule(unix.NFPROTO_INET, "theirs", [][]byte{nftables.Goto(bound.Name)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// with no NLM_F_APPEND nf_tables puts the line at the head of the chain
+	goes.Flags = unix.NLM_F_CREATE
+	if err := another.Batch(slices.Concat([]nftables.Request{create}, filled, []nftables.Request{made, accept, goes}, acceptingBinding(t, fallbackOutput, "theirsout"))); err != nil {
+		t.Fatalf("another writer makes %s, the binding chain that reads it and one that accepts at output: %v", set.Name, err)
+	}
+	if err := sendFrom(t, beyond, 9, ""); err != nil {
+		t.Fatalf("with the binding chain a datagram beyond the LAN left with %v, want sent", err)
+	}
+	if read, err := plat.readFallback(sets); err != nil || !strings.HasPrefix(read.fault, "its chain fallback holds [theirs;") {
+		t.Errorf("with the binding chain the switch reads back with %q (%v), want its chain fallback's foreign line", read.fault, err)
+	}
+	if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackHolding {
+		t.Errorf("the switch's pass reports %+v (%v), want holding", status, err)
+	}
+	if err := sendFrom(t, beyond, 9, ""); !errors.Is(err, unix.EPERM) {
+		t.Errorf("after the switch's pass a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+}
+
+// A binding chain another writer makes under the name of the switch's output
+// chain, in the transaction that deletes that chain, accepting and bound from
+// the head of the switch's chain at postrouting, passes a datagram beyond the
+// LAN. The switch's pass, which flushes the chain at postrouting before it
+// makes output, takes the binding chain out with the goto and makes output
+// again, holds, reads back as written, and refuses that datagram while it
+// passes one to the LAN. So does the pass where that writer makes the chain at
+// postrouting again at another priority, which the pass deletes first, and the
+// binding chain with it.
+func TestNetlinkFallbackMakesAgainAChainUnderItsNameItsFlushTakesOut(t *testing.T) {
+	plat, reconciler, sets := holdingSwitch(t)
+	beyond, lan := netip.MustParseAddr("192.0.2.200"), netip.MustParseAddr("198.51.100.5")
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	moved := fallbackChain
+	moved.Priority = 0
+	for _, c := range []struct {
+		name string
+		head []nftables.Request
+		from nftables.Chain
+	}{
+		{"output deleted", []nftables.Request{fallbackOutput.Delete(unix.NFPROTO_INET)}, fallbackChain},
+		{"postrouting made again at priority 0", []nftables.Request{fallbackChain.Delete(unix.NFPROTO_INET), fallbackOutput.Delete(unix.NFPROTO_INET), moved.Create(unix.NFPROTO_INET)}, moved},
+	} {
+		if err := another.Batch(append(c.head, acceptingBinding(t, c.from, fallbackOutput.Name)...)); err != nil {
+			t.Fatalf("%s: another writer makes the binding chain %s: %v", c.name, fallbackOutput.Name, err)
+		}
+		if err := sendFrom(t, beyond, 9, ""); err != nil {
+			t.Fatalf("%s: with the binding chain a datagram beyond the LAN left with %v, want sent", c.name, err)
+		}
+		read, err := plat.readFallback(sets)
+		if err != nil || read.fault == "" {
+			t.Errorf("%s: with the binding chain the switch reads back with %q (%v), want a fault", c.name, read.fault, err)
+		}
+		t.Logf("%s: with the binding chain the switch reads back with %q, remake %v", c.name, read.fault, read.remake)
+		if status, err := reconciler.applyFallback(sets, true); err != nil || status == nil || status.State != FallbackHolding {
+			t.Errorf("%s: the switch's pass reports %+v (%v), want holding", c.name, status, err)
+		}
+		if read, err := plat.readFallback(sets); read.fault != "" || err != nil {
+			t.Errorf("%s: after the switch's pass it reads back with %q (%v)", c.name, read.fault, err)
+		}
+		if err := sendFrom(t, beyond, 9, ""); !errors.Is(err, unix.EPERM) {
+			t.Errorf("%s: after the switch's pass a datagram beyond the LAN left with %v, want EPERM", c.name, err)
+		}
+		if err := sendFrom(t, lan, 9, ""); err != nil {
+			t.Errorf("%s: after the switch's pass a datagram to the LAN was refused: %v", c.name, err)
+		}
+	}
+}
+
+// A binding chain another writer makes under the name of the switch's chain at
+// postrouting, in the transaction that deletes that chain, accepting and bound
+// from the head of the switch's output chain, passes a datagram beyond the
+// LAN. The switch makes its chain at postrouting before it flushes output, and
+// nf_tables refuses a policy for a chain that is no base chain, so every pass
+// is refused: the switch does not hold, with a reason that says how the chain
+// reads back and gives the refusal, and the datagram still passes.
+func TestNetlinkFallbackReportsAChainUnderItsNameBoundFromALaterChain(t *testing.T) {
+	_, reconciler, sets := holdingSwitch(t)
+	beyond := netip.MustParseAddr("192.0.2.200")
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	if err := another.Batch(append([]nftables.Request{fallbackChain.Delete(unix.NFPROTO_INET)}, acceptingBinding(t, fallbackOutput, fallbackChain.Name)...)); err != nil {
+		t.Fatalf("another writer makes the binding chain %s: %v", fallbackChain.Name, err)
+	}
+	if err := sendFrom(t, beyond, 9, ""); err != nil {
+		t.Fatalf("with the binding chain a datagram beyond the LAN left with %v, want sent", err)
+	}
+	want := `its chain reads back as type "" at hook -1, priority 0, policy -1, where a filter chain at hook 4, priority 2147483646, policy accept was written, and the write failed: operation not supported`
+	for i := range 2 {
+		status, err := reconciler.applyFallback(sets, true)
+		if !errors.Is(err, unix.EOPNOTSUPP) || status == nil || status.State != FallbackNotHolding || status.Fault != want {
+			t.Errorf("the switch's pass %d reports %+v (%v), want not holding with %q", i+1, status, err, want)
+		}
+		if err := sendFrom(t, beyond, 9, ""); err != nil {
+			t.Errorf("after the switch's pass %d a datagram beyond the LAN left with %v, want sent", i+1, err)
+		}
+	}
+}
+
 // fallbackSample is a switch of every line, on the tun ranetsw0, each port set
 // holding a port beside another port or a range
 var fallbackSample = fallbackSets{

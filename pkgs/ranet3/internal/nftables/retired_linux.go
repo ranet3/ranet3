@@ -33,7 +33,10 @@ type Retired struct {
 // owner's pass, nil where the owner did not read them. Leftovers dumps the
 // tables where tables is nil, nothing more where NFPROTO_INET holds no Table,
 // and otherwise one dump of each kind old names, and the table's rules and
-// verdict maps where it finds any object.
+// verdict maps and chains where it finds any object. Those flushed are of the
+// chains TableChains lists, with each binding chain a rule of one binds, and
+// it leaves out a binding chain or an anonymous set nothing past them holds,
+// which nf_tables takes out with the rule that binds it.
 func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired, error) {
 	var err error
 	if tables == nil {
@@ -45,14 +48,20 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 		return nil, nil
 	}
 	var out []Retired
+	// bound is each of out that nf_tables binds to one rule, by its kind and name
+	bound := map[Retired]bool{}
 	if len(old.Chains) > 0 {
-		chains, err := TableChains(conn, unix.NFPROTO_INET, Table)
+		chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutNfgenmsg(nil, unix.NFPROTO_INET))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("nftables: dump chains: %w", err)
 		}
 		for _, name := range old.Chains {
-			if slices.Contains(chains, name) {
+			if i := slices.IndexFunc(chains, func(reply netlink.Message) bool {
+				table, chain, _, _, _ := DecodeChain(reply)
+				return table == Table && chain == name
+			}); i >= 0 {
 				out = append(out, Retired{Kind: "chain", Name: name})
+				bound[out[len(out)-1]] = binding(chains[i])
 			}
 		}
 	}
@@ -62,11 +71,12 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 			return nil, fmt.Errorf("nftables: dump sets: %w", err)
 		}
 		for _, name := range old.Sets {
-			if slices.ContainsFunc(sets, func(reply netlink.Message) bool {
+			if i := slices.IndexFunc(sets, func(reply netlink.Message) bool {
 				set := DecodeSet(reply)
 				return set.Table == Table && set.Name == name
-			}) {
+			}); i >= 0 {
 				out = append(out, Retired{Kind: "set", Name: name})
+				bound[out[len(out)-1]] = DecodeSet(sets[i]).Flags&unix.NFT_SET_ANONYMOUS != 0
 			}
 		}
 	}
@@ -96,8 +106,13 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 	if err != nil {
 		return nil, err
 	}
+	listed, err := TableChains(conn, unix.NFPROTO_INET, Table)
+	if err != nil {
+		return nil, err
+	}
 	// the chains a transaction that deletes the leftovers flushes first, whose rules hold nothing
-	emptied := func(chain string) bool { return owner.chain(chain) || old.chain(chain) }
+	flushes := func(chain string) bool { return owner.chain(chain) || old.chain(chain) }
+	emptied := func(chain string) bool { return flushedWith(chain, listed, rules, flushes) }
 	// user is the chain of the first rule naming the object that no flush empties, and the count of the emptied chains' rules naming it
 	user := func(names func(expressions []byte) bool) (string, uint32) {
 		var count uint32
@@ -126,7 +141,7 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 			out[i].HeldBy = heldBy
 		}
 	}
-	return out, nil
+	return slices.DeleteFunc(out, func(r Retired) bool { return r.HeldBy == "" && bound[Retired{Kind: r.Kind, Name: r.Name}] }), nil
 }
 
 // objectUse is NFTA_OBJ_USE of a dumped object, the count of the rules and map
@@ -183,9 +198,9 @@ func attaches(held []byte, object string) bool {
 
 // Retire is the requests that delete each of leftovers nothing holds, in the
 // order Leftovers gives them, sent in a transaction that flushed every chain of
-// their owner's and each chain of leftovers ahead of them, as Rewrite flushes
-// its strays: a goto in one keeps another it names from being deleted, and a
-// rule in one keeps a set or object it reads
+// their owner's and each chain of leftovers TableChains lists ahead of them,
+// as Rewrite flushes its strays: a goto in one keeps another it names from
+// being deleted, and a rule in one keeps a set or object it reads
 func Retire(leftovers []Retired) []Request {
 	var requests []Request
 	for _, r := range leftovers {

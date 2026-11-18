@@ -60,7 +60,8 @@ func Tables(conn *Conn, name string) (map[uint8]uint32, error) {
 
 // TableChains is the name of every chain of the table named table in the
 // nf_tables family proto, none where the table is not there. The kernel dumps
-// the chains of every table of the family.
+// the chains of every table of the family. It leaves out a binding chain, which
+// goes with the rule that goes to it and takes no flush or delete by name.
 func TableChains(conn *Conn, proto uint8, table string) ([]string, error) {
 	replies, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutNfgenmsg(nil, proto))
 	if err != nil {
@@ -68,11 +69,22 @@ func TableChains(conn *Conn, proto uint8, table string) ([]string, error) {
 	}
 	var out []string
 	for _, reply := range replies {
-		if held, name, _, _, _ := DecodeChain(reply); held == table {
+		if held, name, _, _, _ := DecodeChain(reply); held == table && !binding(reply) {
 			out = append(out, name)
 		}
 	}
 	return out, nil
+}
+
+// binding is whether a dumped chain is a binding chain, which nf_tables binds
+// to the one rule that goes to it and takes out with that rule
+func binding(message netlink.Message) bool {
+	for kind, value := range message.Attributes(SizeofNfgenmsg) {
+		if kind == chainFlags && len(value) == 4 {
+			return binary.BigEndian.Uint32(value)&chainBinding != 0
+		}
+	}
+	return false
 }
 
 // TableRules is every rule of every chain of the table named table in the
@@ -255,7 +267,7 @@ type Readback struct {
 	Fault string
 	// Stale is each chain, set and object of Contents that differs in what
 	// nf_tables will not change in place, which Rewrite deletes and its owner
-	// makes again in one transaction
+	// makes again in one transaction, but a binding chain, which goes with its rule
 	Stale Contents
 	// Chains is the name of each chain the table holds, as the dump finds
 	// them, those Contents names and those it does not
@@ -316,7 +328,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 				read.Held = true
 				fault, remake := chain.Fault(reply)
 				note(fault)
-				if remake {
+				if remake && !binding(reply) {
 					read.Stale.Chains = append(read.Stale.Chains, chain)
 				}
 			}
@@ -410,7 +422,7 @@ func (c Contents) table() string {
 // found stale: Table, adopted where it is there, each chain of stale deleted
 // with its rules, each chain of c made and flushed, which makes a deleted one
 // again, each of strays flushed, then each set and object of stale deleted.
-// strays are the owner's chains the table holds that c does not write, which
+// strays are the owner's chains TableChains lists that c does not write, which
 // the owner deletes after the head. Every chain of the owner's is flushed
 // before any set or object goes, since nf_tables refuses to delete one a rule
 // still uses, so only another writer's rule using one fails the transaction.
@@ -523,7 +535,7 @@ func (s Scope) withdrawal(l listing, last bool) []Request {
 		requests = append(requests, Chain{Table: Table, Name: name}.Flush(unix.NFPROTO_INET))
 	}
 	for _, name := range chains {
-		if Holder(name, l.rules, l.maps, s.chain) == "" {
+		if Holder(name, l.rules, l.maps, func(c string) bool { return flushedWith(c, l.chains, l.rules, s.chain) }) == "" {
 			requests = append(requests, Chain{Table: Table, Name: name}.Delete(unix.NFPROTO_INET))
 		}
 	}
@@ -560,6 +572,16 @@ func Holder(chain string, rules []Installed, maps []VerdictMap, flushed func(cha
 		return "map " + maps[i].Name
 	}
 	return ""
+}
+
+// flushedWith is whether a flush of each chain of listed, TableChains', that
+// flushes names takes out chain's rules: one it flushes, or a binding chain,
+// unlisted, bound by a rule of one, as no binding chain binds another
+func flushedWith(chain string, listed []string, rules []Installed, flushes func(chain string) bool) bool {
+	takes := func(chain string) bool { return flushes(chain) && slices.Contains(listed, chain) }
+	return takes(chain) || !slices.Contains(listed, chain) && slices.ContainsFunc(rules, func(rule Installed) bool {
+		return takes(rule.Chain) && slices.Contains(VerdictChains(rule.Expressions), chain)
+	})
 }
 
 // rules dumps each chain's rules alone, which the kernel filters by the table

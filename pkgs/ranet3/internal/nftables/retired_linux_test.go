@@ -6,6 +6,7 @@
 package nftables
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"slices"
@@ -123,6 +124,232 @@ func TestNftablesFindsWhatHoldsARetiredObject(t *testing.T) {
 	}
 	if none, err := Leftovers(conn, nil, Scope{Chains: []string{"absent"}, Sets: []string{"absent"}, Timeouts: []string{"absent"}}, owner); err != nil || none != nil {
 		t.Errorf("names the table does not hold read as leftovers %+v (%v), want none", none, err)
+	}
+}
+
+// boundObjects is another writer's transaction that makes under name a binding
+// chain, or with set an anonymous set holding 127.0.0.0/8, and binds it by a
+// line at the head of from: a goto, or a lookup
+func boundObjects(t *testing.T, from Chain, name string, set bool) []Request {
+	t.Helper()
+	var made []Request
+	var line [][]byte
+	if set {
+		anonymous := Set{Table: Table, Name: name, ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL | unix.NFT_SET_ANONYMOUS | unix.NFT_SET_CONSTANT}
+		create, err := anonymous.Create(unix.NFPROTO_INET)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filled, err := anonymous.Fill(unix.NFPROTO_INET, Prefixes(prefixList("127.0.0.0/8")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		made = append([]Request{create}, filled...)
+		line = slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(anonymous, false)}, CountedDrop())
+	} else {
+		chain := Chain{Table: Table, Name: name, Hook: NoHook}
+		create := chain.Create(unix.NFPROTO_INET)
+		create.Body = PutAttrBE32(create.Body, chainFlags, chainBinding)
+		drop, err := chain.Rule(unix.NFPROTO_INET, "theirs", CountedDrop())
+		if err != nil {
+			t.Fatal(err)
+		}
+		made = []Request{create, drop}
+		line = [][]byte{Goto(name)}
+	}
+	bind, err := from.Rule(unix.NFPROTO_INET, "theirs", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// with no NLM_F_APPEND nf_tables puts the line at the head of the chain
+	bind.Flags = unix.NLM_F_CREATE
+	return append(made, bind)
+}
+
+// bindingTo is another writer's transaction that makes a binding chain under
+// name holding line, and binds it by a goto at the head of from
+func bindingTo(t *testing.T, from Chain, name string, line [][]byte) []Request {
+	t.Helper()
+	chain := Chain{Table: Table, Name: name, Hook: NoHook}
+	create := chain.Create(unix.NFPROTO_INET)
+	create.Body = PutAttrBE32(create.Body, chainFlags, chainBinding)
+	held, err := chain.Rule(unix.NFPROTO_INET, "theirs", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []Request{create, held, headLine(t, from, [][]byte{Goto(name)})}
+}
+
+// headLine is another writer's line at the head of chain
+func headLine(t *testing.T, chain Chain, line [][]byte) Request {
+	t.Helper()
+	rule, err := chain.Rule(unix.NFPROTO_INET, "theirs", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// with no NLM_F_APPEND nf_tables puts the line at the head of the chain
+	rule.Flags = unix.NLM_F_CREATE
+	return rule
+}
+
+// sendLoopback sends one datagram from 127.0.0.1 to 127.0.0.2, which a drop at
+// output refuses with EPERM
+func sendLoopback() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	return unix.Sendto(fd, []byte("probe"), 0, &unix.SockaddrInet4{Port: 9, Addr: [4]byte{127, 0, 0, 2}})
+}
+
+// A binding chain under a retired name that another writer binds from a chain
+// of its own is no chain the owner's transaction flushes, so the regular chain
+// under another retired name it goes to is a leftover held by it, and the
+// regular chain of the owner's prefix that a binding chain of that prefix goes
+// to stays through the withdrawal. Nor is a regular chain of that writer's
+// that a line of the owner's chain goes to, so a set under a retired name it
+// reads is held by it. The owner's transaction and the withdrawal commit, and each
+// takes out the drop that writer put at the head of the owner's chain.
+func TestNftablesCountsABindingChainFlushedOnlyWithItsBinder(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	conn, another := dial(t), dial(t)
+	mine := Chain{Table: Table, Name: "mine", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 0}
+	other := Chain{Table: Table, Name: "other", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 1}
+	if err := conn.Batch([]Request{NewTable(unix.NFPROTO_INET, Table), mine.Create(unix.NFPROTO_INET)}); err != nil {
+		t.Fatalf("the owner's chain: %v", err)
+	}
+	reading := Chain{Table: Table, Name: "reading", Hook: NoHook}
+	oldset := Set{Table: Table, Name: "oldset", ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4}
+	madeSet, err := oldset.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads, err := reading.Rule(unix.NFPROTO_INET, "theirs", slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(oldset, false)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := slices.Concat([]Request{other.Create(unix.NFPROTO_INET), Chain{Table: Table, Name: "old2", Hook: NoHook}.Create(unix.NFPROTO_INET), Chain{Table: Table, Name: "none_y", Hook: NoHook}.Create(unix.NFPROTO_INET)},
+		[]Request{reading.Create(unix.NFPROTO_INET), madeSet, reads, headLine(t, mine, [][]byte{Goto(reading.Name)})},
+		bindingTo(t, other, "gone", [][]byte{Goto("old2")}), bindingTo(t, other, "none_x", [][]byte{Goto("none_y")}), []Request{headLine(t, mine, CountedDrop())})
+	if err := another.Batch(requests); err != nil {
+		t.Fatalf("another writer's chains, binding chains, set and drop: %v", err)
+	}
+	if err := sendLoopback(); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("with the drop a datagram left with %v, want EPERM", err)
+	}
+	old, owner := Scope{Chains: []string{"gone", "old2"}, Sets: []string{oldset.Name}}, Scope{Chains: []string{"mine"}, Prefix: "none_"}
+	held := []Retired{{"chain", "gone", "chain other"}, {"chain", "old2", "chain gone"}, {"set", oldset.Name, "chain reading"}}
+	leftovers, err := Leftovers(conn, nil, old, owner)
+	if err != nil || !slices.Equal(leftovers, held) {
+		t.Fatalf("the leftovers read %+v (%v), want %+v", leftovers, err, held)
+	}
+	pass := []Request{mine.Flush(unix.NFPROTO_INET), Chain{Table: Table, Name: "old2"}.Flush(unix.NFPROTO_INET)}
+	if err := conn.Batch(append(pass, Retire(leftovers)...)); err != nil {
+		t.Errorf("the owner's transaction: %v", err)
+	}
+	if err := sendLoopback(); err != nil {
+		t.Errorf("after the owner's transaction a datagram left with %v, want sent", err)
+	}
+	if left, err := Leftovers(conn, nil, old, owner); err != nil || !slices.Equal(left, held) {
+		t.Errorf("after the owner's transaction the leftovers read %+v (%v), want %+v", left, err, held)
+	}
+	if err := another.Batch([]Request{headLine(t, mine, CountedDrop())}); err != nil {
+		t.Fatalf("another writer's drop again: %v", err)
+	}
+	var hold Hold
+	if _, err := hold.Withdraw(conn, owner); err != nil {
+		t.Errorf("the withdrawal: %v", err)
+	}
+	if err := sendLoopback(); err != nil {
+		t.Errorf("after the withdrawal a datagram left with %v, want sent", err)
+	}
+	if names := chainNames(t, conn); !slices.Equal(names, []string{"other", "old2", "none_y", "reading", "gone", "none_x"}) {
+		t.Errorf("after the withdrawal the table holds the chains %v, want other, old2, none_y, reading, gone and none_x", names)
+	}
+}
+
+// chainNames is the name of every chain of Table a dump lists, binding chains
+// among them
+func chainNames(t *testing.T, conn *Conn) []string {
+	t.Helper()
+	replies, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutNfgenmsg(nil, unix.NFPROTO_INET))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, reply := range replies {
+		if table, name, _, _, _ := DecodeChain(reply); table == Table {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// A binding chain and an anonymous set another writer makes under an owner's
+// retired names are left out of what TableChains lists and of the leftovers
+// where a line in the owner's chain binds them, and are leftovers held by
+// another writer's chain where a line there binds them. The owner's
+// transaction, which flushes its chain and each retired chain TableChains
+// lists and retires the leftovers, commits, takes the first two out with the
+// line and keeps the others, which still read as leftovers. A withdrawal of
+// names some of which binding chains carry commits the same way.
+func TestNftablesLeavesWhatItsFlushTakesOutToIt(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	conn, another := dial(t), dial(t)
+	mine := Chain{Table: Table, Name: "mine", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 0}
+	other := Chain{Table: Table, Name: "other", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 1}
+	if err := conn.Batch([]Request{NewTable(unix.NFPROTO_INET, Table), mine.Create(unix.NFPROTO_INET)}); err != nil {
+		t.Fatalf("the owner's chain: %v", err)
+	}
+	requests := slices.Concat([]Request{other.Create(unix.NFPROTO_INET)},
+		boundObjects(t, mine, "gone", false), boundObjects(t, other, "kept", false), boundObjects(t, mine, "goneset", true), boundObjects(t, other, "keptset", true))
+	if err := another.Batch(requests); err != nil {
+		t.Fatalf("another writer's binding chains and anonymous sets: %v", err)
+	}
+	old, owner := Scope{Chains: []string{"gone", "kept"}, Sets: []string{"goneset", "keptset"}}, Scope{Chains: []string{"mine"}}
+	if listed, err := TableChains(conn, unix.NFPROTO_INET, Table); err != nil || !slices.Equal(listed, []string{"mine", "other"}) {
+		t.Errorf("TableChains lists %v (%v), want mine and other", listed, err)
+	}
+	held := []Retired{{"chain", "kept", "chain other"}, {"set", "keptset", "chain other"}}
+	leftovers, err := Leftovers(conn, nil, old, owner)
+	if err != nil || !slices.Equal(leftovers, held) {
+		t.Fatalf("the leftovers read %+v (%v), want %+v", leftovers, err, held)
+	}
+	listed, err := TableChains(conn, unix.NFPROTO_INET, Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pass := []Request{mine.Flush(unix.NFPROTO_INET)}
+	for _, name := range old.Chains {
+		if slices.Contains(listed, name) {
+			pass = append(pass, Chain{Table: Table, Name: name}.Flush(unix.NFPROTO_INET))
+		}
+	}
+	if err := conn.Batch(append(pass, Retire(leftovers)...)); err != nil {
+		t.Errorf("the owner's transaction: %v", err)
+	}
+	if left, err := Leftovers(conn, nil, old, owner); err != nil || !slices.Equal(left, held) {
+		t.Errorf("after the owner's transaction the leftovers read %+v (%v), want %+v", left, err, held)
+	}
+	if names := chainNames(t, conn); !slices.Equal(names, []string{"mine", "other", "kept"}) {
+		t.Errorf("after the owner's transaction the table holds the chains %v, want mine, other and kept", names)
+	}
+	if err := another.Batch(boundObjects(t, mine, "again", false)); err != nil {
+		t.Fatalf("another writer's binding chain again: %v", err)
+	}
+	var hold Hold
+	if _, err := hold.Withdraw(conn, Scope{Chains: []string{"mine", "gone", "again", "kept"}}); err != nil {
+		t.Fatalf("the withdrawal: %v", err)
+	}
+	if names := chainNames(t, conn); !slices.Equal(names, []string{"other", "kept"}) {
+		t.Errorf("after the withdrawal the table holds the chains %v, want other and kept", names)
 	}
 }
 

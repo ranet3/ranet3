@@ -356,7 +356,8 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // again. A stray chain is emptied after every chain rules writes, and deleted
 // unless a rule of a chain another writer holds or an element of a named map
 // goes to it, which nf_tables would refuse the whole transaction for, so the
-// readback names that chain or map until it goes.
+// readback names that chain or map until it goes. The strays are of the chains
+// nftables.TableChains lists, none a binding chain, which goes with its rule.
 //
 // The timeout objects and the sets of flows are written on every apply and
 // changed by none. nf_tables has no update for a ct timeout, so a write of an
