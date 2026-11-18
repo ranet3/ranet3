@@ -506,25 +506,25 @@ The capability publishes the advertisement per family on every pass. A prefix is
 announced only while its family is ready, as [readiness](#readiness) gives for
 each platform. A pass reads the translator's chains, the family's sets and
 timeout objects, and the elements of the family's set of untranslated sources,
-`untranslated4` or `untranslated6`. `forward4`, the chain an earlier version
-held IPv4's lines in, is the exit's: it is read as a fault and deleted. So is
-every chain whose name runs past `none_`, the chain an earlier version held the
-lines of a class of `none` in. Another chain in the table is neither read nor
-removed, and a nat chain at the source translation hook at priority 99 or below
-is named as a [conflict](#watching-it). Each pass first rewrites a chain that
-reads back otherwise, such as one missing a rule, holding another writer's, a
-rule edited under the comment it was written with or in a dormant table, fills
-again a set of untranslated sources whose elements read back otherwise, and
-deletes each chain an earlier version wrote. Where a rule of another writer's
-chain goes to that chain, by a goto, a jump or its vmap, or an element of a
-named map does, nf_tables will not delete it, so the pass empties it and writes
-the rest, and both families stay not ready with that chain or map named until
-the rule or the element goes. nf_tables clears no table flag in place but
-dormant, and changes no chain's type, hook or priority, no set's key, flags or
-comment and no timeout object's values, so when a chain, set or object of the
-translator's differs in one of those the pass deletes that one and makes it
-again in the same transaction, leaving everything else in the table as it is.
-Another table flag holds both families not ready, with the reason
+`untranslated4` or `untranslated6`. It also reads 3 kinds of object an earlier
+translator wrote in the table `inet ranet3`: the chain `forward4`, every chain
+whose name runs past `none_`, and the 6 timeout objects [timeouts](#timeouts)
+names. `forward4` held IPv4's lines at the forward hook, and each `none_` chain
+the lines of one class of `none`. A pass deletes each such object it finds in
+the transaction that writes the chains. One that a rule or a map element of
+another writer's holds stays, and keeps both families not ready, as
+[sharing a host](coexistence.md#the-nftables-table) gives. Another chain in the
+table is neither read nor removed, and a nat chain at the source translation
+hook at priority 99 or below is named as a [conflict](#watching-it). Each pass
+first rewrites a chain that reads back otherwise, such as one missing a rule,
+holding another writer's, a rule edited under the comment it was written with or
+in a dormant table, and fills again a set of untranslated sources whose elements
+read back otherwise. nf_tables clears no table flag in place but dormant, and
+changes no chain's type, hook or priority, no set's key, flags or comment and no
+timeout object's values, so when a chain, set or object of the translator's
+differs in one of those the pass deletes that one and makes it again in the same
+transaction, leaving everything else in the table as it is. Another table flag
+holds both families not ready, with the reason
 [sharing a host](coexistence.md#the-nftables-table) gives. When the chains still
 do not read back as written, the host stops forwarding the family or a lookup
 fails, that pass retracts the prefix. A pass runs at least every `sweep` (30

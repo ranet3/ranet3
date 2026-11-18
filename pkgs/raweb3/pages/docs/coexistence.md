@@ -586,8 +586,8 @@ another writer puts in one of its chains or edits there, or a table it sets
 dormant, which changes what the chain does to a packet, is undone by the next
 pass, as is a source another writer adds to or takes from a set of untranslated
 sources. It does not read back the sets' counts, so a count another writer
-changes or removes stays as that writer left it. The chains an earlier version
-wrote are its own, as
+changes or removes stays as that writer left it. The chains and timeout objects
+an earlier version wrote are its own, as
 [refusing to advertise](exit-nodes.md#refusing-to-advertise) names them. Another
 chain in the table is neither read nor removed. It reads other writers' tables,
 chains and rules to find its own and to report conflicts, and writes, replaces
@@ -775,20 +775,26 @@ daemon that dies between two withdrawals, or a start without `cap.table` that
 deletes the kill switch an earlier instance left, leaves the table for the next
 start to take over.
 
-Each writer's pass also deletes the names an earlier version of it wrote, which
-its own section lists, in the transaction that writes its own, and its
-withdrawal deletes them with its own. nf_tables deletes no chain that a rule of
-another chain or an element of a named map goes to, and no set or object that a
-rule or an element of a map uses. Where such a rule or element is another
-writer's and holds one of those earlier names, the pass keeps that chain,
-emptied, or that set or object, and writes the rest, and the writer names it and
-what holds it as a fault until that goes and the next pass deletes it: the
-antispoof filter in its readiness, the kill switch in its `not holding` reason
-and the translator in the reason both families are not ready. A withdrawal keeps
-such a chain, emptied, but deletes every set and object of the writer's whatever
-uses it, so while a rule or a map element of another writer's uses one, the
-writer's own or an earlier version's, nf_tables refuses the whole withdrawal and
-the writer's chains, rules, sets and objects stay as they were.
+Each writer's pass also deletes what an earlier version of it wrote under the
+names its own section lists, in the transaction that writes its own, and its
+withdrawal deletes them with its own. Those sections are
+[where it runs](antispoof.md#where-it-runs) for the antispoof filter,
+[the kill switch on Linux](routing.md#the-kill-switch-on-linux) for the kill
+switch and [refusing to advertise](exit-nodes.md#refusing-to-advertise) for the
+translator. nf_tables deletes no chain that a rule of another chain or an
+element of a named map goes to, and no set or object that a rule or an element
+of a map uses. Where such a rule or element is another writer's and holds one of
+those earlier names, the pass keeps that chain, emptied, or that set or object,
+and writes the rest, and the writer names it as a fault until that goes and the
+next pass deletes it: the antispoof filter in its readiness, the kill switch in
+its `not holding` reason and the translator in the reason both families are not
+ready. The fault names what holds it: the chain of a rule, a named map by its
+name where its element goes to a chain, and a map alone where its element uses
+an object. A withdrawal keeps such a chain, emptied, but deletes every set and
+object of the writer's whatever uses it, so while a rule or a map element of
+another writer's uses one, the writer's own or an earlier version's, nf_tables
+refuses the whole withdrawal and the writer's chains, rules, sets and objects
+stay as they were.
 
 A table another writer gave a flag other than dormant refuses every writer's
 rewrite, and each writer names the flag beside the refusal: the translator in

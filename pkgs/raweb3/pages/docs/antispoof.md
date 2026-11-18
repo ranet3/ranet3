@@ -875,15 +875,15 @@ each set with the elements the last pass asked for, beside every policy rule the
 kernel holds and the rules the reconciler derives from the overlay, as
 [the debug page](development/debug.md) describes.
 
-On macOS the status's `border` object carries a `pf` block with the anchor, the
-daemon's `token` and `pid`, `listed`, whether pf lists the one under the other,
-and `called`, whether the main ruleset calls `com.apple/*`, as the last pass
-read them. `ranet3 debug rules` heads the anchor's rules by their direction,
-`in` for chain `antispoof`, with no priority and packet and byte counters read
-now on drop rows. Labels matching desired rules are shown as those rules' full
-spellings. The view then lists the carved table, the daemon's reference and main
-ruleset call from the last pass, and every reference `pfctl -s References` lists
-now, by pid and process name:
+On macOS the status's `antispoof` object carries a `pf` block with the anchor,
+the daemon's `token` and `pid`, `listed`, whether pf lists the one under the
+other, and `called`, whether the main ruleset calls `com.apple/*`, as the last
+pass read them. `ranet3 debug rules` heads the anchor's rules by their
+direction, `in` for chain `antispoof`, with no priority and packet and byte
+counters read now on drop rows. Labels matching desired rules are shown as those
+rules' full spellings. The view then lists the carved table, the daemon's
+reference and main ruleset call from the last pass, and every reference
+`pfctl -s References` lists now, by pid and process name:
 
 ```
 Antispoof filter, pf anchor com.apple/ranet3, read 2 seconds ago, ready
