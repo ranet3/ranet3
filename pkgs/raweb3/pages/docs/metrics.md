@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-17
+updated: 2026-11-18
 order: 90
 ---
 
@@ -41,17 +41,17 @@ family is [ready](exit-nodes.md#readiness), and the 2 prefix counts whose
 difference says this node is withholding an advertisement it cannot stand
 behind. On Linux the refused and dropped counts are read at each pass from each
 family's limit and untracked rules, which sit at
-[the forward hook](exit-nodes.md#the-nftables-chains), in `forward`, `forward6`
-and the chains of the classes of `none`, so they lag by up to 1 pass, and a
-rewrite of the chains starts them from 0, which a scrape reads as a counter
-reset. A pass that cannot read them back keeps the last pass's, unless it
-rewrote the chains, whose counts start from 0 whether or not it read them back.
-The userspace exit on macOS installs no rules, so it writes only some of the
-egress series, which [watching it](exit-nodes.md#watching-it) names. Its refused
-counts are the packets it refused past their source's share, read at each
-scrape. The flows it holds and its buffers are in `ranet3 status`, as that
-section describes, and its limits and what it refused or dropped by reason are
-in [`ranet3 debug egress`](development/debug.md).
+[the forward hook](exit-nodes.md#the-nftables-chains), in `forward` and
+`forward6`, so they lag by up to 1 pass, and a rewrite of the chains starts them
+from 0, which a scrape reads as a counter reset. A pass that cannot read them
+back keeps the last pass's, unless it rewrote the chains, whose counts start
+from 0 whether or not it read them back. The userspace exit on macOS installs no
+rules, so it writes only some of the egress series, which
+[watching it](exit-nodes.md#watching-it) names. Its refused counts are the
+packets it refused past their source's share, read at each scrape. The flows it
+holds and its buffers are in `ranet3 status`, as that section describes, and its
+limits and what it refused or dropped by reason are in
+[`ranet3 debug egress`](development/debug.md).
 
 [The antispoof filter](antispoof.md) is reported as whether its chains and every
 set read back, and as the packets each of its drops counted, by `reason` and

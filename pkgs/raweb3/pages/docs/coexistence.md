@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-17
+updated: 2026-11-18
 order: 110
 ---
 
@@ -571,25 +571,24 @@ tunnel is using.
 writes its chains in the nftables table `inet ranet3`, which the antispoof
 filter and the kill switch share, [below](#the-nftables-table): a nat chain at
 postrouting, a filter chain at forward, `forward`, with
-[IPv6's chain and a chain for each class of `none`](exit-nodes.md#the-nftables-chains)
-beside it, and for each family it translates, the advertised ones and both
-beside an egress segment, the set it counts each source's flows in for
-[each source's share](exit-nodes.md#each-sources-share-of-the-flows) and the
-timeout objects of the flows it translates, beside the anonymous sets the
-screens of a class of `none`'s chain take their sources from. Every limit line
-of a family counts in that family's set: the family's own line, IPv4's in
-`forward` and IPv6's in `forward6`, the regular chain `forward`'s first line
-goes to, and, in the chain of each class of `none` that directly holds a class
-that translates, the line that counts the flows of those classes' sources. The
-table's name and its chains', sets' and objects' names are the whole of its
-ownership claim, as `rt_proto` is the reconciler's. It writes only those and
-reads them back as [refusing to advertise](exit-nodes.md#refusing-to-advertise)
-lists, so a rule another writer puts in one of its chains or edits there, or a
-table it sets dormant, which changes what the chain does to a packet, is undone
-by the next pass. It does not read back the sets' counts, so a count another
-writer changes or removes stays as that writer left it. Every chain in the table
-whose name runs past `none_` is its own, as
-[refusing to advertise](exit-nodes.md#refusing-to-advertise) describes. Another
+[IPv6's chain](exit-nodes.md#the-nftables-chains) beside it, and for each family
+it translates, the advertised ones and both beside an egress segment, the set it
+counts each source's flows in for
+[each source's share](exit-nodes.md#each-sources-share-of-the-flows), the set of
+the sources whose class is `none`, and the timeout objects of the flows it
+translates. A family's limit line counts in that family's set of flows: IPv4's
+in `forward` and IPv6's in `forward6`, the regular chain `forward`'s first line
+goes to. The table's name and its chains', sets' and objects' names are the
+whole of its ownership claim, as `rt_proto` is the reconciler's. It writes only
+those and reads them back as
+[refusing to advertise](exit-nodes.md#refusing-to-advertise) lists, so a rule
+another writer puts in one of its chains or edits there, or a table it sets
+dormant, which changes what the chain does to a packet, is undone by the next
+pass, as is a source another writer adds to or takes from a set of untranslated
+sources. It does not read back the sets' counts, so a count another writer
+changes or removes stays as that writer left it. The chains an earlier version
+wrote are its own, as
+[refusing to advertise](exit-nodes.md#refusing-to-advertise) names them. Another
 chain in the table is neither read nor removed. It reads other writers' tables,
 chains and rules to find its own and to report conflicts, and writes, replaces
 or deletes nothing but its own. It replaces the chains' rules in 1 transaction,
@@ -742,11 +741,11 @@ with no such rule.
 On Linux every nftables chain, set and object ranet3 writes is in the one table
 `inet ranet3`, which 3 writers share, each owning its own by name:
 
-| Writer                                                                                     | Chains                                                                                                                                                                                                                      | Sets and objects                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [the antispoof filter](antispoof.md#where-it-runs), on every node                          | `mesh_entry`, filter at postrouting, priority 110, and with `overlay` `antispoof`, filter at prerouting, priority -300                                                                                                      | the interval sets `carved4`, `carved6`, `owned4`, `owned6`, `none4` and `none6`                                                                                                                                                  |
-| [the kill switch](routing.md#the-kill-switch-on-linux), under `cap.exit.fallback = "none"` | `fallback`, filter at postrouting, and `output`, filter at output, both at priority 2147483646                                                                                                                              | the sets `forwarded`, `lan4`, `lan6`, `own4`, `own6`, `tcp_ports` and `udp_ports`                                                                                                                                                |
-| [the translator](exit-nodes.md#the-nftables-chains), under `cap.egress`                    | `postrouting`, nat at postrouting, priority 99, `forward`, filter at forward, priority 0, the regular chain `forward6`, which `forward`'s first line sends IPv6 on to, and a regular chain `none_` for each class of `none` | for each family it translates the set `flows4` or `flows6` and 3 timeout objects, `translated-udp4`, `translated-tcp4` and `translated-icmp4` in IPv4, and `translated-udp6`, `translated-tcp6` and `translated-icmpv66` in IPv6 |
+| Writer                                                                                     | Chains                                                                                                                                                                | Sets and objects                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [the antispoof filter](antispoof.md#where-it-runs), on every node                          | `mesh_entry`, filter at postrouting, priority 110, and with `overlay` `antispoof`, filter at prerouting, priority -300                                                | the interval sets `carved4`, `carved6`, `owned4`, `owned6`, `none4` and `none6`                                                                                                                                                                                                       |
+| [the kill switch](routing.md#the-kill-switch-on-linux), under `cap.exit.fallback = "none"` | `fallback`, filter at postrouting, and `output`, filter at output, both at priority 2147483646                                                                        | the sets `forwarded`, `lan4`, `lan6`, `own4`, `own6`, `tcp_ports` and `udp_ports`                                                                                                                                                                                                     |
+| [the translator](exit-nodes.md#the-nftables-chains), under `cap.egress`                    | `postrouting`, nat at postrouting, priority 99, `forward`, filter at forward, priority 0, the regular chain `forward6`, which `forward`'s first line sends IPv6 on to | for each family it translates the set `flows4` or `flows6`, the interval set `untranslated4` or `untranslated6` and 3 timeout objects, `translated-udp4`, `translated-tcp4` and `translated-icmp4` in IPv4, and `translated-udp6`, `translated-tcp6` and `translated-icmpv66` in IPv6 |
 
 Each writer reads back, rewrites and deletes only what its names give. Another
 writer's change to one of a writer's chains, a rule in one or one of its sets
