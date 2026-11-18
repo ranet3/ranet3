@@ -304,13 +304,19 @@ connection tracking keeps the flow, and
 is the kernel's.
 
 Each family has a connection tracking timeout object for each protocol, named
-with the family's digit: `translated-udp4`, `translated-tcp4` and
-`translated-icmp4` in IPv4, and `translated-udp6`, `translated-tcp6` and
-`translated-icmpv66` in IPv6. They are made once and never changed in place: a
-pass that rewrites a chain leaves them, and one that reads back other values in
-one deletes that object and makes it again, which leaves the flows that held it
-on the host's timeouts. A stop withdraws the objects with the chains, and the
-flows it leaves keep their translation under the host's timeouts.
+with the family's digit: `udp4`, `tcp4` and `icmp4` in IPv4, and `udp6`, `tcp6`
+and `icmp6` in IPv6. They are made once and never changed in place: a pass that
+rewrites a chain leaves them, and one that reads back other values in one
+deletes that object and makes it again, which leaves the flows that held it on
+the host's timeouts. A pass deletes `translated-udp4`, `translated-tcp4`,
+`translated-icmp4`, `translated-udp6`, `translated-tcp6` and
+`translated-icmpv66`, the objects an earlier version made, in the transaction
+that writes the chains, so on a host that version left by a kill or a crash the
+flows that held one take the host's timeouts after the first pass. A stop
+withdraws the objects under either name with the chains, and the flows it leaves
+keep their translation under the host's timeouts. Neither deletes an object that
+a rule or a map element of another writer's attaches, as
+[sharing a host](coexistence.md#the-nftables-table) gives.
 
 ## Each source's share of the flows
 

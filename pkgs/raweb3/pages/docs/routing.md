@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-16
+updated: 2026-11-18
 order: 45
 ---
 
@@ -662,10 +662,10 @@ ip6 daddr { fe80::/10, ff00::/8 } accept
 icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
 meta iif 0 icmpv6 type packet-too-big accept
 meta iif 0 icmp type destination-unreachable icmp code 4 accept
-ip daddr @own4 accept
-ip6 daddr @own6 accept
-ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
-ct direction reply ct protocol udp ct original proto-dst @udp_ports accept
+ip daddr @self4 accept
+ip6 daddr @self6 accept
+ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
+ct direction reply ct protocol udp ct original proto-dst @udpports accept
 counter drop
 ```
 
@@ -736,8 +736,8 @@ counter drop
   [counts as a default](#routes-that-count-as-a-default) is left out whole.
   Status names it, and as public a network, or a prefix of its part outside the
   overlay, that the ranges and `cap.exit.lan` leave out in whole or in part.
-  `own4` and `own6` hold the prefixes 5445 names but the carve-outs, and
-  `tcp_ports` and `udp_ports` the ranges `inbound` lists. The rules and the sets
+  `self4` and `self6` hold the prefixes 5445 names but the carve-outs, and
+  `tcpports` and `udpports` the ranges `inbound` lists. The rules and the sets
   come from one derivation each pass.
 
 The table carries no owner flag, so the kernel does not delete the chains with
@@ -750,7 +750,11 @@ the process that wrote them:
   `kernel reconcile failed, retrying` and the start dials without the chains
   until a retry writes them. Chains left by an earlier instance are taken over:
   a pass that reads them back as written keeps them, with their drop's count,
-  and one that does not rewrites them.
+  and one that does not rewrites them. That transaction deletes `own4`, `own6`,
+  `tcp_ports` and `udp_ports`, the sets an earlier version held `self4`,
+  `self6`, `tcpports` and `udpports` in, and a withdrawal deletes them with the
+  rest. Neither deletes a set that a rule of another writer's uses, as
+  [sharing a host](coexistence.md#the-nftables-table) gives.
 - A clean stop, `ranet3 down`, `ranet3 disable reconciler` and a reload to
   `"uplink"` or without `cap.exit` withdraw its chains and sets with the rules,
   and the table as [sharing a host](coexistence.md#the-nftables-table) gives. A

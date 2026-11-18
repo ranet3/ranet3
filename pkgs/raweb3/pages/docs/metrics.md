@@ -55,20 +55,20 @@ limits and what it refused or dropped by reason are in
 
 [The antispoof filter](antispoof.md) is reported as whether its chains and every
 set read back, and as the packets each of its drops counted, by `reason` and
-`family`. Its chains are `mesh_entry`, and `antispoof` where `overlay` is
-written. Its drops are `overlay_source` and `carved_source`, what chain
-`antispoof` drops from outside the mesh, `mapped_source`, an IPv4-mapped IPv6
-source it drops from any interface, the tun included, and `mesh_entry`, what the
-entry chain kept out of the tun. A drop has a series in each family a rule of
-the last pass drops it in, and none otherwise, as
-[watching it](antispoof.md#watching-it) lists. The counts are read from its
-chains at each pass, so they lag by up to 1 pass, and a rewrite of the chains
-starts them from 0, which a scrape reads as a counter reset. On macOS, where
-`overlay` is written, the same series read the pf anchor `com.apple/ranet3`,
-whose readiness takes pf's reference, the main ruleset's call and no interface
-outside the mesh that pf skips too, as [readiness](antispoof.md#readiness)
-gives, and neither `mesh_entry` nor `mapped_source` has a series, since the
-anchor holds no entry chain and no mapped drop.
+`family`. Its chains are `entry`, and `antispoof` where `overlay` is written.
+Its drops are `overlay_source` and `carved_source`, what chain `antispoof` drops
+from outside the mesh, `mapped_source`, an IPv4-mapped IPv6 source it drops from
+any interface, the tun included, and `mesh_entry`, what the entry chain kept out
+of the tun. A drop has a series in each family a rule of the last pass drops it
+in, and none otherwise, as [watching it](antispoof.md#watching-it) lists. The
+counts are read from its chains at each pass, so they lag by up to 1 pass, and a
+rewrite of the chains starts them from 0, which a scrape reads as a counter
+reset. On macOS, where `overlay` is written, the same series read the pf anchor
+`com.apple/ranet3`, whose readiness takes pf's reference, the main ruleset's
+call and no interface outside the mesh that pf skips too, as
+[readiness](antispoof.md#readiness) gives, and neither `mesh_entry` nor
+`mapped_source` has a series, since the anchor holds no entry chain and no
+mapped drop.
 
 A node without `cap.table` writes none of the reconciler's series, a node
 without `cap.egress` writes none of the egress series, a node with the userspace

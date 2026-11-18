@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-16
+updated: 2026-11-18
 order: 10
 ---
 
@@ -124,8 +124,8 @@ packet whose source this node does not own is dropped as
 
 ## The antispoof filter
 
-**An untracked reply enters the mesh only by its addresses.** Chain `mesh_entry`
-of [the antispoof filter](../antispoof.md#the-entry-chain) passes a reply by
+**An untracked reply enters the mesh only by its addresses.** Chain `entry` of
+[the antispoof filter](../antispoof.md#the-entry-chain) passes a reply by
 conntrack's direction. A packet a host rule exempts from connection tracking,
 such as a `notrack` rule in a raw chain, has no direction, so it enters the mesh
 only from a source this node owns, toward a destination a `none` class takes, or
@@ -138,10 +138,10 @@ AH and no next header alone, as `ipv6_ext_hdr` in
 [exthdrs_core.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/exthdrs_core.c)
 lists them, to find a flow's protocol. An IPv6 reply carrying a Mobility (135),
 HIP (139), Shim6 (140) or experimental (253, 254) header is tracked under that
-header, not as its flow's reply, so `mesh_entry` passes it only by its
-addresses, as an untracked one, and drops it otherwise as no reply. RFC 7045
-section 2.1 asks a forwarding node to discard a packet for its extension headers
-only by a policy it can configure, and this drop is fixed.
+header, not as its flow's reply, so `entry` passes it only by its addresses, as
+an untracked one, and drops it otherwise as no reply. RFC 7045 section 2.1 asks
+a forwarding node to discard a packet for its extension headers only by a policy
+it can configure, and this drop is fixed.
 
 **At an exit in `cap.exit`'s mode, a forwarded link meets a LAN's learn before
 the order does.** Rule 5440 sends a packet from a link `forward` expands to
@@ -262,9 +262,9 @@ inside `fe80::/10` with its second 16-bit group cleared, the group in which a
 BSD kernel keeps a link-local address's zone
 ([XNU's `in6.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6.c#L4476-L4481)).
 A prefix of the mesh's table such as `fe80:1:2::/48` that an exemption of
-`fe80::/16` carves would join `<ranet3_carved>` and cannot be written, so the
-pass that meets it fails, the filter reads not ready with the reason, and the
-anchor keeps what it held.
+`fe80::/16` carves would join `<carved>` and cannot be written, so the pass that
+meets it fails, the filter reads not ready with the reason, and the anchor keeps
+what it held.
 
 **On macOS a crash leaves the anchor naming a utun unit.** The anchor's drops
 name every interface but the utun the crashed process held, and pf binds a rule

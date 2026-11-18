@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-17
+updated: 2026-11-18
 order: 30
 ---
 
@@ -169,7 +169,7 @@ These commands take flags of their own:
   its zero-free cover, or `not installed`. Then, on Linux, the
   [antispoof filter's](../antispoof.md) chains and sets: when its last pass read
   them and whether it is ready, then each chain, `antispoof` with `overlay` and
-  `mesh_entry`, with their requested hooks and priorities, each desired rule or
+  `entry`, with their requested hooks and priorities, each desired rule or
   `not held` where it is absent, and each drop row's packet and byte counters
   read now. A desired row takes the first held rule matching its chain and
   comment or label, and every remaining held rule is listed separately, with
@@ -232,8 +232,8 @@ These commands take flags of their own:
   [the switch's reject](../routing.md#the-kill-switch-on-macos) where the lookup
   ends at one. Nor does it show the antispoof filter's drops: an arrival chain
   `antispoof` drops from outside the mesh is followed as though the host routed
-  it, and a packet [`mesh_entry`](../antispoof.md#the-entry-chain) drops before
-  the tun reads it is shown entering the tun and meeting the mesh's checks of a
+  it, and a packet [`entry`](../antispoof.md#the-entry-chain) drops before the
+  tun reads it is shown entering the tun and meeting the mesh's checks of a
   read. The drop shows in the filter's counters, in `debug rules` and
   `ranet3 status`. [Route rows](#route-rows) gives each row the view prints. For
   this host's own IPv6 packet to `::`, the unspecified address, the view names
@@ -428,9 +428,9 @@ These commands take flags of their own:
   exits 0. A record is described below. A packet the forwarding decision never
   sees, such as Babel's own or IKE and ESP on the underlay, never appears, and
   neither does one the antispoof filter drops from outside the mesh or one
-  `mesh_entry` keeps out of the tun, since chain `antispoof` drops the first
-  before the host routes it and `mesh_entry` the second before the tun reads it.
-  The [mapped-source check](../routing.md#transit) records `drop` with reason
+  `entry` keeps out of the tun, since chain `antispoof` drops the first before
+  the host routes it and `entry` the second before the tun reads it. The
+  [mapped-source check](../routing.md#transit) records `drop` with reason
   `martian`. With `--json` each line is an object holding a `packet` or a
   `note`.
 

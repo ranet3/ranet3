@@ -672,7 +672,7 @@ out the table `inet ranet3`, whose writers make their chains again on the pass a
 load wakes.
 
 [The antispoof filter](antispoof.md) writes its chains in the same table,
-`inet ranet3`, on every Linux node: filter chain `mesh_entry` at postrouting,
+`inet ranet3`, on every Linux node: filter chain `entry` at postrouting,
 priority `srcnat` + 10 (110), and with `overlay` filter chain `antispoof` at
 prerouting, priority `raw` (-300). The same rules hold: it writes only its own
 chains and sets and replaces them in 1 transaction.
@@ -686,22 +686,22 @@ on the pass the deletion wakes. A chain or set of the filter's that another
 writer changed in a way nf_tables will not undo in place is deleted and made
 again in 1 transaction, and nothing else in the table goes with it.
 
-For a firewall's author, `mesh_entry` reads the source a packet leaves by the
-tun with, after every source translation: each NAT chain at postrouting runs
-inside NAT's own hook at 100, whatever priority it names, so the translator's at
-99, Docker's masquerade at `srcnat` and any other have run by 110. A container
+For a firewall's author, `entry` reads the source a packet leaves by the tun
+with, after every source translation: each NAT chain at postrouting runs inside
+NAT's own hook at 100, whatever priority it names, so the translator's at 99,
+Docker's masquerade at `srcnat` and any other have run by 110. A container
 masqueraded to the tun's address therefore enters the mesh, and one a bridge
 forwards unmasqueraded does not. Another filter chain at 110 runs before or
-after `mesh_entry` by the order the chains were made in, the later first, and
-neither changes the source the other reads. A packet it drops meets no chain
-after it at postrouting,
-[the kill switch](routing.md#the-kill-switch-on-linux)'s among them.
+after `entry` by the order the chains were made in, the later first, and neither
+changes the source the other reads. A packet it drops meets no chain after it at
+postrouting, [the kill switch](routing.md#the-kill-switch-on-linux)'s among
+them.
 
 `overlay` must not hold another overlay's space, such as Tailscale's
 `100.64.0.0/10`: the antispoof filter would drop that program's peers' sources
 arriving on its own interface. Tailscale's sources forwarded from `tailscale0`
-into the tun are dropped by `mesh_entry` unless a masquerade gives them the
-tun's address, since this node owns none of them.
+into the tun are dropped by `entry` unless a masquerade gives them the tun's
+address, since this node owns none of them.
 
 ### A rule that holds forwarded packets
 
@@ -741,11 +741,11 @@ with no such rule.
 On Linux every nftables chain, set and object ranet3 writes is in the one table
 `inet ranet3`, which 3 writers share, each owning its own by name:
 
-| Writer                                                                                     | Chains                                                                                                                                                                | Sets and objects                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [the antispoof filter](antispoof.md#where-it-runs), on every node                          | `mesh_entry`, filter at postrouting, priority 110, and with `overlay` `antispoof`, filter at prerouting, priority -300                                                | the interval sets `carved4`, `carved6`, `owned4`, `owned6`, `none4` and `none6`                                                                                                                                                                                                       |
-| [the kill switch](routing.md#the-kill-switch-on-linux), under `cap.exit.fallback = "none"` | `fallback`, filter at postrouting, and `output`, filter at output, both at priority 2147483646                                                                        | the sets `forwarded`, `lan4`, `lan6`, `own4`, `own6`, `tcp_ports` and `udp_ports`                                                                                                                                                                                                     |
-| [the translator](exit-nodes.md#the-nftables-chains), under `cap.egress`                    | `postrouting`, nat at postrouting, priority 99, `forward`, filter at forward, priority 0, the regular chain `forward6`, which `forward`'s first line sends IPv6 on to | for each family it translates the set `flows4` or `flows6`, the interval set `untranslated4` or `untranslated6` and 3 timeout objects, `translated-udp4`, `translated-tcp4` and `translated-icmp4` in IPv4, and `translated-udp6`, `translated-tcp6` and `translated-icmpv66` in IPv6 |
+| Writer                                                                                     | Chains                                                                                                                                                                | Sets and objects                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [the antispoof filter](antispoof.md#where-it-runs), on every node                          | `entry`, filter at postrouting, priority 110, and with `overlay` `antispoof`, filter at prerouting, priority -300                                                     | the interval sets `carved4`, `carved6`, `owned4`, `owned6`, `none4` and `none6`                                                                                                                                   |
+| [the kill switch](routing.md#the-kill-switch-on-linux), under `cap.exit.fallback = "none"` | `fallback`, filter at postrouting, and `output`, filter at output, both at priority 2147483646                                                                        | the sets `forwarded`, `lan4`, `lan6`, `self4`, `self6`, `tcpports` and `udpports`                                                                                                                                 |
+| [the translator](exit-nodes.md#the-nftables-chains), under `cap.egress`                    | `postrouting`, nat at postrouting, priority 99, `forward`, filter at forward, priority 0, the regular chain `forward6`, which `forward`'s first line sends IPv6 on to | for each family it translates the set `flows4` or `flows6`, the interval set `untranslated4` or `untranslated6` and 3 timeout objects, `udp4`, `tcp4` and `icmp4` in IPv4, and `udp6`, `tcp6` and `icmp6` in IPv6 |
 
 Each writer reads back, rewrites and deletes only what its names give. Another
 writer's change to one of a writer's chains, a rule in one or one of its sets
@@ -774,6 +774,21 @@ without it. No other withdrawal deletes the table, whatever it lists, so a
 daemon that dies between two withdrawals, or a start without `cap.table` that
 deletes the kill switch an earlier instance left, leaves the table for the next
 start to take over.
+
+Each writer's pass also deletes the names an earlier version of it wrote, which
+its own section lists, in the transaction that writes its own, and its
+withdrawal deletes them with its own. nf_tables deletes no chain that a rule of
+another chain or an element of a named map goes to, and no set or object that a
+rule or an element of a map uses. Where such a rule or element is another
+writer's and holds one of those earlier names, the pass keeps that chain,
+emptied, or that set or object, and writes the rest, and the writer names it and
+what holds it as a fault until that goes and the next pass deletes it: the
+antispoof filter in its readiness, the kill switch in its `not holding` reason
+and the translator in the reason both families are not ready. A withdrawal keeps
+such a chain, emptied, but deletes every set and object of the writer's whatever
+uses it, so while a rule or a map element of another writer's uses one, the
+writer's own or an earlier version's, nf_tables refuses the whole withdrawal and
+the writer's chains, rules, sets and objects stay as they were.
 
 A table another writer gave a flag other than dormant refuses every writer's
 rewrite, and each writer names the flag beside the refusal: the translator in

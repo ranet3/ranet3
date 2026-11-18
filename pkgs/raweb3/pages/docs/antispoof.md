@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-16
+updated: 2026-11-18
 order: 55
 ---
 
@@ -13,8 +13,8 @@ and the pf anchor `com.apple/ranet3` on macOS. Chain `antispoof` runs wherever
 the top-level `overlay` is written, and drops a packet that arrives on an
 interface outside the mesh with a source in the mesh's own address space, but
 where the interface's own network lies inside that space or an exemption passes
-it. Chain `mesh_entry` runs on every Linux node with no key, and lets a packet
-the host sends into the tun pass only from a source this node owns, as a reply,
+it. Chain `entry` runs on every Linux node with no key, and lets a packet the
+host sends into the tun pass only from a source this node owns, as a reply,
 toward a destination a `none` class takes, or toward an IPv6 link-local or
 multicast destination. On macOS the tun read makes that check, as
 [the platforms](#platforms) say. A mesh source arriving from anywhere else is
@@ -46,9 +46,9 @@ exempt = ["203.0.113.64/26"]
 A node that forwards takes a packet from any of its interfaces and routes it by
 its destination. Where the host routes a mesh destination into the tun, as
 [where a lookup ends on Linux](routing.md#where-a-lookup-ends-on-linux) gives,
-every peer then takes the packet as the mesh's own. Chain `mesh_entry` keeps a
-host on the same network as such a node out of the mesh: what the host routes
-into the tun passes only as [the entry chain](#the-entry-chain) lists, from an
+every peer then takes the packet as the mesh's own. Chain `entry` keeps a host
+on the same network as such a node out of the mesh: what the host routes into
+the tun passes only as [the entry chain](#the-entry-chain) lists, from an
 address this node owns or translated to one, such as by Docker's masquerade,
 among them. Such a host can still forge one of this node's own addresses. Chain
 `antispoof` drops a forged source inside the overlay and a carved one where
@@ -59,12 +59,12 @@ says.
 
 An [egress segment](segment-routing.md#egress-segments) carries out of the mesh
 only the sources its `allow` list names. The list is authorization. A forged
-allowed source sent through a forwarding node is dropped there by `mesh_entry`
-unless that node owns it, and, for a source inside the overlay, by `antispoof`
-unless an exemption of that node passes it. A source an `allow` entry outside
-the overlay admits, which [egress segments](segment-routing.md#egress-segments)
-describe, meets `mesh_entry` alone. The filter on the exit itself keeps a forged
-mesh source arriving from outside the mesh off the host's services, but what its
+allowed source sent through a forwarding node is dropped there by `entry` unless
+that node owns it, and, for a source inside the overlay, by `antispoof` unless
+an exemption of that node passes it. A source an `allow` entry outside the
+overlay admits, which [egress segments](segment-routing.md#egress-segments)
+describe, meets `entry` alone. The filter on the exit itself keeps a forged mesh
+source arriving from outside the mesh off the host's services, but what its
 [carve-outs](#carve-outs) and [exemptions](#exemptions) pass. The
 [forwarding decision's source checks](routing.md#transit) apply to a peer's
 packet before this filter. The tun's accept ties no source to the session's
@@ -153,11 +153,11 @@ overlay `192.0.2.0/24` and `3fff:10::/32`, a carve-out of `192.0.2.128/25` on
 `en1`'s `192.0.2.64/26`, the anchor holds:
 
 ```
-table <ranet3_overlay> const { 192.0.2.0/24, 3fff:10::/32 }
-table <ranet3_carved> const { 192.0.2.200 }
-pass in quick on lo0 from <ranet3_overlay> to any no state label "accept via lo0"
-block drop in quick on ! utun7 inet from <ranet3_carved> to any label "drop ipv4 source @carved4"
-block drop in quick on ! utun7 inet6 from <ranet3_carved> to any label "drop ipv6 source @carved6"
+table <overlay> const { 192.0.2.0/24, 3fff:10::/32 }
+table <carved> const { 192.0.2.200 }
+pass in quick on lo0 from <overlay> to any no state label "accept via lo0"
+block drop in quick on ! utun7 inet from <carved> to any label "drop ipv4 source @carved4"
+block drop in quick on ! utun7 inet6 from <carved> to any label "drop ipv6 source @carved6"
 pass in quick on en0 inet from 192.0.2.128/25 to any no state label "accept via en0 source 192.0.2.128/25"
 pass in quick on ! utun7 inet from 192.0.2.32/27 to any no state label "accept exempt source 192.0.2.32/27"
 pass in quick on en0 inet6 from 3fff:10:1::/48 to any no state label "accept exempt via en0 source 3fff:10:1::/48"
@@ -372,8 +372,8 @@ drop takes the range too, and the site's sources are dropped on `eth1` as well.
 
 ## The entry chain
 
-Chain `mesh_entry` judges every packet the host sends or forwards out of the tun
-on Linux, after every source translation. On every other platform the tun read
+Chain `entry` judges every packet the host sends or forwards out of the tun on
+Linux, after every source translation. On every other platform the tun read
 takes its place, as [the platforms](#platforms) say. The chain's first line that
 matches decides:
 
@@ -522,10 +522,10 @@ The filter writes these chains and the 6 interval sets `carved4`, `carved6`,
 where [the translator](exit-nodes.md#the-nftables-chains) and
 [the kill switch](routing.md#the-kill-switch-on-linux) write their own:
 
-| Chain        | Type     | Hook          | Priority          | Policy   | When                       |
-| ------------ | -------- | ------------- | ----------------- | -------- | -------------------------- |
-| `antispoof`  | `filter` | `prerouting`  | -300 (`raw`)      | `accept` | where `overlay` is written |
-| `mesh_entry` | `filter` | `postrouting` | 110 (`srcnat`+10) | `accept` | every Linux node           |
+| Chain       | Type     | Hook          | Priority          | Policy   | When                       |
+| ----------- | -------- | ------------- | ----------------- | -------- | -------------------------- |
+| `antispoof` | `filter` | `prerouting`  | -300 (`raw`)      | `accept` | where `overlay` is written |
+| `entry`     | `filter` | `postrouting` | 110 (`srcnat`+10) | `accept` | every Linux node           |
 
 Prerouting comes before the routing decision, so a forged packet to one of this
 node's own addresses is dropped as well as one to forward. Priority `raw` comes
@@ -551,26 +551,30 @@ configuration asks for, a rule another writer added, a flushed set, a dormant
 table or a policy of drop among it, the pass rewrites both chains and every set
 in 1 transaction, deleting first a chain or set nf_tables will not change in
 place, and leaves the table's other chains as they are, then reads them back
-again. A change of the mesh's table or the host's interfaces that moves only a
-set deletes each range that set no longer holds and adds each new one, a range's
-start and end together, in 1 transaction, the chains left alone, so a lookup
-meets the set before the change or after it. One LAN coming or going sends every
-nf_tables listener a notification for each element of the ranges that differ: 2
-to 6 for a LAN enclosing no other, and more for one that does, since the ranges
-of the LANs inside it go or come with it. A pass runs every 30 seconds, and a
-failed one is retried after 1 second, doubling up to the 30. Another writer
-deleting the table or setting a flag on it, or adding, changing or deleting one
-of the filter's chains, a rule in one or an element of one of its sets, wakes a
-pass at once, and the filter reads not ready until that pass puts them back in 1
-transaction. Between the change and that transaction forged packets may pass.
-The filter's own writes wake nothing, nor do the translator's and the kill
-switch's writes of their chains, rules and sets. A flush of the ruleset deletes
-the table and another program setting it dormant sets a flag on it, so each
-wakes every writer once. The first writer's pass after it makes the table again
-or clears the flag, which wakes no other: the table it makes holds none of their
-chains, and with the flag cleared it bypasses none. Notifications the daemon
-lost, which another table's large transaction can overflow its socket with, wake
-a pass too and leave readiness as it was, since that pass reads the chains back.
+again. The same transaction deletes `mesh_entry`, the entry chain an earlier
+version wrote, and a stop withdraws it with the filter's chains. A regular chain
+another writer made under that name stays while a rule or a map element goes to
+it, as [sharing a host](coexistence.md#the-nftables-table) gives. A change of
+the mesh's table or the host's interfaces that moves only a set deletes each
+range that set no longer holds and adds each new one, a range's start and end
+together, in 1 transaction, the chains left alone, so a lookup meets the set
+before the change or after it. One LAN coming or going sends every nf_tables
+listener a notification for each element of the ranges that differ: 2 to 6 for a
+LAN enclosing no other, and more for one that does, since the ranges of the LANs
+inside it go or come with it. A pass runs every 30 seconds, and a failed one is
+retried after 1 second, doubling up to the 30. Another writer deleting the table
+or setting a flag on it, or adding, changing or deleting one of the filter's
+chains, a rule in one or an element of one of its sets, wakes a pass at once,
+and the filter reads not ready until that pass puts them back in 1 transaction.
+Between the change and that transaction forged packets may pass. The filter's
+own writes wake nothing, nor do the translator's and the kill switch's writes of
+their chains, rules and sets. A flush of the ruleset deletes the table and
+another program setting it dormant sets a flag on it, so each wakes every writer
+once. The first writer's pass after it makes the table again or clears the flag,
+which wakes no other: the table it makes holds none of their chains, and with
+the flag cleared it bypasses none. Notifications the daemon lost, which another
+table's large transaction can overflow its socket with, wake a pass too and
+leave readiness as it was, since that pass reads the chains back.
 
 The lifetime of its chains and sets:
 
@@ -596,15 +600,15 @@ The lifetime of its chains and sets:
   chains, and logs
   `antispoof filter is leaving its chains after the mesh failed`. `antispoof`
   keeps dropping forged sources while the supervisor starts the daemon again,
-  `mesh_entry` passes every packet at its first line with the tun gone, and the
-  next start takes them over as above. While ranet3 stays down, the operator
-  removes the chains, and with them their drops, by
+  `entry` passes every packet at its first line with the tun gone, and the next
+  start takes them over as above. While ranet3 stays down, the operator removes
+  the chains, and with them their drops, by
   `nft delete chain inet ranet3 antispoof` and
-  `nft delete chain inet ranet3 mesh_entry`, which leave the 6 sets for the next
+  `nft delete chain inet ranet3 entry`, which leave the 6 sets for the next
   start to take over, or everything of the filter's, the kill switch's and the
   translator's by `nft delete table inet ranet3`.
 - After `SIGKILL` they stay, since the table carries no owner flag: the tun goes
-  with the process, `mesh_entry` passes every packet at its first line, and
+  with the process, `entry` passes every packet at its first line, and
   `antispoof` keeps dropping forged sources until ranet3 starts again and takes
   them over.
 
@@ -623,7 +627,9 @@ loads the anchor whole in 1 transaction, which replaces every ruleset it holds
 and leaves it as it was where pfctl refuses the text, then `-t <table> -T kill`
 removes each table of the anchor the load does not define, which that
 transaction keeps, by the whole name pf holds, a tab or a newline in it
-included. `pfctl -a com.apple/ranet3 -T load -f -` loads its tables alone in 1
+included. So go `<ranet3_overlay>` and `<ranet3_carved>`, the tables an earlier
+version held the overlay and the carved prefixes in, at the first pass.
+`pfctl -a com.apple/ranet3 -T load -f -` loads its tables alone in 1
 transaction, which keeps the rules and their counters, when only the carved sets
 move. Each pass reads the anchor back with `-sr -vv` for its filter rules,
 `-s nat` for its nat, binat and rdr rules, `-s dummynet`, `-s Tables -vv` and
@@ -783,10 +789,10 @@ A family whose setting the node cannot read is not named, and a node that can
 read neither logs no warning. The warning is of the inbound side alone, since
 the tun read judges what enters the mesh there, as [the platforms](#platforms)
 below say, though a host on the node's links can still send under one of the
-node's own addresses. On Linux the tun read and `mesh_entry` keep a forged
-source out of the mesh and chain `antispoof` runs wherever `overlay` is written,
-on a Mac with `overlay` the tun read and chain `antispoof` do, and neither logs
-the warning.
+node's own addresses. On Linux the tun read and `entry` keep a forged source out
+of the mesh and chain `antispoof` runs wherever `overlay` is written, on a Mac
+with `overlay` the tun read and chain `antispoof` do, and neither logs the
+warning.
 
 ## Platforms
 
@@ -814,7 +820,7 @@ the platform, and no pass logs anything. A node there, or on a Mac with no
 
 The entry chain's place on every other platform, macOS among them, is the tun
 read's own: it drops a read from a source this node does not own toward every
-destination but an IPv6 link-local one, as `mesh_entry` passes `fe80::/10`, and
+destination but an IPv6 link-local one, as `entry` passes `fe80::/10`, and
 counts it `unowned_source` on the `Transit` line and in
 `ranet3_transit_packets_total`, as [metrics](metrics.md#transit-counters) lists.
 A multicast destination never reaches the check, since the read drops it first.
@@ -855,10 +861,10 @@ Reordering a list is no change.
 chains, the interfaces inside, the overlay prefixes, each carve-out as
 `carving <prefix> on <link>`, and the packets each kind of drop counted as of
 the last pass, the overlay's, the carved prefixes' and those entering the mesh.
-A node with no `overlay` prints the table, chain `mesh_entry` and its drops
-alone, and a Mac prints no drops entering the mesh, since its anchor holds no
-entry chain. A filter whose chains are not read back reads `not installed`, with
-the reason, also where they are there and hold another writer's rule or sit in a
+A node with no `overlay` prints the table, chain `entry` and its drops alone,
+and a Mac prints no drops entering the mesh, since its anchor holds no entry
+chain. A filter whose chains are not read back reads `not installed`, with the
+reason, also where they are there and hold another writer's rule or sit in a
 dormant table.
 
 `ranet3 debug rules` reads its chains' rules now, through a socket of its own,
@@ -893,11 +899,11 @@ Antispoof filter, pf anchor com.apple/ranet3, read 2 seconds ago, ready
     accept  exempt via en1 source 192.0.2.64/26
     drop    ipv4 source 192.0.2.0/24  2 packets, 168 B
     drop    ipv6 source 3fff:10::/32  9 packets, 936 B
-  table ranet3_carved  192.0.2.200, 3fff:10::/48
-  pf reference         token 9223372036854775809 of pid 4242, listed
-  pf main ruleset      calls com.apple/*
-  pf enabler           pid 4242 ranet3
-  pf enabler           pid 377 othervpn
+  table carved     192.0.2.200, 3fff:10::/48
+  pf reference     token 9223372036854775809 of pid 4242, listed
+  pf main ruleset  calls com.apple/*
+  pf enabler       pid 4242 ranet3
+  pf enabler       pid 377 othervpn
 ```
 
 The rule for `bridge100` is labelled `accept exempt via bridge100 2` in the
