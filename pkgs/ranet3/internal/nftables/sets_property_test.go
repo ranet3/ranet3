@@ -7,6 +7,7 @@ package nftables
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
@@ -145,6 +146,97 @@ func TestNamesFillAndReadBackOnce(t *testing.T) {
 			if !bytes.Equal(got[i].First, InterfaceName(name)) || !bytes.Equal(got[i].Last, InterfaceName(name)) {
 				ht.Fatalf("%q reads back as %s", names, s.describe(got))
 			}
+		}
+	})
+}
+
+// Elements of an interval set, from none to many more than a sort orders by
+// insertion alone, at a few keys from the edges of the key space or at keys
+// drawn from all of it, some held more than once and some keys holding a start
+// and an end, with flag bits beside the end bit that the decode does not read,
+// so elements tied in the sort differ, handed back in ascending order, with
+// two elements swapped, in any order or descending, read back as the keys a
+// lookup finds: an element's key up to the next greater one, or to the last
+// key, where a start is at that key, since a start sorts after an end at one
+// key
+func TestElementsInAnyOrderReadBackAsALookupFindsThem(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		s := Set{Table: "t", Name: "ports", KeyType: TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL}
+		end := func(e element) bool { return e.flags&unix.NFT_SET_ELEM_INTERVAL_END != 0 }
+		// neither the end bit nor the catchall bit, which marks an element of its own
+		unread := []uint32{0, 0x4, 0xfffffffc}
+		pool := []uint16{0, 0xffff, 0x8000, 1, 0xfffe, 2}[:hegel.Draw(ht, pbt.Spanning(1, 6))]
+		fresh := []float64{0, 0.5, 1}[hegel.Draw(ht, pbt.Spanning(0, 2))]
+		var drawn []element
+		for range hegel.Draw(ht, hegel.Integers(0, 128)) {
+			var key uint16
+			if hegel.Draw(ht, hegel.WeightedBooleans(fresh)) {
+				key = hegel.Draw(ht, hegel.Integers[uint16](0, 0xffff))
+				pool = append(pool, key)
+			} else {
+				key = hegel.Draw(ht, hegel.SampledFrom(pool))
+			}
+			e := element{key: binary.BigEndian.AppendUint16(nil, key), flags: hegel.Draw(ht, hegel.SampledFrom(unread))}
+			if hegel.Draw(ht, hegel.Booleans()) {
+				e.flags |= unix.NFT_SET_ELEM_INTERVAL_END
+			}
+			drawn = append(drawn, e)
+		}
+		if len(drawn) > 0 && hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
+			e := drawn[hegel.Draw(ht, hegel.Integers(0, len(drawn)-1))]
+			twin := element{key: e.key, flags: e.flags ^ hegel.Draw(ht, hegel.SampledFrom(unread))}
+			drawn = append(drawn, twin, element{key: e.key, flags: e.flags ^ unix.NFT_SET_ELEM_INTERVAL_END})
+		}
+		rank := func(e element) int {
+			r := 2 * int(binary.BigEndian.Uint16(e.key))
+			if !end(e) {
+				r++
+			}
+			return r
+		}
+		slices.SortStableFunc(drawn, func(a, b element) int { return cmp.Compare(rank(a), rank(b)) })
+		switch hegel.Draw(ht, pbt.Spanning(0, 3)) {
+		case 1:
+			if len(drawn) > 1 {
+				i, j := hegel.Draw(ht, hegel.Integers(0, len(drawn)-1)), hegel.Draw(ht, hegel.Integers(0, len(drawn)-1))
+				drawn[i], drawn[j] = drawn[j], drawn[i]
+			}
+		case 2:
+			for i := len(drawn) - 1; i > 0; i-- {
+				j := hegel.Draw(ht, hegel.Integers(0, i))
+				drawn[i], drawn[j] = drawn[j], drawn[i]
+			}
+		case 3:
+			slices.Reverse(drawn)
+		}
+
+		starts := map[uint16]bool{}
+		var keys []uint16
+		var list []byte
+		var text []string
+		for _, e := range drawn {
+			key := binary.BigEndian.Uint16(e.key)
+			keys = append(keys, key)
+			starts[key] = starts[key] || !end(e)
+			list = append(list, e.encode()...)
+			text = append(text, fmt.Sprintf("%x end %v flags %#x", e.key, end(e), e.flags))
+		}
+		slices.Sort(keys)
+		keys = slices.Compact(keys)
+		var want []Interval
+		for i, key := range keys {
+			if !starts[key] {
+				continue
+			}
+			last := uint16(0xffff)
+			if i+1 < len(keys) {
+				last = keys[i+1] - 1
+			}
+			want = append(want, Interval{First: binary.BigEndian.AppendUint16(nil, key), Last: binary.BigEndian.AppendUint16(nil, last)})
+		}
+		dump := netlink.Message{Data: netlink.PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)}
+		if got := s.decodeElements([]netlink.Message{dump}); s.elementFault(want, got) != "" {
+			ht.Fatalf("%v read back as %s, want %s", text, s.describe(got), s.describe(s.normal(want)))
 		}
 	})
 }

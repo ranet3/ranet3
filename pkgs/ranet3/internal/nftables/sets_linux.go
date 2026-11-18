@@ -333,7 +333,7 @@ func (s Set) decodeElements(replies []netlink.Message) []Interval {
 		return s.normal(keys)
 	}
 	end := func(e element) bool { return e.flags&unix.NFT_SET_ELEM_INTERVAL_END != 0 }
-	slices.SortStableFunc(held, func(a, b element) int {
+	slices.SortFunc(held, func(a, b element) int {
 		if c := bytes.Compare(a.key, b.key); c != 0 {
 			return c
 		}
