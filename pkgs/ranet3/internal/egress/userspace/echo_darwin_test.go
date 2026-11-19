@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/dumptest"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
@@ -256,7 +257,7 @@ func TestEchoSocketIsScopedTowardEachDestination(t *testing.T) {
 		t.Skipf("no lo0: %v", err)
 	}
 	other := 0
-	if ifs, err := net.Interfaces(); err == nil {
+	if ifs, err := dumptest.Refetched(net.Interfaces); err == nil {
 		for _, ifi := range ifs {
 			if ifi.Index != loopback.Index && ifi.Flags&net.FlagUp != 0 {
 				other = ifi.Index
