@@ -418,16 +418,16 @@ func (c Contents) table() string {
 	return ""
 }
 
-// Rewrite is the head of the one transaction that writes c over what its read
-// found stale: Table, adopted where it is there, each chain of stale deleted
-// with its rules, each chain of c made and flushed, which makes a deleted one
-// again, each of strays flushed, then each set and object of stale deleted.
-// strays are the owner's chains TableChains lists that c does not write, which
-// the owner deletes after the head. Every chain of the owner's is flushed
-// before any set or object goes, since nf_tables refuses to delete one a rule
-// still uses, so only another writer's rule using one fails the transaction.
-// Its owner then makes c's sets and objects, fills the sets and writes its
-// rules, which makes every one stale named again.
+// Rewrite is the head of the one transaction that writes c over stale: Table,
+// adopted where it is there, each chain of stale deleted with its rules, each
+// chain of c made and flushed, which makes a deleted one again, each of strays
+// flushed, then each set and object of stale deleted. strays are the owner's
+// chains TableChains lists that c does not write, which the owner deletes
+// after the head. Every chain of the owner's is flushed before any set or
+// object goes, since nf_tables refuses to delete one a rule still uses, so
+// only another writer's rule using one fails the transaction. Its owner then
+// makes c's sets and objects, fills the sets and writes its rules, which makes
+// every one stale named again.
 func (c Contents) Rewrite(proto uint8, stale Contents, strays []string) []Request {
 	requests := []Request{NewTable(proto, Table)}
 	for _, chain := range stale.Chains {
