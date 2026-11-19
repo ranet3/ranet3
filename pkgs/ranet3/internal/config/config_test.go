@@ -1423,29 +1423,9 @@ var encoders = []struct {
 	render    func(any) ([]byte, error)
 	parse     func([]byte, any) error
 }{
-	{".yaml", marshalYAML, yaml.Unmarshal},
+	{".yaml", yaml.Marshal, yaml.Unmarshal},
 	{".toml", toml.Marshal, toml.Unmarshal},
 	{".json", json.Marshal, json.Unmarshal},
-}
-
-// marshalYAML writes what yaml.Marshal writes with every << quoted, since the
-// decoder takes a plain, untagged << key for a merge key
-func marshalYAML(value any) ([]byte, error) {
-	var document yaml.Node
-	if err := document.Encode(value); err != nil {
-		return nil, err
-	}
-	quoteMergeKeys(&document)
-	return yaml.Marshal(&document)
-}
-
-func quoteMergeKeys(node *yaml.Node) {
-	if node.Value == "<<" {
-		node.Tag, node.Style = "!!str", yaml.DoubleQuotedStyle
-	}
-	for _, child := range node.Content {
-		quoteMergeKeys(child)
-	}
 }
 
 // a block holding one written field and nothing else still reaches the daemon
