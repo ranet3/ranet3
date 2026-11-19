@@ -14,5 +14,5 @@ version = 'v0.16.0'
 hash = 'sha256-OvekWcaTHMs5n3Img4EmYaORRgSmybBS+tObSnPqftY='
 
 [mod.'gvisor.dev/gvisor']
-version = 'v0.0.0-20261117040555-0303b2605d5e'
-hash = 'sha256-BQl38sXpgpyKzckqR89vvxA7FW19+TVSx819hKQoxf0='
+version = 'v0.0.0-20261119000822-2d74d5c17655'
+hash = 'sha256-2dNz9M2Y74iwOk9rHEa16t8nxMai6k8CMvmmcoY6ZM0='
