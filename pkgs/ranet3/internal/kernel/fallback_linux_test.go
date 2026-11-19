@@ -603,7 +603,10 @@ func TestNetlinkFallbackMakesAgainAChainUnderItsNameItsFlushTakesOut(t *testing.
 // LAN. The switch makes its chain at postrouting before it flushes output, and
 // nf_tables refuses a policy for a chain that is no base chain, so every pass
 // is refused: the switch does not hold, with a reason that says how the chain
-// reads back and gives the refusal, and the datagram still passes.
+// reads back and gives the refusal, and the datagram still passes. That pass
+// is an open shape the switch cannot close while it makes its chain at
+// postrouting before it empties output, not what it is meant to do, and the
+// test turns around the day it can.
 func TestNetlinkFallbackReportsAChainUnderItsNameBoundFromALaterChain(t *testing.T) {
 	_, reconciler, sets := holdingSwitch(t)
 	beyond := netip.MustParseAddr("192.0.2.200")
