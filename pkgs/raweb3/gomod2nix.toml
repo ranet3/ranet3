@@ -10,8 +10,8 @@ version = 'v2.27.0'
 hash = 'sha256-nL8pyVmx45wouhzd1WSYqRu2IuuyiiBqC9f+aScgZXA='
 
 [mod.'github.com/dlclark/regexp2/v2']
-version = 'v2.9.1'
-hash = 'sha256-WdJdt2mq+AyGQe9JIBSCgiQmelNtUjsxLTUB/K2o1Vw='
+version = 'v2.13.1'
+hash = 'sha256-QWoGWiSi6ULsubT5b2ia5FyqM2GK7e7KM73LUJdQ0S4='
 
 [mod.'github.com/google/go-cmp']
 version = 'v0.7.0'
@@ -30,12 +30,12 @@ version = 'v1.0.10'
 hash = 'sha256-uDPnWjHpSrzXr17KEYEA1yAbizfcsfo5AyztY2tS6ZU='
 
 [mod.'github.com/tdewolff/minify/v2']
-version = 'v2.24.24'
-hash = 'sha256-Xxw1CVQnVJEKlS4ezRpwLaIXYuFAH0NzBQtcoxbT7nI='
+version = 'v2.25.0'
+hash = 'sha256-kO5rrpOKrJM/T0BDMMDg/4lCNaRP4QRaMeHEW/yWKiM='
 
 [mod.'github.com/tdewolff/parse/v2']
-version = 'v2.8.20'
-hash = 'sha256-i3dL4AAO862cghwnezQjH0VoH33XCvL9I0/h6dh2jdM='
+version = 'v2.25.0'
+hash = 'sha256-nAiTYGGDcNsMzCLTqK+nkgjGsHVNOEpgLFaiCnUpREQ='
 
 [mod.'github.com/yuin/goldmark']
 version = 'v1.8.7'
