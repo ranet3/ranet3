@@ -384,7 +384,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner S
 				}
 				// Create takes a held set as it is, so one that differs in more than its size, or whose size cannot hold the owner's elements, stays stale, whose refused delete keeps the owner's rules off it
 				size := DecodeSet(sets[found]).Size
-				remake = !kept || !set.resized(sets[found]) || size != 0 && int(size) < len(set.normal(c.Elements[set.Name]))
+				remake = !kept || !set.resized(sets[found]) || int(size) < len(set.normal(c.Elements[set.Name]))
 				refuse(fault, kept && remake)
 			}
 			note(fault)
