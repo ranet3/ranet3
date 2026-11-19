@@ -539,7 +539,7 @@ func rulesConfig(t *testing.T) *config.Config {
 // rulesUplinkPair makes the veth pair from the leaf's namespace to the far host's, the leaf's defaults through the far host, and forwarding on at the leaf
 // with reverse path filtering off before any device exists, so the kernel drops no forwarded packet for its source, and waits for
 // each end's link-local address, which the lab needs (rulesLinkLocal). A link made in either namespace from here on skips duplicate
-// address detection unless all/accept_dad is on, as the guard sets it, which saves a lab 2 to 3 s of waiting on tentative link-local
+// address detection unless all/accept_dad is on, as the guard sets it, which saves a lab the wait on tentative link-local
 // addresses and changes nothing else, since every address the lab adds skips it already. The far ends of vethHost's pairs, made into
 // namespaces of their own, keep it.
 func rulesUplinkPair(t *testing.T, leaf, far *netnstest.Thread) {
