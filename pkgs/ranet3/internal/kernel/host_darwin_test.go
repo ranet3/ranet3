@@ -15,7 +15,17 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/dumptest"
 )
+
+// The tests of other packages read the table and the interface list with the
+// daemon's bound
+func TestTestDumpsShareTheDaemonsBound(t *testing.T) {
+	if dumptest.Attempts != dumpAttempts {
+		t.Errorf("internal/dumptest fetches %d times in all, the daemon %d", dumptest.Attempts, dumpAttempts)
+	}
+}
 
 // A dump that fails with ENOMEM, as FetchRIB's does when the table grows past
 // its sizing sysctl, or with ENOBUFS, as an interface list's does when it grows

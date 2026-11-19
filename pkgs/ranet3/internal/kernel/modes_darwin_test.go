@@ -266,7 +266,7 @@ func modeOrphans(rows []modeRow) []netip.Prefix {
 
 func dumpedRoutes(t *testing.T) []*route.RouteMessage {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := runningKernel{}.Dump()
 	if err != nil {
 		t.Fatal(err)
 	}

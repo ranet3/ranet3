@@ -240,7 +240,7 @@ func routedElsewhere(messages []route.Message, key netip.Prefix, own int) (int, 
 // dumpRoutes is the kernel's routing table of both families.
 func dumpRoutes(t *testing.T) []route.Message {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := runningKernel{}.Dump()
 	if err != nil {
 		t.Fatal(err)
 	}

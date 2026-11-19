@@ -19,7 +19,7 @@ import (
 // snapshots can be compared.
 func defaultRoutesOnHost(t *testing.T) []string {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := runningKernel{}.Dump()
 	if err != nil {
 		t.Fatal(err)
 	}

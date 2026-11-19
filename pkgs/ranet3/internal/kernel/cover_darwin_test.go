@@ -24,7 +24,7 @@ import (
 // the clone lives until it expires or that route goes
 func heldOn(t *testing.T, index int) map[netip.Prefix]bool {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := runningKernel{}.Dump()
 	if err != nil {
 		t.Fatal(err)
 	}

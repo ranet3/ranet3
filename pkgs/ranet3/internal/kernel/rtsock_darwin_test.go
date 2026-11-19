@@ -280,7 +280,7 @@ func setInterfaceUp(t *testing.T, name string) {
 // RTF_MODIFIED on and off under a route that is not going anywhere.
 func foreignRoutes(t *testing.T, index int) map[string]bool {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := runningKernel{}.Dump()
 	if err != nil {
 		t.Fatalf("dump the routing table: %v", err)
 	}

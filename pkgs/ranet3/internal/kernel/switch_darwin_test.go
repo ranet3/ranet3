@@ -1103,7 +1103,7 @@ func killLeavesTheHost(t *testing.T, keys ...netip.Prefix) {
 	loopback := interfaceIndex(t, Loopback)
 	defaults := defaultRoutesOnHost(t)
 	links := map[int]bool{}
-	interfaces, err := net.Interfaces()
+	interfaces, err := refetched(net.Interfaces)
 	if err != nil {
 		t.Fatal(err)
 	}
