@@ -505,7 +505,9 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 				if _, err := unix.Write(fd, payload); err != nil {
 					t.Fatalf("send a %d byte packet: %v", learned, err)
 				}
-				waitUntil(t, "the datagram the sender sent at its new path MTU to reach the exit", func() bool { return len(exited.packets(t)) > 0 })
+				waitUntil(t, "the datagram the sender sent at its new path MTU to reach the exit and be counted forwarded", func() bool {
+					return len(exited.packets(t)) > 0 && transit.SegmentCounters().Forwarded > 0
+				})
 				sent := exited.packets(t)
 				if len(sent) != 1 || len(sent[0]) != waypointSession {
 					t.Fatalf("the exit was sent %d packets, the first of %d bytes, want the one %d byte segment the sender's second datagram became", len(sent), len(sent[0]), waypointSession)

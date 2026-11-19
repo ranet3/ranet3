@@ -655,18 +655,14 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 		lab.reload(t, pathSIDW, pathSIDA)
 		forwarded := w.client.Mesh.SegmentCounters().Forwarded
 		lab.expect(t, &next, "a")
-		if got := w.client.Mesh.SegmentCounters().Forwarded; got <= forwarded {
-			t.Errorf("the waypoint counted %d forwarded, as before the probes", got)
-		}
+		labCounted(t, func() uint64 { return w.client.Mesh.SegmentCounters().Forwarded }, forwarded, "the waypoint counted %d forwarded, as before the probes")
 	})
 	t.Run("path whose last segment is an End", func(t *testing.T) {
 		// RFC 8986 section 4.8 makes the End.DT46 SID the last of a policy, which the leaf cannot see of another node's SID, so the End drops what reaches it with no segment left
 		lab.reload(t, pathSIDW)
 		dropped := w.client.Mesh.SegmentCounters().Dropped
 		lab.expect(t, &next, "nowhere")
-		if got := w.client.Mesh.SegmentCounters().Dropped; got <= dropped {
-			t.Errorf("the waypoint counted %d dropped, as before the probes", got)
-		}
+		labCounted(t, func() uint64 { return w.client.Mesh.SegmentCounters().Dropped }, dropped, "the waypoint counted %d dropped, as before the probes")
 	})
 	t.Run("a's SID retracted behind the waypoint", func(t *testing.T) {
 		lab.reload(t, pathSIDW, pathSIDA)
@@ -698,9 +694,7 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 		if got := pathToward(lab.captures[pathExitB], pathSIDAOutside); got != 0 {
 			t.Errorf("%d packets toward a's SID outside the overlay left b's uplink", got)
 		}
-		if got := leaf.client.Mesh.PathCounters().Unrouted; got <= unrouted {
-			t.Errorf("the leaf counted %d unrouted along the path, as before the datagrams sent with b's default its one route to a's SID", got)
-		}
+		labCounted(t, func() uint64 { return leaf.client.Mesh.PathCounters().Unrouted }, unrouted, "the leaf counted %d unrouted along the path, as before the datagrams sent with b's default its one route to a's SID")
 		lab.settle(t, false)
 		lab.awaitDown(t, pathSIDAOutside)
 		lab.awaitEvent(t, "down "+pathSIDAOutside.String()+" none")

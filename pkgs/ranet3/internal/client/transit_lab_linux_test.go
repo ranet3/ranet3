@@ -45,7 +45,7 @@ import (
 const (
 	// labMeshPort is each lab node's IKE and ESP port, free in a namespace of its own
 	labMeshPort = 4500
-	// labPoll is how often a read of a socket's error queue is tried again
+	// labPoll is how often the lab reads again a state it waits for
 	labPoll = 10 * time.Millisecond
 	// lineNarrow is the MTU of the link between b and c, under which b's session to c carries less than a's session to b
 	lineNarrow = 1360
@@ -113,9 +113,7 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 				fd := labDatagrams(t, a, family, lineC[v], 0)
 				payload := []byte("through b over " + family.name)
 				labReceive(t, listener, payload, labWrite(fd, payload))
-				if got := b.client.Mesh.TransitCounters().Forwarded; got <= before {
-					t.Errorf("c read a's datagram and b counted %d forwarded, as before it", got)
-				}
+				labCounted(t, func() uint64 { return b.client.Mesh.TransitCounters().Forwarded }, before, "c read a's datagram and b counted %d forwarded, as before it")
 			})
 			t.Run("expired at b", func(t *testing.T) {
 				got := labAwaitError(t, labDatagrams(t, a, family, lineC[v], 1), family, []byte("one hop"))
@@ -243,9 +241,7 @@ func TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink(t *testing.T) {
 			before := e.client.Mesh.TransitCounters().Forwarded
 			payload := []byte("through the exit over " + family.name)
 			labReceive(t, listener, payload, labWrite(labDatagrams(t, l, family, lineC[family.version], 0), payload))
-			if got := e.client.Mesh.TransitCounters().Forwarded; got <= before {
-				t.Errorf("t read l's datagram and e counted %d forwarded, as before it", got)
-			}
+			labCounted(t, func() uint64 { return e.client.Mesh.TransitCounters().Forwarded }, before, "t read l's datagram and e counted %d forwarded, as before it")
 		})
 	}
 	if labCaptured(capture, func(packet []byte) bool {
@@ -631,6 +627,19 @@ func labForwardedNothing(t *testing.T, node *labNode) {
 	}
 }
 
+// labCounted waits until counted reads more than before, and fails the test with message and the last read once convergeBudget has passed
+// a node may count a packet it forwards or answers only after the far node has read it
+func labCounted(t *testing.T, counted func() uint64, before uint64, message string) {
+	t.Helper()
+	got := counted()
+	for deadline := time.Now().Add(convergeBudget); got <= before && time.Now().Before(deadline); got = counted() {
+		time.Sleep(labPoll)
+	}
+	if got <= before {
+		t.Errorf(message, got)
+	}
+}
+
 // a, b and c in the line, with cap.transit off at b, which announces a network covering a's and c's router-ids
 // and an End.DT46 SID delivering to the mesh, which a steers its datagrams for another network of c's through
 // b answers a datagram for c administratively prohibited from its router-id
@@ -652,17 +661,13 @@ func TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID(t *testing.T
 				if got.kind != family.unreachable || got.code != family.prohibited || got.from != lineB[v] {
 					t.Errorf("a datagram for c drew type %d code %d from %s, want type %d code %d from b's router-id %s", got.kind, got.code, got.from, family.unreachable, family.prohibited, lineB[v])
 				}
-				if got := b.client.Mesh.TransitCounters().Refused; got <= before {
-					t.Errorf("b answered and counted %d refused, as before it", got)
-				}
+				labCounted(t, func() uint64 { return b.client.Mesh.TransitCounters().Refused }, before, "b answered and counted %d refused, as before it")
 			})
 			t.Run("through b's End.DT46 SID", func(t *testing.T) {
 				before := b.client.Mesh.TransitCounters().Forwarded
 				payload := []byte("through b's SID over " + family.name)
 				labReceive(t, listener, payload, labWrite(labDatagrams(t, a, family, lineFar[v].Addr().Next(), 0), payload))
-				if got := b.client.Mesh.TransitCounters().Forwarded; got <= before {
-					t.Errorf("c read the steered datagram and b counted %d forwarded, as before it", got)
-				}
+				labCounted(t, func() uint64 { return b.client.Mesh.TransitCounters().Forwarded }, before, "c read the steered datagram and b counted %d forwarded, as before it")
 			})
 		})
 	}
@@ -1318,6 +1323,8 @@ func TestTUNEdgeChecksAHostsPacketsForwardedIntoTheTun(t *testing.T) {
 			labSendRaw(t, x, raw, dst, 0)
 			return reason(c.client.Mesh.TransitCounters()) > before
 		})
+		// a packet c counted and still sent on is counted at to or b only once it has crossed a session, which the quiet covers
+		time.Sleep(labQuiet)
 		if got := to.client.Mesh.TransitCounters().Delivered; got != delivered {
 			t.Errorf("%s: %s delivered %d packets, want %d, so it read one the checks drop", name, to.name, got, delivered)
 		}

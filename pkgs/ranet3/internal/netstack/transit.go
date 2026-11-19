@@ -321,7 +321,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) []
 	transit := m.transitOn.Load()
 	var tally transitTally
 	var egressed [][]byte
-	// declared first so it runs after the tally is added, and a reader that has the frame finds it counted
+	// declared first so it runs after the tally is added, and a reader that has a frame egress sent finds it counted, unlike a forward or an answer this call sends
 	defer func() { m.egress(egressed, hold) }()
 	defer m.addTally(&tally)
 	out := frames[:0]

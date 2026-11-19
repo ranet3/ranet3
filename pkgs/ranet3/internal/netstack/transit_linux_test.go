@@ -112,7 +112,10 @@ func TestTUNAnswerToThisHostPassesAReversePathCheck(t *testing.T) {
 				if _, err := unix.Write(fd, []byte("spent")); err != nil {
 					t.Fatalf("send a datagram: %v", err)
 				}
-				waitUntil(t, "the answer to be written into the tun", func() bool { return m.TransitCounters().Answered == 1 })
+				waitUntil(t, "the answer to be written into the tun and the packet counted expired", func() bool {
+					counted := m.TransitCounters()
+					return counted.Answered == 1 && counted.Expired == 1
+				})
 				if got := m.TransitCounters(); got.Expired != 1 || got.Forwarded != 0 {
 					t.Errorf("the node counted %+v, want the one packet expired", got)
 				}
