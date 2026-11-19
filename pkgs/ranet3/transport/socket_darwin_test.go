@@ -27,6 +27,8 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/dumptest"
 )
 
 // boundInterface reads back what the kernel holds, so the tests assert on the
@@ -53,7 +55,7 @@ func boundInterface(t *testing.T, socket *darwinSocket) int {
 // twoInterfaces is the loopback and one other live link this host really has, two indices the kernel accepts
 func twoInterfaces(t *testing.T) (first, second int) {
 	t.Helper()
-	devices, err := net.Interfaces()
+	devices, err := dumptest.Refetched(net.Interfaces)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +303,7 @@ func ownRoute(t *testing.T, key netip.Prefix, index int, args ...string) (func()
 // routeDump is the kernel's routing table of both families
 func routeDump(t *testing.T) []route.Message {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := dumptest.Refetched(func() ([]byte, error) { return route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0) })
 	if err != nil {
 		t.Fatalf("dump the routing table: %v", err)
 	}
@@ -692,7 +694,7 @@ func TestDarwinRefusesWhatTheInterfaceCannotCarry(t *testing.T) {
 // hostAddress is an address of the family ipv6 names on an interface of this host that is up and broadcasts
 func hostAddress(t *testing.T, ipv6 bool) netip.Addr {
 	t.Helper()
-	links, err := net.Interfaces()
+	links, err := dumptest.Refetched(net.Interfaces)
 	if err != nil {
 		t.Fatal(err)
 	}
