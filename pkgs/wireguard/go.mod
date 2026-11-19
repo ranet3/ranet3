@@ -3,11 +3,11 @@ module ranet3.com/pkgs/wireguard
 go 1.27.3
 
 require (
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	gvisor.dev/gvisor v0.0.0-20261117040555-0303b2605d5e
 )
 
 require (
-	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
+	golang.org/x/exp v0.0.0-20261118215729-2791e4028fd4 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )

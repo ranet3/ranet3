@@ -2,12 +2,12 @@ schema = 3
 
 [mod]
 [mod.'golang.org/x/exp']
-version = 'v0.0.0-20261014143641-f0251eb4aa3e'
-hash = 'sha256-PLzyWDt9Ni7Qdd6uHw7avHSJxdSc+VEzf5JG9gFCywo='
+version = 'v0.0.0-20261118215729-2791e4028fd4'
+hash = 'sha256-J5bbNDn9ATxwVnM/km9wHrAmYgNllJOnfE5vDrDV7MQ='
 
 [mod.'golang.org/x/sys']
-version = 'v0.49.0'
-hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
+version = 'v0.50.0'
+hash = 'sha256-3T1I5T5pgbQBxRhN9Q2Ajvsy1kJW9WM/uddR9cOUVNA='
 
 [mod.'golang.org/x/time']
 version = 'v0.16.0'

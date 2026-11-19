@@ -601,7 +601,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## go.yaml.in/yaml/v3
 
-go.yaml.in/yaml/v3 v3.0.5, from `LICENSE`.
+go.yaml.in/yaml/v3 v3.0.6, from `LICENSE`.
 
 ```
 
@@ -692,7 +692,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.org/x/exp
 
-golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e, from `LICENSE`.
+golang.org/x/exp v0.0.0-20261118215729-2791e4028fd4, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
@@ -760,7 +760,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.org/x/sys
 
-golang.org/x/sys v0.49.0, from `LICENSE`.
+golang.org/x/sys v0.50.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
