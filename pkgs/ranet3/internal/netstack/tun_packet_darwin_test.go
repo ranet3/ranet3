@@ -20,6 +20,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/dumptest"
 )
 
 // the addresses of the point-to-point link the tests below give a utun, in 198.18.0.0/15, which RFC 2544 sets aside for tests
@@ -148,7 +150,7 @@ func routesElsewhere(t *testing.T, index int) []string {
 // routeDump is the kernel's routing table of both families
 func routeDump(t *testing.T) []route.Message {
 	t.Helper()
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	rib, err := dumptest.Refetched(func() ([]byte, error) { return route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0) })
 	if err != nil {
 		t.Fatalf("dump the routing table: %v", err)
 	}
