@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-18
+updated: 2026-11-19
 order: 20
 ---
 
@@ -216,6 +216,14 @@ nameserver outside the overlay that prepare is checked by `internal/registry`'s
 unit tests. Each test ends by deleting any reject an arm left at the switch's or
 the overlay's keys, and checks that the host's table and defaults are as they
 were.
+
+A root test that needs an unscoped `::/0` adds one on a utun of its own only
+where the host holds none, and the root tests delete a route or an address only
+once they have shown it to be one they added. Where the host already holds, at a
+key or an address a test reads before it writes, what that test would add or
+delete, such as a reject on `lo0` at a key the kill switch writes, an unscoped
+route out of another interface or an alias on `lo0`, the test skips with a
+reason.
 
 ### The userspace exit's host ports
 

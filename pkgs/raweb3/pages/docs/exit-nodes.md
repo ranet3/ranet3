@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-18
+updated: 2026-11-19
 order: 50
 ---
 
@@ -359,10 +359,10 @@ into the mesh holds its own.
   not counted and its flows are not limited, until every flow of some source has
   ended and
   [the kernel collects its count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_set_hash.c?id=940de590b839f71d6dc846160534bf202401b8b7#n393).
-- **What its count misses.** The kernel's count of a source's flows can leave a
-  flow open and uncounted, past the share, as the row for the flows the kernel
-  exit's count misses in [limits](design/limits.md#dataplane-and-sockets) gives.
-  Behind
+- **What its count misses.** The kernel's count of a source's flows, and a pass
+  that makes a set of flows again, can leave a flow open and uncounted, past the
+  share, as the row for the flows the kernel exit's count misses in
+  [limits](design/limits.md#dataplane-and-sockets) gives. Behind
   [a rule that holds forwarded packets](coexistence.md#a-rule-that-holds-forwarded-packets)
   a source's flows are not bounded by the share.
 - **What it bounds.** The open flows a source holds through this node. A mesh
@@ -525,7 +525,11 @@ no table flag in place but dormant. When a chain, set or object of the
 translator's reads back otherwise than written and the difference is one
 nf_tables will not change in place, the pass deletes it and makes it again in
 the same transaction, leaving every chain, set and object of another writer's as
-it is. Another table flag holds both families not ready, with the reason
+it is beyond
+[what goes of another writer's](coexistence.md#what-goes-of-another-writers).
+Where nf_tables refuses that transaction with `file exists`, the pass sends it
+once more as [sharing a host](coexistence.md#the-nftables-table) gives. Another
+table flag holds both families not ready, with the reason
 [sharing a host](coexistence.md#the-nftables-table) gives. When the chains still
 do not read back as written, the host stops forwarding the family or a lookup
 fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
@@ -1052,10 +1056,17 @@ object as it is. The share is one setting of both families, so where that
 instance translated both, the pass makes both sets again.
 
 A pass replaces the chains' rules and the elements of the sets of untranslated
-sources in 1 transaction and leaves the sets of flows, their counts and the
-objects as they are. Each rule carries a comment that names it, which
-`nft list ruleset` shows, and a pass reads each rule back by its comment and by
-what it does:
+sources in 1 transaction. It leaves a timeout object as it is unless the object
+reads back otherwise than written, as [timeouts](#timeouts) gives. It leaves a
+set of flows and its counts as they are unless it makes the set anew, which it
+does in three cases. Where the set is gone, as after a flush of the whole
+ruleset, the pass makes it. Where the set reads back otherwise in a way
+nf_tables will not change in place, as under another share, the pass makes it
+again, as the paragraph above gives. Where nf_tables refused the pass's
+transaction with `file exists`, the pass makes it again in its second send, as
+[sharing a host](coexistence.md#the-nftables-table) gives. Each rule carries a
+comment that names it, which `nft list ruleset` shows, and a pass reads each
+rule back by its comment and by what it does:
 
 - `out via ranet3 ipv4 icmp source quench dropped`
 - `in via ranet3 ipv4 icmp information dropped`
@@ -1083,6 +1094,9 @@ since a line of one of them may go to it by a goto or a map and
 [the gotos of a line's map go with the line](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n6016).
 The same transaction then deletes each such chain that no rule or map element of
 another writer's goes to, as [refusing to advertise](#refusing-to-advertise)
+gives. A chain under such a name that another writer flagged binding is neither
+emptied nor deleted by name, and goes only as
+[what goes of another writer's](coexistence.md#what-goes-of-another-writers)
 gives. A line at the forward hook tests no family ahead of its prefix, so
 `nft list ruleset` prints the prefix as the bytes the line reads, such as
 `@nh,96,32 & 0xffffff00 == 0xc0000200` for `192.0.2.0/24`, and its comment names

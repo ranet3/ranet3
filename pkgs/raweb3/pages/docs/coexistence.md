@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-18
+updated: 2026-11-19
 order: 110
 ---
 
@@ -594,13 +594,16 @@ The chains and timeout objects an earlier version wrote in the table
 `inet ranet3` are its own, as
 [refusing to advertise](exit-nodes.md#refusing-to-advertise) names them, and a
 chain of the table under any other name is another writer's. A pass writes,
-replaces or deletes nothing but its own. It replaces the chains' rules in 1
-transaction, so no packet is ever evaluated against half a ruleset. When a
-chain, set or timeout object of the translator's reads back otherwise than
-written and the difference is one nf_tables will not change in place, the pass
-deletes it and makes it again in that transaction. The withdrawal of
-`cap.egress` removes another writer's chain only with the table, in the case
-[the nftables table](#the-nftables-table) gives.
+replaces or deletes nothing but its own, beyond
+[what goes of another writer's](#what-goes-of-another-writers). It replaces the
+chains' rules in 1 transaction, so no packet is ever evaluated against half a
+ruleset. When a chain, set or timeout object of the translator's reads back
+otherwise than written and the difference is one nf_tables will not change in
+place, the pass deletes it and makes it again in that transaction. Where
+nf_tables refuses that transaction with `file exists`, the pass sends it once
+more as [the nftables table](#the-nftables-table) gives. The withdrawal of
+`cap.egress` removes nothing of another writer's beyond
+[what goes of another writer's](#what-goes-of-another-writers).
 
 Another writer's chain holds a family [not ready](exit-nodes.md#readiness) only
 where a rule of it goes to or uses a chain, set or object of the translator's
@@ -702,13 +705,16 @@ ruleset deletes the table with every writer's chains, and each puts its own back
 on the pass the deletion wakes. When a chain or set of the filter's reads back
 otherwise than written and the difference is one nf_tables will not change in
 place, the pass deletes it and makes it again in 1 transaction, and no chain,
-set or object of another writer's goes with it. Where a rule in a chain that is
-not the filter's uses that set, or a rule or a map element of another writer's
-goes to that chain, nf_tables refuses the whole transaction of each pass that
-must delete it, so that pass writes nothing of the filter's. The filter then
-reads [not ready](antispoof.md#readiness), and the reason names what of the
-filter's reads back otherwise and that the write failed, not what holds it,
-until the first pass after that rule or element is gone.
+set or object of another writer's goes with it beyond
+[what goes of another writer's](#what-goes-of-another-writers). Where a rule in
+a chain that is not the filter's uses that set, or a rule or a map element of
+another writer's goes to that chain, nf_tables refuses the whole transaction of
+each pass that must delete it, so that pass writes nothing of the filter's. The
+filter then reads [not ready](antispoof.md#readiness), and the reason names what
+of the filter's reads back otherwise and that the write failed, not what holds
+it, until the first pass after that rule or element is gone. Where nf_tables
+refuses one of the filter's transactions with `file exists`,
+[the nftables table](#the-nftables-table) gives which it sends once more.
 
 For a firewall's author, `entry` reads the source a packet leaves by the tun
 with, after every source translation: each NAT chain at postrouting runs inside
@@ -771,18 +777,28 @@ On Linux every nftables chain, set and object ranet3 writes is in the one table
 | [the kill switch](routing.md#the-kill-switch-on-linux), under `cap.exit.fallback = "none"` | `fallback`, filter at postrouting, and `output`, filter at output, both at priority 2147483646                                                                        | the sets `forwarded`, `lan4`, `lan6`, `self4`, `self6`, `tcpports` and `udpports`                                                                                                                                 |
 | [the translator](exit-nodes.md#the-nftables-chains), under `cap.egress`                    | `postrouting`, nat at postrouting, priority 99, `forward`, filter at forward, priority 0, the regular chain `forward6`, which `forward`'s first line sends IPv6 on to | for each family it translates the set `flows4` or `flows6`, the interval set `untranslated4` or `untranslated6` and 3 timeout objects, `udp4`, `tcp4` and `icmp4` in IPv4, and `udp6`, `tcp6` and `icmp6` in IPv6 |
 
-Each writer reads back, rewrites and deletes only what its names give. Another
-writer's change to one of a writer's chains, a rule in one or one of its sets
-wakes that writer alone. No monitor reads the timeout objects, and the
-translator's next read finds a change to one. A table message wakes every writer
-but its sender, unless it is a `NEWTABLE` whose flags are 0, which makes the
-table or clears its flags. One that deletes the table wakes them whatever it
-carries. A flush of the whole ruleset deletes the table and another program
-setting it dormant sets a flag on it, so each wakes every writer once, and the
-first writer's pass after it makes the table again or clears the flag, which
-wakes no other: the table it makes holds none of their chains, and with the flag
-cleared it bypasses none. No writer's writes wake another. Each makes the table
-where it is missing.
+Each writer reads back, rewrites and deletes only what its names give, beyond
+[what goes of another writer's](#what-goes-of-another-writers). Another writer's
+change to one of a writer's chains, a rule in one or one of its sets wakes that
+writer alone. No monitor reads the timeout objects, and the translator's next
+read finds a change to one. A table message wakes every writer but its sender,
+unless it is a `NEWTABLE` whose flags are 0, which makes the table or clears its
+flags. One that deletes the table wakes them whatever it carries. A flush of the
+whole ruleset deletes the table and another program setting it dormant sets a
+flag on it, so each wakes every writer once, and the first writer's pass after
+it makes the table again or clears the flag, which wakes no other: the table it
+makes holds none of their chains, and with the flag cleared it bypasses none. No
+writer's writes wake another. Each makes the table where it is missing.
+
+A writer's rewrite is the transaction that writes its chains and sets whole:
+every write of the translator and of the kill switch, and every write of the
+antispoof filter but its fill of its sets alone, which sends only the ranges
+that changed. Where nf_tables refuses a rewrite with `file exists`, the writer
+sends it once more with every named set of those it writes that the table holds
+deleted and made again, the translator's sets of flows among them, whose counts
+start again, and the pass's result is that second send's. A fill nf_tables
+refuses is not sent again: the filter reads not ready with the fill's error, and
+its next pass reads the sets against all they should hold and rewrites them.
 
 The daemon counts its own writers. Each holds the table from its first write
 that succeeds, or from the read that finds what an earlier instance of it left,
@@ -814,11 +830,16 @@ next pass deletes it: the antispoof filter in its readiness, the kill switch in
 its `not holding` reason and the translator in the reason both families are not
 ready. The fault names what holds it: the chain of a rule, a named map by its
 name where its element goes to a chain, and a map alone where its element uses
-an object. A withdrawal keeps such a chain, emptied, but deletes every set and
-object of the writer's whatever uses it, so while a rule or a map element of
-another writer's uses one, the writer's own or an earlier version's, nf_tables
-refuses the whole withdrawal and the writer's chains, rules, sets and objects
-stay as they were.
+an object. The pass and a withdrawal alike keep the writer's chain under an
+earlier name emptied where it is a regular chain, and as it is where another
+writer flagged it [binding](#what-goes-of-another-writers), since nf_tables
+refuses its flush. A withdrawal deletes every set and object of the writer's,
+whatever uses it, but for an [anonymous set](#what-goes-of-another-writers)
+under one of its names, which it does not delete by name, since that set goes
+with the rule that uses it. So while a rule or a map element of another writer's
+uses a set or object the withdrawal deletes, the writer's own or an earlier
+version's, nf_tables refuses the whole withdrawal and the writer's chains,
+rules, sets and objects stay as they were.
 
 A table another writer gave a flag other than dormant refuses every writer's
 rewrite, and each writer names the flag beside the refusal: the translator in
@@ -851,6 +872,21 @@ the old forward chain and kill switch go on refusing and dropping by the
 configuration they were written for. Delete them with
 `nft delete table ip ranet3`, `nft delete table ip6 ranet3` and
 `nft delete table inet ranet3_fallback`, or reboot.
+
+#### What goes of another writer's
+
+A writer's rewrite and its withdrawal empty or delete chains of its own. A rule
+another writer put in one of those chains goes with it. That rule may go to a
+chain the other writer flagged binding, or use an anonymous set. nf_tables ties
+such a chain or set to the one rule that goes to it or uses it, and takes it out
+with that rule, as
+[nft_immediate.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_immediate.c?id=940de590b839f71d6dc846160534bf202401b8b7#n150)
+does for a binding chain and
+[nft_lookup.c](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_lookup.c?id=940de590b839f71d6dc846160534bf202401b8b7#n205)
+for an anonymous set. A binding chain takes with it the anonymous sets its own
+rules use. Nothing else of another writer's goes, but with the table, where a
+withdrawal deletes it in the case [the nftables table](#the-nftables-table)
+gives.
 
 ### pf on macOS
 

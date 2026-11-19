@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-18
+updated: 2026-11-19
 order: 55
 ---
 
@@ -552,15 +552,22 @@ no other, reads as every address. An element that carries an expression reads as
 a fault. When anything differs from what the configuration asks for, a rule
 another writer added, a flushed set, a dormant table or a policy of drop among
 it, the pass rewrites both chains and every set in 1 transaction and leaves the
-table's other chains as they are, then reads them back again. When a chain or
-set of the filter's reads back otherwise than written and the difference is one
-nf_tables will not change in place, that transaction deletes it and makes it
-again, unless another writer holds it, as
-[sharing a host](coexistence.md#the-packet-filter) gives. The same transaction
-deletes `mesh_entry`, the entry chain an earlier version wrote, and a stop
-withdraws it with the filter's chains. A regular chain another writer made under
-that name stays while a rule or a map element goes to it, as
-[sharing a host](coexistence.md#the-nftables-table) gives.
+table's other chains as they are, beyond
+[what goes of another writer's](coexistence.md#what-goes-of-another-writers),
+then reads them back again. When a chain or set of the filter's reads back
+otherwise than written and the difference is one nf_tables will not change in
+place, that transaction deletes it and makes it again, unless another writer
+holds it, as [sharing a host](coexistence.md#the-packet-filter) gives. Where
+nf_tables refuses that transaction with `file exists`, the pass sends it once
+more as [sharing a host](coexistence.md#the-nftables-table) gives. The pass's
+transaction also deletes `mesh_entry`, the entry chain an earlier version wrote,
+and a stop withdraws it with the filter's chains. A regular chain another writer
+made under that name stays while a rule or a map element goes to it, as
+[sharing a host](coexistence.md#the-nftables-table) gives. A chain under that
+name that another writer flagged binding is neither emptied nor deleted by name,
+and goes only as
+[what goes of another writer's](coexistence.md#what-goes-of-another-writers)
+gives.
 
 A change of the mesh's table or the host's interfaces that moves only a set
 deletes each range that set no longer holds and adds each new one, a range's
