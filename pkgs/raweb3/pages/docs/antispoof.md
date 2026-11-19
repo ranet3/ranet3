@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-19
+updated: 2026-11-20
 order: 55
 ---
 
@@ -582,9 +582,11 @@ A pass runs every 30 seconds, and a failed one is retried after 1 second,
 doubling up to the 30. Another writer deleting the table or setting a flag on
 it, or adding, changing or deleting one of the filter's chains, a rule in one or
 an element of one of its sets, wakes a pass at once, and the filter reads not
-ready until that pass puts them back in 1 transaction. Between the change and
-that transaction forged packets may pass. The filter's own writes wake nothing,
-nor do the translator's and the kill switch's writes of their chains, rules and
+ready until a pass puts them back in 1 transaction, and stays not ready while
+another writer holds a chain or set of the filter's that the pass would
+otherwise delete and make again, as above. Between the change and that
+transaction forged packets may pass. The filter's own writes wake nothing, nor
+do the translator's and the kill switch's writes of their chains, rules and
 sets. A flush of the ruleset deletes the table and another program setting it
 dormant sets a flag on it, so each wakes every writer once. The first writer's
 pass after it makes the table again or clears the flag, which wakes no other:
@@ -734,10 +736,12 @@ the set holds.
 
 At startup the daemon refuses to start on Linux when the first pass cannot
 install its chains and sets and read them back, which on a host means a kernel
-without nf_tables or conntrack, a daemon without `CAP_NET_ADMIN`, or nftables
+without nf_tables or conntrack, a daemon without `CAP_NET_ADMIN`, nftables
 changes interrupting one of its reads
-[3 times in a row](design/limits.md#dataplane-and-sockets). A node does not run
-without its entry chain.
+[3 times in a row](design/limits.md#dataplane-and-sockets), or another writer
+holding `mesh_entry` or a chain or set of the filter's that the pass would
+otherwise delete and make again, as [where it runs](#where-it-runs) gives. A
+node does not run without its entry chain.
 
 On macOS the pass runs every 5 seconds, since pf tells no program of another's
 change, so another program's change to the anchor goes unnoticed for up to 5

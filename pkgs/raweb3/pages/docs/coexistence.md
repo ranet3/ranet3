@@ -895,16 +895,19 @@ gives.
 #### A writer's own that another writer holds
 
 A writer's rewrite deletes a chain, set or object of its own that reads back
-otherwise than written in a difference nf_tables will not change in place, and
-makes it again in the same transaction. Where a rule or a map element of another
-writer's goes to it or uses it, the rewrite does one of two things while that
-rule or element stays:
+otherwise than written in a difference nf_tables will not change in place, a
+chain flagged binding aside, and makes it again in the same transaction. Where a
+rule or a map element of another writer's goes to it or uses it, the rewrite
+does one of two things while that rule or element stays:
 
-- It keeps a set that differs in its size alone, where that size holds every
-  element the writer fills the set with. The set keeps its name and that size,
-  and the pass empties and fills it as it does every set it fills, so an element
-  another writer added goes. It keeps a timeout object that differs in its
-  timeouts alone as it is. It writes its chains, rules and other sets and
+- It keeps a set that differs in its size alone, where that size is at least the
+  count of elements the writer fills the set with, an interval counting as one.
+  The set keeps its name and that size, and the pass empties and fills it as it
+  does every set it fills, so an element another writer added goes. Before Linux
+  6.14 nf_tables counts each start and end the pass sends to an interval set
+  against its size, two for most intervals, and refuses each pass that fills a
+  kept one smaller than that count. It keeps a timeout object that differs in
+  its timeouts alone as it is. It writes its chains, rules and other sets and
   objects.
 - It deletes any other, and nf_tables refuses the whole transaction of each pass
   that must delete it. A refused transaction
@@ -916,9 +919,10 @@ In both cases the writer names it and what holds it as a fault, as it names
 is gone and the next pass makes it again. The antispoof filter names it in its
 readiness and the kill switch in its `not holding` reason. The translator names
 it in the reason of the family it is in, and of both families for a chain they
-share. Where the rewrite kept it, the writer's chains and rules are written and
-in force, and the writer still reads not ready or `not holding`, with what
-follows from that as [the antispoof filter's readiness](antispoof.md#readiness),
+share. Where the rewrite kept it and nf_tables took the pass, the writer's
+chains and rules are written and in force, and the writer still reads not ready
+or `not holding`, with what follows from that as
+[the antispoof filter's readiness](antispoof.md#readiness),
 [the translator's readiness](exit-nodes.md#readiness) and
 [the kill switch](routing.md#the-kill-switch-on-linux) give. A second send after
 `file exists`, which [the nftables table](#the-nftables-table) describes,

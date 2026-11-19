@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-18
+updated: 2026-11-19
 order: 30
 ---
 
@@ -1179,8 +1179,8 @@ a string, an event's attributes among them, passes it whatever it holds. The
 walk over a live session's views reads the values. Two nodes hold one session,
 which the dialing node rekeys, and the walk looks in every string, map key and
 field of bytes of each view of both nodes for the keys of the dialing node's
-Child SA and of the one its rekey replaced, and for the dialing node's private
-key, as octets, hex, base64 or the list of numbers `fmt` prints them as. It
-looks for the answering node's private key nowhere. It leaves out `probe` and
-`trace`, whose answers are the call's result and a stream of decisions rather
-than a state the node holds, and looks for no key of the IKE SA.
+Child SA and of the one its rekey replaced, each whole and less its salt, and
+for the private key both nodes are built from, whole and as its seed, as octets,
+hex, base64 or the list of numbers `fmt` prints them as. It leaves out `probe`
+and `trace`, whose answers are the call's result and a stream of decisions
+rather than a state the node holds, and looks for no key of the IKE SA.

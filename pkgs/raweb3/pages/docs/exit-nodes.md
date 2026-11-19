@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-19
+updated: 2026-11-20
 order: 50
 ---
 
@@ -1057,9 +1057,11 @@ The set the limit counts each source's flows in, `flows4` or `flows6`, carries
 the share as its comment, `limit 4096`. Each count keeps the share in force when
 it began. A set read back under another share, as an instance stopped without
 withdrawing under another one leaves it, makes the pass delete that set and make
-it again in the transaction that rewrites the chains, leaving every timeout
-object as it is. The share is one setting of both families, so where that
-instance translated both, the pass makes both sets again.
+it again in the transaction that rewrites the chains, except where another
+writer holds the set, as
+[sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives.
+The share is one setting of both families, so where that instance translated
+both, the pass makes both sets again.
 
 A pass replaces the chains' rules and the elements of the sets of untranslated
 sources in 1 transaction. It leaves a timeout object that reads back as written
@@ -1354,9 +1356,9 @@ counted again:
   unfragmented ICMP Destination Unreachable, Time Exceeded, Parameter Problem
   or, for IPv6, Packet Too Big that has no IPv6 extension header and quotes a
   UDP datagram.
-- A UDP datagram or an echo request that arrives once the exit is withdrawn, and
-  an echo request whose mapping a withdrawal closed while it was sent
-  (`withdrawn`).
+- A UDP datagram or an echo request that reaches its relay once the exit is
+  withdrawn, or one whose mapping a withdrawal closed while it was sent, that no
+  earlier check refused or dropped (`withdrawn`).
 
 | Metric                                   | Meaning                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
