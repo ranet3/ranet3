@@ -256,8 +256,8 @@ func hostCommand(t *testing.T, args ...string) {
 // routed key out of another interface when ownRoute was called and does not once the removal has run. Cleanups registered
 // before the call, as the close of the test's utun or the destroy of its feths, run after that read, and it sees nothing
 // they delete. It rests on none of them deleting the host's unscoped route at key out of another interface. XNU's close of
-// a utun deletes each of its IPv6 addresses with the host route at it, which sits on lo0 (utun_ctl_disconnect in
-// bsd/net/if_utun.c, in6_purgeif and in6_ifremloop in bsd/netinet6/in6.c).
+// a utun deletes each of its IPv6 addresses, and where no other interface holds the address, the host route at it, which
+// sits on lo0 (utun_ctl_disconnect in bsd/net/if_utun.c, in6_purgeif and in6_ifremloop in bsd/netinet6/in6.c).
 func ownRoute(t *testing.T, key netip.Prefix, index int, args ...string) (func(), string) {
 	t.Helper()
 	family, kind := "-inet", "-net"
