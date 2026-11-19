@@ -16,6 +16,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -536,15 +537,24 @@ func rulesConfig(t *testing.T) *config.Config {
 }
 
 // rulesUplinkPair makes the veth pair from the leaf's namespace to the far host's, the leaf's defaults through the far host, and forwarding on at the leaf
-// with reverse path filtering off before any device exists, so the kernel drops no forwarded packet for its source
+// with reverse path filtering off before any device exists, so the kernel drops no forwarded packet for its source, and waits for
+// each end's link-local address, which the lab needs (rulesLinkLocal). A link made in either namespace from here on skips duplicate
+// address detection unless all/accept_dad is on, as the guard sets it, which saves a lab 2 to 3 s of waiting on tentative link-local
+// addresses and changes nothing else, since every address the lab adds skips it already. The far ends of vethHost's pairs, made into
+// namespaces of their own, keep it.
 func rulesUplinkPair(t *testing.T, leaf, far *netnstest.Thread) {
 	t.Helper()
+	const noDAD = "/proc/sys/net/ipv6/conf/default/accept_dad"
+	if err := far.Do(func() error { return os.WriteFile(noDAD, []byte("0\n"), 0o644) }); err != nil {
+		t.Fatalf("have the far host's links skip duplicate address detection: %v", err)
+	}
 	if err := leaf.Do(func() error {
 		for path, value := range map[string]string{
 			"/proc/sys/net/ipv4/ip_forward":             "1",
 			"/proc/sys/net/ipv6/conf/all/forwarding":    "1",
 			"/proc/sys/net/ipv4/conf/all/rp_filter":     "0",
 			"/proc/sys/net/ipv4/conf/default/rp_filter": "0",
+			noDAD: "0",
 		} {
 			if err := os.WriteFile(path, []byte(value+"\n"), 0o644); err != nil {
 				return err
@@ -600,6 +610,80 @@ func rulesUplinkPair(t *testing.T, leaf, far *netnstest.Thread) {
 		return netlink.AddAddresses(rulesFar, rulesHost[4].gateway, rulesHost[4].lan, rulesHost[6].gateway, rulesHost[6].lan)
 	}); err != nil {
 		t.Fatalf("address the far host's end of the uplink: %v", err)
+	}
+	rulesLinkLocal(t, leaf, rulesUplink)
+	rulesLinkLocal(t, far, rulesFar)
+}
+
+// rulesLinkLocal waits for link in ns to hold a link-local address that is not tentative. The kernel solicits a neighbor for a packet
+// whose source the link does not hold, as the far host's from the internet's address on its lo or one the leaf forwards, from that
+// address alone and sends nothing while there is none (ndisc_solicit and ndisc_send_ns in ndisc.c), so the packet would wait out the
+// solicitation's retransmit, a second, as long as exitPingWait. The address comes once the link is up on both ends (addrconf_notify in
+// addrconf.c).
+func rulesLinkLocal(t *testing.T, ns *netnstest.Thread, link string) {
+	t.Helper()
+	waitFor(t, convergeBudget, "a link-local address on "+link+" that is not tentative", func() bool {
+		var raw []byte
+		if err := ns.Do(func() (err error) { raw, err = os.ReadFile("/proc/thread-self/net/if_inet6"); return err }); err != nil {
+			t.Fatalf("read the addresses: %v", err)
+		}
+		// the address, the link's index, the prefix length, the scope, the flags and the link's name (if6_seq_show in addrconf.c)
+		for _, line := range strings.Split(string(raw), "\n") {
+			if f := strings.Fields(line); len(f) == 6 && f[5] == link && f[3] == "20" {
+				if flags, err := strconv.ParseUint(f[4], 16, 8); err == nil && flags&unix.IFA_F_TENTATIVE == 0 {
+					return true
+				}
+			}
+		}
+		return false
+	})
+}
+
+// the internet host's first datagram over IPv6 to the leaf's service on the uplink's address, sent as soon as the uplink is made, is
+// answered within exitPingWait, the far host soliciting the leaf's address from its link-local address. Unlike every other lab's, this
+// uplink's link-local addresses go through duplicate address detection (all/accept_dad, read beside the link's own in
+// addrconf_dad_begin), so that they are tentative for a second or more and a send that did not wait for them fails every time.
+func TestRulesUplinkAnswersAFirstIPv6DatagramAtOnce(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("creating namespaces needs root on linux")
+	}
+	lab := &exitLab{leaf: netnstest.StartThread(t), far: netnstest.StartThread(t)}
+	for _, ns := range []*netnstest.Thread{lab.leaf, lab.far} {
+		if err := ns.Do(func() error { return os.WriteFile("/proc/sys/net/ipv6/conf/all/accept_dad", []byte("1\n"), 0o644) }); err != nil {
+			t.Fatalf("have the uplink's links detect duplicate addresses: %v", err)
+		}
+	}
+	rulesUplinkPair(t, lab.leaf, lab.far)
+	internet := exitLabHost[6].internet
+	if err := lab.far.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		return netlink.AddAddresses("lo", internet)
+	}); err != nil {
+		t.Fatalf("give the far host the internet's address: %v", err)
+	}
+	// the address is usable once added, but its local route, without which the answer to it is dropped for no route, goes in later
+	// from the address's work (__ipv6_ifa_notify in addrconf.c), and ipv6_route lists every table's routes with their flags (ip6_fib.c)
+	local := fmt.Sprintf("%x 80 ", internet.Addr().AsSlice())
+	waitFor(t, convergeBudget, "the local route of "+internet.Addr().String(), func() bool {
+		var raw []byte
+		if err := lab.far.Do(func() (err error) { raw, err = os.ReadFile("/proc/thread-self/net/ipv6_route"); return err }); err != nil {
+			t.Fatalf("read the routes: %v", err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			if f := strings.Fields(line); len(f) == 10 && strings.HasPrefix(line, local) && f[9] == "lo" {
+				if flags, err := strconv.ParseUint(f[8], 16, 32); err == nil && flags&unix.RTF_LOCAL != 0 {
+					return true
+				}
+			}
+		}
+		return false
+	})
+	if !exitAnswered(t, lab, exitReply{false, internet.Addr(), true}) {
+		t.Errorf("the internet host's first datagram over IPv6 to the leaf's service was unanswered")
 	}
 }
 
