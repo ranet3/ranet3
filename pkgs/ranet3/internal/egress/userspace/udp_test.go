@@ -1578,28 +1578,42 @@ func TestLeafsLargestDatagramReachesItsServer(t *testing.T) {
 	readDatagramFrom(t, server, payload)
 }
 
-// A destination's reader waiting for its next datagram holds no pooled
-// buffer: once each of 32 destinations read one reply, with the pool emptied
-// between the replies so that no two readers share a buffer, the live heap
-// has grown by less than one. The heap is first read until it settles, so
-// what earlier tests leave to the collector moves neither reading, and 32
-// readers holding one each would pass the bound many times over.
+// A destination's reader waiting for its first datagram or its next holds no
+// pooled buffer: from before every destination but the first opens to once
+// each read one reply, with the pool emptied between the replies so that no
+// two readers share a buffer, the live heap has grown by less than one. The
+// first destination opens the mapping and reads a reply before the first
+// reading, so neither reading holds what a process sets up once. The heap is
+// first read until it settles, so what earlier tests leave to the collector
+// moves neither reading, and the later readers holding one each would pass the
+// bound many times over.
 func TestReadersAtRestHoldNoBuffer(t *testing.T) {
-	const destinations = 32
+	const destinations = 16
 	h := newRelayHarness(t, nil)
 	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	servers := make([]*net.UDPConn, destinations)
 	var outside netip.AddrPort
-	for i := range servers {
-		servers[i] = loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
-		h.x.udp.take(udpDatagram(leaf, serverAt(servers[i]), []byte("opens")), false)
-		outside = readDatagramFrom(t, servers[i], []byte("opens"))
-	}
 	// a reader's last read moves on first
 	live := func() int64 {
 		time.Sleep(10 * time.Millisecond)
 		return int64(collected().HeapAlloc)
 	}
+	open := func(server *net.UDPConn) {
+		h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens")), false)
+		outside = readDatagramFrom(t, server, []byte("opens"))
+	}
+	reply := func(server *net.UDPConn) {
+		if _, err := server.WriteToUDPAddrPort([]byte("reply"), outside); err != nil {
+			t.Fatal(err)
+		}
+		h.waitLaid(t, "reply", func(raw []byte) bool { return isDatagram(raw, serverAt(server), leaf, []byte("reply")) })
+		live()
+	}
+	for i := range servers {
+		servers[i] = loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	}
+	open(servers[0])
+	reply(servers[0])
 	before := live()
 	for settled := 0; settled < 10; settled++ {
 		now := live()
@@ -1608,16 +1622,12 @@ func TestReadersAtRestHoldNoBuffer(t *testing.T) {
 		}
 		before = now
 	}
-	for _, server := range servers {
-		reply := []byte("reply")
-		if _, err := server.WriteToUDPAddrPort(reply, outside); err != nil {
-			t.Fatal(err)
-		}
-		h.waitLaid(t, "reply", func(raw []byte) bool { return isDatagram(raw, serverAt(server), leaf, reply) })
-		live()
+	for _, server := range servers[1:] {
+		open(server)
+		reply(server)
 	}
 	if grown := live() - before; grown >= datagramBuffer {
-		t.Errorf("the live heap grew by %d bytes once %d readers read a reply each, %.1f buffers of %d", grown, destinations, float64(grown)/datagramBuffer, datagramBuffer)
+		t.Errorf("the live heap grew by %d bytes once %d more readers started and read a reply each, %.1f buffers of %d", grown, destinations-1, float64(grown)/datagramBuffer, datagramBuffer)
 	}
 }
 

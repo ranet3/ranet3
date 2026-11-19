@@ -76,10 +76,11 @@ func keyAt(v reflect.Value, texts []string, at string) string {
 }
 
 // no debug view of either end of a live session, the events among them,
-// carries its Child SA's keys, the keys of the SA a rekey replaced, or the
-// node's private key, as octets or as any text of them, in any string, map
-// key or run of bytes. A debug path the daemon serves that is neither walked
-// nor left out with its reason fails, so a new view joins the walk.
+// carries its Child SA's keys or those of the SA a rekey replaced, each whole
+// or less its salt, or the node's private key, whole or as its seed, as octets,
+// hex, base64 or the list of numbers fmt prints them as, in any string, map key
+// or run of bytes. A debug path the daemon serves that is neither walked nor
+// left out with its reason fails, so a new view joins the walk.
 func TestDebugViewsCarryNoKeyOfALiveSession(t *testing.T) {
 	leftOut := map[string]string{
 		control.PathDebugProbe: "it asks the sessions to prove their path and answers with the call's result, not a state the node holds",
@@ -108,9 +109,13 @@ func TestDebugViewsCarryNoKeyOfALiveSession(t *testing.T) {
 		t.Fatalf("the rekey left the Child SA of SPI %08x in place", child.LocalSPI)
 	}
 	keys := map[string][]byte{
+		"the node's private key": alpha.client.privateKey, "the node's private key's seed": alpha.client.privateKey.Seed(),
+	}
+	for name, key := range map[string][]byte{
 		"the Child SA's inbound key": child.InboundKey, "the Child SA's outbound key": child.OutboundKey,
 		"the replaced Child SA's inbound key": replaced.InboundKey, "the replaced Child SA's outbound key": replaced.OutboundKey,
-		"the node's private key": alpha.client.privateKey,
+	} {
+		keys[name], keys[name+" less its salt"] = key, key[:len(key)-4]
 	}
 	for _, node := range []*loopbackNode{alpha, bravo} {
 		c := node.client
