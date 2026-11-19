@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -131,7 +132,8 @@ func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chain
 	if err != nil {
 		return chainReadback{}, err
 	}
-	out := chainReadback{fault: read.Fault, remake: read.Remake(), held: read.Held}
+	// the fault of a set the pass is refused on, which names what holds it, leads
+	out := chainReadback{fault: cmp.Or(read.Refused, read.Fault), remake: read.Remake(), held: read.Held}
 	if out.fault == "" && len(leftovers) > 0 {
 		out.fault = leftovers[0].Fault("the filter")
 	}
@@ -151,7 +153,7 @@ func readBorderContents(conn *nftables.Conn, contents nftables.Contents) (map[ui
 	if err != nil {
 		return nil, nftables.Readback{}, err
 	}
-	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET, borderScope)
 	if err != nil {
 		return nil, nftables.Readback{}, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
@@ -236,9 +238,12 @@ func intervals(ranges []egress.Range) []nftables.Interval {
 // Apply writes the filter's chains and sets in one transaction, so no packet
 // meets half a chain or a set half filled, reading them first for each that
 // nf_tables will not change in place, which the transaction deletes and makes
-// again, as nftables.Hold.Rewrite does
+// again, as nftables.Hold.Rewrite does. The read counts the elements the sets
+// take, as readBorder does, so a held set too small for them is made again.
 func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
-	tables, read, err := readBorderContents(b.conn, borderContents)
+	contents := borderContents
+	contents.Elements = sets.elements()
+	tables, read, err := readBorderContents(b.conn, contents)
 	if err != nil {
 		return err
 	}

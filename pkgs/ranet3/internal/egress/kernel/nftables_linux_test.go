@@ -366,8 +366,11 @@ func TestChainsHookWhereTheirRulesAct(t *testing.T) {
 // goto or by its vmap, or an element of a named map, which nf_tables would
 // refuse to delete: the fault names that chain or map too, and the chain stays.
 // A rule going to it from a chain the pass empties, or a vmap going only to
-// other chains, keeps it from nothing. The chain an earlier translator held
-// IPv4's forward lines in reads back and goes as such a chain does.
+// other chains, keeps it from nothing, and one of a binding chain, which no
+// listing shows, keeps it unless a chain the pass empties binds that binding
+// chain, and the fault names the chain that binds it. The chain an earlier
+// translator held IPv4's forward lines in reads back and goes as such a chain
+// does.
 func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 	stray := "none_198_51_100_0_24"
 	goes := func(chain, to string) nftables.Installed {
@@ -408,7 +411,16 @@ func TestChainsAnEarlierTranslatorWroteGo(t *testing.T) {
 			"its chain " + retiredChain + " is not one the translator writes", true},
 		"beside the chain of IPv4's another writer's chain goes to": {append(slices.Clone(written), "other", retiredChain), holders{rules: []nftables.Installed{goes("other", retiredChain)}},
 			"its chain " + retiredChain + " is not one the translator writes, and chain other holds a rule going to it, so it stays until that rule goes", false},
+		"beside the chain of IPv4's a binding chain another writer's chain binds goes to": {append(slices.Clone(written), "other", retiredChain, stray),
+			holders{rules: []nftables.Installed{goes("other", stray), goes(stray, retiredChain)}, listed: append(slices.Clone(written), "other", retiredChain)},
+			"its chain " + retiredChain + " is not one the translator writes, and chain other holds a rule going to it, so it stays until that rule goes", false},
+		"beside the chain of IPv4's a binding chain a chain a pass empties binds goes to": {append(slices.Clone(written), retiredChain, stray),
+			holders{rules: []nftables.Installed{goes(LimitChain, stray), goes(stray, retiredChain)}, listed: append(slices.Clone(written), retiredChain)},
+			"its chain " + retiredChain + " is not one the translator writes", true},
 	} {
+		if c.in.listed == nil {
+			c.in.listed = c.held
+		}
 		chain := stray
 		for _, other := range []string{"none_mine", NoneChain, retiredChain} {
 			if slices.Contains(c.held, other) {

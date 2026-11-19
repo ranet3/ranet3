@@ -600,7 +600,7 @@ func steps(desired []Rule) hegel.Generator[step] {
 	foreign := []string{"", "out via ranet1 ipv4 source 192.0.2.1"}
 	faults := []string{
 		"its table carries flags 0x1, where none are written and 0x1 is dormant",
-		`its chain reads back as type "nat" at hook 4, priority 0, policy 1, where a nat chain at hook 4, priority 100, policy accept was written`,
+		`its chain postrouting reads back as type "nat" at hook 4, priority 0, policy 1, where a nat chain at hook 4, priority 100, policy accept was written`,
 	}
 	return hegel.Composite(func(tc hegel.TestCase) step {
 		s := step{

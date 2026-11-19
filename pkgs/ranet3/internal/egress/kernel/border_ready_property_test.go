@@ -38,7 +38,7 @@ func borderSteps(desired []BorderRule) hegel.Generator[borderStep] {
 	foreign := []string{"", "drop ipv4 source 192.0.2.0/24"}
 	faults := []string{
 		"its table carries flags 0x1, where none are written and 0x1 is dormant",
-		`its chain reads back as type "filter" at hook 0, priority 0, policy 1, where a filter chain at hook 0, priority -300, policy accept was written`,
+		`its chain antispoof reads back as type "filter" at hook 0, priority 0, policy 1, where a filter chain at hook 0, priority -300, policy accept was written`,
 	}
 	return hegel.Composite(func(tc hegel.TestCase) borderStep {
 		s := borderStep{

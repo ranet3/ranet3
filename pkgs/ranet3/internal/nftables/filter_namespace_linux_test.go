@@ -212,7 +212,7 @@ func TestNftablesSetElementsReadBackAndWakeOnAnothersChange(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		readback, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+		readback, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -367,7 +367,7 @@ func TestNftablesElementsNoOwnerWritesReadBackUntilTheOwnerFillsAgain(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
-				read, err := Contents{Sets: []Set{c.set}, Elements: map[string][]Interval{c.set.Name: c.written}}.Read(conn, tables, unix.NFPROTO_INET)
+				read, err := Contents{Sets: []Set{c.set}, Elements: map[string][]Interval{c.set.Name: c.written}}.Read(conn, tables, unix.NFPROTO_INET, Scope{Chains: []string{chain.Name}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -478,7 +478,7 @@ func TestNftablesSetMadeAgainOtherwiseIsMadeAgainByItsOwner(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+				read, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -595,7 +595,7 @@ func TestNftablesSetNoDumpTellsFromTheOwnersIsMadeAgainByItsOwner(t *testing.T) 
 				if err != nil {
 					t.Fatal(err)
 				}
-				read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+				read, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -746,7 +746,7 @@ func TestNftablesSetMadeAgainAnonymousUnderTheOwnersNameIsMadeAgainByItsOwner(t 
 				if err != nil {
 					t.Fatal(err)
 				}
-				read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+				read, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -975,7 +975,7 @@ func TestNftablesRewriteKeepsTheReadsStaleChains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
 	if err != nil || !slices.Equal(read.Stale.Chains, []Chain{based}) || len(read.Stale.Sets) != 0 {
 		t.Fatalf("the read over a regular chain c and x made again finds stale %+v (%v), want the chain c alone", read.Stale, err)
 	}
@@ -987,7 +987,7 @@ func TestNftablesRewriteKeepsTheReadsStaleChains(t *testing.T) {
 	if err != nil {
 		t.Errorf("the owner's pass over a stale chain and x made again with one field: %v", err)
 	}
-	if read, err := contents.Read(conn, tables, unix.NFPROTO_INET); err != nil || read.Fault != "" {
+	if read, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope()); err != nil || read.Fault != "" {
 		t.Errorf("after the pass the owner reads back with the fault %q (%v)", read.Fault, err)
 	}
 }

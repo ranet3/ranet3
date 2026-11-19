@@ -267,8 +267,9 @@ type borderBackend interface {
 	Rules(rules []BorderRule, sets borderSets) (chainReadback, error)
 	// Apply writes the filter's chains and sets whole in one transaction: the
 	// sets filled with sets and the chains holding rules, deleting first each
-	// of its own the host holds that cannot change in place and a chain no
-	// rule sits in, and on nftables, where nf_tables refuses that transaction
+	// of its own the host holds that cannot change in place, on nftables each
+	// nftables.Readback.Stale names, and a chain no rule sits in, and on
+	// nftables, where nf_tables refuses that transaction
 	// with EEXIST, every set of its own the table holds, as
 	// nftables.Hold.Rewrite says, and nothing of another writer's but what
 	// nf_tables ties to a rule of another writer's in the filter's chains

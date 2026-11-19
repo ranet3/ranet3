@@ -1089,7 +1089,7 @@ func TestBorderRewritesWhatReadsBackOtherThanWritten(t *testing.T) {
 		{"a rule with no comment at the tail of the chain", func() { be.held = append(be.held, Installed{}) }, []string{"rules", "apply", "rules"}},
 		{"the chain's rules in another order", func() { slices.Reverse(be.held) }, []string{"rules", "apply", "rules"}},
 		{"a table set dormant", func() { be.fault = dormant }, []string{"rules", "apply", "rules"}},
-		{"the chain made again at another priority", func() { be.fault = "its chain reads back at priority 0" }, []string{"rules", "apply", "rules"}},
+		{"the chain made again at another priority", func() { be.fault = "its chain antispoof reads back at priority 0" }, []string{"rules", "apply", "rules"}},
 	} {
 		be.mu.Lock()
 		change.apply()

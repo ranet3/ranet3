@@ -98,29 +98,38 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 	if len(out) == 0 {
 		return nil, nil
 	}
-	rules, err := TableRules(conn, unix.NFPROTO_INET, Table)
+	// a transaction that deletes the leftovers flushes these chains first, whose rules hold nothing
+	if out, err = hold(conn, unix.NFPROTO_INET, Table, out, uses, func(chain string) bool { return owner.chain(chain) || old.chain(chain) }); err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(out, func(r Retired) bool { return r.HeldBy == "" && bound[Retired{Kind: r.Kind, Name: r.Name}] }), nil
+}
+
+// hold is out, objects of table in the nf_tables family proto, each with what
+// holds it once a transaction has flushed each chain TableChains lists that
+// flushes names, uses being each ct timeout's NFTA_OBJ_USE by its name
+func hold(conn *Conn, proto uint8, table string, out []Retired, uses map[string]uint32, flushes func(chain string) bool) ([]Retired, error) {
+	rules, err := TableRules(conn, proto, table)
 	if err != nil {
 		return nil, err
 	}
-	maps, err := VerdictMaps(conn, unix.NFPROTO_INET, Table)
+	maps, err := VerdictMaps(conn, proto, table)
 	if err != nil {
 		return nil, err
 	}
-	listed, err := TableChains(conn, unix.NFPROTO_INET, Table)
+	listed, err := TableChains(conn, proto, table)
 	if err != nil {
 		return nil, err
 	}
-	// the chains a transaction that deletes the leftovers flushes first, whose rules hold nothing
-	flushes := func(chain string) bool { return owner.chain(chain) || old.chain(chain) }
 	emptied := func(chain string) bool { return flushedWith(chain, listed, rules, flushes) }
-	// user is the chain of the first rule naming the object that no flush empties, and the count of the emptied chains' rules naming it
+	// user is the chain of the first rule naming the object that no flush empties, or the binder of its binding chain, and the count of the emptied chains' rules naming it
 	user := func(names func(expressions []byte) bool) (string, uint32) {
 		var count uint32
 		for _, rule := range rules {
 			switch {
 			case !names(rule.Expressions):
 			case !emptied(rule.Chain):
-				return "chain " + rule.Chain, count
+				return "chain " + binder(rule.Chain, listed, rules), count
 			default:
 				count++
 			}
@@ -130,7 +139,7 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 	for i, r := range out {
 		switch r.Kind {
 		case "chain":
-			out[i].HeldBy = Holder(r.Name, rules, maps, emptied)
+			out[i].HeldBy = Holder(r.Name, rules, maps, listed, flushes)
 		case "set":
 			out[i].HeldBy, _ = user(func(expressions []byte) bool { return usesSet(expressions, r.Name) })
 		default:
@@ -141,7 +150,7 @@ func Leftovers(conn *Conn, tables map[uint8]uint32, old, owner Scope) ([]Retired
 			out[i].HeldBy = heldBy
 		}
 	}
-	return slices.DeleteFunc(out, func(r Retired) bool { return r.HeldBy == "" && bound[Retired{Kind: r.Kind, Name: r.Name}] }), nil
+	return out, nil
 }
 
 // objectUse is NFTA_OBJ_USE of a dumped object, the count of the rules and map
@@ -220,7 +229,11 @@ func Retire(leftovers []Retired) []Request {
 // Fault names r in its owner's readback, owner naming the owner as the
 // readback does
 func (r Retired) Fault(owner string) string {
-	fault := fmt.Sprintf("its %s %s is not one %s writes", r.Kind, r.Name, owner)
+	return r.stays(fmt.Sprintf("its %s %s is not one %s writes", r.Kind, r.Name, owner))
+}
+
+// stays is fault, which names r, with what holds r where anything does
+func (r Retired) stays(fault string) string {
 	using := "using it"
 	if r.Kind == "chain" {
 		using = "going to it"

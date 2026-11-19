@@ -433,7 +433,7 @@ func TestEachOwnerMakesAgainASetAnotherWriterMadeAnonymous(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if read, err := (nftables.Contents{Sets: []nftables.Set{c.set}}).Read(another, tables, unix.NFPROTO_INET); err != nil || read.Fault != "" {
+			if read, err := (nftables.Contents{Sets: []nftables.Set{c.set}}).Read(another, tables, unix.NFPROTO_INET, nftables.Scope{}); err != nil || read.Fault != "" {
 				t.Errorf("after the owner's pass %s reads back with the fault %q (%v)", c.set.Name, read.Fault, err)
 			}
 		})
@@ -677,7 +677,8 @@ func TestTranslatorLeavesABindingChainUnderAStrayNameToItsFlush(t *testing.T) {
 // translator's chain at postrouting, is held by that binding chain, which no
 // flush of the translator's takes out. The translator's pass commits, keeps
 // the timeout and takes out the drop, and neither family is ready, with a
-// reason that names the binding chain and the chain that binds it.
+// reason that names the binding chain and the chain that binds it, which the
+// timeout's leftover names as what holds it.
 func TestTranslatorKeepsATimeoutABindingChainOfAnotherWriterUses(t *testing.T) {
 	for _, name := range []string{NoneChain + "192_0_2_0_24", retiredChain} {
 		t.Run(name, func(t *testing.T) {
@@ -707,7 +708,7 @@ func TestTranslatorKeepsATimeoutABindingChainOfAnotherWriterUses(t *testing.T) {
 			if s := tr.lastPass(); s.Ready4 || s.Ready6 || !strings.Contains(s.Unready, held) {
 				t.Errorf("after the translator's pass it reads ready %v and %v with %q, want not ready with %q", s.Ready4, s.Ready6, s.Unready, held)
 			}
-			want := []nftables.Retired{{Kind: "ct timeout", Name: timeout.Name, HeldBy: "chain " + name}}
+			want := []nftables.Retired{{Kind: "ct timeout", Name: timeout.Name, HeldBy: "chain " + otherOutput.Name}}
 			if left, err := nftables.Leftovers(another, nil, translatorRetired, translatorScope); err != nil || !slices.Equal(left, want) {
 				t.Errorf("after the translator's pass the leftovers read %+v (%v), want %+v", left, err, want)
 			}
@@ -833,13 +834,388 @@ func TestBorderLeavesAnEarlierNameInAnotherTableAlone(t *testing.T) {
 	}
 }
 
+// otherRegular is another writer's regular chain, which no packet enters
+var otherRegular = nftables.Chain{Table: nftables.Table, Name: "other", Hook: nftables.NoHook}
+
+// heldBeside is another writer's transaction: head, then otherRegular with
+// line, which uses an object of an owner's, then that writer's drop at the
+// head of drop, a chain of the owner's
+func heldBeside(t *testing.T, head []nftables.Request, drop nftables.Chain, line ...[]byte) []nftables.Request {
+	t.Helper()
+	rule, err := otherRegular.Rule(unix.NFPROTO_INET, "theirs", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(head, otherRegular.Create(unix.NFPROTO_INET), rule, headLine(t, drop, nftables.CountedDrop()))
+}
+
+// theirsIn is whether a rule of another writer's sits in one of chains
+func theirsIn(t *testing.T, conn *nftables.Conn, chains []nftables.Chain) bool {
+	t.Helper()
+	rules, err := nftables.TableRules(conn, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.ContainsFunc(rules, func(rule nftables.Installed) bool {
+		return rule.Spec == "theirs" && slices.ContainsFunc(chains, func(chain nftables.Chain) bool { return chain.Name == rule.Chain })
+	})
+}
+
+// dropOther is another writer's transaction that deletes otherRegular
+func dropOther() []nftables.Request {
+	return []nftables.Request{otherRegular.Flush(unix.NFPROTO_INET), otherRegular.Delete(unix.NFPROTO_INET)}
+}
+
+// carvingRuntime is entryRuntime under a configuration that carves two
+// disjoint addresses of 198.18.0.0/24 on eth0, so the filter's carved drop
+// looks up carved4, which holds two intervals
+func carvingRuntime() egress.BorderRuntime {
+	rt := entryRuntime(nil)
+	rt.Sets = func(b *egress.Border) egress.BorderSets {
+		sets := entrySets(b)
+		sets.CarveOuts, sets.Carved = []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}, ranges("198.18.0.5/32", "198.18.0.9/32")
+		return sets
+	}
+	return rt
+}
+
+// carvedHeld is another writer's transaction that empties the filter's chains,
+// makes carved4 again with size, looks it up from that writer's own chain and
+// puts its drop at the head of the filter's entry chain
+func carvedHeld(t *testing.T, size uint32) []nftables.Request {
+	t.Helper()
+	carved := borderSet(carvedSet + "4")
+	sized := carved
+	sized.Size = size
+	create, err := sized.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := []nftables.Request{prerouting.Flush(unix.NFPROTO_INET), entry.Flush(unix.NFPROTO_INET), carved.Delete(unix.NFPROTO_INET), create}
+	return heldBeside(t, head, entry, nftables.SourceLoad(unix.NFPROTO_IPV4), nftables.Lookup(sized, false))
+}
+
+// A set of the antispoof filter's, carved4, made again by another writer with
+// a size below the two intervals the filter fills it with and looked up by a
+// rule of that writer's own chain, beside that writer's drop at the head of
+// the filter's entry chain, keeps its delete, which nf_tables refuses with
+// every pass of the filter's while that rule stays: the drop stays, and the
+// filter is not ready with a reason that names the chain holding the set and
+// the refusal, not a fill past the set's size. Once the rule goes the pass
+// makes the set again and the filter is ready.
+func TestBorderRefusesASetAnotherWritersRuleHoldsTooSmallForItsRanges(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
+	if err != nil {
+		t.Fatalf("open the antispoof filter's backend: %v", err)
+	}
+	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), carvingRuntime(), be)
+	if err != nil {
+		t.Fatalf("start the antispoof filter: %v", err)
+	}
+	t.Cleanup(func() { _ = f.finish() })
+	another := anotherWriter(t)
+	if err := another.Batch(carvedHeld(t, 1)); err != nil {
+		t.Fatalf("another writer makes carved4 again with size 1, looks it up and drops: %v", err)
+	}
+	held := "and chain other holds a rule using it, so it stays until that rule goes"
+	for i := range 2 {
+		err := f.reconcile()
+		sent := datagram()
+		if f.ready || !strings.Contains(f.unready, held) || !strings.Contains(f.unready, unix.EBUSY.Error()) || strings.Contains(f.unready, unix.ENFILE.Error()) {
+			t.Errorf("the filter's pass %d: %v, ready %v with %q, want not ready with %q and %q", i+1, err, f.ready, f.unready, held, unix.EBUSY.Error())
+		}
+		if !errors.Is(sent, unix.EPERM) {
+			t.Errorf("after the filter's pass %d a datagram left with %v, want EPERM", i+1, sent)
+		}
+	}
+	if err := another.Batch(dropOther()); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if err := f.reconcile(); err != nil || !f.ready {
+		t.Errorf("once the rule is gone the filter's pass: %v, ready %v with %q, want ready", err, f.ready, f.unready)
+	}
+	if err := datagram(); err != nil {
+		t.Errorf("once the rule is gone a datagram left with %v, want sent", err)
+	}
+}
+
+// A set of the antispoof filter's, owned4, made again by another writer as a
+// set of single keys, over which nf_tables takes no create of the filter's,
+// looked up by a rule of that writer's own chain, beside that writer's drop at
+// the head of the filter's entry chain and an address it adds to carved4,
+// which the filter reads first: every pass of the filter's is refused while
+// that rule stays, the drop stays, and the filter is not ready with a reason
+// that names owned4 and the chain holding it, not carved4's other element.
+// Once the rule goes the pass makes the set again and the filter is ready.
+func TestBorderNamesTheHolderOfASetItCannotMakeAgainAheadOfAnEarlierSet(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
+	if err != nil {
+		t.Fatalf("open the antispoof filter's backend: %v", err)
+	}
+	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), carvingRuntime(), be)
+	if err != nil {
+		t.Fatalf("start the antispoof filter: %v", err)
+	}
+	t.Cleanup(func() { _ = f.finish() })
+	another := anotherWriter(t)
+	owned := borderSet(ownedSet + "4")
+	single := owned
+	single.Flags = 0
+	made, err := single.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := borderSet(carvedSet+"4").Fill(unix.NFPROTO_INET, nftables.Prefixes([]netip.Prefix{netip.MustParsePrefix("198.18.0.77/32")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := slices.Concat([]nftables.Request{prerouting.Flush(unix.NFPROTO_INET), entry.Flush(unix.NFPROTO_INET), owned.Delete(unix.NFPROTO_INET), made}, added)
+	if err := another.Batch(heldBeside(t, head, entry, nftables.SourceLoad(unix.NFPROTO_IPV4), nftables.Lookup(single, false))); err != nil {
+		t.Fatalf("another writer makes owned4 again of single keys, looks it up, adds to carved4 and drops: %v", err)
+	}
+	held := "and chain other holds a rule using it, so it stays until that rule goes"
+	for i := range 2 {
+		err := f.reconcile()
+		sent := datagram()
+		if f.ready || !strings.Contains(f.unready, "its set owned4 reads back") || !strings.Contains(f.unready, held) || !strings.Contains(f.unready, unix.EBUSY.Error()) {
+			t.Errorf("the filter's pass %d: %v, ready %v with %q, want not ready with owned4's fault and %q", i+1, err, f.ready, f.unready, held)
+		}
+		if !errors.Is(sent, unix.EPERM) {
+			t.Errorf("after the filter's pass %d a datagram left with %v, want EPERM", i+1, sent)
+		}
+	}
+	if err := another.Batch(dropOther()); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if err := f.reconcile(); err != nil || !f.ready {
+		t.Errorf("once the rule is gone the filter's pass: %v, ready %v with %q, want ready", err, f.ready, f.unready)
+	}
+}
+
+// A set of the antispoof filter's, carved4, which the filter's own carved drop
+// looks up under a configuration that carves, made again by another writer
+// with a size the filter does not write, which holds its two intervals, and
+// looked up by a rule of that
+// writer's own chain, beside that writer's drop at the head of the filter's
+// entry chain, is left by the filter's pass while that rule stays: each pass
+// commits beside it and takes out the drop, and the filter is not ready with a
+// reason that names the chain holding the set. Once the rule goes, the
+// filter's own drop holds the set from nothing its pass does not flush, so the
+// pass makes the set again and the filter is ready.
+func TestBorderLeavesASetAnotherWritersRuleHoldsToItsPass(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
+	if err != nil {
+		t.Fatalf("open the antispoof filter's backend: %v", err)
+	}
+	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), carvingRuntime(), be)
+	if err != nil {
+		t.Fatalf("start the antispoof filter: %v", err)
+	}
+	t.Cleanup(func() { _ = f.finish() })
+	if err := datagram(); err != nil {
+		t.Fatalf("with the filter written a datagram left with %v, want sent", err)
+	}
+	another := anotherWriter(t)
+	carved := borderSet(carvedSet + "4")
+	if rules, err := nftables.TableRules(another, unix.NFPROTO_INET, nftables.Table); err != nil || !slices.ContainsFunc(rules, func(rule nftables.Installed) bool {
+		return slices.Contains(nftables.LookupSets(rule.Expressions), carved.Name)
+	}) {
+		t.Fatalf("the filter's lines look up no %s (%v), want its carved drop to", carved.Name, err)
+	}
+	if err := another.Batch(carvedHeld(t, 1024)); err != nil {
+		t.Fatalf("another writer makes %s again with a size, looks it up and drops: %v", carved.Name, err)
+	}
+	if err := datagram(); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("with the drop a datagram left with %v, want EPERM", err)
+	}
+	held := `size 0 and comment "" were written, and chain other holds a rule using it, so it stays until that rule goes`
+	for i := range 2 {
+		err := f.reconcile()
+		sent := datagram()
+		t.Logf("the filter's pass %d: %v, ready %v with %q, and a datagram left with %v", i+1, err, f.ready, f.unready, sent)
+		if err != nil || f.ready || !strings.Contains(f.unready, "size 1024") || !strings.HasSuffix(f.unready, held) {
+			t.Errorf("the filter's pass %d: %v, ready %v with %q, want not ready with %q", i+1, err, f.ready, f.unready, held)
+		}
+		if sent != nil {
+			t.Errorf("after the filter's pass %d a datagram left with %v, want sent", i+1, sent)
+		}
+	}
+	if theirsIn(t, another, borderContents.Chains) {
+		t.Error("after the filter's passes another writer's line sits in its chains")
+	}
+	if err := another.Batch(dropOther()); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if err := f.reconcile(); err != nil || !f.ready {
+		t.Errorf("once the rule is gone the filter's pass: %v, ready %v with %q, want ready", err, f.ready, f.unready)
+	}
+}
+
+// A ct timeout of the translator's made again by another writer with other
+// timeouts and attached by a rule of that writer's own chain, beside that
+// writer's drop at the head of the translator's chain at postrouting, is left
+// by the translator's pass while that rule stays: each pass commits beside it
+// and takes out the drop, and IPv4 is not ready with a reason that names the
+// chain holding the timeout. Once the rule goes the pass makes the timeout
+// again and both families are ready.
+func TestTranslatorLeavesATimeoutAnotherWritersRuleHoldsToItsPass(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	tr, _ := startTranslator(t)
+	another := anotherWriter(t)
+	timeout := timeoutObjects(egress.FamilyIPv4)[0]
+	theirs := timeout
+	theirs.Policy = nil
+	for _, seconds := range timeout.Policy {
+		theirs.Policy = append(theirs.Policy, seconds+1)
+	}
+	var head []nftables.Request
+	for _, chain := range translatorChains {
+		head = append(head, chain.Flush(unix.NFPROTO_INET))
+	}
+	head = append(head, timeout.Delete(unix.NFPROTO_INET), theirs.Create(unix.NFPROTO_INET))
+	if err := another.Batch(heldBeside(t, head, postrouting, nftables.ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, timeout.Name))); err != nil {
+		t.Fatalf("another writer makes %s again, attaches it and drops: %v", timeout.Name, err)
+	}
+	if err := datagram(); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("with the drop a datagram left with %v, want EPERM", err)
+	}
+	held := "seconds were written, and chain other holds a rule using it, so it stays until that rule goes"
+	for i := range 2 {
+		err := tr.reconcile()
+		sent := datagram()
+		s := tr.lastPass()
+		t.Logf("the translator's pass %d: %v, ready %v and %v with %q, and a datagram left with %v", i+1, err, s.Ready4, s.Ready6, s.Unready, sent)
+		if err != nil || s.Ready4 || !strings.Contains(s.Unready, timeout.Name) || !strings.Contains(s.Unready, held) {
+			t.Errorf("the translator's pass %d: %v, ready %v with %q, want IPv4 not ready with %q", i+1, err, s.Ready4, s.Unready, held)
+		}
+		if sent != nil {
+			t.Errorf("after the translator's pass %d a datagram left with %v, want sent", i+1, sent)
+		}
+	}
+	if theirsIn(t, another, translatorChains) {
+		t.Error("after the translator's passes another writer's line sits in its chains")
+	}
+	if err := another.Batch(dropOther()); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if err := tr.reconcile(); err != nil || !tr.lastPass().Ready4 || !tr.lastPass().Ready6 {
+		t.Errorf("once the rule is gone the translator's pass: %v, %+v, want ready in both families", err, tr.lastPass())
+	}
+}
+
+// A ct timeout of the translator's made again by another writer as one of
+// another protocol and attached by a rule of that writer's own chain, beside
+// that writer's drop at the head of the translator's chain at postrouting and
+// an element it adds to IPv4's set of untranslated sources, keeps its delete,
+// which nf_tables refuses with every pass while that rule stays: the drop
+// stays, and IPv4 is not ready with a reason that names the timeout and the
+// chain holding it, ahead of the set read before it and of the lines the
+// refused pass found flushed. Once the rule goes the pass makes the timeout
+// again and both families are ready.
+func TestTranslatorNamesTheHolderOfATimeoutItCannotMakeAgain(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	tr, _ := startTranslator(t)
+	another := anotherWriter(t)
+	timeout := timeoutObjects(egress.FamilyIPv4)[0]
+	theirs := timeout
+	theirs.L4Proto = unix.IPPROTO_TCP
+	added, err := untranslatedSources(egress.FamilyIPv4).Fill(unix.NFPROTO_INET, nftables.Prefixes([]netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var head []nftables.Request
+	for _, chain := range translatorChains {
+		head = append(head, chain.Flush(unix.NFPROTO_INET))
+	}
+	head = append(append(head, timeout.Delete(unix.NFPROTO_INET), theirs.Create(unix.NFPROTO_INET)), added...)
+	if err := another.Batch(heldBeside(t, head, postrouting, nftables.ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, timeout.Name))); err != nil {
+		t.Fatalf("another writer makes %s again for tcp, attaches it and drops: %v", timeout.Name, err)
+	}
+	held := "and chain other holds a rule using it, so it stays until that rule goes"
+	for i := range 2 {
+		err := tr.reconcile()
+		sent := datagram()
+		s := tr.lastPass()
+		if s.Ready4 || !strings.Contains(s.Unready, "its ct timeout "+timeout.Name+" reads back as protocol 6") || !strings.Contains(s.Unready, held) {
+			t.Errorf("the translator's pass %d: %v, ready %v with %q, want IPv4 not ready with the timeout's fault and %q", i+1, err, s.Ready4, s.Unready, held)
+		}
+		if !errors.Is(sent, unix.EPERM) {
+			t.Errorf("after the translator's pass %d a datagram left with %v, want EPERM", i+1, sent)
+		}
+	}
+	if err := another.Batch(dropOther()); err != nil {
+		t.Fatalf("another writer deletes its rule: %v", err)
+	}
+	if err := tr.reconcile(); err != nil || !tr.lastPass().Ready4 || !tr.lastPass().Ready6 {
+		t.Errorf("once the rule is gone the translator's pass: %v, %+v, want ready in both families", err, tr.lastPass())
+	}
+	if err := datagram(); err != nil {
+		t.Errorf("once the rule is gone a datagram left with %v, want sent", err)
+	}
+}
+
+// A regular chain another writer makes under the name of the chain an earlier
+// translator held IPv4's forward lines in, holding a drop, which a binding
+// chain under a stray chain's name goes to from that writer's own chain at
+// output, reads back with that writer's chain, which binds the binding chain,
+// as what holds it, though the translator's read finds the binding chain among
+// the table's chains. Each pass commits and keeps it.
+func TestTranslatorNamesTheHolderOfAStrayABindingStrayGoesTo(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	tr, _ := startTranslator(t)
+	another := anotherWriter(t)
+	old := regularChain(retiredChain)
+	drop, err := old.Rule(unix.NFPROTO_INET, "theirs", nftables.CountedDrop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray := NoneChain + "192_0_2_0_24"
+	requests := slices.Concat([]nftables.Request{old.Create(unix.NFPROTO_INET), drop, otherOutput.Create(unix.NFPROTO_INET)},
+		bindingChainOf(t, otherOutput, stray, [][]byte{nftables.Goto(old.Name)}))
+	if err := another.Batch(requests); err != nil {
+		t.Fatalf("another writer makes %s and the binding chain %s going to it: %v", old.Name, stray, err)
+	}
+	held := "its chain " + old.Name + " is not one the translator writes, and chain " + otherOutput.Name + " holds a rule going to it, so it stays until that rule goes"
+	for i := range 2 {
+		err := tr.reconcile()
+		s := tr.lastPass()
+		if err != nil || s.Ready4 || s.Ready6 || !strings.Contains(s.Unready, held) {
+			t.Errorf("the translator's pass %d: %v, ready %v and %v with %q, want not ready with %q", i+1, err, s.Ready4, s.Ready6, s.Unready, held)
+		}
+	}
+	if chains, err := nftables.TableChains(another, unix.NFPROTO_INET, nftables.Table); err != nil || !slices.Contains(chains, old.Name) {
+		t.Errorf("after the translator's passes the table lists the chains %v (%v), want %s among them", chains, err, old.Name)
+	}
+}
+
 // kernelSwitch is the fault the kill switch's chains and set read back with
 func kernelSwitch(conn *nftables.Conn) (string, error) {
 	tables, err := nftables.Tables(conn, nftables.Table)
 	if err != nil {
 		return "", err
 	}
-	read, err := nftables.Contents{Chains: switchChains, Sets: []nftables.Set{switchSet}}.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: switchChains, Sets: []nftables.Set{switchSet}}.Read(conn, tables, unix.NFPROTO_INET, switchScope)
 	return read.Fault, err
 }
 

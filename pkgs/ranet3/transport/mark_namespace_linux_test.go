@@ -72,7 +72,7 @@ func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.
 		}
 		sent("the pair's socket")
 	}
-	read, err := nftables.Contents{Chains: []nftables.Chain{kubetest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: []nftables.Chain{kubetest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET, nftables.Scope{})
 	if err != nil {
 		t.Fatal(err)
 	}

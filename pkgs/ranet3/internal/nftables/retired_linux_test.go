@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -205,7 +206,8 @@ func sendLoopback() error {
 
 // A binding chain under a retired name that another writer binds from a chain
 // of its own is no chain the owner's transaction flushes, so the regular chain
-// under another retired name it goes to is a leftover held by it, and the
+// under another retired name it goes to is a leftover held by it, named by the
+// chain that binds it, and the
 // regular chain of the owner's prefix that a binding chain of that prefix goes
 // to stays through the withdrawal. Nor is a regular chain of that writer's
 // that a line of the owner's chain goes to, so a set under a retired name it
@@ -242,7 +244,7 @@ func TestNftablesCountsABindingChainFlushedOnlyWithItsBinder(t *testing.T) {
 		t.Fatalf("with the drop a datagram left with %v, want EPERM", err)
 	}
 	old, owner := Scope{Chains: []string{"gone", "old2"}, Sets: []string{oldset.Name}}, Scope{Chains: []string{"mine"}, Prefix: "none_"}
-	held := []Retired{{"chain", "gone", "chain other"}, {"chain", "old2", "chain gone"}, {"set", oldset.Name, "chain reading"}}
+	held := []Retired{{"chain", "gone", "chain other"}, {"chain", "old2", "chain other"}, {"set", oldset.Name, "chain reading"}}
 	leftovers, err := Leftovers(conn, nil, old, owner)
 	if err != nil || !slices.Equal(leftovers, held) {
 		t.Fatalf("the leftovers read %+v (%v), want %+v", leftovers, err, held)
@@ -446,5 +448,176 @@ func TestRetiredFaultNamesWhatHoldsIt(t *testing.T) {
 		if got := c.r.Fault("the filter"); got != c.want {
 			t.Errorf("%+v reads %q, want %q", c.r, got, c.want)
 		}
+	}
+	read := "its set s reads back with key type 7 of 4 bytes, flags 0x0, size 10 and comment \"\", where key type 7 of 4 bytes, flags 0x0, size 0 and comment \"\" were written"
+	if got, want := (Retired{Kind: "set", Name: "s", HeldBy: "chain other"}).stays(read), read+", and chain other holds a rule using it, so it stays until that rule goes"; got != want {
+		t.Errorf("a stale set's fault with its holder reads %q, want %q", got, want)
+	}
+	if got := (Retired{Kind: "set", Name: "s"}).stays(read); got != read {
+		t.Errorf("a stale set's fault with no holder reads %q, want %q", got, read)
+	}
+}
+
+// staleTable holds, beside the owner's chain mine, a regular chain c where the
+// owner writes a base chain, the sets s with a size, small with a size of one,
+// f with no interval flag and free with a size, and the ct timeouts t and m
+// with other timeouts and p of another protocol than the owner writes: another
+// writer's chain other goes to c, uses s, small and f and attaches t and p,
+// mine alone uses free, and no rule attaches m
+const staleTable = `table inet ranet3 {
+	ct timeout t { protocol udp; l3proto ip; policy = { unreplied: 30s, replied: 30s }; }
+	ct timeout m { protocol udp; l3proto ip; policy = { unreplied: 30s, replied: 30s }; }
+	ct timeout p { protocol tcp; l3proto ip; policy = { established: 100s }; }
+	set s { type ipv4_addr; size 10; }
+	set small { type ipv4_addr; size 1; }
+	set f { type ipv4_addr; }
+	set free { type ipv4_addr; size 10; }
+	chain c { }
+	chain mine { ip daddr @free accept; ip daddr @s accept; }
+	chain other { jump c; ip saddr @s accept; ip saddr @small accept; ip saddr @f accept; meta l4proto udp ct timeout set "t"; meta l4proto tcp ct timeout set "p"; }
+}
+`
+
+// A stale chain, set or ct timeout another writer's rule holds reads back with
+// what holds it, and stays stale, but for a set that differs in its size alone
+// where that size holds the owner's elements, and a ct timeout in its timeouts
+// alone, which the read leaves out of stale, the timeout m among them, which
+// an element of another writer's map of objects alone holds, so the owner's
+// transaction over m with its create commits. A set whose size is below the
+// count of the owner's elements stays stale with its holder named. One only
+// the owner's own chain uses stays stale with no holder. The owner's
+// transaction over what stays stale is refused, and once the other writer's
+// chain is flushed every one of them reads stale with no holder and the
+// transaction commits.
+func TestNftablesReadNamesWhatHoldsAStaleObject(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("the table is written through nft, which is not on the path")
+	}
+	load := exec.Command(nft, "-f", "-")
+	load.Stdin = strings.NewReader(staleTable)
+	if out, err := load.CombinedOutput(); err != nil {
+		t.Fatalf("nft -f: %v\n%s", err, out)
+	}
+	conn := dial(t)
+	// nft writes no map of ct timeouts, so the object map is made by its requests
+	objects, err := Set{Table: Table, Name: "objects", ID: 1, KeyType: TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_OBJECT}.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects.Body = PutAttrBE32(objects.Body, unix.NFTA_SET_OBJ_TYPE, unix.NFT_OBJECT_CT_TIMEOUT)
+	element := netlink.PutAttr(nil, unix.NFTA_SET_ELEM_KEY|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, []byte{0, 53}))
+	element = netlink.PutAttrString(element, unix.NFTA_SET_ELEM_OBJREF, "m")
+	elements := netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_TABLE, Table), unix.NFTA_SET_ELEM_LIST_SET, "objects")
+	elements = netlink.PutAttr(elements, unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, element))
+	if err := conn.Batch([]Request{objects, {Kind: Command(unix.NFT_MSG_NEWSETELEM), Flags: unix.NLM_F_CREATE, Body: elements}}); err != nil {
+		t.Fatalf("make the map of objects: %v", err)
+	}
+	c := Chain{Table: Table, Name: "c", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 0}
+	mine := Chain{Table: Table, Name: "mine", Hook: NoHook}
+	set := func(name string, flags uint32) Set {
+		return Set{Table: Table, Name: name, ID: 1, KeyType: TypeIPv4Addr, KeyLen: 4, Flags: flags}
+	}
+	s, f, free := set("s", 0), set("f", unix.NFT_SET_INTERVAL), set("free", 0)
+	timeout := func(name string) Timeout {
+		return Timeout{Table: Table, Name: name, L3Proto: unix.NFPROTO_IPV4, L4Proto: unix.IPPROTO_UDP, Policy: []uint32{120, 120}}
+	}
+	contents := Contents{Chains: []Chain{c, mine}, Sets: []Set{s, f, free}, Timeouts: []Timeout{timeout("t"), timeout("p")}}
+	read := func(of Contents) Readback {
+		t.Helper()
+		tables, err := Tables(conn, Table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, err := of.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return read
+	}
+	rule := ", and chain other holds a rule using it, so it stays until that rule goes"
+	two := []Interval{Key([]byte{192, 0, 2, 1}), Key([]byte{192, 0, 2, 2})}
+	for _, x := range []struct {
+		name  string
+		of    Contents
+		stale bool
+		held  string
+	}{
+		{"chain c", Contents{Chains: []Chain{c}}, true, ", and chain other holds a rule going to it, so it stays until that rule goes"},
+		{"set s", Contents{Sets: []Set{s}}, false, rule},
+		{"set s of size 10 for two elements", Contents{Sets: []Set{s}, Elements: map[string][]Interval{"s": two}}, false, rule},
+		{"set small of size 1 for two elements", Contents{Sets: []Set{set("small", 0)}, Elements: map[string][]Interval{"small": two}}, true, rule},
+		{"set f", Contents{Sets: []Set{f}}, true, rule},
+		{"set free", Contents{Sets: []Set{free}}, true, `size 0 and comment "" were written`},
+		{"ct timeout t", Contents{Timeouts: []Timeout{timeout("t")}}, false, rule},
+		{"ct timeout p", Contents{Timeouts: []Timeout{timeout("p")}}, true, rule},
+		{"ct timeout m", Contents{Timeouts: []Timeout{timeout("m")}}, false, ", and a map holds an element using it, so it stays until that element goes"},
+	} {
+		if got := read(x.of); got.Remake() != x.stale || !strings.HasSuffix(got.Fault, x.held) {
+			t.Errorf("%s reads back with %q, stale %v, want stale %v and a fault ending %q", x.name, got.Fault, got.Remake(), x.stale, x.held)
+		}
+	}
+	mapped := Contents{Timeouts: []Timeout{timeout("m")}}
+	if err := conn.Batch(append(mapped.Rewrite(unix.NFPROTO_INET, read(mapped).Stale, nil), timeout("m").Create(unix.NFPROTO_INET))); err != nil {
+		t.Errorf("the owner's transaction over ct timeout m with its create: %v", err)
+	}
+	got := read(contents)
+	want := Contents{Chains: []Chain{c}, Sets: []Set{f, free}, Timeouts: []Timeout{timeout("p")}}
+	if !reflect.DeepEqual(got.Stale, want) {
+		t.Errorf("the owner's read finds stale %+v, want %+v", got.Stale, want)
+	}
+	if err := conn.Batch(contents.Rewrite(unix.NFPROTO_INET, got.Stale, nil)); !errors.Is(err, unix.EBUSY) {
+		t.Errorf("the owner's transaction over what reads stale: %v, want %v", err, unix.EBUSY)
+	}
+	if err := conn.Batch([]Request{Chain{Table: Table, Name: "other"}.Flush(unix.NFPROTO_INET)}); err != nil {
+		t.Fatalf("another writer flushes its chain: %v", err)
+	}
+	got = read(contents)
+	want = Contents{Chains: []Chain{c}, Sets: []Set{s, f, free}, Timeouts: []Timeout{timeout("t"), timeout("p")}}
+	if !reflect.DeepEqual(got.Stale, want) || strings.Contains(got.Fault, "holds") {
+		t.Errorf("with the other chain flushed the owner's read finds stale %+v with %q, want %+v and no holder", got.Stale, got.Fault, want)
+	}
+	if err := conn.Batch(contents.Rewrite(unix.NFPROTO_INET, got.Stale, nil)); err != nil {
+		t.Errorf("with the other chain flushed the owner's transaction: %v", err)
+	}
+}
+
+// A stale chain that a rule another writer put in one of the owner's own
+// chains goes to reads back with that chain of the owner's as what holds it,
+// since Rewrite deletes a stale chain before it flushes any, and the owner's
+// transaction is refused
+func TestNftablesReadNamesTheOwnersChainThatHoldsAStaleChain(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	netnstest.EnterEmpty(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("the table is written through nft, which is not on the path")
+	}
+	load := exec.Command(nft, "-f", "-")
+	load.Stdin = strings.NewReader("table inet ranet3 {\n\tchain c { }\n\tchain mine { jump c; }\n}\n")
+	if out, err := load.CombinedOutput(); err != nil {
+		t.Fatalf("nft -f: %v\n%s", err, out)
+	}
+	conn := dial(t)
+	contents := Contents{Chains: []Chain{{Table: Table, Name: "c", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: 0}, {Table: Table, Name: "mine", Hook: NoHook}}}
+	tables, err := Tables(conn, Table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET, contents.Scope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := ", and chain mine holds a rule going to it, so it stays until that rule goes"; !read.Remake() || !strings.HasSuffix(read.Fault, want) {
+		t.Errorf("the owner's read finds stale %+v with %q, want chain c and a fault ending %q", read.Stale, read.Fault, want)
+	}
+	if err := conn.Batch(contents.Rewrite(unix.NFPROTO_INET, read.Stale, nil)); !errors.Is(err, unix.EBUSY) {
+		t.Errorf("the owner's transaction over chain c: %v, want %v", err, unix.EBUSY)
 	}
 }

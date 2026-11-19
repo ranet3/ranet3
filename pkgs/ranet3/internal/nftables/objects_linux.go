@@ -105,14 +105,21 @@ func (t Timeout) Fault(message netlink.Message) (fault string, remake bool) {
 		t.Name, held.L4Proto, held.L3Proto, held.Policy, t.L4Proto, t.L3Proto, t.Policy), true
 }
 
+// retimed is whether the ct timeout a dump holds has t's protocols, so the
+// object of t's name differs from t in its timeouts alone
+func (t Timeout) retimed(message netlink.Message) bool {
+	held, ok := DecodeTimeout(message)
+	return ok && held.L3Proto == t.L3Proto && held.L4Proto == t.L4Proto
+}
+
 // readTimeout is t's fault among the objects a dump holds, one missing among
-// them, and whether one of its name is there
-func readTimeout(t Timeout, objects []netlink.Message) (fault string, remake, found bool) {
-	for _, reply := range objects {
+// them, and the index of the one of its name, -1 where none is there
+func readTimeout(t Timeout, objects []netlink.Message) (fault string, remake bool, found int) {
+	for i, reply := range objects {
 		if held, ok := DecodeTimeout(reply); ok && held.Table == t.Table && held.Name == t.Name {
 			fault, remake = t.Fault(reply)
-			return fault, remake, true
+			return fault, remake, i
 		}
 	}
-	return fmt.Sprintf("its ct timeout %s is missing", t.Name), false, false
+	return fmt.Sprintf("its ct timeout %s is missing", t.Name), false, -1
 }

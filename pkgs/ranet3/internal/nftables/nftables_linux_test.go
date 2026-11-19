@@ -632,6 +632,130 @@ func TestSetsDeclaredOtherwiseReadBackToBeMadeAgain(t *testing.T) {
 	}
 }
 
+// setHandle is NFTA_SET_HANDLE, which x/sys does not carry
+const setHandle = 16
+
+// dumpedSet is a body of the set s that carries attributes a dump carries and
+// Create leaves out, a handle and a policy, beside its flags, its key, the
+// key's byte order and any comment in its userdata, and its size, where it has
+// one, nested in its description, in an order of the test's own, then extra
+func dumpedSet(s Set, extra []byte) []byte {
+	body := netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, s.Table), unix.NFTA_SET_NAME, s.Name)
+	body = netlink.PutAttr(body, setHandle, binary.BigEndian.AppendUint64(nil, 7))
+	body = PutAttrBE32(PutAttrBE32(PutAttrBE32(body, unix.NFTA_SET_FLAGS, s.Flags), unix.NFTA_SET_KEY_TYPE, s.KeyType), unix.NFTA_SET_KEY_LEN, s.KeyLen)
+	body = PutAttrBE32(body, unix.NFTA_SET_POLICY, unix.NFT_SET_POL_MEMORY)
+	udata := binary.NativeEndian.AppendUint32([]byte{udataSetKeyByteOrder, 4}, byteOrderHost)
+	if s.Comment != "" {
+		udata = append(udata, userdata(udataSetComment, s.Comment)...)
+	}
+	body = netlink.PutAttr(body, unix.NFTA_SET_USERDATA, udata)
+	var size []byte
+	if s.Size != 0 {
+		size = PutAttrBE32(nil, unix.NFTA_SET_DESC_SIZE, s.Size)
+	}
+	return append(netlink.PutAttr(body, unix.NFTA_SET_DESC, size), extra...)
+}
+
+// A set dumped as written but for a size is resized, and one that differs in
+// its comment, flags, key type, key length or expressions beside the size is
+// not, each read from a body dumpedSet makes
+func TestSetResizedIsTheSetButForItsSize(t *testing.T) {
+	forwarded := Set{Table: Table, Name: "forwarded", ID: 1, KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ}
+	with := func(change func(*Set)) Set {
+		held := forwarded
+		held.ID, held.Size = 0, 65535
+		change(&held)
+		return held
+	}
+	for _, c := range []struct {
+		name  string
+		held  Set
+		extra []byte
+		want  bool
+	}{
+		{"a size", with(func(*Set) {}), nil, true},
+		{"as written", forwarded, nil, true},
+		{"a size and a comment", with(func(s *Set) { s.Comment = "theirs" }), nil, false},
+		{"a size and the dynamic flag", with(func(s *Set) { s.Flags = unix.NFT_SET_EVAL }), nil, false},
+		{"a size and another key", with(func(s *Set) { s.KeyType, s.KeyLen = TypeIPv4Addr, 4 }), nil, false},
+		{"a size and another key type of the same length", with(func(s *Set) { s.KeyType = TypeIPv6Addr }), nil, false},
+		{"a size and another key length", with(func(s *Set) { s.KeyLen = 8 }), nil, false},
+		{"a size and an expression", with(func(*Set) {}), netlink.PutAttr(nil, setExpression, expressionBody("counter", nil)), false},
+		{"a size and two expressions", with(func(*Set) {}), netlink.PutAttr(nil, setExpressions, slices.Concat(Expression("counter", nil), Expression("last", nil))), false},
+	} {
+		if got := forwarded.resized(netlink.Message{Data: dumpedSet(c.held, c.extra)}); got != c.want {
+			t.Errorf("%s: resized is %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// objectHandle is NFTA_OBJ_HANDLE, which x/sys does not carry
+const objectHandle = 6
+
+// dumpedObject is a body of the object udp4 of type kind that carries
+// attributes a dump carries and Create leaves out, a use and a handle, beside
+// its data, the protocols l3 and l4 and the timeouts of policy, in an order of
+// the test's own
+func dumpedObject(kind uint32, l3 uint16, l4 uint8, policy ...uint32) []byte {
+	var states []byte
+	for i, seconds := range policy {
+		states = PutAttrBE32(states, uint16(i+1), seconds)
+	}
+	data := netlink.PutAttr(nil, ctTimeoutL3Proto, binary.BigEndian.AppendUint16(nil, l3))
+	data = netlink.PutAttr(data, ctTimeoutL4Proto, []byte{l4})
+	data = netlink.PutAttr(data, ctTimeoutData|unix.NLA_F_NESTED, states)
+	body := netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_OBJ_TABLE, Table), unix.NFTA_OBJ_NAME, "udp4")
+	body = PutAttrBE32(PutAttrBE32(body, unix.NFTA_OBJ_TYPE, kind), unix.NFTA_OBJ_USE, 2)
+	body = netlink.PutAttr(body, objectHandle, binary.BigEndian.AppendUint64(nil, 9))
+	return netlink.PutAttr(body, unix.NFTA_OBJ_DATA, data)
+}
+
+// A ct timeout dumped with other timeouts is retimed, and one of another
+// layer 3 or layer 4 protocol, or an object of another type whose data holds
+// the written protocols, is not, each read from a body dumpedObject makes
+func TestTimeoutRetimedIsOfTheWrittenProtocols(t *testing.T) {
+	udp4 := Timeout{Table: Table, Name: "udp4", L3Proto: unix.NFPROTO_IPV4, L4Proto: unix.IPPROTO_UDP, Policy: []uint32{120, 300}}
+	for _, c := range []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{"other timeouts", dumpedObject(unix.NFT_OBJECT_CT_TIMEOUT, unix.NFPROTO_IPV4, unix.IPPROTO_UDP, 30, 30), true},
+		{"as written", dumpedObject(unix.NFT_OBJECT_CT_TIMEOUT, unix.NFPROTO_IPV4, unix.IPPROTO_UDP, 120, 300), true},
+		{"tcp", dumpedObject(unix.NFT_OBJECT_CT_TIMEOUT, unix.NFPROTO_IPV4, unix.IPPROTO_TCP, 120, 300), false},
+		{"IPv6", dumpedObject(unix.NFT_OBJECT_CT_TIMEOUT, unix.NFPROTO_IPV6, unix.IPPROTO_UDP, 120, 300), false},
+		{"a counter whose data holds the written protocols", dumpedObject(unix.NFT_OBJECT_COUNTER, unix.NFPROTO_IPV4, unix.IPPROTO_UDP, 120, 300), false},
+	} {
+		if got := udp4.retimed(netlink.Message{Data: c.body}); got != c.want {
+			t.Errorf("%s: retimed is %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// What goes to a chain from a rule of a binding chain, which no listing shows,
+// holds it under the name of the chain that binds that binding chain, unless
+// the flush empties that chain, and a listed chain the flush does not name
+// holds it under its own
+func TestHolderCountsABindingChainEmptiedWithItsBinder(t *testing.T) {
+	goes := func(chain, to string) Installed { return Installed{Chain: chain, Expressions: Goto(to)} }
+	listed := []string{"mine", "theirs", "target"}
+	flushes := func(chain string) bool { return chain == "mine" || chain == "unlisted" }
+	for _, c := range []struct {
+		name  string
+		rules []Installed
+		want  string
+	}{
+		{"a binding chain mine binds", []Installed{goes("mine", "bound"), goes("bound", "target")}, ""},
+		{"a binding chain theirs binds", []Installed{goes("theirs", "bound"), goes("bound", "target")}, "chain theirs"},
+		{"theirs", []Installed{goes("theirs", "target")}, "chain theirs"},
+		{"an unlisted chain the flush names", []Installed{goes("unlisted", "target")}, "chain unlisted"},
+	} {
+		if got := Holder("target", c.rules, nil, listed, flushes); got != c.want {
+			t.Errorf("%s: Holder is %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // heldSets is each of the owner's sets a dump of the table names, in the
 // owner's order: none the dump lacks, none of the dump's the owner does not
 // write, and none the dump flags anonymous

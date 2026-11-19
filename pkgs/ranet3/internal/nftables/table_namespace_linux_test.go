@@ -271,7 +271,7 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 	}
 	for i, o := range owners {
 		chain := Chain{Table: Table, Name: o.chains[0], Type: "filter", Hook: unix.NF_INET_FORWARD}
-		read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
+		read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET, Scope{Chains: []string{chain.Name}})
 		if err != nil || !strings.Contains(read.Fault, orphanedFix) || read.Remake() {
 			t.Errorf("the %s reads the persistent table back as %+v (%v), want a fault naming the delete and nothing to remake", owners[i].name, read, err)
 		}
@@ -320,7 +320,7 @@ func TestNftablesTableALiveSocketOwnsReadsAsThatSocketsOwn(t *testing.T) {
 			}
 			for i, o := range owners {
 				chain := Chain{Table: Table, Name: o.chains[0], Type: "filter", Hook: unix.NF_INET_FORWARD}
-				read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
+				read, err := Contents{Chains: []Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET, Scope{Chains: []string{chain.Name}})
 				if err != nil || !strings.Contains(read.Fault, c.fault) {
 					t.Errorf("the %s reads the owned table back as %+v (%v), want a fault naming the socket that owns it", owners[i].name, read, err)
 				}

@@ -363,7 +363,7 @@ func entryUntracked(t *testing.T, leaf *netnstest.Thread) uint64 {
 			return err
 		}
 		defer conn.Close()
-		read, err := nftables.Contents{Chains: []nftables.Chain{entryNotrack}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+		read, err := nftables.Contents{Chains: []nftables.Chain{entryNotrack}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET, nftables.Scope{})
 		for _, rule := range read.Rules {
 			out += rule.Packets
 		}
@@ -484,7 +484,7 @@ func entryCounted(t *testing.T, leaf *netnstest.Thread) map[string]uint64 {
 			return err
 		}
 		defer conn.Close()
-		read, err := nftables.Contents{Chains: []nftables.Chain{entryAfter, entryForward}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+		read, err := nftables.Contents{Chains: []nftables.Chain{entryAfter, entryForward}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET, nftables.Scope{})
 		for _, rule := range read.Rules {
 			out[rule.Spec] = rule.Packets
 		}

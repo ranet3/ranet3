@@ -226,8 +226,8 @@ func (c Chain) Fault(message netlink.Message) (fault string, remake bool) {
 	if c.Hook == NoHook {
 		want = "the regular chain " + c.Name
 	}
-	return fmt.Sprintf("its chain reads back as type %q at hook %d, priority %d, policy %d, where %s was written",
-		kind, int32(hook), priority, int32(policy), want), remake
+	return fmt.Sprintf("its chain %s reads back as type %q at hook %d, priority %d, policy %d, where %s was written",
+		c.Name, kind, int32(hook), priority, int32(policy), want), remake
 }
 
 // Installed is one rule as a dump read it back: the comment it was written
@@ -263,11 +263,18 @@ type Readback struct {
 	Rules []Installed
 	// Fault names the first way the table, a chain, a set or an object differs
 	// from what NewTable and the Create methods write, a missing set or object
-	// among them, empty where none does
+	// among them, and what holds a stale one, empty where none does
 	Fault string
+	// Refused is the fault of the first set or ct timeout that stays stale and
+	// has a holder, which the owner's transaction is refused on
+	Refused string
 	// Stale is each chain, set and object of Contents that differs in what
 	// nf_tables will not change in place, which Rewrite deletes and its owner
-	// makes again in one transaction, but a binding chain, which goes with its rule
+	// makes again in one transaction, but a binding chain, which goes with its
+	// rule, and a set or ct timeout that a rule of a chain the owner's
+	// transaction does not empty, or an element of a map, holds and that
+	// differs only in a size that holds the owner's elements or in the
+	// timeouts, which Create takes as it is
 	Stale Contents
 	// Chains is the name of each chain the table holds, as the dump finds
 	// them, those Contents names and those it does not
@@ -281,8 +288,12 @@ func (r Readback) Remake() bool {
 	return len(r.Stale.Chains) > 0 || len(r.Stale.Sets) > 0 || len(r.Stale.Timeouts) > 0
 }
 
-// Read takes tables as Tables read them
-func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readback, error) {
+// Read takes tables as Tables read them, and owner as the scope whose chains
+// the owner's transaction flushes before it deletes a stale set or object.
+// Where it finds anything stale it reads what holds it as Leftovers does: a
+// set or object past the owner's chains, a chain past none, the owner's among
+// them, since Rewrite deletes a stale chain before it flushes any.
+func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8, owner Scope) (Readback, error) {
 	flags, held := tables[proto]
 	if !held {
 		return Readback{}, nil
@@ -292,6 +303,19 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		if read.Fault == "" {
 			read.Fault = fault
 		}
+	}
+	refuse := func(fault string, refused bool) {
+		if refused && read.Refused == "" {
+			read.Refused = fault
+		}
+	}
+	// holder is fault, of a stale object of kind and name, with what holds it past the chains flushes names, and whether anything does
+	holder := func(fault, kind, name string, uses uint32, flushes func(chain string) bool) (string, bool, error) {
+		out, err := hold(conn, proto, c.table(), []Retired{{Kind: kind, Name: name}}, map[string]uint32{name: uses}, flushes)
+		if err != nil {
+			return "", false, err
+		}
+		return out[0].stays(fault), out[0].HeldBy != "", nil
 	}
 	if flags != 0 {
 		// NewTable clears a dormant flag in place and no other
@@ -327,10 +351,13 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 				}
 				read.Held = true
 				fault, remake := chain.Fault(reply)
-				note(fault)
 				if remake && !binding(reply) {
+					if fault, _, err = holder(fault, "chain", name, 0, func(string) bool { return false }); err != nil {
+						return Readback{}, err
+					}
 					read.Stale.Chains = append(read.Stale.Chains, chain)
 				}
+				note(fault)
 			}
 		}
 	}
@@ -350,6 +377,16 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 			}
 			read.Held = true
 			fault, remake := set.Fault(sets[found])
+			if remake {
+				var kept bool
+				if fault, kept, err = holder(fault, "set", set.Name, 0, owner.chain); err != nil {
+					return Readback{}, err
+				}
+				// Create takes a held set as it is, so one that differs in more than its size, or whose size cannot hold the owner's elements, stays stale, whose refused delete keeps the owner's rules off it
+				size := DecodeSet(sets[found]).Size
+				remake = !kept || !set.resized(sets[found]) || size != 0 && int(size) < len(set.normal(c.Elements[set.Name]))
+				refuse(fault, kept && remake)
+			}
 			note(fault)
 			if remake {
 				read.Stale.Sets = append(read.Stale.Sets, set)
@@ -374,9 +411,18 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 			return Readback{}, fmt.Errorf("dump objects: %w", err)
 		}
 		for _, timeout := range c.Timeouts {
-			fault, remake, found := readTimeout(timeout, objects)
+			fault, remake, i := readTimeout(timeout, objects)
+			read.Held = read.Held || i >= 0
+			if remake {
+				var kept bool
+				if fault, kept, err = holder(fault, "ct timeout", timeout.Name, objectUse(objects[i]), owner.chain); err != nil {
+					return Readback{}, err
+				}
+				// as for a set, one of another protocol stays stale
+				remake = !kept || !timeout.retimed(objects[i])
+				refuse(fault, kept && remake)
+			}
 			note(fault)
-			read.Held = read.Held || found
 			if remake {
 				read.Stale.Timeouts = append(read.Stale.Timeouts, timeout)
 			}
@@ -421,13 +467,18 @@ func (c Contents) table() string {
 // Rewrite is the head of the one transaction that writes c over stale: Table,
 // adopted where it is there, each chain of stale deleted with its rules, each
 // chain of c made and flushed, which makes a deleted one again, each of strays
-// flushed, then each set and object of stale deleted. strays are the owner's
-// chains TableChains lists that c does not write, which the owner deletes
-// after the head. Every chain of the owner's is flushed before any set or
-// object goes, since nf_tables refuses to delete one a rule still uses, so
-// only another writer's rule using one fails the transaction. Its owner then
-// makes c's sets and objects, fills the sets and writes its rules, which makes
-// every one stale named again.
+// flushed, then each set and object of stale deleted.
+// strays are the owner's chains TableChains lists that c does not write, which
+// the owner deletes after the head. Every chain of the owner's is flushed
+// before any set or object goes, since nf_tables refuses to delete one a rule
+// still uses, so another writer's rule or map element holding a stale set or
+// object fails the transaction, as does any rule going to a stale chain, the
+// owner's among them, since a stale chain goes before any flush. Read leaves
+// out of stale a set or ct timeout such a rule or element holds that differs
+// only in a size that holds the owner's elements or in its timeouts, which the
+// owner's create takes as it is.
+// Its owner then makes c's sets and objects, fills the sets and writes its
+// rules, which makes every one stale named again.
 func (c Contents) Rewrite(proto uint8, stale Contents, strays []string) []Request {
 	requests := []Request{NewTable(proto, Table)}
 	for _, chain := range stale.Chains {
@@ -535,7 +586,7 @@ func (s Scope) withdrawal(l listing, last bool) []Request {
 		requests = append(requests, Chain{Table: Table, Name: name}.Flush(unix.NFPROTO_INET))
 	}
 	for _, name := range chains {
-		if Holder(name, l.rules, l.maps, func(c string) bool { return flushedWith(c, l.chains, l.rules, s.chain) }) == "" {
+		if Holder(name, l.rules, l.maps, l.chains, s.chain) == "" {
 			requests = append(requests, Chain{Table: Table, Name: name}.Delete(unix.NFPROTO_INET))
 		}
 	}
@@ -551,21 +602,23 @@ func (s Scope) withdrawal(l listing, last bool) []Request {
 	return requests
 }
 
-// Holder names what goes to the chain named chain from a chain flushed does
-// not take: "chain c" for a rule of chain c, by a goto, a jump or its vmap,
-// "map m" for an element of the named map m, empty where nothing does.
-// nf_tables refuses to delete a chain either holds.
-func Holder(chain string, rules []Installed, maps []VerdictMap, flushed func(chain string) bool) string {
+// Holder names what goes to the chain named chain from a chain a flush of each
+// chain of listed, TableChains', that flushes names does not empty, as
+// flushedWith decides it: "chain c" for a rule of chain c, by a goto, a jump
+// or its vmap, or of a binding chain c's rule binds, "map m" for an element of
+// the named map m, empty where nothing does. nf_tables refuses to delete a
+// chain either holds.
+func Holder(chain string, rules []Installed, maps []VerdictMap, listed []string, flushes func(chain string) bool) string {
 	goesTo := func(m VerdictMap) bool { return slices.Contains(m.Chains, chain) }
 	for _, rule := range rules {
-		if flushed(rule.Chain) {
+		if flushedWith(rule.Chain, listed, rules, flushes) {
 			continue
 		}
 		vmap := slices.ContainsFunc(LookupSets(rule.Expressions), func(set string) bool {
 			return slices.ContainsFunc(maps, func(m VerdictMap) bool { return m.Anonymous && m.Name == set && goesTo(m) })
 		})
 		if vmap || slices.Contains(VerdictChains(rule.Expressions), chain) {
-			return "chain " + rule.Chain
+			return "chain " + binder(rule.Chain, listed, rules)
 		}
 	}
 	if i := slices.IndexFunc(maps, func(m VerdictMap) bool { return !m.Anonymous && goesTo(m) }); i >= 0 {
@@ -582,6 +635,17 @@ func flushedWith(chain string, listed []string, rules []Installed, flushes func(
 	return takes(chain) || !slices.Contains(listed, chain) && slices.ContainsFunc(rules, func(rule Installed) bool {
 		return takes(rule.Chain) && slices.Contains(VerdictChains(rule.Expressions), chain)
 	})
+}
+
+// binder is chain, or for a binding chain, which listed, TableChains', leaves
+// out and nft lists inside the rule that binds it, the chain of that rule
+func binder(chain string, listed []string, rules []Installed) string {
+	if !slices.Contains(listed, chain) {
+		if i := slices.IndexFunc(rules, func(rule Installed) bool { return slices.Contains(VerdictChains(rule.Expressions), chain) }); i >= 0 {
+			return rules[i].Chain
+		}
+	}
+	return chain
 }
 
 // rules dumps each chain's rules alone, which the kernel filters by the table

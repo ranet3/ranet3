@@ -163,7 +163,7 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	}
 	_, there := tables[unix.NFPROTO_INET]
 	common := slices.DeleteFunc(slices.Clone(translatorChains), func(chain nftables.Chain) bool { return chain.Name == forward6.Name })
-	shared, err := nftables.Contents{Chains: common}.Read(conn, tables, unix.NFPROTO_INET)
+	shared, err := nftables.Contents{Chains: common}.Read(conn, tables, unix.NFPROTO_INET, translatorScope)
 	if err != nil {
 		return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
@@ -180,12 +180,13 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 	if fault == "" && len(leftovers) > 0 {
 		fault = leftovers[0].Fault("the translator")
 	}
+	var linesFault string
 	if lines && fault == "" {
-		if fault, err = translatorRulesFault(common, desired, shared.Rules); err != nil {
+		if linesFault, err = translatorRulesFault(common, desired, shared.Rules); err != nil {
 			return nil, err
 		}
 	}
-	own, err := nftables.Contents{Chains: []nftables.Chain{forward6}}.Read(conn, tables, unix.NFPROTO_INET)
+	own, err := nftables.Contents{Chains: []nftables.Chain{forward6}}.Read(conn, tables, unix.NFPROTO_INET, translatorScope)
 	if err != nil {
 		return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
@@ -213,11 +214,16 @@ func (n *natTables) read(conn *nftables.Conn, desired []Rule, lines bool) (map[u
 		}
 		var objects nftables.Readback
 		if slices.Contains(n.families, family) {
-			if objects, err = familyContents(family, n.limit, desired).Read(conn, tables, unix.NFPROTO_INET); err != nil {
+			if objects, err = familyContents(family, n.limit, desired).Read(conn, tables, unix.NFPROTO_INET, translatorScope); err != nil {
 				return nil, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 			}
 		}
-		out[family] = chainReadback{rules: placed[family], fault: cmp.Or(fault, chainFault, objects.Fault), remake: remake || objects.Remake(), held: held || objects.Held}
+		// the fault of an object the pass is refused on, which names what holds it, then that of any stale, goes ahead of the lines' faults that holder's remake brings
+		var stale string
+		if objects.Remake() {
+			stale = objects.Fault
+		}
+		out[family] = chainReadback{rules: placed[family], fault: cmp.Or(fault, objects.Refused, stale, linesFault, chainFault, objects.Fault), remake: remake || objects.Remake(), held: held || objects.Held}
 	}
 	return out, nil
 }
@@ -261,14 +267,16 @@ func noneChainsRead(conn *nftables.Conn, held []string) (string, error) {
 }
 
 // holders is the rules and the verdict maps of the table, each map with the
-// chains its elements go to
+// chains its elements go to, and its chains nftables.TableChains lists
 type holders struct {
-	rules []nftables.Installed
-	maps  []nftables.VerdictMap
+	rules  []nftables.Installed
+	maps   []nftables.VerdictMap
+	listed []string
 }
 
-// strayHolders is the rules and the verdict maps of the table where it holds a
-// stray chain, so strays can name what holds one, and none where it holds none
+// strayHolders is the rules, the verdict maps and the listed chains of the
+// table where it holds a stray chain, so strays can name what holds one, and
+// none where it holds none
 func strayHolders(conn *nftables.Conn, held []string) (holders, error) {
 	if len(strays(held, holders{})) == 0 {
 		return holders{}, nil
@@ -281,7 +289,11 @@ func strayHolders(conn *nftables.Conn, held []string) (holders, error) {
 	if err != nil {
 		return holders{}, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 	}
-	return holders{rules, maps}, nil
+	listed, err := nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
+	if err != nil {
+		return holders{}, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
+	}
+	return holders{rules, maps, listed}, nil
 }
 
 // noneChainsFault names a stray chain the table, held, holds, with what of
@@ -302,7 +314,7 @@ type noneStray struct{ name, heldBy string }
 
 // strays is each chain of held that is retiredChain or that NoneChain starts,
 // with what of in, the table's, goes to it, past the chains a pass flushes,
-// the stray chains and the translator's
+// the stray chains in.listed lists and the translator's
 func strays(held []string, in holders) []noneStray {
 	var names []string
 	for _, name := range held {
@@ -310,12 +322,12 @@ func strays(held []string, in holders) []noneStray {
 			names = append(names, name)
 		}
 	}
-	flushed := func(chain string) bool {
+	flushes := func(chain string) bool {
 		return slices.Contains(names, chain) || slices.ContainsFunc(translatorChains, func(own nftables.Chain) bool { return own.Name == chain })
 	}
 	out := make([]noneStray, 0, len(names))
 	for _, name := range names {
-		out = append(out, noneStray{name: name, heldBy: nftables.Holder(name, in.rules, in.maps, flushed)})
+		out = append(out, noneStray{name: name, heldBy: nftables.Holder(name, in.rules, in.maps, in.listed, flushes)})
 	}
 	return out
 }
@@ -365,7 +377,9 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // source's count of flows. A deleted object detaches from every flow it timed,
 // which then takes the host's timeouts, and a deleted set forgets every count,
 // so of those the pass writes only a remake deletes one, the one that reads
-// back other than written, and leaves the other family's, or a transaction
+// back other than written and stale as nftables.Readback.Stale has it, which
+// leaves one another writer holds that differs in a size or the timeouts
+// alone, and leaves the other family's, or a transaction
 // nf_tables refuses as nftables.Hold.Rewrite says, which deletes every set the
 // table holds of those the pass writes. The flows an object
 // of translatorRetired timed take the host's timeouts when the pass deletes
@@ -381,7 +395,7 @@ func (n *natTables) Apply(rules []Rule, remake bool) error {
 		if tables, err = nftables.Tables(n.conn, nftables.Table); err != nil {
 			return err
 		}
-		read, err := contents.Read(n.conn, tables, unix.NFPROTO_INET)
+		read, err := contents.Read(n.conn, tables, unix.NFPROTO_INET, translatorScope)
 		if err != nil {
 			return fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
 		}

@@ -143,6 +143,13 @@ func (s Set) Fault(message netlink.Message) (fault string, remake bool) {
 			held.Comment != s.Comment || held.expressions != s.expressions || held.Size != s.Size && s.Size == 0)
 }
 
+// resized is whether the set a dump holds is s but for its size
+func (s Set) resized(message netlink.Message) bool {
+	held := DecodeSet(message)
+	held.ID, held.Size = s.ID, s.Size
+	return held == s
+}
+
 // Anonymous is a set bound to the one rule whose Lookup names it, made in the
 // same transaction before that rule. The kernel takes no change to its
 // elements once the rule holds it (nf_tables_api.c, nf_tables_newsetelem and

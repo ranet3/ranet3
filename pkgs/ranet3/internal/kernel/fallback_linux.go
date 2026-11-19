@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -428,7 +429,8 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found
 	}
 	switch {
 	case read.Fault != "":
-		out.fault = read.Fault
+		// the fault of a set the pass is refused on, which names what holds it, leads
+		out.fault = cmp.Or(read.Refused, read.Fault)
 		return out, found, nil
 	case len(leftovers) > 0:
 		out.fault = leftovers[0].Fault("the kill switch")
@@ -493,7 +495,7 @@ func ReadFallback() (FallbackDebug, error) {
 	if err != nil {
 		return out, err
 	}
-	read, err := nftables.Contents{Chains: fallbackChains}.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: fallbackChains}.Read(conn, tables, unix.NFPROTO_INET, fallbackScope)
 	if err != nil {
 		return out, err
 	}
@@ -526,7 +528,7 @@ func readFallback(conn *nftables.Conn, s fallbackSets) (map[uint8]uint32, nftabl
 	}
 	contents := fallbackContents
 	contents.Elements = s.elements()
-	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET, fallbackScope)
 	if err != nil {
 		return nil, nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
 	}

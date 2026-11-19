@@ -410,7 +410,7 @@ func TestTUNExitModeBesideKubeProxyAndCilium(t *testing.T) {
 					return err
 				}
 				defer conn.Close()
-				read, err = nftables.Contents{Chains: []nftables.Chain{kubetest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+				read, err = nftables.Contents{Chains: []nftables.Chain{kubetest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET, nftables.Scope{})
 				return err
 			}); err != nil {
 				t.Fatalf("read kube-proxy's masquerade: %v", err)
