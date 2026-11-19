@@ -23,7 +23,9 @@
 // shutdown, with the table as nftables.Hold.Withdraw says.
 // It reads other writers' tables, chains and rules to find its own and to
 // report conflicts, and writes, replaces or deletes nothing else. A rule
-// another writer puts in this package's chains is removed by the next pass.
+// another writer puts in this package's chains is removed by the next pass,
+// with what nf_tables ties to a rule of another writer's in this package's
+// chains.
 // Other source translation already on the host is reported rather than fought
 // over: several nat postrouting chains coexist at the same hook, the first to
 // translate a connection wins it, and taking somebody else's rule away to win

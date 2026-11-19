@@ -270,7 +270,8 @@ type borderBackend interface {
 	// of its own the host holds that cannot change in place and a chain no
 	// rule sits in, and on nftables, where nf_tables refuses that transaction
 	// with EEXIST, every set of its own the table holds, as
-	// nftables.Hold.Rewrite says, and nothing of another writer's
+	// nftables.Hold.Rewrite says, and nothing of another writer's but what
+	// nf_tables ties to a rule of another writer's in the filter's chains
 	Apply(rules []BorderRule, sets borderSets) error
 	// Fill moves each set sets names from the ranges was gives it, which the
 	// host holds under rules, to those sets gives it, in one transaction that
@@ -1024,6 +1025,7 @@ func (f *BorderFilter) reconcile() error {
 		err = fmt.Errorf("list rules: %w", err)
 	case read.fault != "":
 		// a rewrite makes what the filter writes again whole, and touches nothing beside it
+		// but what nf_tables ties to a rule of another writer's in the filter's chains
 		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
 			f.written = nil
 			err = fmt.Errorf("%s, and the write failed: %w", read.fault, applyErr)
