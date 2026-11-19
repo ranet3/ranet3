@@ -259,8 +259,7 @@ func addressLine(proto uint8, set string, lookup []byte, anonymous *nftables.Set
 // fallbackBatch is the switch in one transaction: the table with no owner
 // flag, each chain made and flushed, its named sets made, flushed and filled,
 // and each line behind the anonymous set it reads, deleting first each chain
-// and set of stale, which nf_tables will not change in place, and leftovers
-// retired last
+// and set of stale, and leftovers retired last
 func fallbackBatch(s fallbackSets, stale nftables.Contents, leftovers []nftables.Retired) ([]nftables.Request, error) {
 	requests := nftables.Contents{Chains: fallbackChains}.Rewrite(unix.NFPROTO_INET, stale, nil)
 	elements := s.elements()

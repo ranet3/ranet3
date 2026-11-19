@@ -104,8 +104,7 @@ func TestDarwinStrandsABoundIPv6SocketThroughTheZeroAddress(t *testing.T) {
 // found the host holding none, and answers why it could not as the reason
 // the test skips for. route(8) exits 0 when the kernel refuses the add
 // (newroute in network_cmds' route.c), so the route counts as added only once
-// the dump shows it on the utun. The route goes with the utun, whose detach
-// removes the routes out of it and no other (if_rtdel in bsd/net/if.c). A
+// the dump shows it on the utun. The route is left to go with the utun. A
 // delete names no interface (rnh_deladdr in bsd/net/route.c), so one runs
 // only where the route outlives the utun by waitBudget, and only while the
 // dump shows the key's one unscoped route on the utun's index.
@@ -154,10 +153,11 @@ func uplinkWithDefault6(t *testing.T) (string, int, string) {
 // the table check, and sees nothing those do. What it rests on is that neither
 // deletes an unscoped ::/0 out of another interface. The sweep deletes rejects
 // on lo0 at the keys killSwept names, none of them ::/0. XNU's close of a
-// utun deletes each of its IPv6 addresses with the host route at it, which
-// sits on lo0 (utun_ctl_disconnect in bsd/net/if_utun.c, in6_purgeif and
-// in6_ifremloop in bsd/netinet6/in6.c), and no such host route is a ::/0. A
-// ::/0 the test left on the mesh it reads as a change.
+// utun deletes each of its IPv6 addresses, and where no other interface holds
+// the address, the host route at it, which sits on lo0 (utun_ctl_disconnect in
+// bsd/net/if_utun.c, in6_purgeif and in6_ifremloop in bsd/netinet6/in6.c),
+// and no such host route is a ::/0. A ::/0 the test left on the mesh it reads
+// as a change.
 func keepUnscopedAt(t *testing.T, key netip.Prefix) {
 	t.Helper()
 	before := unscopedRead(t, key)
@@ -251,7 +251,7 @@ func dumpRoutes(t *testing.T) []route.Message {
 	return messages
 }
 
-// The read every root test takes before it adds an unscoped ::/0: a default
+// The read hostDefault6 takes before it adds an unscoped ::/0: a default
 // scoped to an interface, another family's default and a longer prefix over
 // :: are none, and the unscoped one is told from a scoped one at its key.
 func TestUnscopedDefaultIndexReadsOnlyTheFamilysUnscopedDefault(t *testing.T) {
