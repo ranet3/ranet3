@@ -176,7 +176,7 @@ THE SOFTWARE.
 
 ## github.com/google/btree
 
-github.com/google/btree v1.1.2, from `LICENSE`.
+github.com/google/btree v1.1.3, from `LICENSE`.
 
 ```
 
@@ -658,7 +658,7 @@ limitations under the License.
 
 ## golang.org/x/crypto
 
-golang.org/x/crypto v0.58.0, from `LICENSE`.
+golang.org/x/crypto v0.59.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
@@ -726,7 +726,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.org/x/net
 
-golang.org/x/net v0.62.0, from `LICENSE`.
+golang.org/x/net v0.63.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
