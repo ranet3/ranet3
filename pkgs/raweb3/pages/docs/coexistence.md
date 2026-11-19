@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-19
+updated: 2026-11-20
 order: 110
 ---
 
@@ -615,10 +615,10 @@ version wrote, the pass keeps it, and both families stay not ready with a reason
 that names it and what holds it, as [the nftables table](#the-nftables-table)
 gives. Where that is one the translator writes, the pass does with it what
 [a writer's own that another writer holds](#a-writers-own-that-another-writer-holds)
-gives. A set of flows read back under another share is one the pass is refused
-over, since that set differs in its comment. The family the object is in stays
-not ready, both families for a chain they share, with the reason that section
-gives.
+gives. Where another writer's rule, in a chain the pass does not empty, uses a
+set of flows read back under another share, nf_tables refuses the pass, since
+that set differs in its comment. The family the object is in stays not ready,
+both families for a chain they share, with the reason that section gives.
 
 It removes its chains, sets and timeout objects at shutdown and at
 `ranet3 down`, and the table with them as
@@ -906,9 +906,9 @@ does one of two things while that rule or element stays:
   does every set it fills, so an element another writer added goes. Before Linux
   6.14 nf_tables counts each start and end the pass sends to an interval set
   against its size, two for most intervals, and refuses each pass that fills a
-  kept one smaller than that count. It keeps a timeout object that differs in
-  its timeouts alone as it is. It writes its chains, rules and other sets and
-  objects.
+  kept set whose size is below the number of starts and ends sent. It keeps a
+  timeout object that differs in its timeouts alone as it is. It writes its
+  chains, rules and other sets and objects.
 - It deletes any other, and nf_tables refuses the whole transaction of each pass
   that must delete it. A refused transaction
   [changes nothing](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nfnetlink.c?id=940de590b839f71d6dc846160534bf202401b8b7#n593),

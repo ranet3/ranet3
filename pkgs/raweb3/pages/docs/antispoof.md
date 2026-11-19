@@ -739,9 +739,9 @@ install its chains and sets and read them back, which on a host means a kernel
 without nf_tables or conntrack, a daemon without `CAP_NET_ADMIN`, nftables
 changes interrupting one of its reads
 [3 times in a row](design/limits.md#dataplane-and-sockets), or another writer
-holding `mesh_entry` or a chain or set of the filter's that the pass would
-otherwise delete and make again, as [where it runs](#where-it-runs) gives. A
-node does not run without its entry chain.
+holding `mesh_entry`, or holding a chain or set of the filter's that the pass
+would otherwise delete and make again, as [where it runs](#where-it-runs) gives.
+A node does not run without its entry chain.
 
 On macOS the pass runs every 5 seconds, since pf tells no program of another's
 change, so another program's change to the anchor goes unnoticed for up to 5

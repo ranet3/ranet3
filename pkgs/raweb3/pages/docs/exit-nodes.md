@@ -1055,10 +1055,10 @@ meets the 4 screens once, whatever classes cover it.
 
 The set the limit counts each source's flows in, `flows4` or `flows6`, carries
 the share as its comment, `limit 4096`. Each count keeps the share in force when
-it began. A set read back under another share, as an instance stopped without
-withdrawing under another one leaves it, makes the pass delete that set and make
-it again in the transaction that rewrites the chains, except where another
-writer holds the set, as
+it began. A set read back under another share, as an instance that ran under
+that share and stopped without withdrawing leaves it, makes the pass delete that
+set and make it again in the transaction that rewrites the chains, except where
+another writer holds the set, as
 [sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives.
 The share is one setting of both families, so where that instance translated
 both, the pass makes both sets again.
@@ -1356,9 +1356,11 @@ counted again:
   unfragmented ICMP Destination Unreachable, Time Exceeded, Parameter Problem
   or, for IPv6, Packet Too Big that has no IPv6 extension header and quotes a
   UDP datagram.
-- A UDP datagram or an echo request that reaches its relay once the exit is
-  withdrawn, or one whose mapping a withdrawal closed while it was sent, that no
-  earlier check refused or dropped (`withdrawn`).
+- A UDP datagram or an echo request that the exit had not yet sent when
+  `ranet3 down` or the stop ended the mappings of its kind and that the exit
+  handles before the next `ranet3 up`, or one whose mapping `ranet3 down` or the
+  stop closed while it was sent, that no earlier check refused or dropped
+  (`withdrawn`).
 
 | Metric                                   | Meaning                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
