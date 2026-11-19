@@ -556,13 +556,14 @@ table's other chains as they are, beyond
 [what goes of another writer's](coexistence.md#what-goes-of-another-writers),
 then reads them back again. When a chain or set of the filter's reads back
 otherwise than written and the difference is one nf_tables will not change in
-place, that transaction deletes it and makes it again, unless another writer
-holds it, as [sharing a host](coexistence.md#the-packet-filter) gives. Where
-nf_tables refuses that transaction with `file exists`, the pass sends it once
-more as [sharing a host](coexistence.md#the-nftables-table) gives. The pass's
-transaction also deletes `mesh_entry`, the entry chain an earlier version wrote,
-and a stop withdraws it with the filter's chains. A regular chain another writer
-made under that name stays while a rule or a map element goes to it, as
+place, that transaction deletes it and makes it again, except where another
+writer holds it, as
+[sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives.
+Where nf_tables refuses that transaction with `file exists`, the pass sends it
+once more as [sharing a host](coexistence.md#the-nftables-table) gives. The
+pass's transaction also deletes `mesh_entry`, the entry chain an earlier version
+wrote, and a stop withdraws it with the filter's chains. A regular chain another
+writer made under that name stays while a rule or a map element goes to it, as
 [sharing a host](coexistence.md#the-nftables-table) gives. A chain under that
 name that another writer flagged binding is neither emptied nor deleted by name,
 and goes only as

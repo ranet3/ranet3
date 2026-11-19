@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-18
+updated: 2026-11-19
 order: 45
 ---
 
@@ -821,13 +821,15 @@ none.
 
 A rule in a chain of another writer's own in the table `inet ranet3` that adds
 elements to the set `forwarded` leaves the switch reading that set back under a
-size it did not write. nf_tables then refuses every write of the switch while
-that rule stays. Neither the rule nor an element a packet adds through it starts
-a pass: the rule's chain is not one the reconciler watches, and such an element
-sends no notification. The switch finds the set at a pass that runs for another
-reason, such as the periodic pass every `cap.table.reconcile`. A pass whose
-write nf_tables refused is retried as [a failed pass](#when-a-pass-runs) is, and
-the first write of the switch after the rule is gone makes the set again.
+size it did not write. While that rule stays, the switch keeps the set under
+that size, fills it and writes its chains and its other sets, and reads
+`not holding` with a reason that names the set and the chain whose rule holds
+it, as [sharing a host](coexistence.md#a-writers-own-that-another-writer-holds)
+gives. Neither the rule nor an element a packet adds through it starts a pass:
+the rule's chain is not one the reconciler watches, and such an element sends no
+notification. The switch finds the set at a pass that runs for another reason,
+such as the periodic pass every `cap.table.reconcile`. The first write of the
+switch after the rule is gone makes the set again.
 
 #### Mode 3 on Linux
 

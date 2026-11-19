@@ -306,9 +306,12 @@ is the kernel's.
 Each family has a connection tracking timeout object for each protocol, named
 with the family's digit: `udp4`, `tcp4` and `icmp4` in IPv4, and `udp6`, `tcp6`
 and `icmp6` in IPv6. They are made once and never changed in place: a pass that
-rewrites a chain leaves them, and one that reads back other values in one
-deletes that object and makes it again, which leaves the flows that held it on
-the host's timeouts. A pass deletes `translated-udp4`, `translated-tcp4`,
+rewrites a chain leaves them. Where an object reads back with other values and
+no rule or map element of another writer's uses it, the pass deletes the object
+and makes it again, which leaves the flows that held it on the host's timeouts.
+Where such a rule or element uses it,
+[sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives
+what the pass does with it. A pass deletes `translated-udp4`, `translated-tcp4`,
 `translated-icmp4`, `translated-udp6`, `translated-tcp6` and
 `translated-icmpv66`, the objects an earlier version made, in the transaction
 that writes the chains, so on a host that version left by a kill or a crash the
@@ -524,8 +527,9 @@ set of untranslated sources whose elements read back otherwise. nf_tables clears
 no table flag in place but dormant. When a chain, set or object of the
 translator's reads back otherwise than written and the difference is one
 nf_tables will not change in place, the pass deletes it and makes it again in
-the same transaction, leaving every chain, set and object of another writer's as
-it is beyond
+the same transaction, except where another writer holds it, as
+[sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives.
+The pass leaves every chain, set and object of another writer's as it is beyond
 [what goes of another writer's](coexistence.md#what-goes-of-another-writers).
 Where nf_tables refuses that transaction with `file exists`, the pass sends it
 once more as [sharing a host](coexistence.md#the-nftables-table) gives. Another
@@ -658,22 +662,24 @@ next sweep. A chain another writer adds to the table wakes no pass unless it
 carries one of the translator's names or one an earlier version wrote, as
 [refusing to advertise](#refusing-to-advertise) names. A chain under any other
 name holds a family not ready only where a rule of it goes to or uses a chain,
-set or object of the translator's that a pass must delete, as
-[sharing a host](coexistence.md#the-packet-filter) gives. The translator's own
-writes wake no pass of its own, and the antispoof filter's and the kill switch's
-writes of their chains, rules and sets in the same table wake none either. A
-flush of the ruleset deletes the table and another program setting it dormant
-sets a flag on it, so each wakes every writer once. The first writer's pass
-after it makes the table again or clears the flag, which wakes no other: the
-table it makes holds none of their chains, and with the flag cleared it bypasses
-none. Notifications the daemon lost, which another table's large transaction can
-overflow its socket with, wake a pass too and leave readiness as it was, since
-that pass reads the rules back. A pass that reads another writer's change back
-and cannot undo it holds the family the change is in not ready, IPv6 alone for a
-change to `forward6`, and both families for a change to another chain, `forward`
-among them, since it holds IPv6's goto ahead of IPv4's lines, with a reason that
-names what of the translator's reads back otherwise, and withholds its prefixes
-until a later pass does.
+set or object of the translator's that an earlier version wrote, or that reads
+back otherwise than written in a difference nf_tables will not change in place,
+as [sharing a host](coexistence.md#the-packet-filter) gives. The translator's
+own writes wake no pass of its own, and the antispoof filter's and the kill
+switch's writes of their chains, rules and sets in the same table wake none
+either. A flush of the ruleset deletes the table and another program setting it
+dormant sets a flag on it, so each wakes every writer once. The first writer's
+pass after it makes the table again or clears the flag, which wakes no other:
+the table it makes holds none of their chains, and with the flag cleared it
+bypasses none. Notifications the daemon lost, which another table's large
+transaction can overflow its socket with, wake a pass too and leave readiness as
+it was, since that pass reads the rules back. A pass that reads another writer's
+change back and cannot undo it holds the family the change is in not ready, IPv6
+alone for a change to `forward6`, and both families for a change to another
+chain, `forward` among them, since it holds IPv6's goto ahead of IPv4's lines,
+with a reason that names what of the translator's reads back otherwise and what
+holds it where anything does, and withholds its prefixes until a later pass
+does.
 
 ## The exit on macOS
 
@@ -1056,17 +1062,17 @@ object as it is. The share is one setting of both families, so where that
 instance translated both, the pass makes both sets again.
 
 A pass replaces the chains' rules and the elements of the sets of untranslated
-sources in 1 transaction. It leaves a timeout object as it is unless the object
-reads back otherwise than written, as [timeouts](#timeouts) gives. It leaves a
-set of flows and its counts as they are unless it makes the set anew, which it
-does in three cases. Where the set is gone, as after a flush of the whole
-ruleset, the pass makes it. Where the set reads back otherwise in a way
-nf_tables will not change in place, as under another share, the pass makes it
-again, as the paragraph above gives. Where nf_tables refused the pass's
-transaction with `file exists`, the pass makes it again in its second send, as
-[sharing a host](coexistence.md#the-nftables-table) gives. Each rule carries a
-comment that names it, which `nft list ruleset` shows, and a pass reads each
-rule back by its comment and by what it does:
+sources in 1 transaction. It leaves a timeout object that reads back as written
+as it is, and [timeouts](#timeouts) gives what it does with one that reads back
+otherwise. It leaves a set of flows and its counts as they are unless it makes
+the set anew, which it does in three cases. Where the set is gone, as after a
+flush of the whole ruleset, the pass makes it. Where the set reads back
+otherwise in a way nf_tables will not change in place, as under another share,
+the pass makes it again, as the paragraph above gives. Where nf_tables refused
+the pass's transaction with `file exists`, the pass makes it again in its second
+send, as [sharing a host](coexistence.md#the-nftables-table) gives. Each rule
+carries a comment that names it, which `nft list ruleset` shows, and a pass
+reads each rule back by its comment and by what it does:
 
 - `out via ranet3 ipv4 icmp source quench dropped`
 - `in via ranet3 ipv4 icmp information dropped`

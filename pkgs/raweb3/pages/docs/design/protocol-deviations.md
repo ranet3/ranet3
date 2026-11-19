@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-18
+updated: 2026-11-19
 order: 20
 ---
 
@@ -2262,16 +2262,19 @@ also hold only while the timeout object a flow took on its first packet stands.
 nf_tables changes no timeout object in place, and deleting one clears it from
 every flow that took it, which then keeps the host's timeouts for the rest of
 its life, since a flow takes an object only on its first packet. The kernel exit
-deletes an object where a pass reads it back with values other than it writes,
-as an earlier build may have left it, and makes it again in the same
-transaction, withdraws its objects at a stop and at `ranet3 down`, and a
-firewall reload's flush of the whole ruleset deletes them all. A pass deletes
-each object that reads back with other values and leaves the rest. Both
-families' objects of a protocol take the same values, so where an earlier build
-wrote other values for a protocol, its object differs in each family that build
-translated, and one pass detaches that protocol's flows in both, up to all 6
-objects and every translated flow. A flow so left keeps the host's own timeouts,
-the defaults of the kernel's tables for
+deletes an object no other writer holds where a pass reads it back with values
+other than it writes, as an earlier build may have left it, and makes it again
+in the same transaction, withdraws its objects at a stop and at `ranet3 down`,
+and a firewall reload's flush of the whole ruleset deletes them all. A pass
+deletes each object no other writer holds that reads back with other values and
+leaves the rest, and
+[sharing a host](../coexistence.md#a-writers-own-that-another-writer-holds)
+gives what it does with an object another writer holds. Both families' objects
+of a protocol take the same values, so where an earlier build wrote other values
+for a protocol, its object differs in each family that build translated, and one
+pass detaches that protocol's flows in both, up to all 6 objects and every
+translated flow. A flow so left keeps the host's own timeouts, the defaults of
+the kernel's tables for
 [TCP](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto_tcp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n61),
 [UDP](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto_udp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n27),
 [ICMP](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto_icmp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n25)

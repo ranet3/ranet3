@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-11-12
+updated: 2026-11-19
 order: 10
 ---
 
@@ -70,6 +70,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/codel`             | the controlled delay of RFC 8289 a peer's sender and the userspace exit's pump run over their queues                                                                                                          |
 | `internal/config`            | reads the config file                                                                                                                                                                                         |
 | `internal/dnstest`           | a nameserver on lo recording each query's mark, behind a resolv.conf of the test's own, imported by test files alone                                                                                          |
+| `internal/dumptest`          | fetches the routing table or the interface list again where it grew during the read, up to the daemon's own bound of fetches, on macOS, imported by test files alone                                          |
 | `internal/egress`            | the `cap.egress` and `cap.antispoof` capabilities, the `Exit` every exit backend sits behind, and the antispoof filter's reports                                                                              |
 | `internal/egress/egresstest` | the exit behavior suite every exit backend passes, imported by test files alone                                                                                                                               |
 | `internal/egress/kernel`     | the kernel exit, which translates the source of what exit nodes and subnet routers carry with nftables, and the antispoof filter                                                                              |

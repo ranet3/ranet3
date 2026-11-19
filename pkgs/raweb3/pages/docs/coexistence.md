@@ -599,22 +599,26 @@ replaces or deletes nothing but its own, beyond
 chains' rules in 1 transaction, so no packet is ever evaluated against half a
 ruleset. When a chain, set or timeout object of the translator's reads back
 otherwise than written and the difference is one nf_tables will not change in
-place, the pass deletes it and makes it again in that transaction. Where
-nf_tables refuses that transaction with `file exists`, the pass sends it once
-more as [the nftables table](#the-nftables-table) gives. The withdrawal of
-`cap.egress` removes nothing of another writer's beyond
+place, the pass deletes it and makes it again in that transaction, except where
+another writer holds it, as
+[a writer's own that another writer holds](#a-writers-own-that-another-writer-holds)
+gives. Where nf_tables refuses that transaction with `file exists`, the pass
+sends it once more as [the nftables table](#the-nftables-table) gives. The
+withdrawal of `cap.egress` removes nothing of another writer's beyond
 [what goes of another writer's](#what-goes-of-another-writers).
 
 Another writer's chain holds a family [not ready](exit-nodes.md#readiness) only
 where a rule of it goes to or uses a chain, set or object of the translator's
-that a pass must delete. Where that is one an earlier version wrote, the pass
-keeps it, and both families stay not ready with a reason that names it and what
-holds it, as [the nftables table](#the-nftables-table) gives. Where that is one
-the translator writes and it reads back otherwise than written, such as a set of
-flows read back under another share, nf_tables refuses the whole transaction of
-each pass that must delete it, so that pass changes nothing. Each family whose
-chains, sets or objects read back otherwise then stays not ready, and the reason
-names what of the translator's reads back otherwise, not what holds it.
+that an earlier version wrote, or that reads back otherwise than written in a
+difference nf_tables will not change in place. Where that is one an earlier
+version wrote, the pass keeps it, and both families stay not ready with a reason
+that names it and what holds it, as [the nftables table](#the-nftables-table)
+gives. Where that is one the translator writes, the pass does with it what
+[a writer's own that another writer holds](#a-writers-own-that-another-writer-holds)
+gives. A set of flows read back under another share is one the pass is refused
+over, since that set differs in its comment. The family the object is in stays
+not ready, both families for a chain they share, with the reason that section
+gives.
 
 It removes its chains, sets and timeout objects at shutdown and at
 `ranet3 down`, and the table with them as
@@ -708,12 +712,12 @@ place, the pass deletes it and makes it again in 1 transaction, and no chain,
 set or object of another writer's goes with it beyond
 [what goes of another writer's](#what-goes-of-another-writers). Where a rule in
 a chain that is not the filter's uses that set, or a rule or a map element of
-another writer's goes to that chain, nf_tables refuses the whole transaction of
-each pass that must delete it, so that pass writes nothing of the filter's. The
-filter then reads [not ready](antispoof.md#readiness), and the reason names what
-of the filter's reads back otherwise and that the write failed, not what holds
-it, until the first pass after that rule or element is gone. Where nf_tables
-refuses one of the filter's transactions with `file exists`,
+another writer's goes to the filter's chain that reads back otherwise, the pass
+does with it what
+[a writer's own that another writer holds](#a-writers-own-that-another-writer-holds)
+gives, and the filter reads [not ready](antispoof.md#readiness), with the reason
+that section gives, until the first pass after that rule or element is gone.
+Where nf_tables refuses one of the filter's transactions with `file exists`,
 [the nftables table](#the-nftables-table) gives which it sends once more.
 
 For a firewall's author, `entry` reads the source a packet leaves by the tun
@@ -887,6 +891,39 @@ for an anonymous set. A binding chain takes with it the anonymous sets its own
 rules use. Nothing else of another writer's goes, but with the table, where a
 withdrawal deletes it in the case [the nftables table](#the-nftables-table)
 gives.
+
+#### A writer's own that another writer holds
+
+A writer's rewrite deletes a chain, set or object of its own that reads back
+otherwise than written in a difference nf_tables will not change in place, and
+makes it again in the same transaction. Where a rule or a map element of another
+writer's goes to it or uses it, the rewrite does one of two things while that
+rule or element stays:
+
+- It keeps a set that differs in its size alone, where that size holds every
+  element the writer fills the set with. The set keeps its name and that size,
+  and the pass empties and fills it as it does every set it fills, so an element
+  another writer added goes. It keeps a timeout object that differs in its
+  timeouts alone as it is. It writes its chains, rules and other sets and
+  objects.
+- It deletes any other, and nf_tables refuses the whole transaction of each pass
+  that must delete it. A refused transaction
+  [changes nothing](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nfnetlink.c?id=940de590b839f71d6dc846160534bf202401b8b7#n593),
+  so the table holds what it held before that pass.
+
+In both cases the writer names it and what holds it as a fault, as it names
+[what an earlier version wrote](#the-nftables-table), until that rule or element
+is gone and the next pass makes it again. The antispoof filter names it in its
+readiness and the kill switch in its `not holding` reason. The translator names
+it in the reason of the family it is in, and of both families for a chain they
+share. Where the rewrite kept it, the writer's chains and rules are written and
+in force, and the writer still reads not ready or `not holding`, with what
+follows from that as [the antispoof filter's readiness](antispoof.md#readiness),
+[the translator's readiness](exit-nodes.md#readiness) and
+[the kill switch](routing.md#the-kill-switch-on-linux) give. A second send after
+`file exists`, which [the nftables table](#the-nftables-table) describes,
+deletes such a set as it deletes every set of the writer's the table holds, so
+nf_tables refuses it while that rule or element stays.
 
 ### pf on macOS
 
