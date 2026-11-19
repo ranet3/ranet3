@@ -516,6 +516,10 @@ func datagramTo(port int) error {
 	return unix.Sendto(fd, []byte("probe"), 0, &unix.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 2}})
 }
 
+// receiveWait is how long received waits for a datagram over loopback before
+// it counts the datagram as dropped
+const receiveWait = 200 * time.Millisecond
+
 // received is whether a datagram from 127.0.0.1 reaches a socket of
 // 127.0.0.2's, which a drop at prerouting keeps from it
 func received(t *testing.T) bool {
@@ -528,7 +532,8 @@ func received(t *testing.T) bool {
 	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: 7, Addr: [4]byte{127, 0, 0, 2}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 200000}); err != nil {
+	timeout := unix.NsecToTimeval(receiveWait.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
 		t.Fatal(err)
 	}
 	if err := datagramTo(7); err != nil {
