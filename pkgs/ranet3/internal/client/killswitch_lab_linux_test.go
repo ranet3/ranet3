@@ -1591,6 +1591,12 @@ func TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun(t *testing.T) {
 // on the host
 func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 	lab := newSwitchLab(t)
+	port := switchLoopbackPort
+	deliver := func(at, to netip.Addr) error {
+		from := port
+		port++
+		return lab.leaf.Do(func() error { return switchLoopback(at, to, from) })
+	}
 	for _, state := range switchStates {
 		t.Run(string(state), func(t *testing.T) {
 			lab.settle(t, switchArm{state: state})
@@ -1606,7 +1612,7 @@ func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 						addresses = append(addresses, rulesHost[family].own.Addr())
 					}
 					for _, to := range addresses {
-						if err := lab.leaf.Do(func() error { return switchLoopback(to, to) }); err != nil {
+						if err := deliver(to, to); err != nil {
 							t.Errorf("%s: a datagram to %s was not delivered on the host: %v", arm, to, err)
 						}
 					}
@@ -1625,7 +1631,7 @@ func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 				}
 				// the uplink's address is first routed into lo, and a LAN host's out of the uplink
 				for _, to := range []netip.Addr{rulesHost[family].uplink.Addr(), rulesHost[family].lan.Addr()} {
-					if err := lab.leaf.Do(func() error { return switchLoopback(loopback, to) }); err != nil {
+					if err := deliver(loopback, to); err != nil {
 						t.Errorf("PR: a datagram to %s redirected to %s was not delivered on the host: %v", to, loopback, err)
 					}
 				}
@@ -1642,7 +1648,7 @@ func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 			t.Cleanup(otherProgram(otherChain("nat", unix.NF_INET_LOCAL_OUT, -100), false, rules...)(t, lab.leaf))
 			for _, family := range []int{4, 6} {
 				uplink, own := rulesHost[family].uplink.Addr(), rulesHost[family].own.Addr()
-				if err := lab.leaf.Do(func() error { return switchLoopback(own, uplink) }); err != nil {
+				if err := deliver(own, uplink); err != nil {
 					t.Errorf("PD: a datagram to %s translated to %s was not delivered on the host: %v", uplink, own, err)
 				}
 			}
@@ -1650,8 +1656,14 @@ func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 	}
 }
 
-// switchLoopback sends a datagram to to and reads it on a socket bound to at, in the calling thread's namespace
-func switchLoopback(at, to netip.Addr) error {
+// switchLoopbackPort is the source port of the first datagram TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback sends, each later one
+// taking the next, below the ephemeral range. Conntrack translates a flow at its first packet alone (nf_nat_inet_fn in nf_nat_core.c),
+// so a datagram on the tuple of an earlier one meets the nat chain of that one's time, and an ephemeral port, drawn anew for each
+// socket, may repeat one.
+const switchLoopbackPort = 7300
+
+// switchLoopback sends a datagram from port from to to and reads it on a socket bound to at, in the calling thread's namespace
+func switchLoopback(at, to netip.Addr, from int) error {
 	listen, err := exitSocket(at, exitService, 0)
 	if err != nil {
 		return err
@@ -1661,7 +1673,7 @@ func switchLoopback(at, to netip.Addr) error {
 	if to.Is4() {
 		unbound = netip.IPv4Unspecified()
 	}
-	send, err := exitSocket(unbound, 0, 0)
+	send, err := exitSocket(unbound, from, 0)
 	if err != nil {
 		return err
 	}
