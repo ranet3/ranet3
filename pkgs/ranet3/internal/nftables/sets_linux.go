@@ -42,7 +42,9 @@ type Set struct {
 // Create makes the set, or takes one of its name holding the same key, flags,
 // expressions and fields and gives it any size but none, leaving its comment
 // as it was. One that differs in any of those fails the transaction with
-// EEXIST, which Hold.Rewrite answers.
+// EEXIST, which Hold.Rewrite answers. One flagged anonymous fails the
+// transaction with EOPNOTSUPP before any of those is compared, which
+// Hold.Rewrite does not answer.
 func (s Set) Create(proto uint8) (Request, error) {
 	// a longer comment still lists in `nft list ruleset`, but nft -f will not load that listing back
 	if len(s.Comment) > udataCommentMax {

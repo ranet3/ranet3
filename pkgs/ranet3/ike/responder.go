@@ -129,8 +129,8 @@ type Accepted struct {
 
 // Responder accepts IKE SAs that peers initiate to us on a shared hub. One
 // Responder serves every peer. Before IDi is authenticated an initiator holds
-// a half-open SA from its IKE_SA_INIT response on, within halfOpenLimit and
-// halfOpenPerSource.
+// a half-open SA from the admission of its IKE_SA_INIT request on, within
+// halfOpenLimit and halfOpenPerSource.
 type Responder struct {
 	cfg ResponderConfig
 	// local is the IDr body of each endpoint we answer as

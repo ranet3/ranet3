@@ -378,7 +378,7 @@ func translatorRulesFault(chains []nftables.Chain, desired []Rule, held []nftabl
 // which then takes the host's timeouts, and a deleted set forgets every count,
 // so of those the pass writes only a remake deletes one, the one that reads
 // back other than written and stale as nftables.Readback.Stale has it, which
-// leaves one another writer holds that differs in a size or the timeouts
+// leaves a timeout object another writer holds that differs in its timeouts
 // alone, and leaves the other family's, or a transaction
 // nf_tables refuses as nftables.Hold.Rewrite says, which deletes every set the
 // table holds of those the pass writes. The flows an object

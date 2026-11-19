@@ -239,9 +239,12 @@ func intervals(ranges []egress.Range) []nftables.Interval {
 // meets half a chain or a set half filled, reading them first for each that
 // nf_tables will not change in place, which the transaction deletes and makes
 // again, as nftables.Hold.Rewrite does. The read counts the elements the sets
-// take, as readBorder does, so a held set too small for them stays among those
-// the transaction deletes, which nf_tables refuses while it is held, and the
-// first pass after its holder goes makes it again.
+// take, an interval as one, as readBorder does, so a held set too small for
+// them stays among those the transaction deletes, which nf_tables refuses while
+// it is held, and the first pass after its holder goes makes it again. Before
+// Linux 6.14 nf_tables counts each start and end the fill sends against the
+// set's size, so it refuses every pass that fills a kept set smaller than that
+// count.
 func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
 	contents := borderContents
 	contents.Elements = sets.elements()
