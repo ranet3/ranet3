@@ -7,9 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -124,18 +122,29 @@ func newLoopbackMesh(t *testing.T) (alpha, bravo *loopbackNode) {
 func newLoopbackMeshOn(t *testing.T, mesh *netstack.Mesh) (alpha, bravo *loopbackNode) {
 	t.Helper()
 	retryPort(t, "bind", func() (err error) {
-		alpha, bravo, err = tryLoopbackMesh(t, mesh)
+		alpha, bravo, err = tryLoopbackMesh(t, mesh, false)
 		return err
 	})
 	return alpha, bravo
 }
 
-func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode, err error) {
+// newLoopbackMeshKeyed is newLoopbackMesh with each node on a private key of its own and a registry entry of its own that lists that key's public key, both entries of the one organization
+func newLoopbackMeshKeyed(t *testing.T) (alpha, bravo *loopbackNode) {
 	t.Helper()
-	nodes, private, reg := writeMesh(t, [2]uint16{freeUDPPort(t), freeUDPPort(t)}, [2]string{"127.0.0.1", "127.0.0.1"})
+	mesh := netstack.NewRoutesOnly()
+	retryPort(t, "bind", func() (err error) {
+		alpha, bravo, err = tryLoopbackMesh(t, mesh, true)
+		return err
+	})
+	return alpha, bravo
+}
+
+func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh, keyed bool) (_, _ *loopbackNode, err error) {
+	t.Helper()
+	nodes, keys, reg := writeKeyedMesh(t, [2]uint16{freeUDPPort(t), freeUDPPort(t)}, [2]string{"127.0.0.1", "127.0.0.1"}, keyed)
 	meshes := []*netstack.Mesh{netstack.NewRoutesOnly(), bravoMesh}
 	for i, node := range nodes {
-		client, err := newClient(node.cfg, private, trust(t, reg), meshes[i], nil, node.events)
+		client, err := newClient(node.cfg, keys[i], trust(t, reg), meshes[i], nil, node.events)
 		if err != nil {
 			for _, built := range nodes[:i] {
 				built.client.Close()
@@ -155,27 +164,44 @@ func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode
 // it returns the nodes without their clients, and the organization's private key and registry a client is built from
 func writeMesh(t *testing.T, ports [2]uint16, addresses [2]string) ([]*loopbackNode, ed25519.PrivateKey, registry.Registry) {
 	t.Helper()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publicPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	nodes, keys, reg := writeKeyedMesh(t, ports, addresses, false)
+	return nodes, keys[0], reg
+}
 
-	// Names are unique per mesh, not per role. A port the kernel handed back
-	// can be handed out again once a hub closes, and a node another test left
-	// retransmitting would otherwise authenticate against its replacement:
-	// same organization key, same common name, same port.
+// writeKeyedMesh is writeMesh, where keyed gives each node a private key of its own, a key file of its own and a registry entry of its own that lists that key's public key, both entries of the one organization
+// it returns each node's private key, the one key twice where keyed is false
+func writeKeyedMesh(t *testing.T, ports [2]uint16, addresses [2]string, keyed bool) ([]*loopbackNode, [2]ed25519.PrivateKey, registry.Registry) {
+	t.Helper()
+	var keys [2]ed25519.PrivateKey
+	var publicPEMs [2]string
+	for i := range keys {
+		if i > 0 && !keyed {
+			keys[i], publicPEMs[i] = keys[0], publicPEMs[0]
+			continue
+		}
+		public, private, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[i], publicPEMs[i] = private, keyPEM(public)
+	}
+
+	// Names are unique per mesh in a test process, not per role. A port the
+	// kernel handed back can be handed out again once a hub closes. A node
+	// another test of the process left retransmitting can then reach a node of
+	// this mesh on that port, under a common name no entry of this mesh's
+	// registry lists. Each mesh also has keys of its own.
 	mesh := meshCounter.Add(1)
 	nodes := []*loopbackNode{
 		{name: fmt.Sprintf("alpha-%d", mesh), port: ports[0], prefix: netip.MustParsePrefix("fd00:a::/64")},
 		{name: fmt.Sprintf("bravo-%d", mesh), port: ports[1], prefix: netip.MustParsePrefix("fd00:b::/64")},
 	}
-	org := registry.Organization{PublicKey: publicPEM, Organization: "example"}
+	var reg registry.Registry
 	for i, node := range nodes {
+		if i == 0 || keyed {
+			reg = append(reg, registry.Organization{PublicKey: publicPEMs[i], Organization: "example"})
+		}
+		org := &reg[len(reg)-1]
 		org.Nodes = append(org.Nodes, registry.Node{
 			CommonName: node.name,
 			Endpoints: []registry.Endpoint{{
@@ -183,7 +209,6 @@ func writeMesh(t *testing.T, ports [2]uint16, addresses [2]string) ([]*loopbackN
 			}},
 		})
 	}
-	reg := registry.Registry{org}
 
 	// Written to disk as well, because Reload reads the file rather than
 	// taking a struct, and that is the path a SIGHUP takes.
@@ -196,22 +221,18 @@ func writeMesh(t *testing.T, ports [2]uint16, addresses [2]string) ([]*loopbackN
 	if err := os.WriteFile(registryPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyPath := filepath.Join(dir, "key.pem")
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	for i, node := range nodes {
 		peer := nodes[1-i]
+		keyPath := filepath.Join(dir, "key.pem")
+		if keyed {
+			keyPath = filepath.Join(dir, node.name+".pem")
+		}
+		writeKey(t, keyPath, keys[i])
 		node.configPath = filepath.Join(dir, node.name+".yaml")
 		node.cfg = writeLoopbackConfig(t, node, peer, keyPath, registryPath, []string{node.prefix.String()})
 		node.events = events.New()
 	}
-	return nodes, private, reg
+	return nodes, keys, reg
 }
 
 // writeLoopbackConfig writes one node's config file and loads it back, so the
