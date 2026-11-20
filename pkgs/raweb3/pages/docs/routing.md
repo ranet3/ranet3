@@ -796,11 +796,22 @@ the process that wrote them:
   boot.
 
 Each pass reads its chains back, their hooks, priorities, lines and set
-elements. While they do not read back as written, or cannot be written, such as
-on a kernel without `nf_tables`, the reconciler leaves 5405 and 5435 out and
-keeps 5445 and 5450, so an unmarked lookup from the uplink's address meets 5440,
-5445 or 5450 rather than main, but for a route of main longer than /0, which
-still wins at 5410 as in mode 2, the cost
+elements. A read that fails with
+[`ENOENT`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1008)
+is taken for a table that is not there when a fresh dump of the tables then
+holds no table `inet ranet3`: the pass logs
+`kernel's kill switch table was deleted during its read, and the pass writes the switch again`
+and writes the chains. A read that follows a write takes no table for one that
+is not there, and fails with `ENOENT` where its dump of the tables holds no
+table `inet ranet3`. Any other failed read writes nothing, a read that follows a
+write and a read whose fresh dump fails or still holds the table among them: the
+pass logs `kernel reconcile failed, retrying`, status names the switch
+`not holding` with the error, and the pass is [retried](#when-a-pass-runs).
+While the chains do not read back as written, or cannot be written, such as on a
+kernel without `nf_tables`, the reconciler leaves 5405 and 5435 out and keeps
+5445 and 5450, so an unmarked lookup from the uplink's address meets 5440, 5445
+or 5450 rather than main, but for a route of main longer than /0, which still
+wins at 5410 as in mode 2, the cost
 [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) names. While
 the chains hold, their drop takes that route's traffic beyond the LAN unless
 another line passes it. Status names the switch `not holding` with the reason,
@@ -811,13 +822,14 @@ mark 0x72 sends it past them to main, until the chains read back. The reconciler
 watches the notifications of the table and of its chains and sets, so a line
 another writer adds to or deletes from one of its chains, a flush of one of its
 chains or sets, and an element another writer adds to or deletes from one of its
-sets each start a pass at once, and the antispoof filter's and the translator's
-writes of their chains, rules and sets start none. A flush of the ruleset
-deletes the table and another program setting it dormant sets a flag on it, so
-each starts a pass in every writer once. The first writer's pass after it makes
-the table again or clears the flag, which starts none in another writer: the
-table it makes holds none of their chains, and with the flag cleared it bypasses
-none.
+sets each start a pass 250 milliseconds later, as
+[when a pass runs](#when-a-pass-runs) gives, and the antispoof filter's and the
+translator's writes of their chains, rules and sets start none. A flush of the
+ruleset deletes the table and another program setting it dormant sets a flag on
+it, so each starts a pass in every writer once. The first writer's pass after it
+makes the table again or clears the flag, which starts none in another writer:
+the table it makes holds none of their chains, and with the flag cleared it
+bypasses none.
 
 A rule in a chain of another writer's own in the table `inet ranet3` that adds
 elements to the set `forwarded` leaves the switch reading that set back under a
@@ -1836,6 +1848,7 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 | `kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes`                                                       | warn  | under `fallback = "none"` a failed tun's stop found no switch, with `where` and the last pass's `state`, empty before one                                                                       |
 | `kernel is leaving any kill switch there after the mesh failed, which it could not list`                                                                       | warn  | under `fallback = "none"` a failed tun's stop could not list the switch and deleted none, with `where`, `state` and `err`                                                                       |
 | `kernel's kill switch does not read back as written`                                                                                                           | warn  | the switch stopped reading back, with `where`, `fault` and `detail`, where the host's traffic goes meanwhile, once for each fault until it does                                                 |
+| `kernel's kill switch table was deleted during its read, and the pass writes the switch again`                                                                 | warn  | on Linux a pass's read found the switch's table gone, as [the kill switch on Linux](#the-kill-switch-on-linux) gives, with `where` and `err`, once for each pass that finds it                  |
 | `kernel could not delete a kill switch an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`                   | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the switch, on macOS or the holds at its configuration's prefixes, with `where`, `err` and `fix`       |
 | `kernel's first pass has not ended, so sessions are dialed before the kill switch is written`                                                                  | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                                                                        |
 | `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                             | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                                                                           |
