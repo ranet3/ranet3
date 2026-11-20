@@ -28,24 +28,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
-// initialNamespace is the link of each initial namespace, whose inode Linux
-// fixes from 6.17 on (include/uapi/linux/nsfs.h)
-var initialNamespace = map[string]string{"net": "net:[4026531833]", "mnt": "mnt:[4026531832]"}
-
-// QueryTimeout is how long Go's resolver waits for each nameserver, the timeout
-// the resolv.conf Start binds names
-const QueryTimeout = time.Second
-
-const (
-	// resolverWait bounds the wait for Go's resolver to read the resolv.conf
-	// Start binds, past its reread of the file at most every 5 seconds
-	resolverWait = 10 * time.Second
-	// awaitLookup bounds each lookup of that wait
-	awaitLookup = time.Second
-	// awaitStep is the pause between those lookups
-	awaitStep = 100 * time.Millisecond
-)
-
 // Query is one query the nameserver read: the address it was sent to, the
 // mark it arrived with, all ones where the kernel handed no mark, and its
 // question's type, zero where the query holds no question
@@ -148,7 +130,7 @@ func (n *Nameserver) listen(t testing.TB, address netip.Addr) {
 }
 
 func (n *Nameserver) serve(conn *net.UDPConn, address netip.Addr) {
-	buf, oob := make([]byte, 4096), make([]byte, 512)
+	buf, oob := make([]byte, queryReadSize), make([]byte, controlMessageSize)
 	for {
 		size, oobSize, _, from, err := conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
