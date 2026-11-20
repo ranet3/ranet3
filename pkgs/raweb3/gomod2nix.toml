@@ -26,8 +26,8 @@ version = 'v1.10.2'
 hash = 'sha256-nbRCTFiDCC2jKK7AHi79n7urYCMP5yDZnWtNVJrDi+k='
 
 [mod.'github.com/spf13/pflag']
-version = 'v1.0.10'
-hash = 'sha256-uDPnWjHpSrzXr17KEYEA1yAbizfcsfo5AyztY2tS6ZU='
+version = 'v1.1.0'
+hash = 'sha256-B7mjsUWaV/ltrpt8mGFyqeLQBpRd7Xcif019pAjWv+w='
 
 [mod.'github.com/tdewolff/minify/v2']
 version = 'v2.25.0'

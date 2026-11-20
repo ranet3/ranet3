@@ -349,6 +349,30 @@ func TestSubcommandHelpExitsClean(t *testing.T) {
 	}
 }
 
+// the flag library words a value it refuses, and main prints that error alone, so each want is all the user reads
+func TestRefusedFlagValueReadsInFull(t *testing.T) {
+	for name, test := range map[string]struct {
+		args []string
+		want string
+	}{
+		"duration": {args: []string{"debug", "events", "--for", "x"}, want: `invalid argument "x" for "--for" flag: must be a duration like "30s" or "5m"`},
+		"integer":  {args: []string{"debug", "trace", "--rate", "x"}, want: `invalid argument "x" for "--rate" flag: must be an integer`},
+		"bool":     {args: []string{"status", "--json=maybe"}, want: `invalid argument "maybe" for "--json" flag: must be true or false`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// a socket that does not exist, so a value the library ever takes reaches no daemon
+			args := append(append([]string{}, test.args...), "--control", filepath.Join(t.TempDir(), "control.sock"))
+			out, err := execute(t, args...)
+			if err == nil || err.Error() != test.want {
+				t.Errorf("ranet3 %s failed with %v, want %q", strings.Join(args, " "), err, test.want)
+			}
+			if out != "" {
+				t.Errorf("ranet3 %s also wrote %q", strings.Join(args, " "), out)
+			}
+		})
+	}
+}
+
 // Every command carries a one-line summary, because the bare binary's listing
 // is the whole of the built-in documentation.
 func TestEveryCommandIsDescribed(t *testing.T) {

@@ -22,7 +22,7 @@ require (
 	github.com/ebitengine/purego v0.12.0-alpha.2.0.20261110150042-cfb65d5afce1 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/spf13/pflag v1.1.0 // indirect
 	golang.org/x/exp v0.0.0-20261118215729-2791e4028fd4 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )

@@ -566,7 +566,7 @@ github.com/spf13/cobra v1.10.2, from `LICENSE.txt`.
 
 ## github.com/spf13/pflag
 
-github.com/spf13/pflag v1.0.10, from `LICENSE`.
+github.com/spf13/pflag v1.1.0, from `LICENSE`.
 
 ```
 Copyright (c) 2012 Alex Ogier. All rights reserved.
