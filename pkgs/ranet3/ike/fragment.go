@@ -336,6 +336,15 @@ func (s *Session) keepAnswer(ctx *ikeContext, mid uint32, response *outbound, re
 		return nil, err
 	}
 	ctx.nextPeerMID++
+	// the answer to the peer's crossing rekey that this end's rekey settled before it was kept is recorded now, as of that decision, where ctx is still the SA before and the answer is to a rekey's exchange
+	// the dispatch that holds the mark keeps the answer at the marked Message ID next, ctx stays in s.old through it, and s.current moves only in RekeyIKE's decision, which ran before the mark was set
+	// so no real path reaches the Message ID, slot or exchange checks below with any other answer, and they leave such a case without a record
+	if due := ctx.recordDue; due != nil && due.mid == mid {
+		ctx.recordDue = nil
+		if exchange := request.outer.Header.ExchangeType; s.old == ctx && (exchange == CREATE_CHILD_SA || exchange == IKE_FOLLOWUP_KE) {
+			s.recordLocked(ctx, s.current, mid, due.sent, due.at)
+		}
+	}
 	return sent, nil
 }
 

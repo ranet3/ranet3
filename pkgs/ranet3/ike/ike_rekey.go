@@ -191,6 +191,7 @@ func (s *Session) RekeyIKE() (err error) {
 	// the decision and what rekeyTakenLocked reads of it are written in one section of the lock
 	if !lost && !chained {
 		s.replaceLocked(old, candidate)
+		s.recordCollisionLocked(old, local)
 	}
 	s.stateMu.Unlock()
 	if lost {
@@ -228,6 +229,7 @@ func (s *Session) RekeyIKE() (err error) {
 		}
 		s.stateMu.Lock()
 		s.replaceLocked(old, replacement)
+		s.recordCollisionLocked(old, local)
 		s.stateMu.Unlock()
 	}
 
@@ -321,11 +323,12 @@ func (s *Session) sendOwnDeleteLocked(ctx *ikeContext) error {
 }
 
 // errReplacedKept ends this end's Delete of the IKE SA its rekey replaced where keepReplaced keeps that SA
-var errReplacedKept = fmt.Errorf("ike: the Delete of the replaced IKE SA went unanswered, and the SA is kept for the peer's requests until its lifetime or %s after the rekey", retainedContextDeadline)
+var errReplacedKept = errors.New("ike: the Delete of the replaced IKE SA went unanswered, and the SA is kept for the peer's requests")
 
 // keepReplaced decides, as Run deems a Delete of ctx from this end failed, whether the session keeps ctx, and reports whether it does
 // RFC 7296 section 2.8.2: "when the peer that did not notice the simultaneous rekey gets the request to rekey the IKE SA that it has already successfully rekeyed, it SHOULD return TEMPORARY_FAILURE"
 // a peer whose crossing rekey this end refused runs on the SA this end's rekey replaced until the refusal or the Delete reaches it, so that SA stays while it answers requests, to the earlier of its lifetime and retainedContextDeadline after the rekey, and each resend draws the refusal again
+// where this end's rekey won a crossing with a peer rekey it answered, the record of that SA holds it to the record's end instead, which its lifetime caps, and each resend draws the kept answer
 // past its lifetime it answers none, so it goes with its Delete then, and a peer's rekey of the current SA or this end's next rekey replaces it as it would an SA nothing kept
 func (s *Session) keepReplaced(ctx *ikeContext) bool {
 	s.stateMu.Lock()
@@ -677,10 +680,19 @@ func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool 
 	return true
 }
 
-// recordCollisionLocked makes the record of old, which the peer's rekey held as the collision replaced once this end's own rekey of old gave way to it, with stateMu held
-// it runs after keepAnswer kept the answer to that rekey, so the record is made only where old still keeps it
+// recordCollisionLocked makes the record of old, which s.current replaced once local, this end's rekey of old, settled a crossing with the peer's rekey of old either way, with stateMu held
+// the peer resends its rekey until it takes the answer this end kept on old for it, whichever end's SA survives, and nothing is made where no peer rekey crossed local
+// Run places the peer's SA as it answers the peer's rekey and keeps the answer after, so the crossing may settle between the two, and the record is made only where old keeps that answer
+// keepAnswer moves old's window past the peer's rekey once it keeps the answer, so a window still at it marks the answer, with this decision's time, for keepAnswer to record, and one past it with another answer kept makes nothing
 func (s *Session) recordCollisionLocked(old *ikeContext, local *ikeRekey) {
-	if local == nil || local.peerAnswered.IsZero() || old.lastPeer.response == nil || old.lastPeerResponseID != local.peerMID {
+	if local == nil || local.peerAnswered.IsZero() {
+		return
+	}
+	if old.lastPeer.response == nil || old.lastPeerResponseID != local.peerMID {
+		// the decision falls inside the dispatch that placed the peer's SA and keeps its answer, so no real path has the window past that request with its answer unkept, and this check leaves that case without a record
+		if old.nextPeerMID == local.peerMID {
+			old.recordDue = &recordDue{mid: local.peerMID, sent: local.peerAnswered, at: time.Now()}
+		}
 		return
 	}
 	s.recordLocked(old, s.current, local.peerMID, local.peerAnswered, time.Now())

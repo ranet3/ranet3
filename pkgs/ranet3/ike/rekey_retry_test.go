@@ -821,40 +821,111 @@ func TestRetiredAndConfirmedSAsAreRecorded(t *testing.T) {
 	}
 }
 
+// crossed is a session whose rekey of its IKE SA old crosses the peer's chained rekey of old, its CREATE_CHILD_SA at Message ID 0 and its IKE_FOLLOWUP_KE at crossedMID, each answered and kept as dispatch keeps it, the peer's SA held as the collision
+// where keep is false, old keeps the answer to the peer's later request at crossedMID+1 in place of that answer
+func crossed(t *testing.T, keep bool) (*Session, *ikeContext, *ikeRekey) {
+	t.Helper()
+	s, _ := initiatingSession(t, chainSuite, chainLists)
+	old := s.current
+	local := &ikeRekey{old: old}
+	s.localRekey = local
+	peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
+	raw, err := s.handleIKERekey(old, 0, request)
+	if err != nil {
+		t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
+	}
+	if peer.read(t, sealedAnswer(t, old, raw.whole)); peer.link == nil {
+		t.Fatal("the peer's rekey drew no link")
+	}
+	keepPeerAnswer(t, s, old, 0, CREATE_CHILD_SA, request, raw)
+	followup, decapsulate := followupRequest(t, ML_KEM_768, peer.link)
+	raw, err = s.handleFollowup(old, crossedMID, followup)
+	if raw == nil || err != nil {
+		t.Fatalf("the peer's IKE_FOLLOWUP_KE failed: %v", err)
+	}
+	peer.take(t, sealedAnswer(t, old, raw.whole), ML_KEM_768, decapsulate)
+	keepPeerAnswer(t, s, old, crossedMID, IKE_FOLLOWUP_KE, followup, raw)
+	if !keep {
+		later, err := s.response(old, crossedMID+1, INFORMATIONAL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keepPeerAnswer(t, s, old, crossedMID+1, INFORMATIONAL, nil, later)
+	}
+	s.stateMu.Lock()
+	held := s.collision
+	s.stateMu.Unlock()
+	if held == nil {
+		t.Fatal("the peer's SA is not held as the collision")
+	}
+	return s, old, local
+}
+
+// crossedMID is the Message ID of the IKE_FOLLOWUP_KE that placed crossed's peer SA, the one after its CREATE_CHILD_SA
+const crossedMID = 1
+
+// RFC 7296 section 2.1: "In order to allow saving memory, responders are allowed to forget the response after a timeout of several minutes."
+// this end answered the peer's crossing rekey as it was placed, and its own rekey decides the crossing long after, lost or won
+// the record keeps that answer for busyRequestBudget from its send, and no less than retainedContextDeadline from the decision, capped by the SA's lifetime
+// the SA a lost rekey left is held to the record's end, and the SA a won rekey replaced is held for this end's Delete of it to the decision plus retainedContextDeadline at least, as with no record
+func TestRecordOfACrossingRunsFromTheAnswer(t *testing.T) {
+	// lifetimeAfter is how long after the decision the SA before reaches its lifetime, where a case sets one
+	const lifetimeAfter = time.Minute
+	type want struct{ until, held time.Duration }
+	for _, c := range []struct {
+		name     string
+		won      bool
+		age      time.Duration
+		lifetime bool
+		want     want
+	}{
+		{"lost, the answer's budget outlasting the retention", false, 300 * time.Second, false, want{busyRequestBudget - 300*time.Second, busyRequestBudget - 300*time.Second}},
+		{"lost, the retention outlasting the answer's budget", false, 500 * time.Second, false, want{retainedContextDeadline, retainedContextDeadline}},
+		{"lost, the lifetime first", false, 300 * time.Second, true, want{lifetimeAfter, lifetimeAfter}},
+		{"won, the answer's budget outlasting the retention", true, 300 * time.Second, false, want{busyRequestBudget - 300*time.Second, busyRequestBudget - 300*time.Second}},
+		{"won, the retention outlasting the answer's budget", true, 500 * time.Second, false, want{retainedContextDeadline, retainedContextDeadline}},
+		{"won, the lifetime first", true, 300 * time.Second, true, want{lifetimeAfter, retainedContextDeadline}},
+	} {
+		t.Run(c.name, bubble.Run(func(t *testing.T) {
+			s, old, local := crossed(t, true)
+			time.Sleep(c.age)
+			decided := time.Now()
+			s.stateMu.Lock()
+			if c.lifetime {
+				s.timing.IKERekeyInterval = decided.Add(lifetimeAfter).Sub(old.established)
+			}
+			if c.won {
+				s.replaceLocked(old, chainContext(t, chainSuite))
+				s.recordCollisionLocked(old, local)
+			}
+			winner := s.collision
+			s.stateMu.Unlock()
+			if !c.won {
+				if err := s.yieldIKERekey(old, nil, winner, local); err != nil {
+					t.Fatalf("this end's rekey gave way with %v", err)
+				}
+			}
+			s.stateMu.RLock()
+			held, record, oldBy := s.old, s.recovery, s.oldBy
+			s.stateMu.RUnlock()
+			if held != old || record.replaced != old || record.mid != crossedMID || !old.replacedAt.Equal(decided) {
+				t.Fatalf("the SA before is held %v, recorded %v at Message ID %d, retained at the decision %v, want all of them at Message ID %d",
+					held == old, record.replaced == old, record.mid, old.replacedAt.Equal(decided), crossedMID)
+			}
+			if got := record.until.Sub(decided); got != c.want.until {
+				t.Errorf("the record ends %v after the decision, %v after this end's answer, want %v after the decision", got, record.until.Sub(local.peerAnswered), c.want.until)
+			}
+			if got := oldBy.Sub(decided); got != c.want.held {
+				t.Errorf("the SA before is held %v after the decision, want %v", got, c.want.held)
+			}
+		}))
+	}
+}
+
 // RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
 // the peer's SA held as the collision becomes current where this end's rekey lost and where the peer refused it, and the SA before is then replaced through this end's answer to the peer's rekey
 // so it is recorded there as at a peer's rekey with no collision, provided the SA before still keeps that answer
 func TestRecordAtTheLostCollisionAndTheSwap(t *testing.T) {
-	// crossed is a session whose rekey of its IKE SA old crosses the peer's chained rekey of old, held as the collision once its IKE_FOLLOWUP_KE at Message ID 0 is answered
-	// where keep says so, old keeps that answer as keepAnswer keeps it
-	crossed := func(t *testing.T, keep bool) (*Session, *ikeContext, *ikeRekey) {
-		t.Helper()
-		s, _ := initiatingSession(t, chainSuite, chainLists)
-		old := s.current
-		local := &ikeRekey{old: old}
-		s.localRekey = local
-		peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
-		raw, err := s.handleIKERekey(old, 0, request)
-		if err != nil {
-			t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
-		}
-		if peer.read(t, sealedAnswer(t, old, raw.whole)); peer.link == nil {
-			t.Fatal("the peer's rekey drew no link")
-		}
-		if _, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil {
-			t.Fatalf("the peer's IKE_FOLLOWUP_KE failed: %v", err)
-		}
-		s.stateMu.Lock()
-		if keep {
-			old.lastPeer.response, old.lastPeerResponseID = &transmission{}, 0
-		}
-		held := s.collision
-		s.stateMu.Unlock()
-		if held == nil {
-			t.Fatal("the peer's SA is not held as the collision")
-		}
-		return s, old, local
-	}
 	refused := refusal("IKE SA rekey", notifyAnswer(N_TEMPORARY_FAILURE))
 	swap := func(t *testing.T, s *Session, old *ikeContext, local *ikeRekey) {
 		if err := s.refusedIKERekey(local, refused); err != nil {
@@ -897,12 +968,89 @@ func TestRecordAtTheLostCollisionAndTheSwap(t *testing.T) {
 				}
 				return
 			}
-			if record.replaced != old || record.replacement != current || record.mid != 0 || replacedAt.IsZero() || !oldBy.Equal(record.until) {
-				t.Errorf("the record is of the SA before %v, of the peer's SA %v, at Message ID %d, retained %v, held to its end %v, want all of them at Message ID 0",
-					record.replaced == old, record.replacement == current, record.mid, !replacedAt.IsZero(), oldBy.Equal(record.until))
+			if record.replaced != old || record.replacement != current || record.mid != crossedMID || replacedAt.IsZero() || !oldBy.Equal(record.until) {
+				t.Errorf("the record is of the SA before %v, of the peer's SA %v, at Message ID %d, retained %v, held to its end %v, want all of them at Message ID %d",
+					record.replaced == old, record.replacement == current, record.mid, !replacedAt.IsZero(), oldBy.Equal(record.until), crossedMID)
 			}
 			if want := replacedAt.Add(busyRequestBudget); !record.until.Equal(want) {
 				t.Errorf("the record ends %v after the retention, want %v", record.until.Sub(replacedAt), busyRequestBudget)
+			}
+		}))
+	}
+}
+
+// keepPeerAnswer keeps response on ctx as the answer to the peer's request of exchange at mid carrying inner, as dispatch keeps it once the request is handled
+func keepPeerAnswer(t *testing.T, s *Session, ctx *ikeContext, mid uint32, exchange ExchangeType, inner []RawPayload, response *outbound) {
+	t.Helper()
+	raw, err := EncryptMessage(ctx.suite, ctx.peerEncryptionKey(), Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: exchange, MessageID: mid}, nil, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q reassembly
+	request, err := s.open(ctx, &q, raw, message)
+	if err != nil || request == nil {
+		t.Fatalf("the peer's request at Message ID %d did not open: %v", mid, err)
+	}
+	if _, err := s.keepAnswer(ctx, mid, response, request); err != nil {
+		t.Fatalf("the answer at Message ID %d was not kept: %v", mid, err)
+	}
+}
+
+// RFC 7296 section 2.1: "In order to allow saving memory, responders are allowed to forget the response after a timeout of several minutes."
+// Run places the peer's crossing SA as it answers the peer's rekey and keeps that answer after, while this end's rekey settles the crossing on its own goroutine
+// a crossing settled between the two, lost or won, records the answer once it is kept, as one settled after it, and holds the SA before to the record's end
+func TestCrossingSettledBeforeItsAnswerIsKeptIsRecordedOnceKept(t *testing.T) {
+	for _, won := range []bool{false, true} {
+		name := "lost"
+		if won {
+			name = "won"
+		}
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}})
+			old := s.current
+			local := &ikeRekey{old: old}
+			s.localRekey = local
+			_, request := newPeerRekey(t, classicalOffer, drawnOctets(t, 32))
+			response, err := s.handleIKERekey(old, 0, request)
+			if err != nil {
+				t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
+			}
+			s.stateMu.RLock()
+			candidate := s.collision
+			s.stateMu.RUnlock()
+			if candidate == nil {
+				t.Fatal("the peer's SA is not held as the collision")
+			}
+			decided := time.Now()
+			if won {
+				s.stateMu.Lock()
+				s.replaceLocked(old, chainContext(t, classicalSuite))
+				s.recordCollisionLocked(old, local)
+				s.stateMu.Unlock()
+			} else if err := s.yieldIKERekey(old, nil, candidate, local); err != nil {
+				t.Fatalf("this end's rekey gave way with %v", err)
+			}
+			// Run keeps the answer a moment after the decision, and the record still dates the SA's retention from the decision
+			time.Sleep(crossingStep)
+			keepPeerAnswer(t, s, old, 0, CREATE_CHILD_SA, request, response)
+			s.stateMu.RLock()
+			held, record, oldBy := s.old, s.recovery, s.oldBy
+			s.stateMu.RUnlock()
+			if held != old || record.replaced != old || record.replacement != s.currentContext() || record.mid != 0 {
+				t.Fatalf("the SA before is held %v, recorded %v, for the current SA %v, at Message ID %d, want all of them at Message ID 0", held == old, record.replaced == old, record.replacement == s.currentContext(), record.mid)
+			}
+			if want := local.peerAnswered.Add(busyRequestBudget); !record.until.Equal(want) || !oldBy.Equal(want) {
+				t.Errorf("the record ends %v and holds the SA before %v after the answer, want both %v", record.until.Sub(local.peerAnswered), oldBy.Sub(local.peerAnswered), busyRequestBudget)
+			}
+			s.stateMu.RLock()
+			replacedAt := old.replacedAt
+			s.stateMu.RUnlock()
+			if !replacedAt.Equal(decided) {
+				t.Errorf("the SA before is retained from %v after the decision, want from the decision", replacedAt.Sub(decided))
 			}
 		}))
 	}

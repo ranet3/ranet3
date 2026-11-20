@@ -12,8 +12,8 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// recoveryRecord keeps the answer that replaced an IKE SA at a peer's rekey for the peer's resends of that rekey, so a busy peer that lost the answer draws it again for as long as it resends
-// replaced stays in Session.old while the record lives, its lastPeer holding the answer at mid, and replacement is the SA that answer made
+// recoveryRecord keeps this end's answer to a peer's rekey of an IKE SA for the peer's resends of that rekey, so a busy peer that lost the answer draws it again for as long as it resends
+// replaced stays in Session.old while the record lives, its lastPeer holding the answer at mid, and replacement is the SA that replaced it, the one that answer made or, where this end's own rekey won a crossing with that rekey, this end's
 // lastSent is the last time the answer went out and until the record's end, never past the replaced SA's lifetime
 // told marks a record whose first answer past the retention ike.rekey.repeat_answered told
 type recoveryRecord struct {
@@ -23,17 +23,20 @@ type recoveryRecord struct {
 	told                  bool
 }
 
-// recordLocked makes the record of replaced, which the answer at mid that went out at sent replaced with replacement, retained at at, with stateMu held
+// recordLocked makes the record of replaced, whose answer at mid to the peer's rekey went out at sent and which replacement replaced, retained at at, with stateMu held
 // RFC 7296 section 2.1: "In order to allow saving memory, responders are allowed to forget the response after a timeout of several minutes."
-// the answer is kept for busyRequestBudget from the retention, the sends of a peer that keeps traffic flowing, while replacement waits unconfirmed for the peer's first fresh request on it
+// the answer is kept for busyRequestBudget from its send, the sends of a peer that keeps traffic flowing, and no less than retainedContextDeadline from the retention, so the hold of replaced never ends before the one it had
 func (s *Session) recordLocked(replaced, replacement *ikeContext, mid uint32, sent, at time.Time) {
-	until := at.Add(busyRequestBudget)
+	until := sent.Add(busyRequestBudget)
+	if retained := at.Add(retainedContextDeadline); retained.After(until) {
+		until = retained
+	}
 	if ends := replaced.established.Add(s.timing.IKERekeyInterval); s.timing.IKERekeyInterval > 0 && ends.Before(until) {
 		until = ends
 	}
 	replaced.replacedAt = at
 	s.recovery = recoveryRecord{replaced: replaced, replacement: replacement, mid: mid, lastSent: sent, until: until}
-	if s.old == replaced {
+	if s.old == replaced && until.After(s.oldBy) {
 		s.oldBy = until
 	}
 }
@@ -59,7 +62,7 @@ func (s *Session) endRecordLocked(from time.Time) {
 	}
 }
 
-// pastRetention reports whether ctx is an SA a peer's rekey replaced through this end's answer, retained longer than retainedContextDeadline ago
+// pastRetention reports whether ctx is an SA a record held, retained longer than retainedContextDeadline ago
 // past it the SA takes the repeat the record serves and its IKE Delete alone
 func (s *Session) pastRetention(ctx *ikeContext) bool {
 	s.stateMu.RLock()

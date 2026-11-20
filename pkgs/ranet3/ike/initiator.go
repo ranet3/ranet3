@@ -69,6 +69,13 @@ type Recorder func(local, remote identity.Identity, kind string, attrs ...slog.A
 // the esp package after a successful handshake.
 type ChildSA = esp.ChildSA
 
+// recordDue is the Message ID and the send of the answer to the peer's crossing rekey, with the time of the decision that settled the crossing before that answer was kept
+type recordDue struct {
+	mid  uint32
+	sent time.Time
+	at   time.Time
+}
+
 // ikeContext contains the state bound to one IKE SA's SPI pair. During an IKE
 // SA rekey, Session keeps the replaced context until its transition completes.
 type ikeContext struct {
@@ -86,8 +93,10 @@ type ikeContext struct {
 	ownDelete bool
 	// kept marks a replaced IKE SA keepReplaced kept once this end's Delete of it went unanswered, and stateMu guards it
 	kept bool
-	// replacedAt is when the session retained the SA as one a peer's rekey replaced through this end's answer, zero for any other SA, and stateMu guards it
+	// replacedAt is when the session made the record of the SA, zero for an SA no record held, and stateMu guards it
 	replacedAt time.Time
+	// recordDue is the answer to the peer's crossing rekey that this end's rekey settled before keepAnswer kept it, nil for none, which keepAnswer records once it keeps it, and stateMu guards it
+	recordDue *recordDue
 	// unconfirmed marks an SA a peer's rekey made that no fresh authenticated request of the peer's has reached while it was current, and stateMu guards it
 	// the handshake's SA and one this end's own rekey made start confirmed, since the handshake and the peer's answer to that rekey prove the peer holds them
 	unconfirmed bool
@@ -371,11 +380,11 @@ func (s *Session) routedLocked(spi uint64) bool {
 	return false
 }
 
-// keptToRetention is the label of a kept IKE SA dropped at the retention's bound rather than at its lifetime
+// keptToRetention is the label of a kept IKE SA, or one a recoveryRecord held, dropped at the retention's bound rather than at its lifetime
 var keptToRetention = retainedContextDeadline.String() + " after the rekey"
 
-// recordToBound is the label of an SA a recoveryRecord held, dropped at the record's bound rather than at its lifetime
-var recordToBound = busyRequestBudget.String() + " after the rekey"
+// recordToAnswer is the label of an SA a recoveryRecord held, dropped at the record's bound from the send of the answer it kept, rather than from the retention or at its lifetime
+var recordToAnswer = busyRequestBudget.String() + " after the answer to the peer's rekey"
 
 // candidateToReturn is the label of a peer's candidate dropped at the bound this end's crossing rekey gave it at its return rather than at its lifetime
 var candidateToReturn = retainedContextDeadline.String() + " after this end's crossing rekey ended"
@@ -412,9 +421,13 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 			atLifetime := s.timing.IKERekeyInterval > 0 && !held.ctx.established.Add(s.timing.IKERekeyInterval).After(*held.by)
 			keptTo, recordTo := "", ""
 			if r := s.liveRecordLocked(); r != nil && r.replaced == held.ctx {
-				recordTo = recordToBound
-				if atLifetime {
+				switch {
+				case atLifetime:
 					recordTo = "its lifetime"
+				case !r.until.After(held.ctx.replacedAt.Add(retainedContextDeadline)):
+					recordTo = keptToRetention
+				default:
+					recordTo = recordToAnswer
 				}
 			}
 			if held.ctx.kept {

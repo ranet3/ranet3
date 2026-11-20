@@ -262,6 +262,46 @@ func testIKECrossingLossForTheTeardownBudgetKeepsOneSA(t *testing.T) {
 	c.keepOne(t, ownSPI, ownSPI, peerSPI)
 }
 
+// sealed is from's request as the path brings it to to, on the SA to holds for it at the Message ID that SA expects next, and that SA
+func (c *ikeCrossing) sealed(t *testing.T, from, to *ikeCrossingEnd) ([]byte, *ikeContext) {
+	t.Helper()
+	request := from.pending
+	header := Header{SPIInitiator: request.context.spiI, SPIResponder: request.context.spiR, ExchangeType: request.exchange}
+	ctx := to.s.contextForHeader(&header)
+	if ctx == nil {
+		t.Fatalf("this end holds no SA for the request of exchange %d", request.exchange)
+	}
+	to.s.stateMu.RLock()
+	header.MessageID = ctx.nextPeerMID
+	to.s.stateMu.RUnlock()
+	if ctx.responder {
+		header.Flags = FlagInitiator
+	}
+	raw, err := EncryptMessage(ctx.suite, ctx.peerEncryptionKey(), header, nil, request.inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw, ctx
+}
+
+// deliver hands raw, a request on ctx, to to's dispatch as the path hands it a datagram from the peer, and returns the answer to sent for it, nil where it sent none
+// a repeat of a request to answered draws what dispatch kept for it, as on the path, and never reaches the handler again
+func (c *ikeCrossing) deliver(t *testing.T, to *ikeCrossingEnd, ctx *ikeContext, raw []byte) []RawPayload {
+	t.Helper()
+	to.s.stateMu.RLock()
+	before, answers := ctx.lastPeer.response, ctx.lastPeer.answers
+	to.s.stateMu.RUnlock()
+	var pending *pendingRequest
+	to.s.dispatch(raw, to.s.mux.Endpoint(), &pending)
+	to.s.stateMu.RLock()
+	sent, again := ctx.lastPeer.response, ctx.lastPeer.answers > answers
+	to.s.stateMu.RUnlock()
+	if sent == nil || sent == before && !again {
+		return nil
+	}
+	return sealedAnswer(t, ctx, sent.message.whole)
+}
+
 // keepOne fails t unless both ends are current on the SA survivor names, from either side, and hold no other SA or SPI among their old SA's, own and peer's
 func (c *ikeCrossing) keepOne(t *testing.T, survivor uint64, spis ...uint64) {
 	t.Helper()
@@ -285,5 +325,64 @@ func (c *ikeCrossing) keepOne(t *testing.T, survivor uint64, spis ...uint64) {
 				t.Fatalf("SPI %016x is registered %v, current %016x", spi, registered, current.spiI)
 			}
 		}
+	}
+}
+
+// both ends rekey a classical IKE SA at once and each answers the other's rekey, and this end's rekey takes the answer to its own request and settles the crossing while Run is between placing the peer's SA and keeping the answer to the peer's rekey, as Run hands that answer on to the rekey's goroutine
+// the path MTU read inside transmit, which keepAnswer runs before it takes stateMu, is where the decision runs
+// the path loses this end's answer to the peer's rekey and its Delete of old, so the peer resends its rekey on old past retainedContextDeadline after this end's rekey
+// the record of old kept from that answer serves the resend either way the nonces settle it, and both ends end on one SA
+func TestCrossingSettledWhileItsAnswerIsSentServesTheResendPastTheRetention(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// lowest places the lowest nonce as crossingNonces does, this end's exchange first
+		lowest int
+	}{
+		{"this end wins", 2},
+		{"this end yields", 0},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			c := newIKECrossing(t, false, test.lowest)
+			toA := c.answer(t, c.a, c.b)
+			request, crossed := c.sealed(t, c.b, c.a)
+			decided := false
+			c.a.s.fragments = true
+			c.a.s.pathMTU = func() (int, error) {
+				if !decided {
+					decided = true
+					c.takes(t, c.a, toA)
+				}
+				return 0, errors.New("no path MTU")
+			}
+			lost := c.deliver(t, c.a, crossed, request)
+			c.a.s.pathMTU = nil
+			if !decided {
+				t.Fatal("this end's rekey took its answer before Run kept the answer to the peer's rekey")
+			}
+			if lost == nil || findType(lost, PayloadSA) == nil {
+				t.Fatalf("this end answered the peer's rekey with %v, want its SA", payloadTypes(lost))
+			}
+			if c.a.pending != nil && deletesIKE(c.a.pending.inner) {
+				c.takes(t, c.a, nil)
+			}
+			s := c.a.s
+			s.stateMu.RLock()
+			record, oldBy, replacedAt := s.recovery, s.oldBy, c.a.old.replacedAt
+			s.stateMu.RUnlock()
+			if record.replaced != c.a.old || record.mid != 0 || oldBy.Sub(replacedAt) <= retainedContextDeadline {
+				t.Fatalf("the record of old %v at Message ID %d, old held %v after the rekey, want the record of the answer to the peer's rekey past %v", record.replaced == c.a.old, record.mid, oldBy.Sub(replacedAt), retainedContextDeadline)
+			}
+			time.Sleep(time.Until(replacedAt.Add(retainedContextDeadline + pastRetentionBy)))
+			s.expireRetainedContexts(time.Now())
+			again := c.deliver(t, c.a, crossed, request)
+			if again == nil {
+				t.Fatalf("the peer's resend %v after this end's rekey drew nothing", time.Since(replacedAt))
+			}
+			c.takes(t, c.b, again)
+			c.finish(t)
+			if current, peerCurrent := c.a.s.currentContext(), c.b.s.currentContext(); current.spiI != peerCurrent.spiI {
+				t.Errorf("this end runs on %016x and the peer on %016x", current.spiI, peerCurrent.spiI)
+			}
+		}))
 	}
 }
