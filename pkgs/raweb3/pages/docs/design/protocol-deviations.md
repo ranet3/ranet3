@@ -280,14 +280,17 @@ endpoint whether or not the node is behind a NAT. A node never learns whether it
 is behind one, because it does not compare the `NAT_DETECTION_DESTINATION_IP` it
 receives with its own address.
 
-Behind a NAT, someone who captures a request or an answer and resends it from
-another address before the original arrives can move a session's sends to that
-address, and the original then moves nothing. The peer's next fresh request on
-any IKE SA but a replaced one kept past this end's Delete moves them back. When
-that request goes is the peer's own choice, with [the IKE limits](limits.md#ike)
-giving a ranet3 peer's times. In `Run`, either end can follow a moved peer when
-it takes a fresh authenticated request or the authenticated answer to its
-outstanding request.
+Whether or not a NAT is in between, someone who captures a request or an answer
+and resends it from another address before the original arrives can move a
+session's sends to that address, and the original then moves nothing. The peer's
+next fresh request on any IKE SA but a replaced one kept past this end's Delete
+moves them back if it arrives before a copy of it resent the same way. When that
+request goes is the peer's own choice, with [the IKE limits](limits.md#ike)
+giving a ranet3 peer's times. Where such a copy arrives first, the sends go to
+the copy's address instead, so they stay off the peer's address for as long as a
+copy of each fresh request and answer the peer sends arrives before it. In
+`Run`, either end can follow a moved peer when it takes a fresh authenticated
+request or the authenticated answer to its outstanding request.
 
 ## Answer addresses
 
