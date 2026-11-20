@@ -227,8 +227,9 @@ func keyFile(t *testing.T, node *loopbackNode) (der, body []byte) {
 // of the replaced SA, the last request on it by RFC 7296 section 2.8, so the
 // relay keeps that Delete and its resend unless a liveness check started on
 // that SA between bravo's answer and that switch. Bravo holds the replaced SA
-// until it has the Delete, and alpha until the Delete is answered or its two
-// sends go unanswered.
+// until it has the Delete, and alpha until the Delete is answered, until its
+// two sends go unanswered past the SA's lifetime, or, where they go unanswered
+// within it, until the earlier of that lifetime and 2 minutes after the rekey.
 type deleteRelay struct {
 	alphaSide, bravoSide *net.UDPConn
 	bravo                *net.UDPAddr
