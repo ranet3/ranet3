@@ -19,24 +19,23 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
-	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// endpointTo is the endpoint a mux dialing address sends to, which a path report names
+// reportedEndpoint is an endpoint a path report names, with no hub behind it
+// a path report reads its address and prints it, and nothing in netstack calls the rest of the interface
+type reportedEndpoint struct {
+	transport.Endpoint
+	addr netip.AddrPort
+}
+
+func (e reportedEndpoint) String() string           { return net.UDPAddrFromAddrPort(e.addr).String() }
+func (e reportedEndpoint) AddrPort() netip.AddrPort { return e.addr }
+
+// endpointTo is the endpoint at address a path report names
 func endpointTo(t *testing.T, address string) transport.Endpoint {
 	t.Helper()
-	to := netip.MustParseAddrPort(address)
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: underlay.Unchanged})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = hub.Close() })
-	mux, err := hub.NewMux(net.IP(to.Addr().AsSlice()), int(to.Port()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return mux.Endpoint()
+	return reportedEndpoint{addr: netip.MustParseAddrPort(address)}
 }
 
 // a bare path report refused only the packets past the path, so only the batches holding one fail and only those packets count as lost
