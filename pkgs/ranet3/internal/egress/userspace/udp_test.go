@@ -1467,6 +1467,29 @@ func collected() runtime.MemStats {
 	return s
 }
 
+// udpReader is the function each reader of a UDP flow waits for its socket in
+const udpReader = "(*udpRelay).read("
+
+// readersPoll spaces the wait's stack dumps, which unspaced starve the readers
+const readersPoll = time.Millisecond
+
+// waitReadersInPoller waits until n readers of the exit's UDP flows wait in
+// the poller, where a reader holds no pooled buffer, since one holds the
+// buffer of a datagram it laid or of an error it relayed until it waits there
+// again
+func waitReadersInPoller(t *testing.T, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(exitWait); ; time.Sleep(readersPoll) {
+		waiting := len(lockWaiters(udpReader, "IO wait"))
+		if waiting == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of the %d readers of the UDP flows wait in the poller after %s", waiting, n, exitWait)
+		}
+	}
+}
+
 // drainLaid gives back every packet the exit sent toward a leaf so far
 func (h *relayHarness) drainLaid() {
 	for pkt := h.x.link.poll(); pkt != nil; pkt = h.x.link.poll() {
@@ -1591,7 +1614,6 @@ func TestLeafsLargestDatagramReachesItsServer(t *testing.T) {
 // back, and a reader waits there only once it put back every buffer it took.
 func TestReadersAtRestHoldNoBuffer(t *testing.T) {
 	const destinations = 16
-	const reader = "(*udpRelay).read("
 	h := newRelayHarness(t, nil)
 	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	servers := make([]*net.UDPConn, destinations)
@@ -1599,15 +1621,7 @@ func TestReadersAtRestHoldNoBuffer(t *testing.T) {
 	// the mapping's readers once a destination opened, its receiving socket's and each destination's
 	readers := 1
 	live := func() int64 {
-		for deadline := time.Now().Add(exitWait); ; runtime.Gosched() {
-			waiting := len(lockWaiters(reader, "IO wait"))
-			if waiting == readers {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%d of the mapping's %d readers wait in the poller after %s", waiting, readers, exitWait)
-			}
-		}
+		waitReadersInPoller(t, readers)
 		return int64(collected().HeapAlloc)
 	}
 	open := func(server *net.UDPConn) {

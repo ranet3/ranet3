@@ -165,14 +165,13 @@ func TestFlowHoldsAtMostItsBoundsAtRestAndRelayed(t *testing.T) {
 	defer other.Close()
 	to := serverAt(server)
 	leaves, outsides := make([]netip.AddrPort, flows), make([]netip.AddrPort, flows)
-	held := func() (heap, stack int64) {
-		// each reader reaches its wait, and the pool empties at two
-		// collections
-		time.Sleep(100 * time.Millisecond)
+	// the pool empties at two collections
+	held := func(readers int) (heap, stack int64) {
+		waitReadersInPoller(t, readers)
 		s := collected()
 		return int64(s.HeapAlloc), int64(s.StackInuse)
 	}
-	heap, stack := held()
+	heap, stack := held(0)
 	payload := []byte("opens")
 	for i := range outsides {
 		leaves[i] = netip.AddrPortFrom(leafAddress, freeUDPPort(t, leafAddress))
@@ -185,7 +184,8 @@ func TestFlowHoldsAtMostItsBoundsAtRestAndRelayed(t *testing.T) {
 	if open != flows {
 		t.Fatalf("%d flows held, want %d", open, flows)
 	}
-	restHeap, restStack := held()
+	// each flow's two readers, its mapping's receiving socket's and its destination's
+	restHeap, restStack := held(2 * flows)
 	reply := []byte("reply")
 	for i, outside := range outsides {
 		for _, from := range []*net.UDPConn{server, other} {
@@ -201,6 +201,6 @@ func TestFlowHoldsAtMostItsBoundsAtRestAndRelayed(t *testing.T) {
 		})
 	}
 	h.drainLaid()
-	relayedHeap, relayedStack := held()
+	relayedHeap, relayedStack := held(2 * flows)
 	t.Logf("flow cost: at rest heap %d stack %d, relayed heap %d stack %d", (restHeap-heap)/flows, (restStack-stack)/flows, (relayedHeap-heap)/flows, (relayedStack-stack)/flows)
 }
