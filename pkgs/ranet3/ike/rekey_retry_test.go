@@ -1012,6 +1012,49 @@ func testChainedRekeyAdoptedDuringItsFollowupReturnsNil(t *testing.T) {
 	}
 }
 
+// this end's rekey draws a refusal after the peer's Delete of the SA it rekeys made the peer's candidate current, as where Run hands the refusal to the rekey and then takes the Delete before the rekey reads the refusal
+// the crossing settled by that Delete, so the rekey ends as a lost crossing ends, with nil and ike.rekey.completed
+func TestRefusalReadAfterAnAdoptionSettlesTheRekey(t *testing.T) {
+	bubble.Run(testRefusalReadAfterAnAdoptionSettlesTheRekey)(t)
+}
+
+func testRefusalReadAfterAnAdoptionSettlesTheRekey(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
+	events := &recorder{}
+	s := seamed(&Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1), events: events.record})
+	done := rekeying(s)
+	request := requested(t, s, done, CREATE_CHILD_SA)
+	candidate := &ikeContext{suite: suite, spiI: 31, spiR: 32, responder: true, unconfirmed: true}
+	s.stateMu.Lock()
+	s.collision = candidate
+	s.localRekey.peerNonce, s.localRekey.peerResponseNonce = bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{2}, 32)
+	s.stateMu.Unlock()
+	if !s.peerDeletedIKE(old) {
+		t.Fatal("the peer's Delete of the SA this end rekeys ended the session")
+	}
+	request.result <- requestResult{inner: notifyAnswer(N_TEMPORARY_FAILURE)}
+	if err := ended(t, s, done); err != nil {
+		t.Errorf("the rekey ended with %v, want nil once the peer's Delete settled the crossing", err)
+	}
+	if current, _ := s.contexts(); current != candidate {
+		t.Errorf("the session is current on %016x, want the peer's candidate %016x", current.spiI, candidate.spiI)
+	}
+	completed, failed := 0, 0
+	for _, line := range events.recorded() {
+		switch {
+		case strings.HasPrefix(line, "ike.rekey.completed "):
+			completed++
+		case strings.HasPrefix(line, "ike.rekey.failed "):
+			failed++
+		}
+	}
+	if completed != 1 || failed != 0 {
+		t.Errorf("the rekey recorded ike.rekey.completed %d times and ike.rekey.failed %d times, want once and never: %q", completed, failed, events.recorded())
+	}
+}
+
 // RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
 // the peer's SA held as the collision becomes current where this end's rekey lost and where the peer refused it, and the SA before is then replaced through this end's answer to the peer's rekey
 // so it is recorded there as at a peer's rekey with no collision, provided the SA before still keeps that answer

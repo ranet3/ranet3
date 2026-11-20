@@ -400,7 +400,7 @@ func (s *Session) refusedFollowup(err error, late bool) error {
 	return err
 }
 
-// refusedIKERekey is how local, this end's IKE SA rekey, ends where its CREATE_CHILD_SA drew a refusal or an answer this end does not take, err saying which, nil where it takes the peer's rekey of the same SA held for it in its place
+// refusedIKERekey is how local, this end's IKE SA rekey, ends where its CREATE_CHILD_SA drew a refusal or an answer this end does not take, err saying which, nil where it takes the peer's rekey of the same SA held for it in its place or where the peer's Delete of that SA took it already
 // RFC 7296 section 2.8.2, of a peer that stops its rekey at an error notify: "Because the other peer has already rekeyed the exchange, doing so does not have any ill effects."
 // RFC 7296 section 2.25: "A TEMPORARY_FAILURE notification SHOULD be sent when a peer receives a request that cannot be completed due to a temporary condition such as a rekeying operation."
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
@@ -413,6 +413,10 @@ func (s *Session) refusedIKERekey(local *ikeRekey, err error) error {
 	// the rekey ends with the decision, so a peer's rekey of the SA that ends after it is placed as one with no rekey of this end's in flight
 	if s.localRekey == local {
 		s.localRekey = nil
+	}
+	// an adoption on the peer's Delete of local.old settled the rekey as a lost crossing, whatever the refusal says
+	if local.adopted {
+		return nil
 	}
 	if _, refused := errors.AsType[*rejectedError](err); !refused || s.collision == nil || local.peerNonce == nil {
 		return err
