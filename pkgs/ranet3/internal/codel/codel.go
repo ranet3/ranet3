@@ -10,14 +10,6 @@ import (
 	"time"
 )
 
-// Target is the delay a queue is held to, and Interval how long the delay may
-// stay above it before the consumer starts dropping. Both are the defaults RFC
-// 8289 gives and the kernel's CoDel uses.
-const (
-	Target   = 5 * time.Millisecond
-	Interval = 100 * time.Millisecond
-)
-
 // Controller is the controlled delay over one queue.
 // The delay is measured where the consumer takes each item, a peer's batch or
 // a packet, from when it was queued, and an item whose turn comes while the
