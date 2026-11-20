@@ -414,7 +414,7 @@ func (c *Client) renderKernel(w io.Writer) {
 // writeFallback writes the kill switch as the last pass left it, holding while the switch reads back as written, whether or not an exit is live
 func writeFallback(w io.Writer, fallback control.KernelFallback) {
 	holding := fallback.State == string(kernel.FallbackHolding) || fallback.State == string(kernel.FallbackPassing)
-	fmt.Fprint(w, "# HELP ranet3_kernel_fallback_holding Whether the kill switch of cap.exit fallback none read back as written in the last pass, holding the host's traffic while no exit is live or passing it to a live one.\n")
+	fmt.Fprint(w, "# HELP ranet3_kernel_fallback_holding Whether the kill switch of cap.exit fallback none read back as written at its last read, holding the host's traffic while no exit is live or passing it to a live one.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_fallback_holding gauge\n")
 	fmt.Fprintf(w, "ranet3_kernel_fallback_holding %d\n", boolValue(holding))
 	if fallback.Dropped == nil {

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"reflect"
 	"slices"
+	"sync/atomic"
 	"syscall"
 
 	"ranet3.com/pkgs/ranet3/schema"
@@ -269,23 +271,37 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 		return nil, nil
 	}
 	r.fallbackClear = false
-	// a read that fails on a switch no write touched keeps the drops the last read found, and a rewrite starts them from zero
-	read, err := sw.readFallback(sets)
-	r.fallbackDropsRead = r.fallbackDropsRead || err == nil && !form.uncounted
-	switch {
-	case err != nil:
+	var read fallbackRead
+	var err error
+	// every asked pass takes what the monitor reported, so a change during its read is left for the next
+	rec := r.liveRecord()
+	moved := rec == nil || rec.takeMoved()
+	if !moved && rec.holds(sets) && routeOnly(r.trigger) {
+		// a skipped read reports the drops the last read found
 		read.dropped, read.bytes = r.fallbackDropped, r.fallbackBytes
-	case read.fault != "":
-		if err = sw.writeFallback(sets, read.remake); err != nil {
-			err = fmt.Errorf("%s, and the write failed: %w", read.fault, err)
-		} else {
-			read, err = sw.readFallback(sets)
+	} else {
+		// a read that fails on a switch no write touched keeps the drops the last read found, and a rewrite starts them from zero
+		read, err = sw.readFallback(sets)
+		r.fallbackDropsRead = r.fallbackDropsRead || err == nil && !form.uncounted
+		switch {
+		case err != nil:
+			read.dropped, read.bytes = r.fallbackDropped, r.fallbackBytes
+		case read.fault != "":
+			if err = sw.writeFallback(sets, read.remake); err != nil {
+				err = fmt.Errorf("%s, and the write failed: %w", read.fault, err)
+			} else {
+				read, err = sw.readFallback(sets)
+			}
 		}
 	}
 	r.fallbackDropped, r.fallbackBytes = read.dropped, read.bytes
 	if err != nil {
 		read.fault = err.Error()
 		err = fmt.Errorf("write the kill switch, %s: %w", form.where, err)
+	}
+	// the record of a watch the read opened takes the read
+	if rec := r.liveRecord(); rec != nil {
+		rec.record(sets, read.fault == "")
 	}
 	status := &FallbackStatus{
 		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes, DropsRead: r.fallbackDropsRead, Uncounted: form.uncounted,
@@ -299,6 +315,54 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 	}
 	r.reportFallbackState(status)
 	return status, err
+}
+
+// routeOnly is whether trigger is a change in the mesh's routes or a
+// notification of the route monitor, which the switch's own monitor reports
+// apart. Every other trigger reads the switch.
+func routeOnly(trigger string) bool { return trigger == "mesh" || trigger == "kernel" }
+
+// liveRecord is the record of the platform's switch, nil where no monitor of
+// it reads
+func (r *Reconciler) liveRecord() *switchRecord {
+	if watcher, ok := r.sw.(switchWatcher); ok {
+		return watcher.liveRecord()
+	}
+	return nil
+}
+
+// switchWatcher is the optional half of a switcher whose switch a monitor
+// watches for every other writer's change, as linux's nf_tables monitor does.
+// A switcher without one has its switch read on every pass that asks for it.
+type switchWatcher interface {
+	liveRecord() *switchRecord
+}
+
+// switchRecord holds what the switch's monitor reported since the last read of
+// the switch began and what that read found. moved is set by the monitor's
+// goroutine at each change and each loss it reports, and clean, the sets of a
+// read that found the switch holding them as written and nil after any other
+// read, belongs to the reconcile loop.
+type switchRecord struct {
+	moved atomic.Bool
+	clean *fallbackSets
+}
+
+// takeMoved is whether the monitor reported a change or a loss since the last
+// call, and clears it
+func (rec *switchRecord) takeMoved() bool { return rec.moved.Swap(false) }
+
+// holds is whether the last read found the switch holding sets as written
+func (rec *switchRecord) holds(sets fallbackSets) bool {
+	return rec.clean != nil && reflect.DeepEqual(*rec.clean, sets)
+}
+
+// record keeps a read of sets and whether it found the switch holding them as written
+func (rec *switchRecord) record(sets fallbackSets, clean bool) {
+	rec.clean = nil
+	if clean {
+		rec.clean = &sets
+	}
 }
 
 // warnFallbackLeft is the one line for a delete of the switch that failed

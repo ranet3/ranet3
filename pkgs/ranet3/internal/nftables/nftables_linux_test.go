@@ -301,6 +301,39 @@ func TestOnlyAnotherWritersChangeToItsNamesWakes(t *testing.T) {
 	}
 }
 
+// A scope with AnyChain takes another writer's chain made or deleted in Table
+// whatever its name, as one of its own renamed out of its names carries the
+// new name, and still neither its own chain writes, a rule of a chain outside
+// its names nor a chain of another table
+func TestAnyChainScopeTakesEveryChainMadeOrDeletedInTheTable(t *testing.T) {
+	const own, other = 7, 9
+	chain := func(command int, table, name string, pid uint32) netlink.Message {
+		return netlink.Message{Kind: Command(command), Pid: pid, Data: netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_CHAIN_TABLE, table), unix.NFTA_CHAIN_NAME, name)}
+	}
+	rule := netlink.Message{Kind: Command(unix.NFT_MSG_NEWRULE), Pid: other, Data: netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_RULE_TABLE, Table), unix.NFTA_RULE_CHAIN, "elsewhere")}
+	every := translatorNames
+	every.AnyChain = true
+	for _, c := range []struct {
+		name    string
+		message netlink.Message
+		wakes   bool
+	}{
+		{"a chain renamed to a name outside its own", chain(unix.NFT_MSG_NEWCHAIN, Table, "elsewhere", other), true},
+		{"that chain deleted", chain(unix.NFT_MSG_DELCHAIN, Table, "elsewhere", other), true},
+		{"another owner's chain made", chain(unix.NFT_MSG_NEWCHAIN, Table, "antispoof", other), true},
+		{"its own chain of another name", chain(unix.NFT_MSG_NEWCHAIN, Table, "elsewhere", own), false},
+		{"a rule of a chain outside its names", rule, false},
+		{"a chain of another table", chain(unix.NFT_MSG_DELCHAIN, "nat", "elsewhere", other), false},
+	} {
+		if got := every.ChangedByAnother(c.message, own); got != c.wakes {
+			t.Errorf("%s: woke %v, want %v", c.name, got, c.wakes)
+		}
+		if c.wakes && translatorNames.ChangedByAnother(c.message, own) {
+			t.Errorf("%s: woke the scope without AnyChain", c.name)
+		}
+	}
+}
+
 // Each expression of the switch's chain encodes as nft 1.1.7 writes the line
 // named for it (`nft --debug=netlink -f`): a lookup by its set's name and ID,
 // with flags only when inverted, ct with a direction only for a key the kernel

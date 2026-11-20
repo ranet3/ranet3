@@ -25,12 +25,15 @@ import (
 // name runs past Prefix among them, its named sets and its ct timeout
 // objects. Its monitor watches the chains and the sets, never a timeout
 // object, whose change the owner's next read finds, and Hold.Withdraw
-// removes all of them.
+// removes all of them. AnyChain has the monitor take every chain made or
+// deleted in Table whatever its name, as one of Chains renamed out of them
+// carries its new name from the rename on.
 type Scope struct {
 	Chains   []string
 	Prefix   string
 	Sets     []string
 	Timeouts []string
+	AnyChain bool
 }
 
 func (s Scope) chain(name string) bool {
@@ -61,10 +64,11 @@ func (s Scope) set(name string) bool { return slices.Contains(s.Sets, name) }
 // read that finds the queue already empty and returns EAGAIN, each change
 // read wakes Changed at once. A transaction read in that span can wake
 // Changed more than once. A transaction the kernel sends while the socket is
-// congested is lost in whole or in part, and a change lost so wakes nothing,
-// so only the owner's next pass reads it back. One it sends after the read
-// that leaves the queue empty and before the EAGAIN read is queued whole and
-// wakes Changed at once.
+// congested is lost in whole or in part, so in that span each datagram read
+// wakes Missed as well, and the EAGAIN read that ends it wakes Missed once
+// more: the kernel clears the congestion in the read that empties the queue,
+// so whatever it dropped was committed before that EAGAIN, and the owner's
+// pass it wakes reads what changed.
 type Monitor struct {
 	file *os.File
 	// read returns one datagram, or unix.EAGAIN once each time it finds the
@@ -142,6 +146,10 @@ func (m *Monitor) Changed() <-chan struct{} { return m.changed }
 
 func (m *Monitor) Missed() <-chan struct{} { return m.missed }
 
+// Done is closed once the monitor has stopped reading, at a read error other
+// than an overflow or at Close, after which nothing wakes Changed or Missed
+func (m *Monitor) Done() <-chan struct{} { return m.done }
+
 func (m *Monitor) run() {
 	defer close(m.done)
 	buf := make([]byte, notificationReadSize)
@@ -163,15 +171,22 @@ func (m *Monitor) run() {
 		case errors.Is(err, os.ErrClosed):
 			return
 		case errors.Is(err, unix.EAGAIN):
+			if lost {
+				notify(m.missed)
+			}
 			lost = false
 			continue
 		case errors.Is(err, unix.ENOBUFS):
 			loss()
 			continue
 		case err != nil:
-			loss()
+			// logged first, so Done closes as close to the loss as it can
 			slog.Warn("stopped reading nf_tables notifications", "table", Table, "chains", m.scope.Chains, "err", err)
+			loss()
 			return
+		}
+		if lost {
+			notify(m.missed)
 		}
 		messages, err := netlink.ParseMessages(buf[:n])
 		if err != nil {
@@ -209,16 +224,17 @@ func (m *Monitor) Close() error {
 }
 
 // ChangedByAnother is whether message is a change to Table, or to one of s's
-// chains, a rule in one, one of its sets or a set's elements, written through
-// a socket other than pid. The table's deletion reaches every owner, and so
-// does a NEWTABLE that sets a flag or carries no NFTA_TABLE_FLAGS. A NEWTABLE
-// whose flags are 0 reaches none: it makes the table, which holds no chain
-// until another message names one, or clears its flags, which takes no
-// owner's chain and leaves nothing Contents.Read faults. The kernel puts the
-// flags in every NEWTABLE (nf_tables_fill_table_info), notifies an element
-// only from a transaction, never from a set's garbage collection or a
-// packet's dynset, and notifies nothing for an owner's NewTable over the
-// table as it stands (nf_tables_updtable).
+// chains, any chain where s.AnyChain, a rule in one of s's chains, one of its
+// sets or a set's elements, written through a socket other than pid. The
+// table's deletion reaches every owner, and so does a NEWTABLE that sets a
+// flag or carries no NFTA_TABLE_FLAGS. A NEWTABLE whose flags are 0 reaches
+// none: it makes the table, which holds no chain until another message names
+// one, or clears its flags, which takes no owner's chain and leaves nothing
+// Contents.Read faults. The kernel puts the flags in every NEWTABLE
+// (nf_tables_fill_table_info), notifies an element only from a transaction,
+// never from a set's garbage collection or a packet's dynset, and notifies
+// nothing for an owner's NewTable over the table as it stands
+// (nf_tables_updtable).
 func (s Scope) ChangedByAnother(message netlink.Message, pid uint32) bool {
 	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < SizeofNfgenmsg || message.Data[0] != unix.NFPROTO_INET {
 		return false
@@ -230,6 +246,9 @@ func (s Scope) ChangedByAnother(message netlink.Message, pid uint32) bool {
 		table = unix.NFTA_TABLE_NAME
 	case unix.NFT_MSG_NEWCHAIN, unix.NFT_MSG_DELCHAIN:
 		table, name, own = unix.NFTA_CHAIN_TABLE, unix.NFTA_CHAIN_NAME, s.chain
+		if s.AnyChain {
+			own = nil
+		}
 	case unix.NFT_MSG_NEWRULE, unix.NFT_MSG_DELRULE:
 		table, name, own = unix.NFTA_RULE_TABLE, unix.NFTA_RULE_CHAIN, s.chain
 	case unix.NFT_MSG_NEWSET, unix.NFT_MSG_DELSET:

@@ -405,8 +405,9 @@ func TestMonitorWakesOnceAtTheEndOfAnotherWritersTransaction(t *testing.T) {
 // drops every later one until a read finds the queue empty, so the end of any
 // transaction in that backlog may be gone. So a loss wakes Changed for the
 // change read before it, clears it and wakes Missed, each change read up to
-// the drain wakes Changed at once, a second loss in that span ends nothing,
-// and a transaction read after the drain wakes Changed once at its own end.
+// the drain wakes Changed at once, each datagram read up to it and the drain
+// itself wake Missed, a second loss in that span ends nothing, and a
+// transaction read after the drain wakes Changed once at its own end.
 func TestMonitorWakesChangedAtOnceFromALossToTheDrain(t *testing.T) {
 	deletion := transaction(otherPort, 3, deleted...)
 	objects, end := deletion[:len(deletion)-1], deletion[len(deletion)-1:]
@@ -434,23 +435,23 @@ func TestMonitorWakesChangedAtOnceFromALossToTheDrain(t *testing.T) {
 		}{
 			// each of the deletion's 8 datagrams at once, then the flush's NEWGEN
 			// after the drain
-			{"ahead of a deletion's objects", slices.Concat(lost, deletion, drain, flush), []int{1, 2, 3, 4, 5, 6, 7, 8, 19}, []int{0}},
+			{"ahead of a deletion's objects", slices.Concat(lost, deletion, drain, flush), []int{1, 2, 3, 4, 5, 6, 7, 8, 19}, through(0, 10)},
 			// the loss for the 3 datagrams read before it, each of the other 5 at
 			// once, then the rule's NEWGEN after the drain
-			{"in the middle of a deletion", slices.Concat(deletion[:3], lost, deletion[3:], drain, rule), []int{3, 4, 5, 6, 7, 8, 12}, []int{3}},
+			{"in the middle of a deletion", slices.Concat(deletion[:3], lost, deletion[3:], drain, rule), []int{3, 4, 5, 6, 7, 8, 12}, through(3, 10)},
 			// the loss for the deletion's 8 datagrams, then the rule's NEWGEN
 			// after the drain and the owner's install
-			{"ahead of a deletion's end", slices.Concat(objects, lost, end, drain, install, rule), []int{8, 21}, []int{8}},
+			{"ahead of a deletion's end", slices.Concat(objects, lost, end, drain, install, rule), []int{8, 21}, through(8, 10)},
 			// each of the deletion's 8 datagrams at once, then the flush's NEWGEN
-			{"that took a deletion's end", slices.Concat(lost, objects, drain, install, flush), []int{1, 2, 3, 4, 5, 6, 7, 8, 27}, []int{0}},
+			{"that took a deletion's end", slices.Concat(lost, objects, drain, install, flush), []int{1, 2, 3, 4, 5, 6, 7, 8, 27}, through(0, 9)},
 			// each of the first writer's 4 datagrams and the second's 4 at once,
 			// then the rule's NEWGEN
-			{"that took the second of two writers' ends", slices.Concat(lost, first, second[:len(second)-1], drain, install, rule), []int{1, 2, 3, 4, 6, 7, 8, 9, 21}, []int{0}},
+			{"that took the second of two writers' ends", slices.Concat(lost, first, second[:len(second)-1], drain, install, rule), []int{1, 2, 3, 4, 6, 7, 8, 9, 21}, through(0, 10)},
 			// the flush's NEWGEN after the drain
-			{"with nothing queued behind it", slices.Concat(lost, drain, flush), []int{10}, []int{0}},
+			{"with nothing queued behind it", slices.Concat(lost, drain, flush), []int{10}, through(0, 1)},
 			// each datagram at once on either side of the second loss, which ends
 			// nothing, then the flush's NEWGEN
-			{"and a second in its span", slices.Concat(lost, deletion[:3], lost, deletion[3:], drain, flush), []int{1, 2, 3, 5, 6, 7, 8, 9, 20}, []int{0, 4}},
+			{"and a second in its span", slices.Concat(lost, deletion[:3], lost, deletion[3:], drain, flush), []int{1, 2, 3, 5, 6, 7, 8, 9, 20}, through(0, 11)},
 		} {
 			t.Run(loss.name+" "+c.name, func(t *testing.T) {
 				m := feedMonitor(t)
@@ -472,6 +473,37 @@ func TestMonitorWakesChangedAtOnceFromALossToTheDrain(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// through is each read from first to last
+func through(first, last int) []int {
+	var reads []int
+	for read := first; read <= last; read++ {
+		reads = append(reads, read)
+	}
+	return reads
+}
+
+// From an overflow to the read that finds the queue empty the kernel drops
+// what it sends, so Missed wakes at the overflow, at each datagram read in
+// that span whatever it holds, here another table's transaction, and at that
+// read, which ends the span, and the same transaction read after it wakes
+// nothing
+func TestMonitorWakesMissedThroughALossSpanAndAtItsDrain(t *testing.T) {
+	other := transaction(otherPort, 3, flooded("flood0")...)
+	reads := slices.Concat([]monitorRead{{err: unix.ENOBUFS}}, other, []monitorRead{drained}, other)
+	m := feedMonitor(t)
+	var missed []int
+	for i, read := range reads {
+		if changed, wokeMissed := m.answer(t, read); changed {
+			t.Errorf("read %d of %d, of another table, woke Changed", i, len(reads))
+		} else if wokeMissed {
+			missed = append(missed, i)
+		}
+	}
+	if want := through(0, len(other)+1); !slices.Equal(missed, want) {
+		t.Errorf("Missed woke after reads %v of %d, want %v", missed, len(reads), want)
 	}
 }
 
@@ -517,7 +549,8 @@ func TestMonitorWakesMissedAndAnyChangeReadBeforeAReadErrorAndStops(t *testing.T
 // owner's. After such a loss, with no read since finding the queue empty, it
 // wakes Changed at once for the last datagram of another writer's deletion of
 // the owner's table, which holds the table's deletion, and nothing at that
-// transaction's end, and it stops on a closed socket
+// transaction's end, Missed at each of those datagrams, and it stops on a
+// closed socket
 func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	m := feedMonitor(t)
 	deletion := transaction(otherPort, 3, deleted...)
@@ -529,8 +562,8 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	}{
 		{"an overflow", monitorRead{err: unix.ENOBUFS}, false, true},
 		{"a datagram cut short", monitorRead{datagram: deletion[0].datagram[:unix.SizeofNlMsghdr+SizeofNfgenmsg]}, false, true},
-		{"another writer deleting its table", last, true, false},
-		{"the end of that writer's transaction", end, false, false},
+		{"another writer deleting its table", last, true, true},
+		{"the end of that writer's transaction", end, false, true},
 	} {
 		if changed, missed := m.answer(t, c.read); changed != c.changed || missed != c.missed {
 			t.Errorf("%s woke changed %v and missed %v, want %v and %v", c.name, changed, missed, c.changed, c.missed)

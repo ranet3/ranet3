@@ -20,7 +20,10 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-var _ switcher = (*netlinkPlatform)(nil)
+var (
+	_ switcher      = (*netlinkPlatform)(nil)
+	_ switchWatcher = (*netlinkPlatform)(nil)
+)
 
 // tableForm is the switch's chains in nftables.Table as a log line and a
 // status read them
@@ -306,25 +309,43 @@ func chainFirstSet(i int) uint32 { return uint32(fallbackSetIDs * (i + 1)) }
 
 // fallbackScope is the switch's chains and sets and fallbackRetired, whose
 // change by another writer wakes the reconciler, as the table's deletion or a
-// flag set on it does
+// flag set on it does, and any chain made or deleted in the table, since a
+// chain of the switch renamed out of its names carries its new name
 var fallbackScope = func() nftables.Scope {
 	scope := fallbackContents.Scope()
 	scope.Sets = append(scope.Sets, fallbackRetired.Sets...)
+	scope.AnyChain = true
 	return scope
 }()
 
 // fallbackWatch is the socket the switch is written through and the monitor
-// of every other writer's change to it. A pass that finds the switch changed
-// leaves 5405 and 5435 out until it reads back, so the change is answered at
-// once rather than at the next periodic pass.
+// of every other writer's change to it, which reports to rec. A pass that
+// finds the switch changed leaves 5405 and 5435 out until it reads back, so
+// the change is answered at once rather than at the next periodic pass.
 type fallbackWatch struct {
 	conn    *nftables.Conn
 	monitor *nftables.Monitor
+	rec     switchRecord
 	stop    chan struct{}
 	done    chan struct{}
 	// written is a write through conn that no read has followed yet, whose
 	// readback takes no table gone
 	written bool
+}
+
+// liveRecord is the open watch's record, nil where no watch is open or its
+// monitor has stopped, which no pass opens again while the switch is asked for
+func (p *netlinkPlatform) liveRecord() *switchRecord {
+	w := p.fallback
+	if w == nil {
+		return nil
+	}
+	select {
+	case <-w.monitor.Done():
+		return nil
+	default:
+		return &w.rec
+	}
 }
 
 // watchFallback is the socket the switch is written through, opening it with
@@ -348,8 +369,8 @@ func (p *netlinkPlatform) watchFallback() (*nftables.Conn, error) {
 	return conn, nil
 }
 
-// forward wakes the reconciler on each change the monitor reports and on each
-// it may have missed
+// forward reports to the record and then wakes the reconciler on each change the
+// monitor reports and on each it may have missed
 func (w *fallbackWatch) forward(changed, missed <-chan struct{}, wake func()) {
 	defer close(w.done)
 	for {
@@ -359,6 +380,7 @@ func (w *fallbackWatch) forward(changed, missed <-chan struct{}, wake func()) {
 		case <-changed:
 		case <-missed:
 		}
+		w.rec.moved.Store(true)
 		wake()
 	}
 }
