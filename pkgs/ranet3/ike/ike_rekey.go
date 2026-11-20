@@ -601,7 +601,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	return s.response(ctx, msgID, CREATE_CHILD_SA, answer)
 }
 
-// rekeyTakenLocked reports whether ctx was replaced, or this end's rekey of it won and has its additional key exchange to run before it replaces ctx, with stateMu held
+// rekeyTakenLocked reports whether ctx is not the current IKE SA, or this end's rekey of it won and has its additional key exchange to run before it replaces ctx, with stateMu held
 // RFC 7296 section 2.8.2: "when the peer that did not notice the simultaneous rekey gets the request to rekey the IKE SA that it has already successfully rekeyed, it SHOULD return TEMPORARY_FAILURE because it is an IKE SA that it is currently trying to close"
 // a peer's rekey checked before this end's decision and placed after it is such a request, since that decision counted no collision
 // the SA that rekey made once its additional key exchange ran is not taken, so a peer's rekey of it is answered as after a classical rekey

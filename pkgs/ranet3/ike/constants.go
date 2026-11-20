@@ -42,7 +42,7 @@ const (
 	childRetireDelay = 5 * time.Second
 	// a replaced Child SA refuses every rekey until the peer's Delete, which RFC 7296 section 2.8 cannot make a peer send
 	retirementDeadline = 30 * time.Second
-	// a replaced IKE SA refuses every peer rekey until the peer's Delete, as a replaced Child SA does
+	// while a replaced IKE SA awaits the peer's Delete and this end runs no IKE SA rekey of its own, a peer's IKE SA rekey is refused, as while a replaced Child SA awaits its Delete
 	// it exceeds the retransmission budget of an exchange the peer does not answer, so a Delete still in flight finds its SA
 	retainedContextDeadline = 2 * time.Minute
 	// a peer-initiated Child SA rekey retains the SA it replaces, and a legitimate one is minutes apart
