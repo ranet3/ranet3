@@ -5,6 +5,7 @@ package ike
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/bubble"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -153,6 +155,76 @@ func testCrossingCandidateThePeerNeverDeletesGoesAtTheRetentionAfterTheRekey(t *
 		t.Errorf("the initiator warned of the dropped candidate at %v, want once at %q", told, want)
 	}
 }
+
+// the initiator loses a crossing, and the responder's Delete of the crossed SA reaches it after its rekey decided it lost and before that rekey gives way, the rekey held at its line meanwhile
+// the Delete makes the responder's candidate current and releases the crossed SA, and the rekey then gives way without holding that SA again, so no warning comes 2 minutes later of an SA the peer never deleted
+func TestPeerDeleteBetweenTheLostDecisionAndTheYieldLeavesTheCrossedSAReleased(t *testing.T) {
+	bubble.Run(testPeerDeleteBetweenTheLostDecisionAndTheYieldLeavesTheCrossedSAReleased)(t)
+}
+
+func testPeerDeleteBetweenTheLostDecisionAndTheYieldLeavesTheCrossedSAReleased(t *testing.T) {
+	lines := parkLines(t, "ike simultaneous rekey selected peer candidate")
+	c := startCrossing(t, false, crossingLosses{staleRequests: true})
+	select {
+	case <-lines.parked:
+	default:
+		t.Fatal("the initiator's rekey did not reach its lost decision")
+	}
+	c.path.loseStaleRequests(false)
+	time.Sleep(crossingDecidedWithin)
+	synctest.Wait()
+	if current := c.initiator.currentContext(); current.spiI != c.candidates[c.winner] {
+		t.Fatalf("the responder's Delete of the crossed SA left the initiator current on %016x, want the responder's candidate %016x", current.spiI, c.candidates[c.winner])
+	}
+	lines.unpark()
+	time.Sleep(crossingStep)
+	synctest.Wait()
+	if _, old := c.initiator.contexts(); old != nil && old.spiI == c.crossed.spiI {
+		t.Errorf("the initiator holds the crossed SA %016x again after it gave way, which the responder deleted", old.spiI)
+	}
+	time.Sleep(crossingSettled)
+	synctest.Wait()
+	if never := lines.said(slog.LevelWarn, "ike dropping an IKE SA the peer never deleted", "after"); len(never) != 0 {
+		t.Errorf("the initiator warned %d times of an SA the peer never deleted", len(never))
+	}
+	c.converged(t)
+}
+
+// parkedLines keeps every line as lineRecorder does, and holds the goroutine that first logs park until unpark
+type parkedLines struct {
+	lineRecorder
+	park     string
+	parked   chan struct{}
+	release  chan struct{}
+	first    sync.Once
+	released sync.Once
+}
+
+// parkLines makes a new parkedLines the default until the test ends, and unparks it then
+func parkLines(t *testing.T, park string) *parkedLines {
+	t.Helper()
+	p := &parkedLines{park: park, parked: make(chan struct{}), release: make(chan struct{})}
+	logtest.SetDefault(t, slog.New(p))
+	t.Cleanup(p.unpark)
+	return p
+}
+
+func (p *parkedLines) unpark() { p.released.Do(func() { close(p.release) }) }
+
+func (p *parkedLines) Handle(ctx context.Context, r slog.Record) error {
+	_ = p.lineRecorder.Handle(ctx, r)
+	held := false
+	if r.Message == p.park {
+		p.first.Do(func() { held = true })
+	}
+	if held {
+		close(p.parked)
+		<-p.release
+	}
+	return nil
+}
+func (p *parkedLines) WithAttrs([]slog.Attr) slog.Handler { return p }
+func (p *parkedLines) WithGroup(string) slog.Handler      { return p }
 
 // crossingRun is two ends of one session that rekey the IKE SA the responder's first rekey made at once, each answering the other's rekey
 type crossingRun struct {

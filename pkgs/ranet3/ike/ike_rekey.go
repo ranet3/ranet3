@@ -287,7 +287,8 @@ func (s *Session) replaceLocked(old, replacement *ikeContext) {
 func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext, local *ikeRekey) error {
 	// the winner and the redundant context both stay visible to dispatch while the Delete is outstanding
 	s.stateMu.Lock()
-	if winner != nil {
+	// the peer's Delete of old made winner current and released old already where it was adopted, so neither is placed or recorded again
+	if winner != nil && !local.adopted {
 		s.retainOldLocked(old)
 		s.current, s.collision = winner, nil
 		s.recordCollisionLocked(old, local)
