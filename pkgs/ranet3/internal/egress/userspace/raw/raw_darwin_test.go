@@ -20,6 +20,10 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
+// unreachableWait is how long a test waits for the port unreachable a send
+// delivers to the server's socket
+const unreachableWait = 5 * time.Second
+
 // A port unreachable Send sends from the address a mapping sends from, quoting
 // a datagram a server of the test's sent to it, reaches that server's
 // connected socket, which XNU tells of it, in both families: the kernel wrote
@@ -66,7 +70,7 @@ func TestPortUnreachableReachesTheServersSocket(t *testing.T) {
 			if len(prepared) != 1 || prepared[0] != netip.AddrPortFrom(at.Addr(), 0) {
 				t.Errorf("Prepare readied sockets toward %v, want one toward %s", prepared, at.Addr())
 			}
-			_ = server.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_ = server.SetReadDeadline(time.Now().Add(unreachableWait))
 			if _, err := server.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNREFUSED) {
 				t.Errorf("the server's socket read %v, want the port unreachable's ECONNREFUSED", err)
 			}

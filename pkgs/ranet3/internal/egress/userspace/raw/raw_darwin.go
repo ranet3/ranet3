@@ -19,11 +19,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
-// sources is how many addresses Sockets holds a socket bound to at once, the
-// one past them closing another's, so addresses the host gives up do not
-// keep sockets open
-const sources = 16
-
 // Sockets is a raw ICMP socket of each address the exit's errors leave from,
 // bound to it, which XNU sends a whole error from as root with
 // its quote untouched: the kernel writes the IP header from the socket's
