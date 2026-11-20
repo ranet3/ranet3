@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-18
+updated: 2026-11-20
 order: 80
 ---
 
@@ -107,7 +107,7 @@ lists every command and its flags.
 $ ranet3 status
 Node        example/laptop
 Version     2026.912.0+860393bf1c2e
-Uptime      3h12m0s
+Uptime      3h12m
 Port        13000
 Endpoints   0/ip6 1/ip4
 TUN         ranet0 MTU 1400 queues 16
@@ -487,7 +487,7 @@ $ ranet3 status
 Node        example/gateway
 Down        since 2026-10-12 21:04:05 UTC, 3 minutes ago, until ranet3 up
 Version     2026.912.0+860393bf1c2e
-Uptime      26h0m0s
+Uptime      1d2h
 Port        13000
 Endpoints   0/ip4 1/ip6
 TUN         ranet3 MTU 1400 queues 4
