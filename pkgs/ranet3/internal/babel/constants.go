@@ -16,6 +16,8 @@ import (
 // no babel packet is then larger than the session it leaves through carries
 const defaultPacketSize = srv6.MinimumIPv6MTU - ipv6HeaderLen - udpHeaderLen
 
+const encodeBodyCapacity = 128
+
 // defaultMargin is cap.babel.margin where the file leaves it out
 const defaultMargin = 4
 
@@ -25,6 +27,9 @@ const refusalLogInterval = time.Minute
 
 // maxTriggerPace is the longest triggerPace spaces two triggered updates to one neighbor
 const maxTriggerPace = time.Second
+
+// centisecond is the unit of the relative times RFC 8966 section 4.1.2 carries in 16-bit fields
+const centisecond = 10 * time.Millisecond
 
 // probeInterval is the Interval a probe's Ack Request names, the longest the field holds
 // a receiver answers before it elapses, RFC 8966 section 4.6.3
@@ -202,6 +207,15 @@ const rttTimestampHorizon = 3 * time.Minute
 // and a steady one-in-sixteen loss makes this end's advertised cost a square
 // wave while the other end reads it as flat.
 const betaWindow = historyDepth
+
+// defaultRxCost is the nominal hop cost C every link's cost starts from, RFC 8966 Appendix B's wired value and BIRD's BABEL_RXCOST_WIRED, which ETX scales by the link's loss
+// a lower cost makes a ranet3 hop look cheaper than a BIRD hop, which pulls the transit of a mesh of both onto ranet3 nodes
+const defaultRxCost = 96
+
+// defaultRTTMin is rtt-min, the RTT up to which a link's RTT adds no cost, the value RFC 9616 section 4.2 recommends
+// the section asks for a mapping constant around 0 "so that small oscillations in the RTT of low-RTT links do not contribute to routing instability"
+// a mapping linear from zero moves the smoothed RTT of a link with ordinary jitter, and so its cost, on most IHUs
+const defaultRTTMin = 10 * time.Millisecond
 
 // defaultRTTMax and defaultRTTWeight are rtt-max and max-rtt-penalty, which
 // depart from RFC 9616 section 4.2, for the reason the protocol deviations page

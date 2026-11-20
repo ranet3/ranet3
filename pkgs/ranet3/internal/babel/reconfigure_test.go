@@ -133,6 +133,9 @@ func TestLongerHelloIntervalIsAnnouncedBeforeItIsInForce(t *testing.T) {
 // firstPassWait bounds how long a test waits for the run loop's first pass
 const firstPassWait = 5 * time.Second
 
+// firstPassPoll is the pause between two looks for the run loop's first pass or its first send
+const firstPassPoll = time.Millisecond
+
 // RFC 8966 section 3.1 has a TLV whose timeout a previous one named "sent early enough to meet the explicit deadline (with a small margin to allow for propagation delays)", and section 3.4.1 lets a scheduled Hello go ahead of time
 // a pass of the run loop sets the next Hello, with its IHU, and the next periodic update a sixteenth of their interval early
 func TestNextHelloAndUpdateGoBeforeTheIntervalTheyName(t *testing.T) {
@@ -145,7 +148,7 @@ func TestNextHelloAndUpdateGoBeforeTheIntervalTheyName(t *testing.T) {
 		defer close(done)
 		_ = speaker.Run(ctx)
 	}()
-	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(firstPassPoll) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the run loop made no pass in %s", firstPassWait)
 		}
@@ -197,7 +200,7 @@ func TestRunningSpeakerTakesShorterIntervalsAtOnce(t *testing.T) {
 	defer func() { cancel(); <-done }()
 	deadline := time.Now().Add(changedIntervalsWindow)
 	for len(sent()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(firstPassPoll)
 	}
 	before := len(sent())
 	if before == 0 {

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"time"
 )
 
 // ValidRouterID reports whether id may be a router-id, of which RFC 8966
@@ -130,7 +129,7 @@ const (
 // probeTLVs is an Ack Request carrying nonce, padded with PadN alone to make the inner IPv6 packet it travels in size octets long
 // size runs from smallestProbe to largestProbe
 func probeTLVs(nonce uint16, size int) []RawTLV {
-	request := EncodeAckReq(nonce, uint16(probeInterval/(10*time.Millisecond)))
+	request := EncodeAckReq(nonce, uint16(probeInterval/centisecond))
 	tlvs := []RawTLV{request}
 	// each TLV takes two octets of type and length ahead of its body, RFC 8966 section 4.3
 	padding := size - ipv6HeaderLen - udpHeaderLen - headerLen - 2 - len(request.Body)

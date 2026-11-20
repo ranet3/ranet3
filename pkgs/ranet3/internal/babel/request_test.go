@@ -243,7 +243,7 @@ func TestReceiveFailoverWakesTheLoopForAnOverdueRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = speaker.Run(ctx) }()
 	defer func() { cancel(); <-done }()
-	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(refreshPollInterval) {
+	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(firstPassPoll) {
 		if time.Now().After(deadline) {
 			t.Fatal("the run loop made no initial pass")
 		}
@@ -303,6 +303,9 @@ func TestRefreshForAReplacedSessionIsDropped(t *testing.T) {
 // runRefreshInterval is the update interval near names to a running speaker, short enough that the route's refresh and its expiry both come before the run loop's next Hello pass, so only the refresh's own wake sends the request in time
 const runRefreshInterval = time.Second
 
+// runRefreshPoll is the pause between two looks at whether the running speaker asked for the route
+const runRefreshPoll = 10 * time.Millisecond
+
 // a running speaker asks the selected route's neighbor for the route between its refresh and its expiry, near sending nothing more meanwhile
 func TestRunningSpeakerAsksForASelectedRouteBeforeItExpires(t *testing.T) {
 	speaker, near, captured := captureSpeaker(t, Config{})
@@ -312,7 +315,7 @@ func TestRunningSpeakerAsksForASelectedRouteBeforeItExpires(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = speaker.Run(ctx) }()
 	defer func() { cancel(); <-done }()
-	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(firstPassWait); speaker.Passes() == 0; time.Sleep(firstPassPoll) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the run loop made no pass in %s", firstPassWait)
 		}
@@ -333,7 +336,7 @@ func TestRunningSpeakerAsksForASelectedRouteBeforeItExpires(t *testing.T) {
 		case now.After(expires):
 			t.Fatalf("near was not asked for %s before the route expired %s after the update", key.dest, expires.Sub(learned))
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(runRefreshPoll)
 	}
 }
 

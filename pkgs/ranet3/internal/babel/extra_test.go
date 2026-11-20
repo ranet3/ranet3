@@ -17,6 +17,9 @@ import (
 // exchangeBudget bounds how long two running speakers take to read each other's IHUs
 const exchangeBudget = 5 * time.Second
 
+// exchangePoll is the pause between two looks at the stats of the two speakers
+const exchangePoll = 10 * time.Millisecond
+
 // the most specific key wins and the amounts never add up
 func TestExtraCostTakesTheMostSpecificKey(t *testing.T) {
 	extra := ExtraCost{
@@ -180,7 +183,7 @@ func TestPeerSpeakerReadsTheExtraInTheIHU(t *testing.T) {
 	speakerA, speakerB := wireExtraPair(t, 1000)
 	want := uint16(96 + 1000)
 	var a, b NeighborStat
-	for deadline := time.Now().Add(exchangeBudget); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(exchangeBudget); time.Now().Before(deadline); time.Sleep(exchangePoll) {
 		a, b = speakerA.Stats().Neighbors[0], speakerB.Stats().Neighbors[0]
 		if b.HaveReportedCost && b.ReportedCost == want && b.Cost == want && a.Cost == want {
 			break

@@ -95,19 +95,9 @@ type RTTCost struct {
 
 func DefaultCostParams() CostParams {
 	return CostParams{
-		// 96 is RFC 8966 Appendix B's wired value and BIRD's
-		// BABEL_RXCOST_WIRED. At 32 a ranet3 hop would look three times
-		// cheaper than a BIRD hop, and a mesh of both would pull transit onto
-		// ranet3 nodes.
-		RxCost: 96,
+		RxCost: defaultRxCost,
 		RTT: RTTCost{
-			// RFC 9616 section 4.2: "The mapping should also be constant
-			// around 0, so that small oscillations in the RTT of low-RTT links
-			// do not contribute to routing instability", and it RECOMMENDS
-			// rtt-min = 10 ms for it. A mapping linear from zero would move
-			// the exponential average of a link with ordinary jitter, and so
-			// the cost, on most IHUs.
-			Min:    schema.Duration(10 * time.Millisecond),
+			Min:    schema.Duration(defaultRTTMin),
 			Max:    schema.Duration(defaultRTTMax),
 			Weight: defaultRTTWeight,
 		},

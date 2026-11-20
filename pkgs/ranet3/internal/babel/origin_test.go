@@ -90,6 +90,12 @@ func TestSeqnoRequestsAndRaisesAreRecorded(t *testing.T) {
 	}
 }
 
+// firstUpdatesWait bounds how long a test waits for a run's first updates of every prefix the speaker originates
+const firstUpdatesWait = 10 * time.Second
+
+// firstUpdatesPoll is the pause between two looks at what the run has sent
+const firstUpdatesPoll = 10 * time.Millisecond
+
 // the first pass of a run sends every prefix this node originates at the seqno its start raised, and so does the first pass of a run after it
 // a dump at the seqno before the raise could repeat one the process before sent with another metric, which a neighbor holding it finds unfeasible
 func TestFirstPassOfARunSendsTheSeqnoItsStartRaised(t *testing.T) {
@@ -105,7 +111,7 @@ func TestFirstPassOfARunSendsTheSeqnoItsStartRaised(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() { defer close(done); _ = speaker.Run(ctx) }()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(firstUpdatesWait)
 		var first map[netip.Prefix]uint16
 		for {
 			first = map[netip.Prefix]uint16{}
@@ -117,7 +123,7 @@ func TestFirstPassOfARunSendsTheSeqnoItsStartRaised(t *testing.T) {
 			if len(first) == len(mine) || time.Now().After(deadline) {
 				break
 			}
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(firstUpdatesPoll)
 		}
 		cancel()
 		<-done

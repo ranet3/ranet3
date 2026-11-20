@@ -47,7 +47,7 @@ func decodeTLVFrames(body []byte) ([]framedTLV, error) {
 
 // EncodePacket frames a Babel packet: 4-byte header + concatenated TLVs.
 func EncodePacket(tlvs []RawTLV) []byte {
-	body := make([]byte, 0, 128)
+	body := make([]byte, 0, encodeBodyCapacity)
 	for _, t := range tlvs {
 		if t.Type == TLVPad1 {
 			// Pad1 is the one TLV with no Length field, RFC 8966 section 4.6.1:

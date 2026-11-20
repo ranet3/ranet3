@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"reflect"
@@ -641,9 +642,9 @@ func TestProbeIsOneAckRequestPaddedToItsSize(t *testing.T) {
 			ht.Fatalf("the probe carrying nonce %d decoded as %d, %v", nonce, got, err)
 		}
 		// RFC 8966 section 4.6.3 sends the reserved field as zero
-		// it never names an interval of zero
+		// a probe names the longest interval the field holds
 		request := requests[0]
-		if len(request) != 6 || request[0] != 0 || request[1] != 0 || binary.BigEndian.Uint16(request[4:6]) == 0 {
+		if len(request) != 6 || request[0] != 0 || request[1] != 0 || binary.BigEndian.Uint16(request[4:6]) != math.MaxUint16 {
 			ht.Fatalf("the Ack Request is %x", request)
 		}
 	})

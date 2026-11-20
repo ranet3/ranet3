@@ -73,6 +73,12 @@ func TestReceiveFromReplacedPeerCannotChangeRoutes(t *testing.T) {
 	}
 }
 
+// remoteExpiryWait bounds how long a test waits for a route to stop forwarding at the expiry its neighbor named, and stays under every timer of the speaker's own that would otherwise expire it
+const remoteExpiryWait = 500 * time.Millisecond
+
+// remoteExpiryPoll is the pause between two looks at whether that route still forwards
+const remoteExpiryPoll = time.Millisecond
+
 func TestExpiryUsesRemoteDeadlines(t *testing.T) {
 	for _, expiry := range []string{"update", "ihu", "hello"} {
 		t.Run(expiry, func(t *testing.T) {
@@ -101,9 +107,9 @@ func TestExpiryUsesRemoteDeadlines(t *testing.T) {
 			// The prefix stops forwarding at expiry. Its entry is held a while
 			// longer as unreachable, RFC 8966 section 3.5.4, so what is under
 			// test here is the lookup rather than the size of the table.
-			deadline := time.Now().Add(500 * time.Millisecond)
+			deadline := time.Now().Add(remoteExpiryWait)
 			for forwards(s.mesh, dest) && time.Now().Before(deadline) {
-				time.Sleep(time.Millisecond)
+				time.Sleep(remoteExpiryPoll)
 			}
 			if forwards(s.mesh, dest) {
 				t.Fatal("route expiry waited for the much slower local timers")

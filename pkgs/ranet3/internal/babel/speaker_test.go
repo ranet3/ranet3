@@ -170,6 +170,15 @@ func (p *testPeer) settle(t tester) {
 	}
 }
 
+// pairLearnWait bounds how long a test waits for one speaker of a running pair to install the route the other originates
+const pairLearnWait = 5 * time.Second
+
+// pairRTTWait bounds how long a test waits for one speaker of a running pair to measure its RTT to the other
+const pairRTTWait = 3 * time.Second
+
+// pairPoll is the pause between two looks at a running pair
+const pairPoll = 20 * time.Millisecond
+
 func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 	fast := Config{Hello: dur(50 * time.Millisecond), Update: dur(100 * time.Millisecond)}
 	meshA, _, speakerA, speakerB := wireSpeakerPair(t, fast)
@@ -183,12 +192,12 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 	go speakerA.Run(ctx)
 	go speakerB.Run(ctx)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(pairLearnWait)
 	for time.Now().Before(deadline) {
 		if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(pairPoll)
 	}
 	peer, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr())
 	if verdict != netstack.RoutePeer {
@@ -198,7 +207,7 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 		t.Fatalf("route installed via peer %q, want \"b\"", peer.ID)
 	}
 
-	deadline = time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(pairRTTWait)
 	for time.Now().Before(deadline) {
 		speakerA.mu.Lock()
 		n := speakerA.neighbors["b"]
@@ -207,7 +216,7 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 		if have {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(pairPoll)
 	}
 	t.Fatal("A never measured RTT to B within the deadline")
 }
@@ -360,6 +369,12 @@ func TestSelectedOriginIsTheRouterIDOfTheSelectedRoute(t *testing.T) {
 	}
 }
 
+// downLearnWait bounds how long a test waits for a running pair to install the route whose retraction it then watches
+const downLearnWait = 3 * time.Second
+
+// downRetractWait bounds how long a test waits for a speaker to retract the routes of a neighbor that went silent
+const downRetractWait = 2 * time.Second
+
 func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 	fast := Config{Hello: dur(30 * time.Millisecond), Update: dur(60 * time.Millisecond)}
 	meshA, _, speakerA, speakerB := wireSpeakerPair(t, fast)
@@ -373,12 +388,12 @@ func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 	bCtx, bCancel := context.WithCancel(ctx)
 	go speakerB.Run(bCtx)
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(downLearnWait)
 	for time.Now().Before(deadline) {
 		if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(pairPoll)
 	}
 	if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("A never learned the route before the down test could proceed")
@@ -386,12 +401,12 @@ func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 
 	bCancel() // B stops sending Hello entirely, simulating a dead link
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(downRetractWait)
 	for time.Now().Before(deadline) {
 		if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(pairPoll)
 	}
 	t.Fatal("A never retracted the route after B went silent")
 }
@@ -612,6 +627,9 @@ func TestOriginRequestsAndUpdateSplitting(t *testing.T) {
 	}
 }
 
+// stallWait bounds how long a test waits for the speaker to send while one neighbor's transport never returns
+const stallWait = 20 * time.Second
+
 // The speaker sends to every neighbor from one goroutine, and Receive runs on
 // the sending peer's own decrypt path. A send that waits on a peer whose queue
 // is backed up therefore stops hellos, updates and retractions to every other
@@ -662,7 +680,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 	}()
 	select {
 	case <-sent:
-	case <-time.After(20 * time.Second):
+	case <-time.After(stallWait):
 		t.Fatal("the speaker was held by one neighbor whose transport never returned")
 	}
 	// Waited for rather than sampled: a place is taken under the lock and the
@@ -670,7 +688,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 	// has not scheduled that goroutine yet is not a speaker that is stuck.
 	select {
 	case <-healthy:
-	case <-time.After(20 * time.Second):
+	case <-time.After(stallWait):
 		t.Error("the healthy neighbor received nothing")
 	}
 }
@@ -867,6 +885,9 @@ func TestUnscheduledHelloDoesNotFlapANeighbor(t *testing.T) {
 	}
 }
 
+// emitOrderWait bounds how long a test waits for each update the speaker emitted to reach the peer
+const emitOrderWait = 5 * time.Second
+
 // Two goroutines emit: Run, and Receive on the sending peer's own decrypt
 // path. Both decide under s.mu and both send after releasing it, which keeps
 // the seal each send runs outside the lock. Whichever reaches the peer first
@@ -932,7 +953,7 @@ func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 		select {
 		case metric := <-metrics:
 			order = append(order, metric)
-		case <-time.After(5 * time.Second):
+		case <-time.After(emitOrderWait):
 			t.Fatalf("only %d of the two updates reached the peer", len(order))
 		}
 	}
@@ -1686,6 +1707,12 @@ func TestDroppedDumpDoesNotRefundTheRateLimit(t *testing.T) {
 	}
 }
 
+// lossReportWait bounds how long a test waits for the losses a failing transport reports after its places were taken
+const lossReportWait = 2 * time.Second
+
+// lossReportPoll is the pause between two looks at what those losses did
+const lossReportPoll = time.Millisecond
+
 // A retraction lost after its place was taken has already come out of
 // n.advertised, and advertiseTo keeps a retraction out of every later dump for
 // a prefix the neighbor was never told about, so the neighbor keeps routing
@@ -1714,7 +1741,7 @@ func TestRetractionLostInTheTransportIsAdvertisedAgain(t *testing.T) {
 	speaker.SetOriginated(nil)
 	speaker.flushUpdates()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(lossReportWait)
 	for {
 		speaker.mu.Lock()
 		speaker.applyLostLocked()
@@ -1726,7 +1753,7 @@ func TestRetractionLostInTheTransportIsAdvertisedAgain(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("a retraction lost in the transport left the prefix out of every later dump")
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(lossReportPoll)
 	}
 }
 
@@ -1809,7 +1836,7 @@ func TestLostPacketsDoNotWakeTheLoopPerPacket(t *testing.T) {
 		return len(speaker.lost), speaker.lostWoke
 	}
 	speaker.flushUpdates()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(lossReportWait)
 	var first time.Time
 	for {
 		count, woke := lost()
@@ -1825,7 +1852,7 @@ func TestLostPacketsDoNotWakeTheLoopPerPacket(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the transport lost %d undos, so this proves nothing", count)
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(lossReportPoll)
 	}
 }
 
@@ -1876,6 +1903,9 @@ func TestPartlyRefusedDumpOwesOnlyWhatItLost(t *testing.T) {
 			accept, prefixes, owed)
 	}
 }
+
+// budgetReleaseWait bounds how long a test waits for what a full pass decided to leave once the peer's transport is released
+const budgetReleaseWait = 10 * time.Second
 
 // A place is taken for every packet of a pass before any is sent, so a pass
 // that fills the peer's budget drops whatever it reached last. The periodic
@@ -1943,7 +1973,7 @@ func TestDumpDoesNotStarveRequestsDecidedWithIt(t *testing.T) {
 
 	select {
 	case <-asked:
-	case <-time.After(10 * time.Second):
+	case <-time.After(budgetReleaseWait):
 		t.Fatal("the request decided with the dump never left, so the prefix it asks about stops being asked about")
 	}
 }
@@ -2127,7 +2157,7 @@ func TestHelloSurvivesPassThatFillsTheBudget(t *testing.T) {
 
 	select {
 	case <-arrived:
-	case <-time.After(10 * time.Second):
+	case <-time.After(budgetReleaseWait):
 		t.Fatal("the hello was dropped for the requests decided with it, so the adjacency goes and every route through it with it")
 	}
 }
@@ -2950,14 +2980,23 @@ func TestOwnRequestPastItsWindowReplacesItsOwnEntry(t *testing.T) {
 	}
 }
 
+// quietWait bounds how long quietPasses waits for the run loop to go quiet
+const quietWait = 10 * time.Second
+
+// quietLooks is how many looks in a row quietPasses takes with no new pass before it calls the run loop quiet
+const quietLooks = 10
+
+// quietPoll is the pause between two of those looks
+const quietPoll = 10 * time.Millisecond
+
 // quietPasses waits for the run loop to stop working and reports how many
 // passes it has made.
 func quietPasses(t *testing.T, s *Speaker) uint64 {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(quietWait)
 	last := s.Passes()
-	for still := 0; still < 10; still++ {
-		time.Sleep(10 * time.Millisecond)
+	for still := 0; still < quietLooks; still++ {
+		time.Sleep(quietPoll)
 		if now := s.Passes(); now != last {
 			last, still = now, 0
 		}
