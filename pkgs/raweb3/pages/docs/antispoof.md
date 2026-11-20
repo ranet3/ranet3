@@ -472,8 +472,17 @@ instance killed outright, stays there as another writer's address, as
 [addresses and the tun](coexistence.md#addresses-and-the-tun) gives. Where it
 lies under a shorter length than its own, its connected route stays with it
 until the operator deletes the address or the device, since the load reads the
-file alone. A pass warns `kernel is leaving an address another writer holds`
-only where the file asks for the same address at another length. At an exit in
+file alone. A pass that lists the tun's addresses warns
+`kernel is leaving an address it does not own whose network reaches a none class outside overlay`
+of each such address this process did not add whose network the load would
+refuse were the file to assign it, other than an IPv6 link-local address, and
+`kernel is leaving an address another writer holds` where the file asks for the
+same address at another length. Neither line removes the address. In mode off a
+Linux pass lists the tun only while `cap.table` assigns an address or this
+process still holds one it added, so a node that assigns none writes neither
+line. A pass judges an address by the address and length the listing gives, so
+an address another program added with a peer address is judged on its own
+network and not on the peer's network the kernel routes. At an exit in
 `cap.exit`'s mode, a forwarded link's packet meets the mesh's default from a
 LAN's learn until the hold lands or the filter's pass writes the sets without
 the LAN, as [the limits](design/limits.md#the-antispoof-filter) say.
