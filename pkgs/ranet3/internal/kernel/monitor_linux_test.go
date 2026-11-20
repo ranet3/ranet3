@@ -8,10 +8,13 @@ package kernel
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,11 +31,17 @@ import (
 // the periodic sweep alone takes DefaultReconcileInterval
 const ruleRestoreBudget = time.Second
 
+// ownPort is the port of the socket a test's reconciler writes routes through, and otherPort another writer's
+const (
+	ownPort   = 4000
+	otherPort = 4001
+)
+
 // the monitor wakes on a deleted rule carrying the reconciler's protocol and on nothing else about rules
 // another writer's rule comes and goes without a pass, and a rule the reconciler adds itself is already in place
 func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 	plat, _ := writePlatform(t)
-	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index)
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
 	owned := plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40})
 	for name, arm := range map[string]struct {
 		kind uint16
@@ -53,7 +62,7 @@ func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 // the monitor wakes on an address added to the tun or taken off it, whoever wrote it, and on no other link's
 func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 	plat, _ := writePlatform(t)
-	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index)
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
 	tun := plat.addrMessage(netip.MustParsePrefix("192.0.2.1/32"))
 	other := slices.Clone(tun)
 	binary.NativeEndian.PutUint32(other[4:], plat.index+1)
@@ -72,6 +81,72 @@ func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 			t.Errorf("%s: the monitor woke %v, want %v", name, got, arm.want)
 		}
 	}
+}
+
+// the monitor wakes on a route of its table that a socket other than the one the reconciler writes routes through wrote, the
+// kernel's own changes among them, which carry port 0, and on its deleted rules and the tun's addresses whichever socket wrote them
+func TestRouteMonitorWakesOnARouteOnlyWhereAnotherSocketWroteIt(t *testing.T) {
+	plat, _ := writePlatform(t)
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
+	elsewhere, _ := writePlatform(t)
+	elsewhere.table.ID = plat.table.ID + 1
+	for _, route := range []Route{{Destination: prefix("2001:db8:1::/48"), Metric: 1024}, {Destination: prefix("192.0.2.0/24"), Metric: 1024}} {
+		added, deleted := plat.routeMessage(route, false), plat.routeMessage(route, true)
+		for name, arm := range map[string]struct {
+			kind uint16
+			port uint32
+			body []byte
+			want bool
+		}{
+			"its own route added":                {unix.RTM_NEWROUTE, ownPort, added, false},
+			"its own route deleted":              {unix.RTM_DELROUTE, ownPort, deleted, false},
+			"a route the kernel added":           {unix.RTM_NEWROUTE, 0, added, true},
+			"a route the kernel deleted":         {unix.RTM_DELROUTE, 0, deleted, true},
+			"another writer's route added":       {unix.RTM_NEWROUTE, otherPort, added, true},
+			"another writer's route deleted":     {unix.RTM_DELROUTE, otherPort, deleted, true},
+			"another table's route deleted":      {unix.RTM_DELROUTE, otherPort, elsewhere.routeMessage(route, true), false},
+			"its own rule deleted by its socket": {unix.RTM_DELRULE, ownPort, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40}), true},
+			"a tun address its socket added":     {unix.RTM_NEWADDR, ownPort, plat.addrMessage(prefix("192.0.2.1/32")), true},
+			"a tun address its socket took off":  {unix.RTM_DELADDR, ownPort, plat.addrMessage(prefix("192.0.2.1/32")), true},
+		} {
+			if got := wakesOn(netlink.Message{Kind: arm.kind, Pid: arm.port, Data: arm.body}); got != arm.want {
+				t.Errorf("%s, %s: the monitor woke %v, want %v", route.Destination, name, got, arm.want)
+			}
+		}
+	}
+}
+
+// a datagram the monitor cannot parse and an overflow each wake it, where a datagram holding only a route of its own socket's does not
+func TestRouteMonitorWakesOnWhatItCannotReadPastItsOwnRoute(t *testing.T) {
+	plat, _ := writePlatform(t)
+	source := newScriptedSource(nil)
+	monitor := startMonitor("scripted", source, reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort))
+	t.Cleanup(func() { _ = monitor.Close() })
+	own := fromPort(notification(unix.RTM_NEWROUTE, plat.routeMessage(Route{Destination: prefix("2001:db8:1::/48"), Metric: 1024}, false)), ownPort)
+	source.queue <- scriptedRead{datagram: own}
+	// read, then given monitorQuiet to wake
+	waitFor(t, func() bool { return source.reads.Load() == 1 })
+	time.Sleep(monitorQuiet)
+	select {
+	case <-monitor.signal:
+		t.Fatal("a route written through the reconciler's own socket woke the monitor")
+	default:
+	}
+	runsPast := fromPort(notification(unix.RTM_NEWROUTE, nil), ownPort)
+	binary.NativeEndian.PutUint32(runsPast, uint32(2*len(runsPast)))
+	source.queue <- scriptedRead{datagram: runsPast}
+	awaitWake(t, monitor.signal, "a datagram whose length runs past its end")
+	source.queue <- scriptedRead{err: unix.ENOBUFS}
+	awaitWake(t, monitor.signal, "an overflow")
+}
+
+// monitorQuiet is how long a test waits to see that a datagram handed on woke nothing
+const monitorQuiet = 50 * time.Millisecond
+
+// fromPort is datagram with the port of its first message's header set to port
+func fromPort(datagram []byte, port uint32) []byte {
+	binary.NativeEndian.PutUint32(datagram[12:], port)
+	return datagram
 }
 
 // notification is one datagram holding one netlink message of kind with body
@@ -254,6 +329,175 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 		waitFor(t, holds(rule))
 		if took := time.Since(deleted); took > ruleRestoreBudget {
 			t.Errorf("the deleted rule %s took %s to come back, want at most %s", rule, took, ruleRestoreBudget)
+		}
+	}
+}
+
+// passCounter is the reconciler's own platform counting its passes, each of which lists the table once, and failing the next
+// writes of a route a test names
+type passCounter struct {
+	*netlinkPlatform
+	lists atomic.Int64
+	mu    sync.Mutex
+	fail  map[netip.Prefix]int
+}
+
+func (p *passCounter) Routes() ([]Route, error) {
+	p.lists.Add(1)
+	return p.netlinkPlatform.Routes()
+}
+
+func (p *passCounter) AddRoute(route Route) error {
+	p.mu.Lock()
+	failing := p.fail[route.Destination] > 0
+	if failing {
+		p.fail[route.Destination]--
+	}
+	p.mu.Unlock()
+	if failing {
+		return fmt.Errorf("write %s: %w", route.Destination, unix.ENOBUFS)
+	}
+	return p.netlinkPlatform.AddRoute(route)
+}
+
+// failNext fails the next times writes of a route to destination
+func (p *passCounter) failNext(destination netip.Prefix, times int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fail[destination] = times
+}
+
+// secondPassWindow is how long after a pass's write a pass its own notification woke would have run, its settle window
+// and the pass with room for a loaded machine
+const secondPassWindow = 4 * settleDelay
+
+// routeRestoreBudget is how soon a route of the reconciler's that another writer deletes is back, the settle window and
+// one pass, where the periodic pass the test sets takes an hour
+const routeRestoreBudget = time.Second
+
+// routeRetryBudget is how soon a route whose write failed is written again, the first retry of the backoff after the
+// settle window and the pass that failed
+const routeRetryBudget = 3 * minRetryInterval
+
+// countedReconciler runs a reconciler on a tun named device in a network namespace of the test's own, with an hour between
+// its periodic passes, on a platform counting its passes, and answers whether the reconciler's table holds a route to a
+// destination, read through a socket of the test's own
+func countedReconciler(t *testing.T, device string) (*passCounter, *netstack.RouteTable, *nlConn, func(netip.Prefix) bool) {
+	t.Helper()
+	netnstest.EnterEmpty(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	createTUN(t, device)
+	if err := netnstest.BringUp(device); err != nil {
+		t.Fatal(err)
+	}
+	overlay := []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}
+	routes := netstack.NewRouteTable()
+	r, err := New(Table{Reconcile: schema.Duration(time.Hour)}, Runtime{Interface: device, Overlay: overlay}, routes)
+	if err != nil {
+		t.Fatalf("start the reconciler: %v", err)
+	}
+	counter := &passCounter{netlinkPlatform: r.plat.(*netlinkPlatform), fail: map[netip.Prefix]int{}}
+	r.use(counter)
+	holds := func(destination netip.Prefix) bool {
+		family := uint8(unix.AF_INET6)
+		if destination.Addr().Is4() {
+			family = unix.AF_INET
+		}
+		body := make([]byte, unix.SizeofRtMsg)
+		body[0] = family
+		body = netlink.PutAttrU32(body, unix.RTA_TABLE, uint32(counter.table.ID))
+		replies, err := conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, body)
+		if err != nil {
+			t.Fatalf("dump the table: %v", err)
+		}
+		return slices.ContainsFunc(replies, func(reply netlink.Message) bool {
+			route, ok := counter.decodeRoute(reply)
+			return ok && route.Destination == destination
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("the reconciler stopped with %v", err)
+		}
+	})
+	<-r.FirstPass()
+	return counter, routes, conn, holds
+}
+
+// each route the reconciler writes or deletes takes one pass, its own notification waking none after it
+func TestNetlinkRouteChangeRunsOnePass(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	counter, routes, _, holds := countedReconciler(t, "ranetpass0")
+	time.Sleep(secondPassWindow)
+	for _, step := range []struct {
+		destination netip.Prefix
+		add         bool
+	}{{prefix("2001:db8:1::/48"), true}, {prefix("192.0.2.0/24"), true}, {prefix("2001:db8:1::/48"), false}, {prefix("192.0.2.0/24"), false}} {
+		before := counter.lists.Load()
+		if step.add {
+			routes.Set(netip.Prefix{}, step.destination, nil)
+		} else {
+			routes.Remove(netip.Prefix{}, step.destination)
+		}
+		waitFor(t, func() bool { return holds(step.destination) == step.add })
+		time.Sleep(secondPassWindow)
+		if passes := counter.lists.Load() - before; passes != 1 {
+			t.Errorf("a route to %s, added %t, took %d passes, want 1", step.destination, step.add, passes)
+		}
+	}
+}
+
+// another writer's delete of a route of the reconciler's wakes the pass that writes it back, long before the periodic one
+func TestNetlinkRestoresAnotherWritersDeletedRouteWithinASecond(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	counter, routes, conn, holds := countedReconciler(t, "ranetroute0")
+	for _, destination := range []netip.Prefix{prefix("2001:db8:1::/48"), prefix("192.0.2.0/24")} {
+		routes.Set(netip.Prefix{}, destination, nil)
+		waitFor(t, func() bool { return holds(destination) })
+		if _, err := conn.execute(unix.RTM_DELROUTE, unix.NLM_F_ACK, counter.routeMessage(Route{Destination: destination}, true)); err != nil {
+			t.Fatalf("delete %s as another writer: %v", destination, err)
+		}
+		deleted := time.Now()
+		waitFor(t, func() bool { return holds(destination) })
+		if took := time.Since(deleted); took > routeRestoreBudget {
+			t.Errorf("the deleted route to %s took %s to come back, want at most %s", destination, took, routeRestoreBudget)
+		}
+	}
+}
+
+// a route write the kernel refuses fails its pass, whose retry writes it, alone and beside a route whose write lands
+func TestNetlinkRetriesAFailedRouteWrite(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	counter, routes, _, holds := countedReconciler(t, "ranetretry0")
+	for _, step := range []struct {
+		failing, beside netip.Prefix
+	}{{failing: prefix("2001:db8:1::/48")}, {failing: prefix("2001:db8:2::/48"), beside: prefix("2001:db8:3::/48")}} {
+		counter.failNext(step.failing, 1)
+		changed := time.Now()
+		routes.Set(netip.Prefix{}, step.failing, nil)
+		if step.beside.IsValid() {
+			routes.Set(netip.Prefix{}, step.beside, nil)
+		}
+		waitFor(t, func() bool { return holds(step.failing) })
+		if took := time.Since(changed); took > routeRetryBudget {
+			t.Errorf("the route to %s whose write failed took %s to be written, want at most %s", step.failing, took, routeRetryBudget)
+		}
+		if step.beside.IsValid() && !holds(step.beside) {
+			t.Errorf("the route to %s beside it is not written", step.beside)
 		}
 	}
 }

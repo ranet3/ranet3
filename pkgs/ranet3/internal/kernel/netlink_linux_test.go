@@ -150,17 +150,27 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	}
 
 	// A notification for this table has to reach the monitor, because the reconcile
-	// loop has nothing else to tell it that somebody edited the table.
-	drain(plat.Notify())
-	if err := plat.AddRoute(Route{Destination: prefix("192.0.2.0/24")}); err != nil {
+	// loop has nothing else to tell it that somebody edited the table. The route
+	// goes in through the test's own socket, another writer's, since a route the
+	// platform's socket writes wakes nothing, and a monitor that takes what the
+	// platform's takes but joins the route groups alone hears the route's
+	// notification and none of the tun's addresses, one of which can arrive late.
+	wakes := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, plat.conn.(*nlConn).socket.Pid())
+	routeWatch, err := openMonitor("route-monitor-test", unix.RTMGRP_IPV4_ROUTE|unix.RTMGRP_IPV6_ROUTE, wakes)
+	if err != nil {
+		t.Fatalf("open a monitor as the platform's: %v", err)
+	}
+	t.Cleanup(func() { _ = routeWatch.Close() })
+	written := Route{Destination: prefix("192.0.2.0/24")}
+	if _, err := conn.execute(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, plat.routeMessage(written, false)); err != nil {
 		t.Fatalf("install a route to wake the monitor: %v", err)
 	}
 	select {
-	case <-plat.Notify():
+	case <-routeWatch.signal:
 	case <-time.After(waitBudget):
 		t.Fatal("no route notification arrived")
 	}
-	if err := plat.DelRoute(Route{Destination: prefix("192.0.2.0/24")}); err != nil {
+	if _, err := conn.execute(unix.RTM_DELROUTE, unix.NLM_F_ACK, plat.routeMessage(written, true)); err != nil {
 		t.Fatalf("remove the route: %v", err)
 	}
 
@@ -768,16 +778,6 @@ func (r *replyRecorder) execute(kind, flags uint16, body []byte) ([]netlink.Mess
 	replies, err := r.netlinkConn.execute(kind, flags, body)
 	r.replies = append(r.replies, replies...)
 	return replies, err
-}
-
-func drain(signal <-chan struct{}) {
-	for {
-		select {
-		case <-signal:
-		default:
-			return
-		}
-	}
 }
 
 // The RFC 8966 section 3.5.4 hold has to reach the kernel as a route that

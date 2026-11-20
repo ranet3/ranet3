@@ -101,7 +101,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: promote secondary addresses on %s: %w", rt.Interface, err)
 	}
-	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto, tun.index)
+	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto, tun.index, conn.socket.Pid())
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -441,8 +441,9 @@ func promoteSecondaries(conn netlinkConn, index uint32) error {
 // routeMonitor turns unsolicited route notifications into one coalesced
 // wake-up. It parses just enough of each message to drop notifications for
 // tables the reconciler does not own, which stops another daemon's
-// route churn from waking it. Its own writes still wake it once, but the settle
-// window in Run absorbs the burst and the following pass finds nothing to do.
+// route churn from waking it. A route its own pass writes wakes nothing, and
+// an address its own pass writes or a rule it deletes wakes one more pass,
+// which finds nothing to do.
 // it wakes as well on a deleted rule carrying proto
 // systemd-networkd removes every rule it did not ask for when it configures a link
 // the network watch reads its own groups through the same type
@@ -457,8 +458,8 @@ type routeMonitor struct {
 	done    chan struct{}
 }
 
-func newRouteMonitor(table uint32, proto uint8, tun uint32) (*routeMonitor, error) {
-	return openMonitor("rtnetlink-monitor", reconcilerGroups, reconcilerWakes(table, proto, tun))
+func newRouteMonitor(table uint32, proto uint8, tun, ownPort uint32) (*routeMonitor, error) {
+	return openMonitor("rtnetlink-monitor", reconcilerGroups, reconcilerWakes(table, proto, tun, ownPort))
 }
 
 // reconcilerGroups is the notification groups the reconciler's monitor joins
@@ -500,13 +501,15 @@ func (m *routeMonitor) run() {
 }
 
 // reconcilerWakes takes a notification touching what the reconciler owns
+// a route is woken on only where another socket wrote it, since the ack of each write tells the pass that sent it how it went
+// (rtmsg_fib in fib_semantics.c, inet6_rt_notify in route.c)
 // a rule is woken on only when it goes, since the pass that follows puts it back
 // an address is woken on only where it is the tun's, whoever wrote it, since the rules of modes 2 and 3 follow the tun's overlay addresses
-func reconcilerWakes(table uint32, proto uint8, tun uint32) func(netlink.Message) bool {
+func reconcilerWakes(table uint32, proto uint8, tun, ownPort uint32) func(netlink.Message) bool {
 	return func(message netlink.Message) bool {
 		switch message.Kind {
 		case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
-			return notificationTable(message) == table
+			return notificationTable(message) == table && message.Pid != ownPort
 		case unix.RTM_DELRULE:
 			return ruleProtocol(message) == proto
 		case unix.RTM_NEWADDR, unix.RTM_DELADDR:
