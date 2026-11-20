@@ -183,6 +183,8 @@ func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	s.stateMu.RUnlock()
 	// RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND"."
 	if !linked {
+		// on the SA this end's rekey replaced, right after the answer its record keeps, that answer takes the kept answer's place as it does past the retention
+		s.keepsStateNotFound(ctx, msgID)
 		return s.responseNotify(ctx, msgID, IKE_FOLLOWUP_KE, N_STATE_NOT_FOUND)
 	}
 	// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
@@ -251,7 +253,7 @@ func (made *peerIKE) install(s *Session, ctx *ikeContext, shared, added, ni, nr 
 	if err != nil {
 		return false, err
 	}
-	return s.placePeerIKELocked(ctx, newContext, ni, nr), nil
+	return s.placePeerIKELocked(ctx, newContext, ni, nr, added != nil), nil
 }
 
 // awaitPeerRekey waits for the peer's chain on old, which won a simultaneous rekey this end's own lost, to replace old, and fails when the chain ends without replacing it or the IKE SA starts to close

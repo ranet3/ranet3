@@ -1059,7 +1059,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			if nextPeerMID == 0 || hdr.MessageID != nextPeerMID-1 || lastPeerResponseID != hdr.MessageID {
 				return false
 			}
-			// past its retention a replaced IKE SA answers the repeat of the rekey its record keeps the answer to, and no other
+			// past its retention a replaced IKE SA answers the repeat of the rekey its record keeps the answer to, or of the IKE_FOLLOWUP_KE it answered STATE_NOT_FOUND there, and no other
 			past := s.pastRetention(ctx)
 			if past && !s.servesRepeat(ctx, hdr.MessageID) {
 				dropPastRetention(ctx, hdr.MessageID, "a repeat its record does not serve")

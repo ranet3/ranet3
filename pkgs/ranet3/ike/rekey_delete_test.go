@@ -265,7 +265,7 @@ func testPeerDeleteOfTheCurrentIKESAWhileTheRedundantOneIsDeletedEndsTheSession(
 
 // this end's rekey is answered before the peer's crossing rekey reaches it, so it wins with no collision, and the peer holds this end's SA as its collision
 // the path drops what this end sends on the old SA for the teardown's budget: the TEMPORARY_FAILURE to the peer's rekey and both sends of the Delete of the old SA
-// the rekey then returns with the old SA still held, so the peer's resend of its rekey draws the TEMPORARY_FAILURE again, until the old SA's deadline drops it
+// the rekey then returns with the old SA still held, so the peer's resend of its rekey draws the TEMPORARY_FAILURE again, until the record of that refusal ends busyRequestBudget after it and drops the old SA
 func TestReplacedIKESAOutlastsTheTeardownBudgetForACrossingPeer(t *testing.T) {
 	bubble.Run(testReplacedIKESAOutlastsTheTeardownBudgetForACrossingPeer)(t)
 }
@@ -315,6 +315,7 @@ func testReplacedIKESAOutlastsTheTeardownBudgetForACrossingPeer(t *testing.T) {
 		t.FailNow()
 	}
 	refused("the answer to the peer's rekey")
+	refusedAt := time.Now()
 	for deletes < teardownRetransmits {
 		p.next("a send of the Delete of the old SA", INFORMATIONAL, false)
 		deletes++
@@ -344,7 +345,11 @@ func testReplacedIKESAOutlastsTheTeardownBudgetForACrossingPeer(t *testing.T) {
 	if current := s.currentContext(); current.spiI != ownSPI {
 		t.Errorf("the session is current on %016x, want this end's SA %016x", current.spiI, ownSPI)
 	}
-	time.Sleep(time.Until(retained) + pastBound)
+	time.Sleep(time.Until(refusedAt.Add(busyRequestBudget)) - pastBound)
+	if s.contextRetired(old) {
+		t.Fatalf("the session no longer holds the old SA %v after its refusal, short of the end of the record of it at %v", time.Since(refusedAt), busyRequestBudget)
+	}
+	time.Sleep(2 * pastBound)
 	if !s.contextRetired(old) {
 		t.Error("the session still holds the old SA past its deadline")
 	}

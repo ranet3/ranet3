@@ -37,6 +37,16 @@ const (
 	crossingDecidedWithin = requestTimeout<<(maxRetransmits-1) + crossingStep
 	// crossingMirrorLost is how long past the responder's decision the path loses its answers and its Delete, past the 120 s it keeps the crossed SA after its unanswered Delete
 	crossingMirrorLost = retainedContextDeadline + 10*time.Second
+	// crossingRefusalLost is how long the path loses the refusal of the initiator's crossing rekey, past the 120 s the refusing end kept the crossed SA before and inside the initiator's resends
+	crossingRefusalLost = busyRequestBudget / 2
+	// crossingStreakSurvived is the longest loss of that refusal, from the passing of the initiator's request, that lets the initiator take it before the responder's Child SA rekey has drawn TEMPORARY_FAILURE for temporaryFailureSpan at a retry, its retries unjittered
+	crossingStreakSurvived = 315 * time.Second
+	// crossingStreakEnds loses the initiator's resend that the shorter loss let through, which comes one second after the shorter loss ends, and ends half a second past it so the two never fall on one instant
+	crossingStreakEnds = crossingStreakSurvived + 3*time.Second/2
+	// crossingLastResend is when the initiator's last resend of its crossing rekey comes after the release, the last of maxRetransmitsWhileBusy sends, 510 s after its first
+	crossingLastResend = 508 * time.Second
+	// crossingChildAnswersLost is how long the path loses every answer to a rekey sent to the responder from the start of its Child SA rekey, past the 120 s an end keeps a replaced SA after its rekey
+	crossingChildAnswersLost = retainedContextDeadline + 6*time.Second
 	// crossingSettled is how long after the losses end the test leaves both ends, past every resend budget and every retention
 	crossingSettled = busyRequestBudget + retainedContextDeadline
 	// crossingESPEvery is how often authenticated ESP passes each way, well inside the liveness interval
@@ -111,6 +121,203 @@ func testSimultaneousRekeyWonWithTheDeleteOfTheCrossedSALostConverges(t *testing
 	time.Sleep(crossingSettled)
 	synctest.Wait()
 	c.converged(t)
+}
+
+// the responder takes the answer to its rekey before the initiator's crossing request reaches it, so it decides with no crossing, refuses that request and sends its Delete of the crossed SA
+// the path loses the refusal, its repeats and that Delete past the 120 s the responder kept the crossed SA before, while the responder's Child SA rekey draws the initiator's refusals, the initiator holding the responder's SA undecided
+// the initiator's resends then draw the refusal the responder keeps on the crossed SA for them, the initiator takes the responder's SA, its first fresh request there ends what the responder keeps for them, and both sessions run on the responder's SA
+func TestRefusalOfACrossingRekeyLostPastTheRetentionConverges(t *testing.T) {
+	bubble.Run(testRefusalOfACrossingRekeyLostPastTheRetentionConverges)(t)
+}
+
+func testRefusalOfACrossingRekeyLostPastTheRetentionConverges(t *testing.T) {
+	c := startCrossing(t, false, crossingLosses{toInitiator: true, staleRequests: true, initiatorRequestHeld: true})
+	released, childRekeyed := c.refusedWithChildRekey(t)
+	time.Sleep(time.Until(released.Add(crossingRefusalLost)))
+	c.path.loseAnswers(false, false)
+	c.path.loseStaleRequests(false)
+	for deadline := time.Now().Add(crossingDecidedWithin); c.initiator.currentContext().spiI == c.crossed.spiI; time.Sleep(crossingStep) {
+		if !time.Now().Before(deadline) {
+			_, old := c.responder.contexts()
+			t.Fatalf("the initiator took no answer within %v of the refusal passing, and the responder holds the crossed SA %v", crossingDecidedWithin, old != nil && old.spiI == c.crossed.spiI)
+		}
+	}
+	if _, err := c.initiator.request(INFORMATIONAL, nil); err != nil {
+		t.Fatalf("the initiator's first request on the responder's SA failed: %v", err)
+	}
+	time.Sleep(crossingStep)
+	synctest.Wait()
+	if _, old := c.responder.contexts(); old != nil && old.spiI == c.crossed.spiI {
+		t.Errorf("the responder holds the crossed SA %016x after the initiator's first fresh request on the responder's SA", old.spiI)
+	}
+	time.Sleep(crossingSettled)
+	synctest.Wait()
+	c.converged(t)
+	c.childRekeyEnded(t, childRekeyed)
+	// the initiator's resends past the retention drew the kept refusal, told once
+	if got := recordedKind(c.responderEvents, "ike.rekey.repeat_answered"); got != 1 {
+		t.Errorf("the responder told %d repeats of the initiator's rekey answered past the retention, want 1: %q", got, c.responderEvents.recorded())
+	}
+}
+
+// the crossing above with no Child SA rekey of the responder's, the refusal lost to either side of the initiator's last resend
+// the record keeps the refusal to busyRequestBudget after the initiator's first send, past that resend, so a loss that ends crossingStep before it converges, and one that ends crossingStep after it loses that last send, and the initiator's session ends with no answer to its resends
+func TestRefusalLostToTheLastResendOfTheCrossingRekey(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		loss time.Duration
+		ends bool
+	}{
+		{name: "lost to a second before the last resend converges", loss: crossingLastResend - crossingStep},
+		{name: "lost to a second after it ends the initiator's session", loss: crossingLastResend + crossingStep, ends: true},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			c := startCrossing(t, false, crossingLosses{toInitiator: true, staleRequests: true, initiatorRequestHeld: true})
+			released := c.refused(t)
+			time.Sleep(time.Until(released.Add(test.loss)))
+			c.path.loseAnswers(false, false)
+			c.path.loseStaleRequests(false)
+			if !test.ends {
+				time.Sleep(crossingSettled)
+				synctest.Wait()
+				c.converged(t)
+				return
+			}
+			select {
+			case err := <-c.runs[0]:
+				if want := fmt.Sprintf("peer unresponsive after %d attempts", maxRetransmitsWhileBusy); !strings.Contains(fmt.Sprint(err), want) {
+					t.Fatalf("the initiator's session ended %v after the release with %v, want %q", time.Since(released), err, want)
+				}
+			case <-time.After(crossingSettled):
+				t.Fatalf("the initiator's session runs %v after the release, its last resend lost", time.Since(released))
+			}
+		}))
+	}
+}
+
+// the crossing of TestRefusalOfACrossingRekeyLostPastTheRetentionConverges, where the initiator answers the responder's Child SA rekey TEMPORARY_FAILURE while its own crossing rekey holds the responder's SA undecided
+// RFC 7296 section 2.25.1: "If a peer receives a request to rekey a Child SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+// that refusal moves no IKE SA and is not kept: lost with every answer to the responder for crossingChildAnswersLost from the Child SA rekey's start, or not lost, the Child SA rekey ends with it and both sessions run on the responder's SA
+func TestChildSARefusalDuringTheCrossingRekeyLeavesBothOnOneSA(t *testing.T) {
+	for _, lost := range []time.Duration{0, crossingChildAnswersLost} {
+		t.Run(fmt.Sprintf("answers to the responder lost %v", lost), bubble.Run(func(t *testing.T) {
+			c := startCrossing(t, false, crossingLosses{toInitiator: true, staleRequests: true, initiatorRequestHeld: true})
+			released, childRekeyed := c.refusedWithChildRekey(t)
+			if lost > 0 {
+				c.path.loseAnswers(true, true)
+				time.Sleep(lost)
+				c.path.loseAnswers(true, false)
+			}
+			time.Sleep(time.Until(released.Add(crossingRefusalLost)))
+			c.path.loseAnswers(false, false)
+			c.path.loseStaleRequests(false)
+			time.Sleep(crossingSettled)
+			synctest.Wait()
+			select {
+			case err := <-childRekeyed:
+				if !rejectedWith(err, N_TEMPORARY_FAILURE) {
+					t.Fatalf("the responder's Child SA rekey ended with %v, want the initiator's TEMPORARY_FAILURE", err)
+				}
+			default:
+				t.Fatal("the responder's Child SA rekey still runs once every budget ran out")
+			}
+			c.converged(t)
+		}))
+	}
+}
+
+// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
+// the crossing above with the refusal lost longer: the initiator takes the refusal at its first resend after the loss, and until then the responder's Child SA rekey draws TEMPORARY_FAILURE, its retries unjittered
+// so the record keeps the refusal only as long as the responder's run of refusals stays short of temporaryFailureSpan at each retry
+// a loss of crossingStreakSurvived lets the initiator's resend before that retry through and both sessions converge, and a loss of crossingStreakEnds loses that resend, so the responder ends its session for the run of refusals and the initiator's session then ends with no answer to its resends
+func TestRefusalLostAgainstTheTemporaryFailureSpanOfAChildSARekey(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		loss time.Duration
+		ends bool
+	}{
+		{name: "lost to the last resend that comes in time converges", loss: crossingStreakSurvived},
+		{name: "lost one second longer ends at the run of refusals", loss: crossingStreakEnds, ends: true},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			c := startCrossing(t, false, crossingLosses{toInitiator: true, staleRequests: true, initiatorRequestHeld: true})
+			released, childRekeyed := c.refusedWithChildRekey(t)
+			time.Sleep(time.Until(released.Add(test.loss)))
+			c.path.loseAnswers(false, false)
+			c.path.loseStaleRequests(false)
+			if !test.ends {
+				time.Sleep(crossingSettled)
+				synctest.Wait()
+				c.converged(t)
+				c.childRekeyEnded(t, childRekeyed)
+				return
+			}
+			var ended [2]time.Time
+			var errs [2]error
+			for deadline := time.Now().Add(crossingSettled); (ended[0].IsZero() || ended[1].IsZero()) && time.Now().Before(deadline); time.Sleep(crossingStep) {
+				for i, run := range c.runs {
+					if ended[i].IsZero() {
+						select {
+						case errs[i] = <-run:
+							ended[i] = time.Now()
+						default:
+						}
+					}
+				}
+			}
+			if ended[1].IsZero() || !rejectedWith(errs[1], N_TEMPORARY_FAILURE) || !strings.Contains(errs[1].Error(), temporaryFailureSpan.String()) {
+				t.Fatalf("the responder's session ended %v after the release with %v, want an end for TEMPORARY_FAILURE answered for %v", ended[1].Sub(released), errs[1], temporaryFailureSpan)
+			}
+			if want := fmt.Sprintf("peer unresponsive after %d attempts", maxRetransmitsWhileBusy); ended[0].IsZero() || ended[0].Before(ended[1]) || !strings.Contains(fmt.Sprint(errs[0]), want) {
+				t.Errorf("the initiator's session ended %v after the release with %v, want %q after the responder's end at %v", ended[0].Sub(released), errs[0], want, ended[1].Sub(released))
+			}
+		}))
+	}
+}
+
+// refusedWithChildRekey is refused, then starts the responder's Child SA rekey with its retries unjittered
+// it returns when it passed the request on and the end of that Child SA rekey's first exchange
+func (c *crossingRun) refusedWithChildRekey(t *testing.T) (time.Time, <-chan error) {
+	t.Helper()
+	released := c.refused(t)
+	childRekeyed := make(chan error, 1)
+	go func() { childRekeyed <- c.responder.RekeyChild() }()
+	return released, childRekeyed
+}
+
+// refused checks that the responder decided its rekey before the initiator's crossing request reached it while the initiator holds the responder's rekey as its collision, passes that request on, and waits for the responder's rekey to return
+// it returns when it passed the request on
+func (c *crossingRun) refused(t *testing.T) time.Time {
+	t.Helper()
+	if held, _ := holdsCrossing(c.initiator, c.nonces[1]); !held {
+		t.Fatal("the initiator does not hold the responder's rekey as the collision of its own")
+	}
+	if c.holdsCandidate(c.responder, c.candidates[0]) || c.responder.currentContext().spiI != c.candidates[1] {
+		t.Fatal("the responder did not decide its rekey before the initiator's request reached it")
+	}
+	c.responder.rekeyJitterSource = unjittered
+	c.path.holdRekeysFrom(false, false)
+	released := time.Now()
+	// the responder's rekey holds the session's requests until its Delete of the crossed SA is given up
+	select {
+	case err := <-c.rekeyed[1]:
+		if c.rekeyed[1] = nil; err != nil {
+			t.Fatalf("the responder's rekey ended with %v", err)
+		}
+	case <-time.After(crossingDecidedWithin):
+		t.Fatal("the responder's rekey still runs its Delete of the crossed SA")
+	}
+	return released
+}
+
+// childRekeyEnded fails t unless the first exchange of the responder's Child SA rekey, which ends on childRekeyed, ended once every budget ran out
+func (c *crossingRun) childRekeyEnded(t *testing.T, childRekeyed <-chan error) {
+	t.Helper()
+	select {
+	case <-childRekeyed:
+	default:
+		t.Error("the responder's Child SA rekey still runs once every budget ran out")
+	}
 }
 
 // the winner of a crossing holds the loser's candidate for the loser's Delete of it, which a loser that adopted the winner's candidate on the winner's Delete never sends, since it never took the answer that made it
@@ -321,8 +528,8 @@ type crossingRun struct {
 	winner     int
 	// nonces is each end's Ni in the crossing, the initiator's first
 	nonces [2][]byte
-	// events keeps what the initiator records
-	events *recorder
+	// events keeps what the initiator records, and responderEvents what the responder records
+	events, responderEvents *recorder
 }
 
 // crossingLosses says whether the path loses the answers to rekeys sent to the initiator, those sent to the responder, and the responder's INFORMATIONAL requests on any IKE SA but its current one, from before the crossing's requests pass, and whether it holds the initiator's rekey request once the responder's passes
@@ -332,7 +539,8 @@ type crossingLosses struct{ toInitiator, toResponder, staleRequests, initiatorRe
 // the initiator's exchange holds the lowest nonce unless initiatorWins, so the end whose exchange does not wins
 func startCrossing(t *testing.T, initiatorWins bool, losses crossingLosses) *crossingRun {
 	t.Helper()
-	h := newResponderHarness(t, nil)
+	responderEvents := &recorder{}
+	h := newResponderHarness(t, nil, responderEvents.record)
 	path := &crossingPath{}
 	cfg := h.peerConfig()
 	cfg.RemotePort = path.listen(t, h.remotePort)
@@ -342,7 +550,7 @@ func startCrossing(t *testing.T, initiatorWins bool, losses crossingLosses) *cro
 	path.responderSession.Store(responder)
 	draws := [2]*crossingDraws{{}, {}}
 	initiator.ikeRekeyNonce, responder.ikeRekeyNonce = draws[0].draw, draws[1].draw
-	c := &crossingRun{initiator: initiator, responder: responder, path: path, events: events}
+	c := &crossingRun{initiator: initiator, responder: responder, path: path, events: events, responderEvents: responderEvents}
 	c.runs = [2]<-chan error{runSession(t, initiator), runSession(t, responder)}
 	c.espFailure = crossingESP(t, initiator, responder)
 

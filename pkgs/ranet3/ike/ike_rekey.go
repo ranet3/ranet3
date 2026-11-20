@@ -218,6 +218,14 @@ func (s *Session) RekeyIKE() (err error) {
 			if s.adopted(local) {
 				return nil
 			}
+			// RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND"."
+			// the peer holds no chain of this exchange then and makes no SA of it, so a candidate its own completed chain made, held here, is the SA both ends keep, as where the CREATE_CHILD_SA is refused
+			// RFC 9370 section 2.2.4: "if additional key exchanges are negotiated in the CREATE_CHILD_SA exchange in which the smallest nonce is used, then, because there is nothing to delete yet, the initiator of this exchange just stops the rekeying process, and it MUST NOT initiate the IKE_FOLLOWUP_KE exchange."
+			// so a peer whose chain sent its IKE_FOLLOWUP_KE did not give way and runs on the SA it made, while a classical candidate may be one the peer gave way on and deletes, which is not taken
+			// the IKE SA a taken candidate replaces goes with the peer's Delete, and otherwise the refusal ends the rekey as before, the third in a row with none held the IKE SA
+			if rejectedWith(err, N_STATE_NOT_FOUND) && s.heldFromPeersChain(local) {
+				return s.refusedIKERekey(local, err)
+			}
 			return err
 		}
 		replacement, err := rekeyedContext(old, answer.suite, answer.shared, added, ni, answer.nonce, spiI, answer.spiR, false)
@@ -246,6 +254,13 @@ func (s *Session) RekeyIKE() (err error) {
 	return nil
 }
 
+// heldFromPeersChain reports whether the peer's rekey held as local's collision was made by the peer's chain
+func (s *Session) heldFromPeersChain(local *ikeRekey) bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return local.peerChained
+}
+
 // adopted reports whether the peer's Delete of the SA local rekeys made the peer's candidate current, after which local's exchange on that SA fails and the rekey ends as a lost crossing ends, with nil
 // RFC 7296 section 2.8.2: "If the peer that did notice the simultaneous rekey gets the delete request from the other peer for the old IKE SA, it knows that the other peer did not detect the simultaneous rekey, and the first peer can forget its own rekey attempt."
 func (s *Session) adopted(local *ikeRekey) bool {
@@ -269,16 +284,24 @@ func (s *Session) retireOwn(ctx *ikeContext, deleted error) {
 		s.retireLocked(ctx, reason, "")
 		s.collision = nil
 	}
+	if !s.routedLocked(ctx.spiI) {
+		s.forgetRecordLocked(ctx)
+	}
 	s.releaseSPILocked(ctx.spiI)
 	s.stateMu.Unlock()
 	s.tellRetired()
 }
 
-// replaceLocked makes replacement, the SA this end's rekey of old made, current, and keeps old for this end's Delete of it, with stateMu held
+// replaceLocked makes replacement, the SA this end's rekey of old made, current, and keeps old for this end's Delete of it, retained from now, with stateMu held
+// an answer that made no SA to the peer's rekey of old, a refusal or one that opened a chain this end's rekey won over, sent while old was current and with no later request of the peer's taken there, is recorded from now, as one sent on old once replaced is
+// the peer resends that rekey on old until the answer or this end's Delete reaches it, and its later request would show it took the answer
 func (s *Session) replaceLocked(old, replacement *ikeContext) {
-	old.ownDelete = true
+	old.ownDelete, old.replacedAt = true, time.Now()
 	s.retainOldLocked(old)
 	s.current = replacement
+	if !old.refusedAt.IsZero() && old.nextPeerMID <= old.refusedRekey+1 && !s.ikeExpired(old) {
+		s.recordLocked(old, replacement, old.refusedRekey, old.refusedAt, old.replacedAt)
+	}
 }
 
 // yieldIKERekey ends this end's rekey of old in favor of a peer's rekey of it, making winner current where it is the SA the peer's exchange made
@@ -328,8 +351,8 @@ var errReplacedKept = errors.New("ike: the Delete of the replaced IKE SA went un
 
 // keepReplaced decides, as Run deems a Delete of ctx from this end failed, whether the session keeps ctx, and reports whether it does
 // RFC 7296 section 2.8.2: "when the peer that did not notice the simultaneous rekey gets the request to rekey the IKE SA that it has already successfully rekeyed, it SHOULD return TEMPORARY_FAILURE"
-// a peer whose crossing rekey this end refused runs on the SA this end's rekey replaced until the refusal or the Delete reaches it, so that SA stays while it answers requests, to the earlier of its lifetime and retainedContextDeadline after the rekey, and each resend draws the refusal again
-// where this end's rekey won a crossing with a peer rekey it answered, the record of that SA holds it to the record's end instead, which its lifetime caps, and each resend draws the kept answer
+// a peer whose crossing rekey this end refused, or answered and then won against, runs on the SA this end's rekey replaced until that answer or the Delete reaches it, so the record of the answer holds that SA to the record's end, which its lifetime caps, and each resend draws the kept answer
+// with no record the SA stays to the earlier of its lifetime and retainedContextDeadline after the rekey
 // past its lifetime it answers none, so it goes with its Delete then, and a peer's rekey of the current SA or this end's next rekey replaces it as it would an SA nothing kept
 func (s *Session) keepReplaced(ctx *ikeContext) bool {
 	s.stateMu.Lock()
@@ -541,7 +564,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	// section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
 	// RFC 9370 section 2.2.4: "a situation may occur when, due to packet loss, one of the peers receives the CREATE_CHILD_SA message requesting the rekey of an SA that is already being rekeyed by this peer (i.e., the CREATE_CHILD_SA exchange initiated by this peer has already been completed, and the series of IKE_FOLLOWUP_KE exchanges is in progress). In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 	if !accept || childChain || s.closing.Load() || s.childRekeying.Load() || s.retiringChild().LocalSPI != 0 || s.ikeExpired(ctx) {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 	}
 	// the peer runs one rekey of the IKE SA at a time, so a new one ends the chain of the last
 	s.dropChain(superseded)
@@ -576,18 +599,18 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	chosen, retry, ok := chooseIKE(props, lists.ikeCiphers(), lists.rekeyPRFs(ctx.suite.PRFID), lists.rekeyEntries(ctx.suite.entry(), group), group)
 	if retry != 0 {
 		// RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
-		return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD, invalidKENotifyData(retry))
+		return s.refuseIKERekey(ctx, msgID, N_INVALID_KE_PAYLOAD, invalidKENotifyData(retry))
 	}
 	if !ok {
 		// an offer refused over lists that left out a transform of this SA's suite replaces or rekeys the SA as a reload does
 		s.SuitesChanged()
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
+		return s.refuseIKERekey(ctx, msgID, N_NO_PROPOSAL_CHOSEN, nil)
 	}
 	suite := chosen.suite
 	// checked once the offer is settled and before the key exchange and the derivation, the work minPeerIKERekeyInterval limits
 	// so a rekey answered INVALID_KE_PAYLOAD leaves the limit to the retry it asks for
 	if !s.allowPeerIKERekey() {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 	}
 	spiI := binary.BigEndian.Uint64(chosen.offered.SPI)
 	// RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
@@ -597,14 +620,14 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	taken := s.routedLocked(spiI) || (s.localRekey != nil && s.localRekey.spiI == spiI)
 	s.stateMu.RUnlock()
 	if taken || spiI == ctx.spiI || spiI == ctx.spiR {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
+		return s.refuseIKERekey(ctx, msgID, N_NO_PROPOSAL_CHOSEN, nil)
 	}
 	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
 	// the IKE SA a rekey would replace is kept the same way, and an error returned from here would end it, so a failure of this end's answers TEMPORARY_FAILURE
 	dh, err := GenerateDH(group)
 	if err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 	}
 	shared, err := dh.SharedSecret(peerPublic)
 	if err != nil {
@@ -613,7 +636,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	nr := make([]byte, nonceLen)
 	if err := s.ikeRekeyNonce(nr); err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 	}
 	ni := append([]byte(nil), payloads.nonce.Body...)
 	spiR := randUint64Nonzero()
@@ -633,22 +656,41 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		// this end's own rekey may have taken ctx while the answer was made
 		if s.rekeyTakenLocked(ctx) {
 			s.stateMu.Unlock()
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+			return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 		}
 		// the chain dropped above was the last one open, since only Run's goroutine opens one
 		s.peerChain = c
+		// the answer makes no SA until the chain's IKE_FOLLOWUP_KE, which a peer whose chain loses to this end's rekey never sends, so it is marked as a refusal is
+		ctx.refusedRekey, ctx.refusedAt = msgID, time.Now()
 		s.stateMu.Unlock()
 		return s.response(ctx, msgID, CREATE_CHILD_SA, append(answer, c.linkPayload()))
 	}
 	placed, err := made.install(s, ctx, shared, nil, ni, nr)
 	if err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 	}
 	if !placed {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return s.refuseIKERekey(ctx, msgID, N_TEMPORARY_FAILURE, nil)
 	}
 	return s.response(ctx, msgID, CREATE_CHILD_SA, answer)
+}
+
+// refuseIKERekey answers the peer's rekey of ctx at msgID with an answer that makes no SA, a notify of type notify carrying data, with stateMu not held
+// a peer whose rekey is refused resends it until the answer or this end's Delete reaches it, so the answer is kept for those resends as an answer that made an SA is
+// on the SA this end's own rekey replaced it is recorded now, and on the current SA it is marked, for this end's rekey that replaces the SA to record it then
+// this end's decision can replace ctx after handleIKERekey's first check and after this answer, so the answer reads the slots when it is sent and the replacement reads the mark
+func (s *Session) refuseIKERekey(ctx *ikeContext, msgID uint32, notify NotifyType, data []byte) (*outbound, error) {
+	s.stateMu.Lock()
+	switch {
+	case ctx == s.old && ctx.ownDelete && !s.ikeExpired(ctx):
+		s.recordLocked(ctx, s.current, msgID, time.Now(), ctx.replacedAt)
+	// the crossing's candidate takes no rekey until it is current, and once current this end's rekey may replace it
+	case ctx == s.current || ctx == s.collision:
+		ctx.refusedRekey, ctx.refusedAt = msgID, time.Now()
+	}
+	s.stateMu.Unlock()
+	return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, notify, data)
 }
 
 // rekeyTakenLocked reports whether ctx is not the current IKE SA, or this end's rekey of it won and has its additional key exchange to run before it replaces ctx, with stateMu held
@@ -660,9 +702,10 @@ func (s *Session) rekeyTakenLocked(ctx *ikeContext) bool {
 }
 
 // placePeerIKELocked makes made, the IKE SA a peer's rekey of ctx made with the nonces ni and nr, current, or holds it as the collision's candidate while this end's own rekey of ctx has not taken its decision, until RekeyIKE returns and dates the slot
+// chained says the peer's chain made it, at the IKE_FOLLOWUP_KE this end answers
 // it reports false where rekeyTakenLocked holds, and then places nothing and releases made's SPI
 // it must be called with stateMu held
-func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool {
+func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte, chained bool) bool {
 	switch local := s.localRekey; {
 	case s.rekeyTakenLocked(ctx):
 		s.releaseSPILocked(made.spiI)
@@ -670,7 +713,7 @@ func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool 
 	case local != nil && local.old == ctx && !local.lost:
 		made.unconfirmed = true
 		local.peerNonce, local.peerResponseNonce = ni, nr
-		local.peerMID, local.peerAnswered = ctx.nextPeerMID, time.Now()
+		local.peerMID, local.peerAnswered, local.peerChained = ctx.nextPeerMID, time.Now(), chained
 		s.retainCollisionLocked(made)
 		// this end's rekey settles the crossing whenever its answer comes, so the candidate waits for it, bounded by its own lifetime alone
 		s.crossing, s.collisionBy = made, time.Time{}

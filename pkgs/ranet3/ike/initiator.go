@@ -93,10 +93,16 @@ type ikeContext struct {
 	ownDelete bool
 	// kept marks a replaced IKE SA keepReplaced kept once this end's Delete of it went unanswered, and stateMu guards it
 	kept bool
-	// replacedAt is when the session made the record of the SA, zero for an SA no record held, and stateMu guards it
+	// replacedAt is when this end's rekey replaced the SA or the session made the record of it, zero for an SA neither holds, and stateMu guards it
 	replacedAt time.Time
+	// refusedRekey is the Message ID of the peer's rekey of the SA that this end answered with no SA while the SA was current or held as the crossing's candidate, a refusal or the answer that opened the rekey's chain, and refusedAt when, zero for none, and stateMu guards both
+	// this end's rekey that replaces the SA records that answer from them
+	refusedRekey uint32
+	refusedAt    time.Time
 	// recordDue is the answer to the peer's crossing rekey that this end's rekey settled before keepAnswer kept it, nil for none, which keepAnswer records once it keeps it, and stateMu guards it
 	recordDue *recordDue
+	// stateNotFoundKept marks the answer kept at lastPeerResponseID, where it is the Message ID after the record's, as the STATE_NOT_FOUND keepsStateNotFound let take the kept answer's place, and stateMu guards it
+	stateNotFoundKept bool
 	// unconfirmed marks an SA a peer's rekey made that no fresh authenticated request of the peer's has reached while it was current, and stateMu guards it
 	// the handshake's SA and one this end's own rekey made start confirmed, since the handshake and the peer's answer to that rekey prove the peer holds them
 	unconfirmed bool
@@ -281,9 +287,10 @@ type ikeRekey struct {
 	nonce             []byte
 	peerNonce         []byte
 	peerResponseNonce []byte
-	// peerMID and peerAnswered are the Message ID of the peer's rekey held as the collision and when this end answered it
+	// peerMID and peerAnswered are the Message ID of the peer's rekey held as the collision and when this end answered it, and peerChained marks one the peer's chain made at its IKE_FOLLOWUP_KE
 	peerMID      uint32
 	peerAnswered time.Time
+	peerChained  bool
 	// chain is set once the rekey's CREATE_CHILD_SA selected an additional key exchange this end then runs, and lost once the rekey lost a simultaneous rekey and stopped
 	chain, lost bool
 	// adopted is set once the peer's Delete of old made the peer's candidate current, which settles the crossing as a lost one does, and stateMu guards it
@@ -358,9 +365,14 @@ func (s *Session) releaseDisplacedLocked(displaced *ikeContext, collision bool) 
 		return
 	}
 	s.queueRetiredLocked(displaced, collision, retiredDisplaced, "")
-	if displaced.kept {
+	recorded := s.recovery.replaced == displaced
+	s.forgetRecordLocked(displaced)
+	switch {
+	case recorded:
+		slog.Info("ike dropping a replaced IKE SA kept for the peer's resends of its rekey, which a later rekey replaced", "spi", displaced.spiI)
+	case displaced.kept:
 		slog.Info("ike dropping a replaced IKE SA kept after this end's unanswered Delete, which a later rekey replaced", "spi", displaced.spiI)
-	} else {
+	default:
 		slog.Warn("ike dropping an IKE SA a second rekey displaced", "spi", displaced.spiI)
 	}
 	s.releaseSPILocked(displaced.spiI)
@@ -389,6 +401,9 @@ var recordToAnswer = busyRequestBudget.String() + " after the answer to the peer
 // candidateToReturn is the label of a peer's candidate dropped at the bound this end's crossing rekey gave it at its return rather than at its lifetime
 var candidateToReturn = retainedContextDeadline.String() + " after this end's crossing rekey ended"
 
+// retainedFromAnswer names the bound of an SA a peer's rekey replaced, kept for the peer's Delete from the last send of the answer to that rekey once the peer's switch ended its record
+var retainedFromAnswer = retainedContextDeadline.String() + " after the answer to the peer's rekey last went out"
+
 // expireRetainedContexts drops a retained IKE SA whose Delete never arrived,
 // and a replaced IKE SA whose Delete the peer owes once that SA's lifetime
 // ends. Its SPI leaves the mux with it, so a later datagram naming it is
@@ -396,11 +411,11 @@ var candidateToReturn = retainedContextDeadline.String() + " after this end's cr
 func (s *Session) expireRetainedContexts(now time.Time) {
 	// keptTo names the deadline keepReplaced kept ctx to, which is the one that drops it, and is empty for an SA it did not keep
 	// it is read with the slots, so the lines below, written once stateMu is released, read nothing stateMu guards
-	// recordTo names the same for an SA a recoveryRecord held, and candidate marks a peer's candidate the collision slot held
+	// recordTo names the same for an SA a recoveryRecord held, candidate marks a peer's candidate the collision slot held, and fromAnswer marks an SA a peer's rekey replaced, held past the retention counted from the rekey because the peer's switch counted it from the answer's last send, which confirm does for no SA this end's own rekey replaced
 	type drop struct {
-		ctx              *ikeContext
-		keptTo, recordTo string
-		candidate        bool
+		ctx                   *ikeContext
+		keptTo, recordTo      string
+		candidate, fromAnswer bool
 	}
 	s.stateMu.Lock()
 	var dropped []drop
@@ -420,7 +435,7 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 		case !now.Before(*held.by):
 			atLifetime := s.timing.IKERekeyInterval > 0 && !held.ctx.established.Add(s.timing.IKERekeyInterval).After(*held.by)
 			keptTo, recordTo := "", ""
-			if r := s.liveRecordLocked(); r != nil && r.replaced == held.ctx {
+			if r := &s.recovery; r.replaced == held.ctx && (s.liveRecordLocked() == r || heldByStateNotFoundLocked(held.ctx, r)) {
 				switch {
 				case atLifetime:
 					recordTo = "its lifetime"
@@ -441,10 +456,12 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 				reason = retiredLifetime
 			}
 			s.queueRetiredLocked(held.ctx, held.out == &s.collision, reason, "")
-			dropped, *held.out = append(dropped, drop{held.ctx, keptTo, recordTo, held.out == &s.collision && !held.ctx.ownDelete}), nil
+			fromAnswer := held.out == &s.old && recordTo == "" && !held.ctx.kept && !held.ctx.ownDelete && !held.ctx.replacedAt.IsZero() && held.by.After(held.ctx.replacedAt.Add(retainedContextDeadline))
+			dropped, *held.out = append(dropped, drop{held.ctx, keptTo, recordTo, held.out == &s.collision && !held.ctx.ownDelete, fromAnswer}), nil
 		}
 	}
 	for _, d := range dropped {
+		s.forgetRecordLocked(d.ctx)
 		s.releaseSPILocked(d.ctx.spiI)
 	}
 	s.stateMu.Unlock()
@@ -465,6 +482,10 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 		}
 		if d.candidate {
 			slog.Warn("ike dropping an IKE SA the peer never deleted", "spi", ctx.spiI, "at", candidateToReturn)
+			continue
+		}
+		if d.fromAnswer {
+			slog.Warn("ike dropping an IKE SA the peer never deleted", "spi", ctx.spiI, "at", retainedFromAnswer)
 			continue
 		}
 		slog.Warn("ike dropping an IKE SA the peer never deleted",
