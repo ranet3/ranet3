@@ -20,25 +20,6 @@ type Card struct {
 	Meta  string
 }
 
-const (
-	// cardWidth is the width of the title and the lead, from the 72px margin
-	// on the left
-	cardWidth = 900
-	// titleLines and leadLines are the most lines each takes
-	titleLines, leadLines = 3, 3
-	// Noto Sans Mono's width of every Latin glyph, and its ascent and
-	// height, in em
-	advance, ascent, height = 0.6, 1.069, 1.362
-	titleTop, titleLeading  = 232, 1.12
-	leadSize, leadLeading   = 28, 1.4
-	// leadGap is the space between the title and the lead, and leadBottom
-	// where the lead ends, above the meta line
-	leadGap, leadBottom = 20, 540
-)
-
-// cardSizes are the title's font sizes in pixels, the largest that fits taken
-var cardSizes = []int{64, 52, 44}
-
 // NewCard breaks title into the fewest lines at the largest size that fits,
 // as even in length as the line count allows, as text-wrap: balance does. The
 // lead takes as many lines below it as fit, up to 3, cut at a word with an
