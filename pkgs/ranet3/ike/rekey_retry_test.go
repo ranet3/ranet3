@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"slices"
@@ -868,10 +869,14 @@ const crossedMID = 1
 // this end answered the peer's crossing rekey as it was placed, and its own rekey decides the crossing long after, lost or won
 // the record keeps that answer for busyRequestBudget from its send, and no less than retainedContextDeadline from the decision, capped by the SA's lifetime
 // the SA a lost rekey left is held to the record's end, and the SA a won rekey replaced is held for this end's Delete of it to the decision plus retainedContextDeadline at least, as with no record
+// dropped at that hold, the SA's line names the bound that applied
 func TestRecordOfACrossingRunsFromTheAnswer(t *testing.T) {
 	// lifetimeAfter is how long after the decision the SA before reaches its lifetime, where a case sets one
 	const lifetimeAfter = time.Minute
-	type want struct{ until, held time.Duration }
+	type want struct {
+		until, held time.Duration
+		at          string
+	}
 	for _, c := range []struct {
 		name     string
 		won      bool
@@ -879,14 +884,15 @@ func TestRecordOfACrossingRunsFromTheAnswer(t *testing.T) {
 		lifetime bool
 		want     want
 	}{
-		{"lost, the answer's budget outlasting the retention", false, 300 * time.Second, false, want{busyRequestBudget - 300*time.Second, busyRequestBudget - 300*time.Second}},
-		{"lost, the retention outlasting the answer's budget", false, 500 * time.Second, false, want{retainedContextDeadline, retainedContextDeadline}},
-		{"lost, the lifetime first", false, 300 * time.Second, true, want{lifetimeAfter, lifetimeAfter}},
-		{"won, the answer's budget outlasting the retention", true, 300 * time.Second, false, want{busyRequestBudget - 300*time.Second, busyRequestBudget - 300*time.Second}},
-		{"won, the retention outlasting the answer's budget", true, 500 * time.Second, false, want{retainedContextDeadline, retainedContextDeadline}},
-		{"won, the lifetime first", true, 300 * time.Second, true, want{lifetimeAfter, retainedContextDeadline}},
+		{"lost, the answer's budget outlasting the retention", false, 300 * time.Second, false, want{busyRequestBudget - 300*time.Second, busyRequestBudget - 300*time.Second, recordToAnswer}},
+		{"lost, the retention outlasting the answer's budget", false, 500 * time.Second, false, want{retainedContextDeadline, retainedContextDeadline, keptToRetention}},
+		{"lost, the lifetime first", false, 300 * time.Second, true, want{lifetimeAfter, lifetimeAfter, "its lifetime"}},
+		{"won, the answer's budget outlasting the retention", true, 300 * time.Second, false, want{busyRequestBudget - 300*time.Second, busyRequestBudget - 300*time.Second, recordToAnswer}},
+		{"won, the retention outlasting the answer's budget", true, 500 * time.Second, false, want{retainedContextDeadline, retainedContextDeadline, keptToRetention}},
+		{"won, the lifetime first", true, 300 * time.Second, true, want{lifetimeAfter, retainedContextDeadline, "its lifetime"}},
 	} {
 		t.Run(c.name, bubble.Run(func(t *testing.T) {
+			lines := recordLines(t)
 			s, old, local := crossed(t, true)
 			time.Sleep(c.age)
 			decided := time.Now()
@@ -918,7 +924,91 @@ func TestRecordOfACrossingRunsFromTheAnswer(t *testing.T) {
 			if got := oldBy.Sub(decided); got != c.want.held {
 				t.Errorf("the SA before is held %v after the decision, want %v", got, c.want.held)
 			}
+			time.Sleep(time.Until(oldBy))
+			s.expireRetainedContexts(time.Now())
+			told := lines.said(slog.LevelInfo, "ike dropping a replaced IKE SA kept for the peer's resends of its rekey", "at")
+			if len(told) != 1 || told[0].String() != c.want.at {
+				t.Errorf("the SA before was dropped at %v, want once at %q", told, c.want.at)
+			}
 		}))
+	}
+}
+
+// chainCrossedByAChain is a session of chainSuite whose own chained rekey sent its CREATE_CHILD_SA, and a peer's chained rekey of the same SA then ran to its IKE_FOLLOWUP_KE, its Ni of zeros the lowest nonce
+// a peer whose chain lost runs no IKE_FOLLOWUP_KE, so this is a peer that runs it anyway, the only order in which the session holds the peer's candidate of a chain while its own rekey goes on to win
+// it returns the session, the SA both rekeyed, the rekey's end, its CREATE_CHILD_SA and the peer's candidate, with the session's answer to the peer's rekey kept on the SA as the send that the test stands in for keeps it
+func chainCrossedByAChain(t *testing.T) (*Session, *ikeContext, <-chan error, *localRequest, *ikeContext) {
+	t.Helper()
+	s, _ := initiatingSession(t, chainSuite, chainLists)
+	old := s.current
+	done := rekeying(s)
+	create := requested(t, s, done, CREATE_CHILD_SA)
+	peer, request := newPeerRekey(t, hybridOffer, make([]byte, 32))
+	raw, err := s.handleIKERekey(old, 0, request)
+	if err != nil {
+		t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
+	}
+	if peer.read(t, sealedAnswer(t, old, raw.whole)); peer.link == nil {
+		t.Fatal("the peer's rekey drew no link")
+	}
+	if _, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil {
+		t.Fatalf("the peer's IKE_FOLLOWUP_KE failed: %v", err)
+	}
+	s.stateMu.Lock()
+	old.lastPeer.response, old.lastPeerResponseID = &transmission{}, s.localRekey.peerMID
+	candidate := s.collision
+	s.stateMu.Unlock()
+	if candidate == nil {
+		t.Fatal("the peer's SA is not held as the collision")
+	}
+	return s, old, done, create, candidate
+}
+
+// this end's chained rekey has sent its CREATE_CHILD_SA when a peer's chain of the same SA crosses it, and this end wins
+// once its IKE_FOLLOWUP_KE makes its SA, the SA before is held by a record of this end's answer to the peer's rekey, before this end's Delete of it goes out
+func TestChainedRekeyWonOverACrossingKeepsTheAnswer(t *testing.T) {
+	bubble.Run(testChainedRekeyWonOverACrossingKeepsTheAnswer)(t)
+}
+
+func testChainedRekeyWonOverACrossingKeepsTheAnswer(t *testing.T) {
+	s, old, done, create, _ := chainCrossedByAChain(t)
+	answer, peer := answerRekey(t, create.inner, 0, []byte("link"), nil)
+	create.result <- requestResult{inner: answer}
+	followup := requested(t, s, done, IKE_FOLLOWUP_KE)
+	followup.result <- requestResult{inner: peer.answerFollowup(t, followup.inner, ML_KEM_768, nil)}
+	deletion := requested(t, s, done, INFORMATIONAL)
+	s.stateMu.RLock()
+	record, live, held := s.recovery, s.liveRecordLocked() != nil, s.old
+	s.stateMu.RUnlock()
+	if !live || record.replaced != old || held != old {
+		t.Errorf("the SA before is held %v and recorded %v, the record live %v, want all three", held == old, record.replaced == old, live)
+	}
+	deletion.result <- requestResult{}
+	if err := ended(t, s, done); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// this end's chained rekey has sent its CREATE_CHILD_SA when a peer's chain of the same SA crosses it, and this end wins
+// the peer's Delete of the old SA comes while this end's IKE_FOLLOWUP_KE runs, so this end takes the peer's SA there, and its rekey returns nil as the IKE_FOLLOWUP_KE on the deleted SA fails
+func TestChainedRekeyAdoptedDuringItsFollowupReturnsNil(t *testing.T) {
+	bubble.Run(testChainedRekeyAdoptedDuringItsFollowupReturnsNil)(t)
+}
+
+func testChainedRekeyAdoptedDuringItsFollowupReturnsNil(t *testing.T) {
+	s, old, done, create, candidate := chainCrossedByAChain(t)
+	answer, _ := answerRekey(t, create.inner, 0, []byte("link"), nil)
+	create.result <- requestResult{inner: answer}
+	followup := requested(t, s, done, IKE_FOLLOWUP_KE)
+	if !s.adoptCollisionOnPeerDelete(old) {
+		t.Fatal("the peer's Delete of the old SA did not make its SA current")
+	}
+	followup.result <- requestResult{err: errors.New("ike: the IKE SA carrying this exchange was replaced")}
+	if err := ended(t, s, done); err != nil {
+		t.Errorf("the rekey returned %v, want nil", err)
+	}
+	if current, _ := s.contexts(); current != candidate {
+		t.Error("the session is not current on the peer's SA")
 	}
 }
 
