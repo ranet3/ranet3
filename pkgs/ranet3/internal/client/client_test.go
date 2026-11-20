@@ -2455,14 +2455,14 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 // the process while Reload's "so nothing will dial it" is not true.
 func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	// A name the dialer takes and the resolver refuses, so the loop comes
-	// round again without the dial reaching the transport. RFC 6761 reserves .invalid for exactly this. An endpoint the
-	// registry itself disqualifies is given up on before the loop, which is
-	// the case above this one.
+	// a name the dialer takes, so each pass is one attempt and then the reconnect delay, and the dial never reaches the transport
+	// an endpoint the registry itself disqualifies is given up on before the loop, which is the case above this one
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
 	c := testClientOf(t, cfg, privateKey, reg)
 	c.dialRetry = time.Millisecond
+	// with no prepare the resolution is refused before any lookup, so an attempt never asks the host
+	c.prepare = nil
 
 	d := dialTo(t, cfg, cfg.Dial.To[0])
 	if _, err := c.index().Key(d.peer.Node()); err != nil {
