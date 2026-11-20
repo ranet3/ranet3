@@ -522,9 +522,15 @@ reads the lists of `cap.crypto.ike` and `cap.crypto.esp` at each exchange.
 | `jitter` | duration | `"1m"`  | Up to this much earlier, at random                       |
 
 - No value is negative.
+- A value of `child`, `ike` or `margin` above `0` and under 10 seconds is
+  refused.
 - `margin` is positive whenever `child` or `ike` is on, since a rekey due at the
   end of its SA's lifetime could never replace it.
-- `margin` plus `jitter` is less than every interval that is on.
+- Every interval that is on is at least `margin` plus `jitter` plus 1 second, so
+  an SA's scheduled rekey comes at least 1 second after the SA is made, the
+  [least spacing](design/limits.md#ike) a ranet3 peer takes between 2 rekeys of
+  a kind. The shortest `child` or `ike` that loads is 11 seconds, beside a
+  `margin` of 10 seconds and a `jitter` of `0`.
 
 `jitter` also delays the rekey a reload forces on an SA whose transform the new
 lists leave out, as [how the lists are used](#how-the-lists-are-used) describes.
@@ -558,7 +564,9 @@ the SA the peer made.
 | `first` | duration | `"5s"`  | First delay   |
 | `max`   | duration | `"5m"`  | Longest delay |
 
-- Both are positive. `first` is at most `max`.
+- Both are at least 1 second. `first` is at most `max`.
+- `first` is shorter than `margin` whenever `child` or `ike` is on, so a rekey
+  that fails at once is retried before its SA's lifetime ends.
 
 ### `cap.crypto.ike`
 
