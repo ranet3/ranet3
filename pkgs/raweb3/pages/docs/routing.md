@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-24
+updated: 2026-11-25
 order: 45
 ---
 
@@ -575,10 +575,12 @@ an overlay prefix goes there too, this node's own prefix among them, even where
 a carve-out equals the overlay prefix. An address `cap.table` assigns gets no
 route of its own there unless this node originates it too, since the host's
 kernel holds it as one of its own already, though an overlay prefix equal to it
-still gets its hold, unless a carve-out equals it, as the table below gives. On
-Linux a hold or a throw names no device, though an IPv6 one reads back as
-`dev lo`, and every other route leaves through the tun. On macOS every route it
-installs is on the utun, but the hold of each overlay prefix and the kill
+still gets its hold, unless a carve-out equals it, where on Linux it gets the
+carve-out's throw, and nothing where the mesh's table holds that prefix itself
+for every source but as an address only `cap.table` assigns, as the table below
+gives. On Linux a hold or a throw names no device, though an IPv6 one reads back
+as `dev lo`, and every other route leaves through the tun. On macOS every route
+it installs is on the utun, but the hold of each overlay prefix and the kill
 switch's rejects, which are on `lo0`. The reconciler also assigns the tun's
 addresses. On Linux it also installs the [policy rules](#policy-rules-on-linux)
 it derives.
@@ -607,7 +609,7 @@ Each entry of the mesh's table becomes:
 | This node's own prefix inside the overlay                                                                     | a hold, but on macOS nothing at one address the utun holds unless the hold has no source and a prefix of `overlay` equals the address, where it goes on `lo0`                                                                                                                                                                           |
 | An address only `cap.table` assigns                                                                           | nothing                                                                                                                                                                                                                                                                                                                                 |
 | Each prefix of `overlay`                                                                                      | a hold for each but one a carve-out equals, on macOS on `lo0` in every mode, as [the kill switch on macOS](#the-kill-switch-on-macos) gives                                                                                                                                                                                             |
-| Each [carve-out](antispoof.md#carve-outs), where a link's network or point-to-point far end meets the overlay | in place of an overlay prefix's hold of the same prefix, on Linux a throw at metric 4294967295, and nothing where the mesh's table holds that prefix itself for every source, and on macOS nothing                                                                                                                                      |
+| Each [carve-out](antispoof.md#carve-outs), where a link's network or point-to-point far end meets the overlay | in place of an overlay prefix's hold of the same prefix, on Linux a throw at metric 4294967295, and nothing where the mesh's table holds that prefix itself for every source but as an address only `cap.table` assigns, and on macOS nothing                                                                                           |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
@@ -660,7 +662,9 @@ announcement with a source, D from S. Under the destination-first ordering of
 [RFC 9079 section 4](https://www.rfc-editor.org/rfc/rfc9079.html#section-4) the
 mesh routes D to this node only for packets from S, so a reply to D from outside
 S would never come back through the mesh. With no `overlay`, no 5110 rule is
-installed.
+installed. While a node is down the rules at 32764 and 32765 of
+[the overlay while a node is down](#the-overlay-while-a-node-is-down) stand in
+place of these, unless `ranet3 disable reconciler` stopped the reconciler.
 
 #### Exit mode on Linux
 
@@ -1019,8 +1023,10 @@ These tables are where a lookup ends under the derived rules, and the other
 pages link here for it. They hold where `cap.table` is written and the
 reconciler is enabled, with every rule of the reconciler's last pass in place,
 no rule of another program in the policy database, and no route of another
-writer in `cap.table.id`'s table. `ranet3 debug route` names the rule and route
-a lookup of one packet ends on, as [debugging](development/debug.md) describes.
+writer in `cap.table.id`'s table. Where a lookup ends while a node is down is
+[the overlay while a node is down](#the-overlay-while-a-node-is-down).
+`ranet3 debug route` names the rule and route a lookup of one packet ends on, as
+[debugging](development/debug.md) describes.
 
 Where that does not hold, the reconciler does this:
 
@@ -1087,10 +1093,9 @@ A lookup bound to no device:
 
 - L3 and L5: every overlay prefix has a hold of its own, or where a carve-out
   equals it, in its place that carve-out's throw or the mesh's own route at it,
-  but one whose carve-out is an address `cap.table` assigns this node gets none
-  of them. So inside the overlay the mesh's longest match is never a route
-  shorter than the prefix but at such an address. Without `overlay` no
-  destination is inside the overlay.
+  the throw where the carve-out is an address `cap.table` assigns this node. So
+  inside the overlay the mesh's longest match is never a route shorter than the
+  prefix. Without `overlay` no destination is inside the overlay.
 - L5: a [carve-out](antispoof.md#carve-outs)'s throw is the mesh's longest match
   for an address of the carve-out no route of the mesh holds, so a lookup to the
   link's gateway or neighbor ends at L6 by main's route for the link.
@@ -1186,12 +1191,13 @@ fails no pass.
 - A change in the mesh, or a kernel notification, starts a pass 250 milliseconds
   later. Changes in that window join the same pass. On Linux the notifications
   are a route of the mesh's table coming or going that the reconciler did not
-  write itself, a rule of the reconciler's protocol going, and an address of the
-  tun coming or going, another writer's among them, and another writer deleting
-  the table `inet ranet3` or setting a flag on it, or changing the kill switch's
-  chains and sets in it, while the reconciler writes them. On macOS they are a
-  route of the utun, or of `lo0`, where the holds and the kill switch's rejects
-  are, coming, going or changing, another writer's among them.
+  write itself, a rule of the reconciler's protocol going that it did not delete
+  itself, and an address of the tun coming or going, another writer's among
+  them, and another writer deleting the table `inet ranet3` or setting a flag on
+  it, or changing the kill switch's chains and sets in it, while the reconciler
+  writes them. On macOS they are a route of the utun, or of `lo0`, where the
+  holds and the kill switch's rejects are, coming, going or changing, another
+  writer's among them.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
@@ -1217,11 +1223,226 @@ fails no pass.
   endpoint.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
-reconciler installed, 5450 among them on Linux, and deletes the kill switch,
-[its chains and sets](#the-kill-switch-on-linux) on Linux and
+reconciler installed, 5450 and the down set among them on Linux, and deletes the
+kill switch, [its chains and sets](#the-kill-switch-on-linux) on Linux and
 [the rejects](#the-kill-switch-on-macos) on macOS, so the host's traffic leaves
 by the uplink until it is enabled again. `ranet3 enable reconciler` puts them
 back. Both are refused on a node with no `cap.table`.
+
+### The overlay while a node is down
+
+On Linux, `ranet3 down` and a stop of the daemon, a stop for the mesh's failure
+among them, first add 2 rules for each prefix of `overlay` but one a
+[carve-out](antispoof.md#carve-outs) equals, in its family and carrying
+`cap.table.proto`, unless `ranet3 disable reconciler` stopped the reconciler
+before them. These are the down set, where `<n>` is the prefix's length:
+
+| Priority | Rule                                                  | What it does                                                           |
+| -------- | ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| 32764    | `to <prefix> lookup main suppress_prefixlength <n-1>` | main's table to the prefix, its routes shorter than the prefix skipped |
+| 32765    | `to <prefix> unreachable`                             | refuses the rest with `Network is unreachable`                         |
+
+32765 goes in first, so once its add succeeds no lookup meets 32764 alone. Both
+sit just ahead of the kernel's rule for main at 32766. Another program's rule
+ahead of 32764 answers first, as
+[sharing a host](coexistence.md#another-programs-rules) gives. Past those rules,
+a lookup to an overlay destination ends at 32764 at a route of main as long as
+the overlay prefix or longer, and otherwise at 32765. Where overlay prefixes
+nest, main's route as long as the shorter prefix answers an address in the
+longer one at the shorter prefix's 32764. Main's default and a shorter route of
+main covering the prefix are refused like the rest. A prefix a carve-out equals,
+such as one the uplink's own network covers, gets no rules, as it gets no hold
+while the node runs, so its addresses go onto the carve-out's link while down as
+they do then. A reject route of main, `unreachable`, `prohibit` or `blackhole`,
+ends the lookup at 32764 at any length, shorter than the prefix too, and refuses
+it there with its own error, `No route to host`, `Permission denied` or
+`Invalid argument`, in place of `Network is unreachable`, since the kernel skips
+a shorter route only where its lookup found one to send by. A `throw` route of
+main goes on to 32765. A destination outside `overlay` meets neither rule, and
+nothing is written into main. An IPv4 socket bound to a device, by
+`SO_BINDTODEVICE` or `ping -I`, whose lookup 32765 refuses sends on-link out of
+that device all the same, as it does while the node runs. An IPv6 socket bound
+to a device meets the refusal.
+
+Once the down set is in, the stop deletes the reconciler's other rules from the
+last priority to the first, and then its routes and addresses. Every rule that
+looks main up goes before 5110, so until 5110 goes a lookup to an overlay
+destination meets the mesh's table as it does while the node runs, and after it
+the down set. A destination outside `overlay` meets the rules not yet deleted
+and then main at 32766.
+
+Where the add of a rule of the down set fails or one of the reconciler's rules
+cannot be deleted, the stop leaves that family's routes and each of its rules
+not yet deleted, and where the reconciler's rules cannot be listed it leaves
+both families', and its error says so. `ranet3 disable reconciler` leaves the
+same where a listing or a delete fails. A stopped reconciler tries again on its
+retry. A stop of the daemon runs the withdrawal once more, then lists the rules
+again and adds once each rule of the down set the listing lacks, one another
+writer deleted in between among them, and does not retry, so what that
+withdrawal could not delete stays, apart from the routes through the tun, which
+go with it.
+
+While the reconciler is stopped, each of its passes, at each wake, the sweep,
+the retry, a verb, a reload and a change of the network or the endpoints among
+them, lists the rules and the routes again and writes what the stop asks now:
+the down set of the `overlay` in force, unless `ranet3 disable reconciler`
+stopped it, and nothing else of the reconciler's. Each such pass reads the
+carve-outs from the links as the network watch last read them, so a link that
+comes or goes while the node is down moves the pair of each prefix it holds
+whole at the next pass. A down set another writer deletes while the node is down
+goes back in at the next pass, and a pass that finds the kernel as the stop asks
+writes nothing. After a stop of the daemon no pass runs, so a carve-out's link
+lost after the network watch's last read before the stop leaves its prefix to
+main's routes, main's default among them, until the next start, and a prefix
+that a link coming up after the stop covers by a shorter network stays refused
+until then. A rule of the down set another writer deletes after that stop, as
+systemd-networkd does where [sharing a host](coexistence.md#routes-on-linux)
+gives, stays out until the next start too. Where that writer deletes the 32764
+of a prefix alone, that prefix's 32765 still refuses its addresses, unless a
+rule ahead of it answers first, the 32764 of a shorter prefix where prefixes
+nest among them. Where it deletes the 32765, a lookup to an address of the
+prefix can reach main's routes, main's default among them, unless the pair of
+another prefix of the down set that holds the address, or a rule ahead of 32765,
+answers it first.
+
+After a stop, an IPv6 route exception for an address of a prefix the down set
+holds passes 32764, so the host's packets to that one address leave by main's
+route to it, or by the target of the redirect that made it. A `Packet Too Big`
+makes one while main answers the address, its default route among them, whether
+or not the node sent the packet it quotes. It lasts until
+`net.ipv6.route.mtu_expires` runs out from its making, 10 minutes by default. A
+router's redirect makes one too, which goes 30 to 60 seconds after its last use,
+so one the host keeps sending through stays. A redirect the host takes while the
+node runs makes one for an overlay address as well, the mesh's or one the hold
+refuses, which no lookup meets while 5110 stands and which passes 32764 once the
+node stops, through the redirect's target, for up to 60 seconds after its last
+use. `ip -6 route flush cache root <prefix>` clears the exceptions inside an
+overlay prefix alone. The flush after a stop clears those a redirect made while
+the node ran too. While the down set stands main answers an address of its
+prefixes only by a route as long as the prefix or longer, and a start that has
+not finished adds no rule that looks main up, so no exception is made by a
+shorter one, and one flush after a stop lasts until the next start. IPv4's are
+refused.
+
+A start that finds the down set a stop left, and no running rules beside it,
+keeps the down set until it has finished, also where its listing of the tun's
+addresses fails. Until then it adds no rule that looks main up, and no rule that
+sends a lookup into the mesh but the lookup at 5110 of an overlay prefix where a
+route of the reconciler's at the prefix itself stands: its hold, a carve-out's
+throw, or the mesh's own route there. It adds the pair of an overlay prefix a
+reload added, 32765 first. It deletes the pair of a prefix a reload removed or a
+carve-out now equals, 32764 first, and its 32765 only once a pair that stands
+covers each prefix of the down set it overlaps, the prefix's own or that of an
+overlay prefix that holds it. An add of a pair that fails is reported, and the
+next pass adds it again. A pass that replaces or deletes a prefix's hold or the
+mesh's own route at the prefix, or adds a throw inside it, first deletes that
+prefix's 5110, so beside an exit default no lookup to the prefix goes into the
+mesh while no route at the prefix itself holds it. Under `fallback = "none"` the
+start adds 5490, 5400 and 5450 right after those pairs and before any address or
+route write, whether the kill switch holds or not, 5450 for `lo` and for each
+link `forward` expands to then. A link `forward` names that appears later gets
+its 5450 at the next pass, and until then its traffic leaves as a completed down
+sends it. A pass that cannot list the rules adds the three all the same, before
+any address or route write, as a stop adds its down set where its listing fails,
+whether or not it can list the tun's addresses. The kernel answers the add of
+one that stands with `EEXIST`, which the reconciler takes as done, so none
+stands twice.
+
+While a start has not finished, each kind of traffic gets, in every mode:
+
+- A lookup to an overlay destination meets the hold at 5110, which refuses it
+  (`EHOSTUNREACH`), or at a prefix a carve-out equals the throw, which sends it
+  on to main, and a destination the mesh routes goes into the mesh there. Where
+  5110 is not in, the down set answers it as a completed down does, but under
+  `fallback = "none"` 5450 refuses the host's own lookup and each forwarded
+  link's first. The underlay's marked packet passes 5110 and 5450 and meets
+  32764, which answers it by a route of main as long as the prefix or longer,
+  and otherwise 32765. Under `fallback = "none"`, where the add of 5490 fails
+  and 5400 lands, the kernel passes the goto at 5400 over, so the marked packet
+  of that family meets 5450 and is refused, the daemon's own underlay traffic
+  among it, until a pass adds 5490. That holds for a pass that cannot list the
+  rules as for a start that can.
+- In mode off and under `fallback = "uplink"` a destination outside `overlay`,
+  the host's own send, its reply from the uplink's address and what a link
+  forwards leave as a completed down sends them, by main, the host's send from
+  its own prefix and a subnet only the mesh's table holds among them.
+- Under `fallback = "none"` 5450 refuses with `ENETUNREACH` every lookup of the
+  host's own and of each link `forward` expands to that the down set and 5110
+  leave to it: the host's send outside, the reply to an inbound connection
+  `inbound` exempts, a carve-out's neighbor and the LAN `forward` names. A link
+  `forward` leaves out keeps main. That is the cost of a start under `none` that
+  has not finished. Where the add of 5450 fails, a destination outside `overlay`
+  leaves by main as a completed down sends it until a pass adds 5450, with the
+  kill switch alone in its way, and the status and the log report the failed add
+  without saying whether the switch holds.
+
+A start finishes once a pass has listed the routes, every hold stands and every
+rule the start keeps stands. In each family it then adds 5490 and 5400 where
+they are not in, then 5405, 5410, 5435 and 5445. Where one of those adds fails,
+or one of them does not stand once all are written, the pass deletes what it
+added, the last first, and the down set stays whole until a later pass finishes.
+A rule whose delete fails too stays beside the down set, owed in the status and
+named in the warning, and each pass deletes it first until one does. Once every
+one of them stands, each pair goes, 32765 and then 32764, then 5420, 5430, 5440,
+and 5450 where it is not in. From then on the pass deletes none of the running
+rules: a delete of the down set or an add that fails is owed, and every pass
+writes it again. Until they all stand no destination outside `overlay` leaves
+another way than a completed down sends it. For a destination an old pair
+covered, where the restart keeps `cap.table.proto` and no carve-out equals the
+prefix at the start, a lookup meets the mesh's table or the down set throughout
+a restart. A prefix a reload added gets its pair at the first pass, and until
+its 32765 is in, a lookup to it leaves by main's route that holds it. A prefix a
+carve-out equals has no pair, so a lookup inside it that no rule of the start
+answers meets main and leaves by the carve-out's link, as the running node sends
+it. A reload while the node is down that changes `overlay` writes the down set
+of the new prefixes in the same order, so the 32764 of an old prefix that
+overlaps a new one goes ahead of the new pairs.
+
+Two cases stay as they are. Under `fallback = "none"`, a pass that cannot tell
+whether those adds stand and whose delete of a 5410 fails too leaves that 5410
+beside the down set until a later pass deletes it, owed meanwhile: a subnet main
+holds by a route longer than its default leaves by that route, as a completed
+down sends it, where 5450 would refuse it. A process that starts after a pass
+whose deletes of the down set and whose adds after them all failed finds the
+down set and none of 5420, 5430 and 5440 beside it, and starts as after a stop.
+
+`ranet3 disable reconciler` withdraws the down set with the rest. It is the way
+to clear the down set from a running daemon. Every stop after it adds none until
+`ranet3 enable reconciler`. A reboot clears the down set. A `SIGKILL` adds none
+and leaves the kernel as that instant had it, a pass's or a stop's writes in
+part among them, but the routes the tun takes with it.
+
+A start with no `cap.table` deletes no rule of the down set, only
+[the kill switch](#the-kill-switch-on-linux) an earlier instance left. It warns
+once, as [watching it](#watching-it) gives, of each such rule at a prefix of its
+`overlay` under protocol 155. A rule left under another protocol, after a change
+of `cap.table.proto`, or at a prefix the file no longer holds goes unnamed. Such
+a rule stays after an uninstall too. Each is deleted by
+`ip -4 rule del priority <priority> to <prefix> protocol <proto>`, or
+`ip -6 rule del priority <priority> to <prefix> protocol <proto>` for an IPv6
+prefix.
+
+The `Kernel` line of `ranet3 status` counts as refused while down the distinct
+overlay prefixes whose pair of down rules the last pass found standing, by its
+listing of the rules and its writes, where there are any, while the reconciler
+is stopped or its start has not finished. It counts rules that stand, not
+packets refused, a second copy of a rule counting nothing more. A node that runs
+counts none. Where the last pass could not list the rules the line reads
+`refused while down not known`, since its writes alone do not say what stands,
+and the writes owed stay those the last pass that listed the rules found. Where
+the last pass owes writes the line counts them, as `2 writes owed`, and `--json`
+lists each as `kernel.owed`, as does the warning, once each time the list
+changes. Beside a running set a delete of the down set is owed by prefix,
+`delete the pair of <prefix> (32765, 32764)` or
+`delete the refusal of <prefix> (32765)`: either refuses the underlay's marked
+packet to an endpoint main reaches by a shorter route, and for a prefix a reload
+removed the host's own send there. An add that did not land reads
+`install <rule>`. Where that rule is not 5110, 5110 answers each overlay lookup
+ahead of it, so it opens no way out of the overlay. A missing 5110 lets its
+prefix's lookups reach the lookups of main at 5405 and 5410, which send them by
+main's routes that hold them. A rule left beside the down set reads
+`delete <rule>`. `--json` always carries the count as `kernel.held`, 0 where it
+is not known, and `kernel.held_unknown` true then.
 
 ### Routes that count as a default
 
@@ -1953,41 +2174,43 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.
 
-| Log line                                                                                                                                                       | Level | When                                                                                                                                                                                            |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `babel neighbor up`, `babel neighbor down`                                                                                                                     | info  | a neighbor comes up or goes down                                                                                                                                                                |
-| `babel route installed`                                                                                                                                        | info  | a route is selected                                                                                                                                                                             |
-| `babel route retracted`                                                                                                                                        | info  | a route is held unreachable                                                                                                                                                                     |
-| `kernel reconciler started`                                                                                                                                    | info  | the reconciler starts, naming where it writes                                                                                                                                                   |
-| `kernel routes reconciled`                                                                                                                                     | info  | a pass added or removed a route                                                                                                                                                                 |
-| `kernel changed the endpoints it cuts out of the mesh's routes or the routes it scopes beneath the host's`                                                     | info  | on macOS, a pass began or stopped cutting an address out or scoping a route beneath the host's, with `cut`, `restored`, `scoped` and `unscoped`, once for each change                           |
-| `kernel reconciler withdrawn`                                                                                                                                  | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules                                                                                                                 |
-| `kernel is leaving an address it does not own whose network reaches a none class outside overlay`                                                              | warn  | a pass found an address this process did not add, other than IPv6 link-local, whose network the load would refuse, with `interface`, `address`, `class` and `fix`, once while it stays          |
-| `kernel finds an overlay prefix answered outside the mesh's table`                                                                                             | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed                                                                                                                        |
-| `kernel finds an overlay prefix answered through the tun or by a hold again`                                                                                   | info  | an overlay prefix's lookup stopped being taken                                                                                                                                                  |
-| `kernel finds the underlay's mark answered through the tun`                                                                                                    | warn  | a send's lookup under the mark became taken, or a taken one's answer changed                                                                                                                    |
-| `kernel finds the underlay's mark answered outside the tun again`                                                                                              | info  | a send's lookup under the mark stopped being taken                                                                                                                                              |
-| `kernel no longer asks a lookup it found taken`                                                                                                                | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups                                                                                                                |
-| `kernel could not ask where its overlay and underlay lookups end`                                                                                              | warn  | the lookups failed, once until they answer again, and the last answers stay                                                                                                                     |
-| `kernel can ask where its overlay and underlay lookups end again`                                                                                              | info  | the lookups answered after failing                                                                                                                                                              |
-| `kernel leaves a link cap.exit forward matches out of the mode`                                                                                                | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer                                                                                                            |
-| `kernel no longer leaves a link cap.exit forward matched out of the mode`                                                                                      | info  | that link stopped being one of them, or stopped matching                                                                                                                                        |
-| `kernel leaves a family out of the exit mode, the tun holding no overlay address of it`                                                                        | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`                                                                                                                       |
-| `kernel no longer leaves a family out of the exit mode`                                                                                                        | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew                                                                                                                      |
-| `kernel is withdrawing the steered defaults`                                                                                                                   | warn  | under `cap.exit.via`, a pass found a segment of the path unresolved, with `segment` and `verdict`, once until that changes                                                                      |
-| `kernel holds the steered defaults while every segment of cap.exit via resolves to a peer through its own /128, or for a segment after the first to this node` | info  | under `cap.exit.via`, a pass found every segment resolved, with `installed`, the families whose steered default, or on macOS its zero-free cover, it left in the table, once until that changes |
-| `kernel's kill switch holds the host's traffic while no exit is live`                                                                                          | info  | the switch began holding, or holds again once it reads back, with `where`, the chains or the rejects on `lo0`                                                                                   |
-| `kernel's kill switch passes the host's traffic to the exit live through the tun`                                                                              | info  | an exit became live under the switch, with `where`                                                                                                                                              |
-| `kernel's kill switch is no longer asked for`                                                                                                                  | info  | a reload or a withdrawal ended the switch, with `where`                                                                                                                                         |
-| `kernel is leaving its kill switch after the mesh failed`                                                                                                      | warn  | under `fallback = "none"` a failed tun's stop left the switch it found, with `where` and the last pass's `state`, empty before one                                                              |
-| `kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes`                                                       | warn  | under `fallback = "none"` a failed tun's stop found no switch, with `where` and the last pass's `state`, empty before one                                                                       |
-| `kernel is leaving any kill switch there after the mesh failed, which it could not list`                                                                       | warn  | under `fallback = "none"` a failed tun's stop could not list the switch and deleted none, with `where`, `state` and `err`                                                                       |
-| `kernel's kill switch does not read back as written`                                                                                                           | warn  | the switch stopped reading back, with `where`, `fault` and `detail`, where the host's traffic goes meanwhile, once for each fault until it does                                                 |
-| `kernel's kill switch table was deleted during its read, and the pass writes the switch again`                                                                 | warn  | on Linux a pass's read found the switch's table gone, as [the kill switch on Linux](#the-kill-switch-on-linux) gives, with `where` and `err`, once for each pass that finds it                  |
-| `kernel could not delete a kill switch an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`                   | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the switch, on macOS or the holds at its configuration's prefixes, with `where`, `err` and `fix`       |
-| `kernel's first pass has not ended, so sessions are dialed before the kill switch is written`                                                                  | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                                                                        |
-| `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                             | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                                                                           |
-| `stopped reading nf_tables notifications`                                                                                                                      | warn  | a read of the switch's notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next periodic pass                                       |
+| Log line                                                                                                                                                       | Level | When                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `babel neighbor up`, `babel neighbor down`                                                                                                                     | info  | a neighbor comes up or goes down                                                                                                                                                                                                                                                                                |
+| `babel route installed`                                                                                                                                        | info  | a route is selected                                                                                                                                                                                                                                                                                             |
+| `babel route retracted`                                                                                                                                        | info  | a route is held unreachable                                                                                                                                                                                                                                                                                     |
+| `kernel reconciler started`                                                                                                                                    | info  | the reconciler starts, naming where it writes                                                                                                                                                                                                                                                                   |
+| `kernel routes reconciled`                                                                                                                                     | info  | a pass added or removed a route                                                                                                                                                                                                                                                                                 |
+| `kernel changed the endpoints it cuts out of the mesh's routes or the routes it scopes beneath the host's`                                                     | info  | on macOS, a pass began or stopped cutting an address out or scoping a route beneath the host's, with `cut`, `restored`, `scoped` and `unscoped`, once for each change                                                                                                                                           |
+| `kernel reconciler withdrawn`                                                                                                                                  | info  | shutdown, `ranet3 down` or `ranet3 disable reconciler` removed the routes, addresses and rules, with `held`, the overlay prefixes whose pair of down rules stands after it, and a stopped reconciler's later pass where it wrote                                                                                |
+| `kernel found rules an earlier instance left to hold overlay prefixes, which refuse each prefix whose 32765 rule stands until they are deleted`                | warn  | a start with no `cap.table` found rules of the down set of its `overlay` under protocol 155, with `rules` and `fix`                                                                                                                                                                                             |
+| `kernel found a rule of its own that another writer deleted`                                                                                                   | warn  | a pass or a stopped pass found missing a rule that the pass or stop before it left standing, with `rule`. It is not warned of again until a listing has shown the rule standing, so another delete after a pass put it back and before such a listing goes untold. The hold routes are put back with no warning |
+| `kernel is leaving an address it does not own whose network reaches a none class outside overlay`                                                              | warn  | a pass found an address this process did not add, other than IPv6 link-local, whose network the load would refuse, with `interface`, `address`, `class` and `fix`, once while it stays                                                                                                                          |
+| `kernel finds an overlay prefix answered outside the mesh's table`                                                                                             | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed                                                                                                                                                                                                                                        |
+| `kernel finds an overlay prefix answered through the tun or by a hold again`                                                                                   | info  | an overlay prefix's lookup stopped being taken                                                                                                                                                                                                                                                                  |
+| `kernel finds the underlay's mark answered through the tun`                                                                                                    | warn  | a send's lookup under the mark became taken, or a taken one's answer changed                                                                                                                                                                                                                                    |
+| `kernel finds the underlay's mark answered outside the tun again`                                                                                              | info  | a send's lookup under the mark stopped being taken                                                                                                                                                                                                                                                              |
+| `kernel no longer asks a lookup it found taken`                                                                                                                | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups                                                                                                                                                                                                                                |
+| `kernel could not ask where its overlay and underlay lookups end`                                                                                              | warn  | the lookups failed, once until they answer again, and the last answers stay                                                                                                                                                                                                                                     |
+| `kernel can ask where its overlay and underlay lookups end again`                                                                                              | info  | the lookups answered after failing                                                                                                                                                                                                                                                                              |
+| `kernel leaves a link cap.exit forward matches out of the mode`                                                                                                | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer                                                                                                                                                                                                                            |
+| `kernel no longer leaves a link cap.exit forward matched out of the mode`                                                                                      | info  | that link stopped being one of them, or stopped matching                                                                                                                                                                                                                                                        |
+| `kernel leaves a family out of the exit mode, the tun holding no overlay address of it`                                                                        | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`                                                                                                                                                                                                                                       |
+| `kernel no longer leaves a family out of the exit mode`                                                                                                        | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew                                                                                                                                                                                                                                      |
+| `kernel is withdrawing the steered defaults`                                                                                                                   | warn  | under `cap.exit.via`, a pass found a segment of the path unresolved, with `segment` and `verdict`, once until that changes                                                                                                                                                                                      |
+| `kernel holds the steered defaults while every segment of cap.exit via resolves to a peer through its own /128, or for a segment after the first to this node` | info  | under `cap.exit.via`, a pass found every segment resolved, with `installed`, the families whose steered default, or on macOS its zero-free cover, it left in the table, once until that changes                                                                                                                 |
+| `kernel's kill switch holds the host's traffic while no exit is live`                                                                                          | info  | the switch began holding, or holds again once it reads back, with `where`, the chains or the rejects on `lo0`                                                                                                                                                                                                   |
+| `kernel's kill switch passes the host's traffic to the exit live through the tun`                                                                              | info  | an exit became live under the switch, with `where`                                                                                                                                                                                                                                                              |
+| `kernel's kill switch is no longer asked for`                                                                                                                  | info  | a reload or a withdrawal ended the switch, with `where`                                                                                                                                                                                                                                                         |
+| `kernel is leaving its kill switch after the mesh failed`                                                                                                      | warn  | under `fallback = "none"` a failed tun's stop left the switch it found, with `where` and the last pass's `state`, empty before one                                                                                                                                                                              |
+| `kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes`                                                       | warn  | under `fallback = "none"` a failed tun's stop found no switch, with `where` and the last pass's `state`, empty before one                                                                                                                                                                                       |
+| `kernel is leaving any kill switch there after the mesh failed, which it could not list`                                                                       | warn  | under `fallback = "none"` a failed tun's stop could not list the switch and deleted none, with `where`, `state` and `err`                                                                                                                                                                                       |
+| `kernel's kill switch does not read back as written`                                                                                                           | warn  | the switch stopped reading back, with `where`, `fault` and `detail`, where the host's traffic goes meanwhile, once for each fault until it does                                                                                                                                                                 |
+| `kernel's kill switch table was deleted during its read, and the pass writes the switch again`                                                                 | warn  | on Linux a pass's read found the switch's table gone, as [the kill switch on Linux](#the-kill-switch-on-linux) gives, with `where` and `err`, once for each pass that finds it                                                                                                                                  |
+| `kernel could not delete a kill switch an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`                   | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the switch, on macOS or the holds at its configuration's prefixes, with `where`, `err` and `fix`                                                                                                                       |
+| `kernel's first pass has not ended, so sessions are dialed before the kill switch is written`                                                                  | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                                                                                                                                                                                        |
+| `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                             | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                                                                                                                                                                                           |
+| `stopped reading nf_tables notifications`                                                                                                                      | warn  | a read of the switch's notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next periodic pass                                                                                                                                                       |
 
 The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. A lookup's
@@ -1997,13 +2220,13 @@ send carries where it carries them, and `answer`. The events
 `babel.neighbor.up`, `babel.neighbor.down`, `babel.route.selected` and
 `babel.route.retracted` record each change. `kernel.pass` records each pass that
 changed the kernel, met a newly refused route, failed or followed a reload, and
-a withdrawal only when it fails, `kernel.taken` each line that names a lookup,
-`kernel.forward` each line about a skipped link, with its `entry`, `link`,
-`reason` and `skipped`, `kernel.exit` each line about a family the tun holds no
-overlay address of, with its `family` and `addressed`, `kernel.fallback` each
-change of the switch's state, with `state` and `was`, each `holding`, `passing`,
-`not holding` or `off`, and `kernel.path` each line about the path, with
-`state`, `segment`, `verdict` and `installed`, as
+a withdrawal only when it fails or follows a reload, `kernel.taken` each line
+that names a lookup, `kernel.forward` each line about a skipped link, with its
+`entry`, `link`, `reason` and `skipped`, `kernel.exit` each line about a family
+the tun holds no overlay address of, with its `family` and `addressed`,
+`kernel.fallback` each change of the switch's state, with `state` and `was`,
+each `holding`, `passing`, `not holding` or `off`, and `kernel.path` each line
+about the path, with `state`, `segment`, `verdict` and `installed`, as
 [debugging](development/debug.md#events) says.
 
 [Metrics](metrics.md#series) lists the series of Babel and of the reconciler,

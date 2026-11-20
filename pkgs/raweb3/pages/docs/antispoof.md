@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-22
+updated: 2026-11-24
 order: 55
 ---
 
@@ -222,13 +222,14 @@ address and its far end, each a `/32`.
   neighbors by main, and a route of the mesh inside the lease still wins by its
   length, as rows L5 and L6 of
   [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give. Where the
-  mesh's table holds the carve-out's own prefix for every source, the reconciler
-  throws nothing. [Exit mode](routing.md#exit-mode-on-linux) selects the lease's
-  address and network for main at 5405 and 5435 unless an entry of the mesh's
-  table inside the carve-out holds them, so an exit's default leaves them
-  selected. [The kill switch](routing.md#the-kill-switch-on-linux) gives what a
-  carve-out adds to its sets and to 5445, and what of its network outside the
-  overlay its LAN holds.
+  mesh's table holds the carve-out's own prefix for every source, but as an
+  address only `cap.table` assigns, the reconciler throws nothing.
+  [Exit mode](routing.md#exit-mode-on-linux) selects the lease's address and
+  network for main at 5405 and 5435 unless an entry of the mesh's table inside
+  the carve-out holds them, so an exit's default leaves them selected.
+  [The kill switch](routing.md#the-kill-switch-on-linux) gives what a carve-out
+  adds to its sets and to 5445, and what of its network outside the overlay its
+  LAN holds.
 
 Each carve-out that comes is logged at warning,
 `antispoof carves the overlay for a link that holds part of it`, with `link` and
@@ -417,14 +418,15 @@ its passes, and after each withdrawal that listed its routes, the reconciler
 tells the filter which of its routes the kernel may hold: after a pass, each
 route of its record of what it installed and each add the kernel answered with
 an error since its last listing, and after a withdrawal, each route whose delete
-failed. A pass whose listing fails writes nothing and tells the record again. A
-withdrawal leaves the record as it was, so such a pass after one tells the
-routes the withdrawal deleted, and the sets leave their addresses out, dropping
-a stranger's packet toward them, until a listing reads the kernel. The filter
-leaves out of the sets the addresses outside the overlay of each learned route
-into the tun that the kernel may hold: each the reconciler names, and each the
-source handed it since the reconciler's last report. A hold, a throw, a member
-of a cover and a route that counts as a default leave no address out. Two orders
+failed and each route of a family it kept. A pass whose listing fails writes
+nothing and tells the record again. A withdrawal that listed its routes leaves
+the record as that listing and its deletes left it, so such a pass after one
+tells only the routes whose delete failed and the routes of a family the
+withdrawal kept, whose rules did not all go as its stop asks. The filter leaves
+out of the sets the addresses outside the overlay of each learned route into the
+tun that the kernel may hold: each the reconciler names, and each the source
+handed it since the reconciler's last report. A hold, a throw, a member of a
+cover and a route that counts as a default leave no address out. Two orders
 follow, whether a pass fails, a write lands late or the kernel refuses a route:
 
 - The route to a LAN another node starts advertising inside a `none` class

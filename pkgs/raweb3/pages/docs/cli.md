@@ -143,7 +143,11 @@ exits 1. The page of each writer gives what a refusal leaves of it:
 - `down` withdraws [the kill switch's](routing.md#the-kill-switch-on-linux)
   rules and chains, or on macOS
   [its rejects](routing.md#the-kill-switch-on-macos), with the rest of the
-  reconciler's, as a clean stop does, and `up` writes them again.
+  reconciler's, as a clean stop does, and `up` writes them again. On Linux
+  `down` and a clean stop leave the down set of
+  [the overlay while a node is down](routing.md#the-overlay-while-a-node-is-down),
+  which the `Kernel` line of `status` counts as refused while down, unless
+  `disable reconciler` came first. That verb withdraws the down set.
 - `debug netmon` lists each family's links outside the mesh with their addresses
   and point-to-point far ends, as [moving hosts](platforms.md#moving-hosts)
   gives them, the links [exit mode](routing.md#exit-mode-on-linux) derives its

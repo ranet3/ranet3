@@ -1014,14 +1014,17 @@ switching `margin` the speaker now runs, and a `responder.changed` carries
 `listen` and, in `closed`, how many sessions this node had answered and closed
 with a Delete. A `kernel.pass` names what woke the reconciler in `trigger`, and
 the pass a reload causes reads `trigger=reload` and is recorded whether or not
-it moved anything. A reconciler stopped with `disable` runs no pass when it
-takes a reload, and the pass that installs the block once it is enabled again
+it moved anything. A reconciler stopped with `disable` runs its stopped pass
+when it takes a reload, which installs no running route or rule and reads
+`trigger=reload`, and the pass that installs the block once it is enabled again
 reads `trigger=enable`. The same holds for a reconciler `ranet3 down` stopped,
-until `ranet3 up`. The withdrawal such a stop runs records a `kernel.pass` only
-when it fails, and no `kernel.cover` or `kernel.underlay` for what it takes out.
-It records a `kernel.taken` with `taken=false` for each lookup the reconciler
-last found taken. The pass that puts the routes back records a `kernel.cover` or
-`kernel.underlay` only for what differs from the last pass before the stop.
+until `ranet3 up`, whose stopped pass can also add rules of the down set, a
+reload's new pairs among them. Every other withdrawal such a stop runs records a
+`kernel.pass` only when it fails, and none records a `kernel.cover` or
+`kernel.underlay` for what it takes out. Such a stop records a `kernel.taken`
+with `taken=false` for each lookup the reconciler last found taken. The pass
+that puts the routes back records a `kernel.cover` or `kernel.underlay` only for
+what differs from the last pass before the stop.
 
 A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
 `net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is

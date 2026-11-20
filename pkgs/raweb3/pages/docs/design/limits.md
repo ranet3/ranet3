@@ -712,6 +712,36 @@ that names its interface falls back to, as
 exit serving Macs advertises the `/0` only, as
 [exit nodes](../exit-nodes.md#what-to-advertise) describes.
 
+**While the down set of a Linux node stands, its overlay refuses an operator's
+route shorter than an overlay prefix no carve-out equals.** The down set of
+[the overlay while a node is down](../routing.md#the-overlay-while-a-node-is-down)
+stands from a stop until the next start releases it, unless
+`ranet3 disable reconciler` came first or another writer deletes a rule of it
+after a stop of the daemon, as below, and lets main answer only with a route as
+long as the prefix or longer. Where overlay prefixes nest, main's route as long
+as the shorter prefix answers an address in the longer one. A shorter reject
+route of main refuses with its own error. Another program's rule at a priority
+below 32765, or at 32765 added before the stop wrote the down set, still answers
+what 32764 leaves before the refusal does, and one added at 32765 after it
+answers no overlay destination. `ranet3 disable reconciler` leaves no down set.
+A reboot clears the down set, so from the boot until the next start an overlay
+destination leaves by the host's routes, main's default among them. A prefix a
+carve-out equals has no pair, and a carve-out's link lost after the network
+watch's last read before a stop of the daemon leaves its prefix to the host's
+routes, main's default among them, until the next start, while a prefix that a
+link coming up after the stop covers by a shorter network stays refused until
+then, as
+[the overlay while a node is down](../routing.md#the-overlay-while-a-node-is-down)
+gives. After a stop of the daemon no pass runs, so a rule of the down set
+another writer deletes, as systemd-networkd does where
+[sharing a host](../coexistence.md#routes-on-linux) gives, stays out until the
+next start. Where that writer deletes the 32764 of a prefix alone, that prefix's
+32765 still refuses its addresses, unless a rule ahead of it answers first, the
+32764 of a shorter prefix where prefixes nest among them. Where it deletes the
+32765, a lookup to an address of the prefix can reach the host's routes, main's
+default among them, unless the pair of another prefix of the down set that holds
+the address, or a rule ahead of 32765, answers it first.
+
 ## The kill switch on macOS
 
 [The kill switch on macOS](../routing.md#the-kill-switch-on-macos) is reject

@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-22
+updated: 2026-11-23
 order: 110
 ---
 
@@ -29,14 +29,16 @@ never touches another writer's routes or rules.
 
 systemd-networkd removes every policy rule it did not ask for whenever it
 configures a link, on resume, on a `.network` change and on its own restart. The
-reconciler's route monitor also listens for rule notifications, and a deleted
-rule carrying its protocol wakes it, so the pass after the 250 millisecond
-settle puts the rule back. A rule another writer adds or deletes for itself
-wakes nothing. `ManageForeignRoutingPolicyRules=no` in `networkd.conf` keeps
-networkd from removing the rules at all. The NixOS module sets it to `false`, by
-`mkDefault`, wherever `systemd.network.enable` is on, as nixpkgs' wg-quick
-module does for its own rules, and a host that sets it itself keeps its own
-value.
+reconciler's route monitor also listens for rule notifications, and another
+program's delete of a rule carrying its protocol wakes it, so the pass after the
+250 millisecond settle puts the rule back and warns that another writer deleted
+it, as [watching it](routing.md#watching-it) gives. A delete of one of its hold
+routes is put back the same way, with no warning. A rule another writer adds or
+deletes for itself wakes nothing. `ManageForeignRoutingPolicyRules=no` in
+`networkd.conf` keeps networkd from removing the rules at all. The NixOS module
+sets it to `false`, by `mkDefault`, wherever `systemd.network.enable` is on, as
+nixpkgs' wg-quick module does for its own rules, and a host that sets it itself
+keeps its own value.
 
 Installing is where a router daemon usually takes over from its neighbors, and
 this one does not. It asks for the route exclusively, and a key something else
@@ -53,7 +55,13 @@ The reconciler writes its rules in 2 blocks, 5100 to 5190 and 5400 to 5490, on
 either side of Tailscale's 5210 to 5270, which Tailscale uses at its default
 base of 5200, as [routing](routing.md#policy-rules-on-linux) lists them.
 [Where a lookup ends](routing.md#where-a-lookup-ends-on-linux) gives where each
-lookup ends while no rule of another program is in the policy database.
+lookup ends while no rule of another program is in the policy database. While a
+node is down, and after a stop, the reconciler holds the rules of the down set
+at 32764 and 32765, just ahead of main at 32766, unless
+`ranet3 disable reconciler` stopped it, as
+[the overlay while a node is down](routing.md#the-overlay-while-a-node-is-down)
+gives. Another program's rule ahead of 32764 answers first, as
+[another program's rules](#another-programs-rules) gives.
 
 ### The underlay's mark
 

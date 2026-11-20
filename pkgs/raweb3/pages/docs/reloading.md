@@ -312,9 +312,9 @@ the reload changed. Turning `link.listen` on or off records a
 `responder.changed` with `listen`, and its `closed` counts the answered sessions
 it closed. The reconciler's pass after it is a `kernel.pass` with
 `trigger=reload`, recorded whether or not it moved anything. A reconciler
-stopped with `ranet3 disable reconciler` runs no pass when it takes the block,
-and the pass that installs it once the reconciler is started again is recorded
-with `trigger=enable`.
+stopped with `ranet3 disable reconciler` runs its stopped pass when it takes the
+block, which installs nothing, and the pass that installs the block once the
+reconciler is started again is recorded with `trigger=enable`.
 
 A reload reads the host's default TTL and hop limit again for the answers the
 node builds and the userspace exit's, and records a `daemon.ttl` where it cannot
