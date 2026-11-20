@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +23,25 @@ import (
 
 // windowGap is how far apart a test emits two events so that a window takes the later alone
 const windowGap = 200 * time.Millisecond
+
+// allocationChild names the process of its own a test counts allocations in, since a count takes every goroutine's
+// and a goroutine an earlier test of the binary left allocates in it, as a closed hub's receive loop that first runs after the close fills its receive buffers
+const allocationChild = "RANET3_CLIENT_ALLOCATION_CHILD"
+
+// inAllocationChild reports true in the process of its own, and in the test's process runs the test there and reports false
+func inAllocationChild(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(allocationChild) == t.Name() {
+		return true
+	}
+	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
+	child.Env = append(os.Environ(), allocationChild+"="+t.Name())
+	out, err := child.CombinedOutput()
+	if err != nil || !strings.Contains("\n"+string(out), "\n--- PASS: "+t.Name()+" (") {
+		t.Errorf("the process of its own ended with %v and did not pass %s:\n%s", err, t.Name(), out)
+	}
+	return false
+}
 
 // a query keeps the kinds it names and every kind under them, a peer named the way redial names one, and an event carrying every attribute it names as the event renders it, the last of a key being the one rendered
 func TestQuerySelectsKindsPeersAndAttributes(t *testing.T) {
@@ -192,8 +213,12 @@ func TestEventsViewKeepsToItsWindow(t *testing.T) {
 // the kind emitted is longer than each kind named, which is longer than 32 bytes
 // a match that joined a kind named and a dot to compare with the start of a longer kind would allocate here
 // Go builds a joined string longer than 32 bytes on the heap
+// it counts in a process of its own with a client of the bus alone, which opens no hub
 func TestFollowMatchAllocatesNothing(t *testing.T) {
-	c := testClient(t)
+	if !inAllocationChild(t) {
+		return
+	}
+	c := &Client{events: events.New()}
 	stamp := time.Date(2026, 10, 6, 4, 0, 0, 0, time.UTC)
 	emit := func() {
 		c.events.Emit("babel.a-thing-with-a-long-name.a-change-with-a-long-name", "an-organization-with-a-long-name/a-gateway-with-a-long-name:0@0",
