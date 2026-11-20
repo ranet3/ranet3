@@ -38,6 +38,62 @@ func TestCanonicalPrefixesAndSnapshotIsolation(t *testing.T) {
 	}
 }
 
+// A root read twice with no write between is equal.
+// Each write of the test publishes a root no earlier state had, a Set of the value held, a Remove of an absent entry and a RemoveFunc that removes nothing among them.
+// A lookup at a root answers from that state after later writes.
+func TestRootNamesOneState(t *testing.T) {
+	var table Table[int]
+	pairs := []struct {
+		src, dst netip.Addr
+		dests    netip.Prefix
+	}{
+		{addr("192.0.2.1"), addr("198.51.100.1"), prefix("198.51.100.0/24")},
+		{addr("2001:db8::1"), addr("3fff:1::1"), prefix("3fff:1::/32")},
+	}
+	empty := table.Root()
+	for _, p := range pairs {
+		table.Set(netip.Prefix{}, p.dests, 1)
+	}
+	first := table.Root()
+	if first != table.Root() {
+		t.Fatal("a root read twice with no write between differs")
+	}
+	if first == empty {
+		t.Fatal("a write left the root the empty table had")
+	}
+	writes := []func(){
+		func() { table.Set(netip.Prefix{}, pairs[0].dests, 2) },
+		func() { table.Set(netip.Prefix{}, pairs[0].dests, 2) },
+		func() { table.Set(netip.Prefix{}, pairs[1].dests, 2) },
+		func() { table.Remove(netip.Prefix{}, prefix("203.0.113.0/24")) },
+		func() { table.RemoveFunc(func(held int) bool { return held == 9 }) },
+		func() { table.Remove(netip.Prefix{}, pairs[0].dests) },
+		func() { table.Remove(netip.Prefix{}, pairs[1].dests) },
+	}
+	seen := []Root[int]{empty, first}
+	for i, write := range writes {
+		write()
+		now := table.Root()
+		for _, before := range seen {
+			if now == before {
+				t.Fatalf("write %d left a root an earlier state had", i)
+			}
+		}
+		seen = append(seen, now)
+	}
+	for _, p := range pairs {
+		if value, bits, ok := LookupBitsAt(first, p.src, p.dst); value != 1 || bits != p.dests.Bits() || !ok {
+			t.Errorf("a lookup of %s at the first root answered %d, /%d, %v after later writes, want 1, /%d, true", p.dst, value, bits, ok, p.dests.Bits())
+		}
+		if _, _, ok := LookupBitsAt(empty, p.src, p.dst); ok {
+			t.Errorf("a lookup of %s at the empty table's root found an entry", p.dst)
+		}
+		if _, _, ok := table.LookupBits(p.src, p.dst); ok {
+			t.Errorf("a lookup of %s now found the entry a later write removed", p.dst)
+		}
+	}
+}
+
 func TestInvalidTableInputs(t *testing.T) {
 	var table Table[int]
 	table.Set(netip.Prefix{}, netip.Prefix{}, 1)

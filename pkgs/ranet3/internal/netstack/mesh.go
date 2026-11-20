@@ -418,6 +418,8 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 
 // classify picks the peer of every packet of a read that passes the checks of what enters the mesh, and holds each packet to the largest its peer's session carries
 // a packet past that is answered, cut into fragments or dropped rather than sent, and a SYN within it has its MSS clamped to it
+// a packet of the source and destination of the last pair looked up in the read takes that pair's lookup while the table's root is the one the lookup was made at
+// the checks, steering and delivery are made for each packet from its lookup, the checks judging its source by the answers keptAnswers keeps
 func (m *Mesh) classify(b *outboundBatch) {
 	trace := m.tracer.Load()
 	var tally transitTally
@@ -429,6 +431,10 @@ func (m *Mesh) classify(b *outboundBatch) {
 	steering := m.steerTable.Load()
 	// read once a read, so every change in force as the read begins reaches each of its packets
 	b.answers.keepFor(m.Routes.generation.Load())
+	var last pairLookup
+	var sharePeer *Peer
+	// share is sharePeer's share of the read, written back to b.shares when a packet is decided for another peer and at the read's end
+	var share outboundShare
 	for i := range b.n {
 		r := b.reads[i]
 		raw := b.slab[r.Offset : r.Offset+r.Size : r.Offset+r.Size]
@@ -449,8 +455,11 @@ func (m *Mesh) classify(b *outboundBatch) {
 			}
 			continue
 		}
+		if root := m.Routes.root(); root != last.root || src != last.src || dst != last.dst {
+			last.lookup(root, src, dst)
+		}
 		// the checks judge a steered packet by the destination it was read with
-		peer, verdict, match := m.Routes.Resolve(src, dst)
+		peer, verdict, match := last.peer, last.verdict, last.match
 		// mode off pays the nil test alone, since takesPath is past the inliner's budget
 		alongPath, leaves := false, match.Counted
 		if steering.Default() != nil {
@@ -521,10 +530,16 @@ func (m *Mesh) classify(b *outboundBatch) {
 			}
 			continue
 		}
-		share, seen := b.shares[peer]
-		if !seen {
-			share.mtu = peer.MTU()
-			b.peerOrder = append(b.peerOrder, peer)
+		if peer != sharePeer {
+			if sharePeer != nil {
+				b.shares[sharePeer] = share
+			}
+			var seen bool
+			if share, seen = b.shares[peer]; !seen {
+				share.mtu = peer.MTU()
+				b.peerOrder = append(b.peerOrder, peer)
+			}
+			sharePeer = peer
 		}
 		// a steered packet sits behind the header steering put on it, which the session carries as well
 		overhead := len(sent) - len(raw)
@@ -550,7 +565,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 			share.count++
 			share.bytes += len(sent)
 		}
-		b.shares[peer] = share
+	}
+	if sharePeer != nil {
+		b.shares[sharePeer] = share
 	}
 }
 

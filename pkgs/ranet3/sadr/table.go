@@ -33,6 +33,14 @@ type roots[V comparable] struct {
 	ipv6 *trieNode[V]
 }
 
+// Root is one state of a table, the empty one before any write is published or one a write published.
+// Two Roots of one table are equal only when no write was published between them.
+// A lookup at a Root answers from that state however much was written since.
+type Root[V comparable] struct{ roots *roots[V] }
+
+// Root is the state the table holds now.
+func (t *Table[V]) Root() Root[V] { return Root[V]{t.roots.Load()} }
+
 type srcEntry[V comparable] struct {
 	src   netip.Prefix
 	value V
@@ -354,8 +362,13 @@ func (t *Table[V]) Lookup(src, dst netip.Addr) (V, bool) {
 // LookupBits is Lookup that also answers the length of the destination prefix the answer is held under, in the bits of dst's own family
 // the length is the node the entry was taken from, shorter than the deepest node the walk reached when every source there missed
 func (t *Table[V]) LookupBits(src, dst netip.Addr) (V, int, bool) {
+	return LookupBitsAt(t.Root(), src, dst)
+}
+
+// LookupBitsAt is LookupBits of the table whose state root is, at that state
+func LookupBitsAt[V comparable](root Root[V], src, dst netip.Addr) (V, int, bool) {
 	var result V
-	current := t.roots.Load()
+	current := root.roots
 	// A zoned destination is inside no prefix, as Prefix.Contains has it,
 	// which is also how a zoned source is read below.
 	if current == nil || !dst.IsValid() || dst.Zone() != "" {

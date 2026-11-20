@@ -204,7 +204,11 @@ type Match struct {
 // consulted for a packet inside it. The peer is nil for every verdict but
 // RoutePeer.
 func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict, Match) {
-	entry, bits, ok := rt.table.LookupBits(src, dst)
+	return resolveEntry(rt.table.LookupBits(src, dst))
+}
+
+// resolveEntry is Resolve's answer from the entry a lookup found, the length of the destination prefix it was found at and whether one was found
+func resolveEntry(entry routeEntry, bits int, ok bool) (*Peer, Verdict, Match) {
 	match := Match{Bits: bits, Counted: entry.counted, Egress: entry.egress}
 	switch {
 	case !ok:
@@ -215,6 +219,24 @@ func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict, Match) {
 		return nil, RouteLocal, match
 	}
 	return entry.peer, RoutePeer, match
+}
+
+// root is the state of the table now, and every write that changes the table publishes a new one
+func (rt *RouteTable) root() sadr.Root[routeEntry] { return rt.table.Root() }
+
+// pairLookup is the answer Resolve gives for a packet from src to dst while the table holds root, kept beside that pair and root
+type pairLookup struct {
+	src, dst netip.Addr
+	root     sadr.Root[routeEntry]
+	peer     *Peer
+	verdict  Verdict
+	match    Match
+}
+
+// lookup reads nothing of the table but the state root names
+func (l *pairLookup) lookup(root sadr.Root[routeEntry], src, dst netip.Addr) {
+	l.src, l.dst, l.root = src, dst, root
+	l.peer, l.verdict, l.match = resolveEntry(sadr.LookupBitsAt(root, src, dst))
 }
 
 // assigned reports whether the entry Resolve matches for a packet from src to dst holds Assigned, which it answers RouteLocal as it does Local

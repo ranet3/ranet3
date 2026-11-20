@@ -647,3 +647,47 @@ func TestAnswerGoesToNoPeerTheTableAnswersHeldOrLocal(t *testing.T) {
 		}
 	}
 }
+
+// a lookup at a root read before a write answers as the table did then, and one at the root after it as Resolve does now
+// over a route moved, held, withdrawn to a shorter route that counts as a default, and an overlay that takes that route in, in each family
+func TestPairLookupAnswersAtTheRootItIsHanded(t *testing.T) {
+	short := map[int]netip.Prefix{4: mustPrefix("192.0.0.0/6"), 6: mustPrefix("3ff0::/12")}
+	wide := []schema.Prefix{schema.PrefixFrom(mustPrefix("192.0.0.0/4")), schema.PrefixFrom(mustPrefix("3f00::/8"))}
+	for _, family := range []int{4, 6} {
+		rt := NewRouteTable()
+		rt.SetOverlay(transitOverlay)
+		peer, moved, exit := &Peer{ID: "peer"}, &Peer{ID: "moved"}, &Peer{ID: "exit"}
+		far := hostPrefix(transitFar[family])
+		rt.Set(netip.Prefix{}, short[family], exit)
+		rt.Set(netip.Prefix{}, far, peer)
+		src, dst := transitOwn[family], transitFar[family]
+		writes := []struct {
+			name  string
+			write func()
+		}{
+			{"moved", func() { rt.Set(netip.Prefix{}, far, moved) }},
+			{"held", func() { rt.Set(netip.Prefix{}, far, Unreachable) }},
+			{"withdrawn", func() { rt.Remove(netip.Prefix{}, far) }},
+			{"the overlay widened", func() { rt.SetOverlay(wide) }},
+		}
+		for _, w := range writes {
+			before := rt.root()
+			var was pairLookup
+			was.lookup(before, src, dst)
+			w.write()
+			var at pairLookup
+			at.lookup(before, src, dst)
+			if at != was {
+				t.Errorf("IPv%d, %s: a lookup at the root read before the write answered %+v, then %+v", family, w.name, was, at)
+			}
+			var now pairLookup
+			now.lookup(rt.root(), src, dst)
+			if peer, verdict, match := rt.Resolve(src, dst); now.peer != peer || now.verdict != verdict || now.match != match {
+				t.Errorf("IPv%d, %s: a lookup at the root after the write answered %v, %v, %+v, Resolve %v, %v, %+v", family, w.name, now.peer, now.verdict, now.match, peer, verdict, match)
+			}
+			if now.peer == was.peer && now.verdict == was.verdict && now.match == was.match {
+				t.Errorf("IPv%d, %s: the write left the answer as it was", family, w.name)
+			}
+		}
+	}
+}
