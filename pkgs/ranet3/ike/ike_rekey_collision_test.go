@@ -500,6 +500,33 @@ func TestPeerDeleteOfAnIKESAIsTakenByItsSlot(t *testing.T) {
 	}
 }
 
+// retire reports whether the session lives on without the IKE SA it is handed: false for the current one alone, and true for a retained SA, which it drops, and for one no slot holds any more, which it leaves as it is
+// so fragments past the limit on an SA this end dropped since dispatch found it end nothing
+func TestRetireReportsFalseForTheCurrentIKESAAlone(t *testing.T) {
+	bubble.Run(testRetireReportsFalseForTheCurrentIKESAAlone)(t)
+}
+
+func testRetireReportsFalseForTheCurrentIKESAAlone(t *testing.T) {
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	sa := func(spiI uint64) *ikeContext { return &ikeContext{suite: suite, spiI: spiI, spiR: spiI + 1} }
+	mux, _ := lifecycleMuxes(t)
+	current, replaced, dropped := sa(11), sa(21), sa(51)
+	s := &Session{mux: mux, current: current, old: replaced}
+	if s.retire(current, retiredFailed, failedSyntax) || s.current != current {
+		t.Error("the current IKE SA was retired")
+	}
+	if !s.retire(dropped, retiredFailed, failedSyntax) || s.current != current || s.old != replaced {
+		t.Error("an IKE SA no slot holds was reported as the current one, or its retirement changed a slot")
+	}
+	if !s.retire(replaced, retiredFailed, failedSyntax) || s.old != nil {
+		t.Error("the replaced IKE SA was not retired")
+	}
+	s.fragmentLimit(dropped, 1, errors.New("fragments past the limit"))
+	if s.mux.IsClosed() || s.endedBy != nil {
+		t.Errorf("fragments past the limit on an IKE SA no slot holds ended the session with %v", s.endedBy)
+	}
+}
+
 // The same case driven through the path a real Delete takes, because the
 // resolution above is only reached if dispatch asks for it.
 func TestPeerDeleteOnOneSidedCollisionKeepsSessionOpen(t *testing.T) {

@@ -1120,19 +1120,15 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if err != nil {
 		// section 2.21.3's "the IKE SA is deleted" names the IKE SA the message came on, so a retained one ends alone, as when the peer answers INVALID_SYNTAX on it
 		// an answer's SA goes before its request ends, since the rekey waiting on that request releases the SA once it ends, and the SA would then not read as retained here
-		retained := s.retire(ctx, retiredFailed, failedSyntax)
+		lives := s.retire(ctx, retiredFailed, failedSyntax)
 		if matching != nil {
 			matching.result <- requestResult{err: fmt.Errorf("ike: malformed authenticated response: %w", err)}
 			*pending = nil
 		} else if response, _ := s.refuseRequest(ctx, hdr.MessageID, hdr.ExchangeType, err); response != nil {
 			s.answer(response, message.form, source)
 		}
-		if retained {
+		if lives {
 			return !kept
-		}
-		// a kept IKE SA this end's next rekey displaced since dispatch read it ends all the same
-		if kept {
-			return false
 		}
 		// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 		// section 2.21.3 on a response with errors: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
@@ -1208,12 +1204,11 @@ func (s *Session) endKept(ctx *ikeContext, err error, failure string) {
 	s.retire(ctx, retiredFailed, failure)
 }
 
-// fragmentLimit ends ctx's IKE SA, alone where it is a retained one or one keepReplaced kept, once the peer's fragments of one message at mid passed reassemblyLimit
+// fragmentLimit ends ctx's IKE SA, alone where it is not the current one, once the peer's fragments of one message at mid passed reassemblyLimit
 // RFC 7383 section 5: "If the peer sends so many fragments that the above condition is not met, the receiver can consider this situation to be either an attack or a broken sender implementation. In either case, the receiver SHOULD drop the connection and discard all the received fragments."
-// a kept IKE SA this end's next rekey displaced since dispatch read it is still marked kept, since nothing clears the mark, so it ends alone all the same
 func (s *Session) fragmentLimit(ctx *ikeContext, mid uint32, err error) {
 	slog.Warn("ike the peer's fragments of one message passed the reassembly limit, which ends the IKE SA", "message_id", mid, "limit", reassemblyLimit)
-	if s.retire(ctx, retiredFailed, failedFragments) || s.keptContext(ctx) {
+	if s.retire(ctx, retiredFailed, failedFragments) {
 		return
 	}
 	s.tellClosed("fragment limit", err)

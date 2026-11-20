@@ -488,15 +488,16 @@ func (s *Session) nextRetainedExpiry() (time.Time, bool) {
 }
 
 // retire drops ctx when the session retains it as a replaced or
-// redundant IKE SA, with any record of it, tells ike.sa.retired with reason and failure, and reports whether it did. Its SPI stays registered while
+// redundant IKE SA, with any record of it, tells ike.sa.retired with reason and failure, and reports whether the session lives on without ctx: false only where ctx is the current IKE SA, true as well where no slot holds ctx any more, which this end dropped since the caller found it. Its SPI stays registered while
 // another context is routed by it, since unregistering it would make that one
 // deaf, which is a session that keeps sending ESP into a peer that answers
 // nothing until its own liveness check expires.
 func (s *Session) retire(ctx *ikeContext, reason, failure string) bool {
 	s.stateMu.Lock()
 	if s.old != ctx && s.collision != ctx {
+		lives := ctx != s.current
 		s.stateMu.Unlock()
-		return false
+		return lives
 	}
 	s.retireRetainedLocked(ctx, reason, failure)
 	s.stateMu.Unlock()
