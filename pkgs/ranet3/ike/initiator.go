@@ -129,9 +129,12 @@ type Session struct {
 	// retains the winning candidate and the SA it replaces.
 	collision *ikeContext
 	// oldBy and collisionBy bound how long each is kept for the Delete that
-	// ends it, the peer's or this end's, as retainedUntil gives.
+	// ends it, the peer's or this end's, as retainedUntil gives, and
+	// collisionBy the candidate's own lifetime alone while crossing names it.
 	oldBy       time.Time
 	collisionBy time.Time
+	// crossing is the peer's candidate held in collision while this end's rekey of the SA both rekeys replace runs, undated where no IKE SA lifetime caps it, nil once RekeyIKE dated the slot at its return, and stateMu guards it
+	crossing *ikeContext
 	// recovery is the record of the SA in old while it serves, and stateMu guards it
 	recovery recoveryRecord
 	// retiredIKE holds the ends of retained IKE SAs retireLocked queued for tellRetired, and stateMu guards it
@@ -274,6 +277,8 @@ type ikeRekey struct {
 	peerAnswered time.Time
 	// chain is set once the rekey's CREATE_CHILD_SA selected an additional key exchange this end then runs, and lost once the rekey lost a simultaneous rekey and stopped
 	chain, lost bool
+	// adopted is set once the peer's Delete of old made the peer's candidate current, which settles the crossing as a lost one does, and stateMu guards it
+	adopted bool
 }
 
 func (s *Session) Mux() *transport.Mux { return s.mux }
@@ -372,6 +377,9 @@ var keptToRetention = retainedContextDeadline.String() + " after the rekey"
 // recordToBound is the label of an SA a recoveryRecord held, dropped at the record's bound rather than at its lifetime
 var recordToBound = busyRequestBudget.String() + " after the rekey"
 
+// candidateToReturn is the label of a peer's candidate dropped at the bound this end's crossing rekey gave it at its return rather than at its lifetime
+var candidateToReturn = retainedContextDeadline.String() + " after this end's crossing rekey ended"
+
 // expireRetainedContexts drops a retained IKE SA whose Delete never arrived,
 // and a replaced IKE SA whose Delete the peer owes once that SA's lifetime
 // ends. Its SPI leaves the mux with it, so a later datagram naming it is
@@ -379,10 +387,11 @@ var recordToBound = busyRequestBudget.String() + " after the rekey"
 func (s *Session) expireRetainedContexts(now time.Time) {
 	// keptTo names the deadline keepReplaced kept ctx to, which is the one that drops it, and is empty for an SA it did not keep
 	// it is read with the slots, so the lines below, written once stateMu is released, read nothing stateMu guards
-	// recordTo names the same for an SA a recoveryRecord held
+	// recordTo names the same for an SA a recoveryRecord held, and candidate marks a peer's candidate the collision slot held
 	type drop struct {
 		ctx              *ikeContext
 		keptTo, recordTo string
+		candidate        bool
 	}
 	s.stateMu.Lock()
 	var dropped []drop
@@ -395,6 +404,8 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 	}{{s.old, &s.oldBy, &s.old}, {s.collision, &s.collisionBy, &s.collision}} {
 		switch {
 		case held.ctx == nil:
+		// the candidate held for this end's running rekey stays undated until RekeyIKE dates it at its return
+		case held.by.IsZero() && held.ctx == s.crossing:
 		case held.by.IsZero():
 			*held.by = s.retainedUntil(held.ctx, now)
 		case !now.Before(*held.by):
@@ -417,7 +428,7 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 				reason = retiredLifetime
 			}
 			s.queueRetiredLocked(held.ctx, held.out == &s.collision, reason, "")
-			dropped, *held.out = append(dropped, drop{held.ctx, keptTo, recordTo}), nil
+			dropped, *held.out = append(dropped, drop{held.ctx, keptTo, recordTo, held.out == &s.collision && !held.ctx.ownDelete}), nil
 		}
 	}
 	for _, d := range dropped {
@@ -437,6 +448,10 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 		}
 		if s.ikeExpired(ctx) {
 			slog.Warn("ike dropping a replaced IKE SA at its lifetime", "spi", ctx.spiI, "lifetime", s.timing.IKERekeyInterval)
+			continue
+		}
+		if d.candidate {
+			slog.Warn("ike dropping an IKE SA the peer never deleted", "spi", ctx.spiI, "at", candidateToReturn)
 			continue
 		}
 		slog.Warn("ike dropping an IKE SA the peer never deleted",
@@ -497,13 +512,16 @@ func (s *Session) retire(ctx *ikeContext, reason, failure string) bool {
 // lifetime.
 func (s *Session) adoptCollisionOnPeerDelete(ctx *ikeContext) bool {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
 	// a collision this end's own rekey left over is the redundant SA it deletes, which the peer never made current, so the peer's Delete of the current SA then ends the session
 	if ctx != s.current || s.collision == nil || s.collision.ownDelete || s.localRekey == nil {
+		s.stateMu.Unlock()
 		return false
 	}
+	s.localRekey.adopted = true
 	s.current, s.collision, s.localRekey = s.collision, nil, nil
 	s.releaseSPILocked(ctx.spiI)
+	s.stateMu.Unlock()
+	slog.Info("ike simultaneous rekey selected peer candidate")
 	return true
 }
 

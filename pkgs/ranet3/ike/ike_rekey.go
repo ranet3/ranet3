@@ -72,6 +72,13 @@ func (s *Session) RekeyIKE() (err error) {
 		if s.localRekey == local {
 			s.localRekey = nil
 		}
+		// a candidate left in the slot waits for the peer's Delete from here, and an earlier bound stands
+		if s.collision != nil {
+			if by := s.retainedUntil(s.collision, time.Now()); s.collisionBy.IsZero() || by.Before(s.collisionBy) {
+				s.collisionBy = by
+			}
+		}
+		s.crossing = nil
 	}()
 	entries := lists.rekeyable(old.suite.entry())
 	// RFC 7296 section 1.3: "The Diffie-Hellman group of the KEi MUST be an element of the group the initiator expects the responder to accept (additional Diffie-Hellman groups can be proposed)."
@@ -106,6 +113,9 @@ func (s *Session) RekeyIKE() (err error) {
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 		})
 		if err != nil {
+			if s.adopted(local) {
+				return nil
+			}
 			return fmt.Errorf("ike: IKE SA rekey request: %w", err)
 		}
 		answered = time.Now()
@@ -204,6 +214,9 @@ func (s *Session) RekeyIKE() (err error) {
 	if chained {
 		added, err := s.followup(old, answer.suite.Addition, answer.link, answered)
 		if err != nil {
+			if s.adopted(local) {
+				return nil
+			}
 			return err
 		}
 		replacement, err := rekeyedContext(old, answer.suite, answer.shared, added, ni, answer.nonce, spiI, answer.spiR, false)
@@ -229,6 +242,14 @@ func (s *Session) RekeyIKE() (err error) {
 	}
 	s.retireOwn(old, deleted)
 	return nil
+}
+
+// adopted reports whether the peer's Delete of the SA local rekeys made the peer's candidate current, after which local's exchange on that SA fails and the rekey ends as a lost crossing ends, with nil
+// RFC 7296 section 2.8.2: "If the peer that did notice the simultaneous rekey gets the delete request from the other peer for the old IKE SA, it knows that the other peer did not detect the simultaneous rekey, and the first peer can forget its own rekey attempt."
+func (s *Session) adopted(local *ikeRekey) bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return local.adopted
 }
 
 // retireOwn ends ctx, an IKE SA this end deleted, where the session still holds it once deleted, the outcome of that Delete, is known
@@ -627,7 +648,7 @@ func (s *Session) rekeyTakenLocked(ctx *ikeContext) bool {
 	return ctx != s.current || s.localRekey != nil && s.localRekey.old == ctx && s.localRekey.chain
 }
 
-// placePeerIKELocked makes made, the IKE SA a peer's rekey of ctx made with the nonces ni and nr, current, or holds it as the collision's candidate while this end's own rekey of ctx has not taken its decision
+// placePeerIKELocked makes made, the IKE SA a peer's rekey of ctx made with the nonces ni and nr, current, or holds it as the collision's candidate while this end's own rekey of ctx has not taken its decision, until RekeyIKE returns and dates the slot
 // it reports false where rekeyTakenLocked holds, and then places nothing and releases made's SPI
 // it must be called with stateMu held
 func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool {
@@ -640,6 +661,11 @@ func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool 
 		local.peerNonce, local.peerResponseNonce = ni, nr
 		local.peerMID, local.peerAnswered = ctx.nextPeerMID, time.Now()
 		s.retainCollisionLocked(made)
+		// this end's rekey settles the crossing whenever its answer comes, so the candidate waits for it, bounded by its own lifetime alone
+		s.crossing, s.collisionBy = made, time.Time{}
+		if s.timing.IKERekeyInterval > 0 {
+			s.collisionBy = made.established.Add(s.timing.IKERekeyInterval)
+		}
 	// with no rekey of this end's on ctx, or one that lost a simultaneous rekey and stopped, the peer's replaces the SA as one with no collision does
 	default:
 		s.retainOldLocked(ctx)
