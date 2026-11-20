@@ -18,6 +18,15 @@ const (
 	DefaultRetryMax    = 5 * time.Minute
 )
 
+// the least nonzero rekey timings Crypto.Validate takes, so a unit written wrong, "10ns" for "10h", is refused at load by the field it is in
+const (
+	minRekeyLifetime = 10 * time.Second
+	// a rekey that loses one send still lands before the lifetime, and the Child SA it replaces keeps its drain
+	minRekeyMargin = 10 * time.Second
+	// a ranet3 peer refuses a rekey sooner than minPeerChildRekeyInterval or minPeerIKERekeyInterval after the last, so an earlier retry draws that refusal
+	minRekeyRetry = time.Second
+)
+
 const (
 	// RFC 7296 section 2.10 asks for at least half the key of the negotiated PRF, and PRF_HMAC_SHA2_384 is the largest offered
 	nonceLen             = 32

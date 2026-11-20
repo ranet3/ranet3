@@ -112,6 +112,7 @@ func interval(configured *schema.Duration, fallback time.Duration) time.Duration
 }
 
 // Validate refuses timings and lists a session could not run, naming the field as the operator wrote it
+// the floors and the two relations below are checked here at load alone, not by RekeyTiming.validate
 func (c Crypto) Validate() error {
 	if c.Replay != nil && *c.Replay > esp.MaxReplayWindow {
 		return fmt.Errorf("ike: cap.crypto replay must not exceed %d", esp.MaxReplayWindow)
@@ -120,13 +121,14 @@ func (c Crypto) Validate() error {
 		name     string
 		value    *schema.Duration
 		positive bool
+		floor    time.Duration
 	}{
-		{name: "rekey child", value: c.Rekey.Child},
-		{name: "rekey ike", value: c.Rekey.IKE},
-		{name: "rekey margin", value: c.Rekey.Margin},
+		{name: "rekey child", value: c.Rekey.Child, floor: minRekeyLifetime},
+		{name: "rekey ike", value: c.Rekey.IKE, floor: minRekeyLifetime},
+		{name: "rekey margin", value: c.Rekey.Margin, floor: minRekeyMargin},
 		{name: "rekey jitter", value: c.Rekey.Jitter},
-		{name: "rekey retry first", value: c.Rekey.Retry.First, positive: true},
-		{name: "rekey retry max", value: c.Rekey.Retry.Max, positive: true},
+		{name: "rekey retry first", value: c.Rekey.Retry.First, positive: true, floor: minRekeyRetry},
+		{name: "rekey retry max", value: c.Rekey.Retry.Max, positive: true, floor: minRekeyRetry},
 	} {
 		if named.value == nil {
 			continue
@@ -137,22 +139,35 @@ func (c Crypto) Validate() error {
 		if named.value.Duration() < 0 {
 			return fmt.Errorf("ike: cap.crypto %s must be nonnegative when set", named.name)
 		}
+		if *named.value > 0 && named.value.Duration() < named.floor {
+			return fmt.Errorf("ike: cap.crypto %s %s is shorter than %s", named.name, named.value, named.floor)
+		}
 	}
 	if c.RetryFirst() > c.RetryMax() {
 		return fmt.Errorf("ike: cap.crypto rekey retry first must not exceed retry max")
 	}
-	// a rekey runs at interval less margin less jitter
+	// two scheduled rekeys of one lineage are at least the lifetime less margin less jitter apart
+	// a ranet3 peer refuses a rekey sooner than spacing after the last
 	// a disabled interval runs none
 	for _, named := range []struct {
 		name     string
 		interval time.Duration
-	}{{"child", c.ChildInterval()}, {"ike", c.IKEInterval()}} {
-		if named.interval != 0 && c.Margin() == 0 {
+		spacing  time.Duration
+	}{{"child", c.ChildInterval(), minPeerChildRekeyInterval}, {"ike", c.IKEInterval(), minPeerIKERekeyInterval}} {
+		if named.interval == 0 {
+			continue
+		}
+		if c.Margin() == 0 {
 			return fmt.Errorf("ike: cap.crypto rekey margin must be positive beside rekey %s, since a rekey due at the end of the SA's lifetime can never replace it", named.name)
 		}
-		if !validRekeyTiming(named.interval, c.Margin(), c.Jitter()) {
-			return fmt.Errorf("ike: cap.crypto rekey margin plus jitter must be less than rekey %s", named.name)
+		// validRekeyTiming first, so margin and jitter are subtracted only from a lifetime that holds them and never summed past it
+		if !validRekeyTiming(named.interval, c.Margin(), c.Jitter()) || named.interval-c.Margin()-c.Jitter() < named.spacing {
+			return fmt.Errorf("ike: cap.crypto rekey %s %s is shorter than rekey margin %s plus jitter %s plus %s", named.name, named.interval, c.Margin(), c.Jitter(), named.spacing)
 		}
+	}
+	// a rekey that fails at once is retried before the lifetime closes the IKE SA
+	if (c.ChildInterval() != 0 || c.IKEInterval() != 0) && c.RetryFirst() >= c.Margin() {
+		return fmt.Errorf("ike: cap.crypto rekey retry first %s must be shorter than rekey margin %s while a lifetime is on", c.RetryFirst(), c.Margin())
 	}
 	if err := c.Timing().validate(); err != nil {
 		return err

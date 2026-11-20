@@ -436,26 +436,34 @@ func segments() hegel.Generator[srv6.Segments] {
 }
 
 // cryptos draws cap.crypto, each list left out or a run of distinct names it takes in drawn order
-// a rekey interval holds any margin and jitter drawn beside it
-// and the first retry never passes the last, whichever of each pair is left at its default
+// each timing is drawn where Validate takes it, whichever of the others is left at its default: a margin of zero only beside two intervals that are off,
+// a rekey interval holding any margin and jitter with a second to spare, and the first retry under the margin while an interval is on and never past the last
 func cryptos() hegel.Generator[ike.Crypto] {
 	intervals := unset(between(30*time.Minute, 24*time.Hour))
 	return hegel.Composite(func(tc hegel.TestCase) ike.Crypto {
-		return ike.Crypto{
+		crypto := ike.Crypto{
 			Replay: hegel.Draw(tc, hegel.Optional(edges[uint32](0, 1<<20))),
 			Rekey: ike.Rekey{
 				Child:  hegel.Draw(tc, hegel.Optional(intervals)),
 				IKE:    hegel.Draw(tc, hegel.Optional(intervals)),
-				Margin: hegel.Draw(tc, hegel.Optional(between(0, 10*time.Minute))),
 				Jitter: hegel.Draw(tc, hegel.Optional(between(0, 10*time.Minute))),
-				Retry: ike.Retry{
-					First: hegel.Draw(tc, hegel.Optional(between(time.Millisecond, time.Minute))),
-					Max:   hegel.Draw(tc, hegel.Optional(between(time.Minute, time.Hour))),
-				},
+				Retry:  ike.Retry{Max: hegel.Draw(tc, hegel.Optional(between(time.Minute, time.Hour)))},
 			},
 			IKE: ike.IKESuites{Cipher: pbt.List(tc, cipherNames), PRF: pbt.List(tc, prfNames), Kex: pbt.List(tc, kexEntries)},
 			ESP: ike.ESPSuites{Cipher: pbt.List(tc, cipherNames)},
 		}
+		on := crypto.ChildInterval() != 0 || crypto.IKEInterval() != 0
+		margins := between(10*time.Second, 10*time.Minute)
+		if !on {
+			margins = unset(margins)
+		}
+		crypto.Rekey.Margin = hegel.Draw(tc, hegel.Optional(margins))
+		last := crypto.RetryMax()
+		if on {
+			last = min(last, crypto.Margin()-time.Nanosecond)
+		}
+		crypto.Rekey.Retry.First = hegel.Draw(tc, hegel.Optional(between(time.Second, last)))
+		return crypto
 	})
 }
 

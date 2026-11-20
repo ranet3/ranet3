@@ -1003,6 +1003,30 @@ func TestZeroRekeyIntervalDisablesIt(t *testing.T) {
 	}
 }
 
+// a refusal of ike's reaches the operator unwrapped
+func TestRekeyTimingRefusalsReachTheOperatorUnwrapped(t *testing.T) {
+	for name, test := range map[string]struct{ body, want string }{
+		"a margin under its floor": {
+			"cap:\n  crypto:\n    rekey: { margin: 9s }\n",
+			"ike: cap.crypto rekey margin 9s is shorter than 10s",
+		},
+		"a lifetime with no second past margin plus jitter": {
+			"cap:\n  crypto:\n    rekey: { child: 30s, margin: 20s, jitter: 9.5s }\n",
+			"ike: cap.crypto rekey child 30s is shorter than rekey margin 20s plus jitter 9.5s plus 1s",
+		},
+		"a first retry as long as the margin": {
+			"cap:\n  crypto:\n    rekey: { margin: 10s, retry: { first: 10s } }\n",
+			"ike: cap.crypto rekey retry first 10s must be shorter than rekey margin 10s while a lifetime is on",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadYAML(t, nodeYAML+test.body); err == nil || err.Error() != test.want {
+				t.Errorf("%s was answered %v, want %q", name, err, test.want)
+			}
+		})
+	}
+}
+
 // A key written with nothing under it turns a block on and leaves a scalar
 // alone, and fillBlocks is where the two rules meet: it allocates the first
 // and must not touch the second. Every pointer-to-scalar field in this schema
