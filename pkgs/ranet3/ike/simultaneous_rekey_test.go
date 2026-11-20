@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -188,6 +189,86 @@ func testPeerDeleteBetweenTheLostDecisionAndTheYieldLeavesTheCrossedSAReleased(t
 		t.Errorf("the initiator warned %d times of an SA the peer never deleted", len(never))
 	}
 	c.converged(t)
+	c.settledOnce(t, &lines.lineRecorder)
+}
+
+// the peer's Delete of the crossed SA reaches the end whose own rekey the crossing leaves on the peer's candidate wholly before that rekey's decision or wholly after it, where the mover is the yield of a lost crossing or the swap of a refusal from a peer that decided before this end's request reached it
+// the Delete before the decision makes the peer's candidate current and the rekey returns nil, and the Delete after it retires the crossed SA, which the decision held
+// where the peer decided first, the Delete before the refusal ends this end's request at the adoption, so that order reads no refusal
+// in each order that end logs the peer's candidate selected once and records one completed rekey, and both ends run on the peer's candidate
+func TestPeerDeleteOfTheCrossedSABeforeOrAfterTheDecisionSettlesOnce(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		losses          crossingLosses
+		before, refused bool
+	}{
+		{name: "yield with the Delete before the decision", losses: crossingLosses{toInitiator: true}, before: true},
+		{name: "yield with the Delete after the decision", losses: crossingLosses{staleRequests: true}},
+		{name: "adoption with the Delete before the refusal is read", losses: crossingLosses{initiatorRequestHeld: true}, before: true, refused: true},
+		{name: "refusal with the Delete after the decision", losses: crossingLosses{staleRequests: true, initiatorRequestHeld: true}, refused: true},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			lines := recordLines(t)
+			c := startCrossing(t, false, test.losses)
+			if test.refused {
+				if held, _ := holdsCrossing(c.initiator, c.nonces[1]); !held && !test.before {
+					t.Fatal("the initiator does not hold the responder's rekey as the collision of its own")
+				}
+				if c.holdsCandidate(c.responder, c.candidates[0]) || c.responder.currentContext().spiI != c.candidates[1] {
+					t.Fatal("the responder did not decide its rekey before the initiator's request reached it")
+				}
+				// no time passes, so the losses end before the second and last send of the responder's Delete
+				c.path.holdRekeysFrom(false, false)
+				synctest.Wait()
+			}
+			current, old := c.initiator.contexts()
+			if current.spiI != c.candidates[c.winner] {
+				t.Fatalf("the initiator is current on %016x before the losses end, want the responder's candidate %016x", current.spiI, c.candidates[c.winner])
+			}
+			if crossedHeld := old != nil && old.spiI == c.crossed.spiI; crossedHeld == test.before {
+				t.Fatalf("the initiator holds the crossed SA %v before the losses end, want %v", crossedHeld, !test.before)
+			}
+			c.path.loseAnswers(false, false)
+			c.path.loseStaleRequests(false)
+			time.Sleep(crossingSettled)
+			synctest.Wait()
+			c.converged(t)
+			c.settledOnce(t, lines)
+			retired := 0
+			for _, line := range c.events.recorded() {
+				if strings.HasPrefix(line, "ike.sa.retired ") && strings.Contains(line, fmt.Sprintf("spi=%016x", c.crossed.spiI)) && strings.Contains(line, "reason=deleted") {
+					retired++
+				}
+			}
+			want := 1
+			if test.before {
+				want = 0
+			}
+			if retired != want {
+				t.Errorf("the initiator told the crossed SA %016x retired as deleted %d times, want %d: %q", c.crossed.spiI, retired, want, c.events.recorded())
+			}
+		}))
+	}
+}
+
+// settledOnce fails t unless lines hold one line of the peer's candidate selected and the initiator recorded one completed IKE SA rekey and no failed one, the line written by the initiator alone where the responder wins or decides with no crossing
+func (c *crossingRun) settledOnce(t *testing.T, lines *lineRecorder) {
+	t.Helper()
+	if selected := lines.said(slog.LevelInfo, "ike simultaneous rekey selected peer candidate", ""); len(selected) != 1 {
+		t.Errorf("the initiator logged the peer's candidate selected %d times, want once", len(selected))
+	}
+	completed, failed := 0, 0
+	for _, line := range c.events.recorded() {
+		switch {
+		case strings.HasPrefix(line, "ike.rekey.completed ") && strings.Contains(line, "sa=ike"):
+			completed++
+		case strings.HasPrefix(line, "ike.rekey.failed ") && strings.Contains(line, "sa=ike"):
+			failed++
+		}
+	}
+	if completed != 1 || failed != 0 {
+		t.Errorf("the initiator recorded ike.rekey.completed %d times and ike.rekey.failed %d times, want once and never", completed, failed)
+	}
 }
 
 // parkedLines keeps every line as lineRecorder does, and holds the goroutine that first logs park until unpark
@@ -240,10 +321,12 @@ type crossingRun struct {
 	winner     int
 	// nonces is each end's Ni in the crossing, the initiator's first
 	nonces [2][]byte
+	// events keeps what the initiator records
+	events *recorder
 }
 
-// crossingLosses says whether the path loses the answers to rekeys sent to the initiator, those sent to the responder, and the responder's INFORMATIONAL requests on any IKE SA but its current one, from before the crossing's requests pass
-type crossingLosses struct{ toInitiator, toResponder, staleRequests bool }
+// crossingLosses says whether the path loses the answers to rekeys sent to the initiator, those sent to the responder, and the responder's INFORMATIONAL requests on any IKE SA but its current one, from before the crossing's requests pass, and whether it holds the initiator's rekey request once the responder's passes
+type crossingLosses struct{ toInitiator, toResponder, staleRequests, initiatorRequestHeld bool }
 
 // startCrossing runs a session through the responder's first rekey, then starts both ends' rekeys of its replacement with the path holding both requests until both rekeys are recorded, and passes them on with losses in force
 // the initiator's exchange holds the lowest nonce unless initiatorWins, so the end whose exchange does not wins
@@ -253,11 +336,13 @@ func startCrossing(t *testing.T, initiatorWins bool, losses crossingLosses) *cro
 	path := &crossingPath{}
 	cfg := h.peerConfig()
 	cfg.RemotePort = path.listen(t, h.remotePort)
+	events := &recorder{}
+	cfg.Events = events.record
 	initiator, responder := dialPaused(t, h, cfg)
 	path.responderSession.Store(responder)
 	draws := [2]*crossingDraws{{}, {}}
 	initiator.ikeRekeyNonce, responder.ikeRekeyNonce = draws[0].draw, draws[1].draw
-	c := &crossingRun{initiator: initiator, responder: responder, path: path}
+	c := &crossingRun{initiator: initiator, responder: responder, path: path, events: events}
 	c.runs = [2]<-chan error{runSession(t, initiator), runSession(t, responder)}
 	c.espFailure = crossingESP(t, initiator, responder)
 
@@ -308,7 +393,7 @@ func startCrossing(t *testing.T, initiatorWins bool, losses crossingLosses) *cro
 		}
 		c.candidates[i] = local.spiI
 	}
-	path.holdRekeys(false)
+	path.holdRekeysFrom(losses.initiatorRequestHeld, false)
 	time.Sleep(crossingStep)
 	synctest.Wait()
 	return c
@@ -531,7 +616,7 @@ func crossingESP(t *testing.T, a, b *Session) func() error {
 }
 
 // crossingPath carries UDP between the initiator and the responder
-// it loses the answers to rekeys sent to either end as loseAnswers says, holds the rekey requests either way while holdRekeys is set, and loses the responder's INFORMATIONAL requests on any IKE SA but its current one while loseStaleRequests is set
+// it loses the answers to rekeys sent to either end as loseAnswers says, holds the rekey requests from each end as holdRekeysFrom says, and loses the responder's INFORMATIONAL requests on any IKE SA but its current one while loseStaleRequests is set
 type crossingPath struct {
 	responderSession atomic.Pointer[Session]
 	conn             *transport.MemoryConn
@@ -540,14 +625,17 @@ type crossingPath struct {
 	mu                       sync.Mutex
 	initiator                *net.UDPAddr
 	toInitiator, toResponder bool
-	holding, stale           bool
-	held                     []crossingDatagram
+	// holding says whether the path holds the rekey requests from the initiator and from the responder
+	holding [2]bool
+	stale   bool
+	held    []crossingDatagram
 }
 
-// crossingDatagram is a datagram the path holds, with where it goes on to
+// crossingDatagram is a datagram the path holds, with where it goes on to and whether it came from the initiator
 type crossingDatagram struct {
-	raw []byte
-	to  *net.UDPAddr
+	raw           []byte
+	to            *net.UDPAddr
+	fromInitiator bool
 }
 
 // listen starts the path to the responder at responderPort and returns the port to dial
@@ -608,8 +696,8 @@ func (p *crossingPath) keeps(fromInitiator bool, datagram []byte, to *net.UDPAdd
 			return p.toResponder
 		}
 		return p.toInitiator
-	case header.ExchangeType == CREATE_CHILD_SA && p.holding:
-		p.held = append(p.held, crossingDatagram{bytes.Clone(datagram), to})
+	case header.ExchangeType == CREATE_CHILD_SA && p.holding[crossingFrom(fromInitiator)]:
+		p.held = append(p.held, crossingDatagram{bytes.Clone(datagram), to, fromInitiator})
 		return true
 	case !fromInitiator && p.stale && !header.IsResponse() && header.ExchangeType == INFORMATIONAL && header.SPIInitiator != current:
 		return true
@@ -624,21 +712,34 @@ func (p *crossingPath) loseAnswers(toInitiator, toResponder bool) {
 	p.mu.Unlock()
 }
 
-// holdRekeys sets whether the path holds the rekey requests either way, and once it stops, sends what it held on in the order it came
-func (p *crossingPath) holdRekeys(holding bool) {
+// holdRekeys sets whether the path holds the rekey requests either way, as holdRekeysFrom does for both ends
+func (p *crossingPath) holdRekeys(holding bool) { p.holdRekeysFrom(holding, holding) }
+
+// holdRekeysFrom sets whether the path holds the rekey requests from the initiator and from the responder, and sends on what it held from an end it holds no longer, in the order it came
+func (p *crossingPath) holdRekeysFrom(initiator, responder bool) {
 	p.mu.Lock()
-	p.holding = holding
-	out := p.held
-	if !holding {
-		p.held = nil
+	p.holding = [2]bool{initiator, responder}
+	var out, kept []crossingDatagram
+	for _, d := range p.held {
+		if p.holding[crossingFrom(d.fromInitiator)] {
+			kept = append(kept, d)
+		} else {
+			out = append(out, d)
+		}
 	}
+	p.held = kept
 	p.mu.Unlock()
-	if holding {
-		return
-	}
 	for _, d := range out {
 		_, _ = p.conn.WriteToUDP(d.raw, d.to)
 	}
+}
+
+// crossingFrom indexes the end a datagram came from, the initiator first
+func crossingFrom(fromInitiator bool) int {
+	if fromInitiator {
+		return 0
+	}
+	return 1
 }
 
 // loseStaleRequests sets whether the path loses the responder's INFORMATIONAL requests on any IKE SA but its current one

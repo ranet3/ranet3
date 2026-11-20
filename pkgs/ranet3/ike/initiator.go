@@ -538,11 +538,15 @@ func (s *Session) peerDeletedIKE(ctx *ikeContext) bool {
 		s.stateMu.Unlock()
 		return true
 	case s.collision != nil && !s.collision.ownDelete && s.localRekey != nil && s.localRekey.old == ctx:
+		// a rekey that decided it lost writes the line itself once stateMu is released
+		logged := !s.localRekey.lost
 		s.localRekey.adopted = true
 		s.current, s.collision, s.localRekey = s.collision, nil, nil
 		s.releaseSPILocked(ctx.spiI)
 		s.stateMu.Unlock()
-		slog.Info("ike simultaneous rekey selected peer candidate")
+		if logged {
+			slog.Info("ike simultaneous rekey selected peer candidate")
+		}
 		return true
 	}
 	s.stateMu.Unlock()

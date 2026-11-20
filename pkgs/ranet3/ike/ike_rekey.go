@@ -409,21 +409,24 @@ func (s *Session) refusedFollowup(err error, late bool) error {
 // the peer's nonces are recorded only where its rekey of the SA was held for this one, and a collision without them is the redundant SA of an earlier crossing
 func (s *Session) refusedIKERekey(local *ikeRekey, err error) error {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
 	// the rekey ends with the decision, so a peer's rekey of the SA that ends after it is placed as one with no rekey of this end's in flight
 	if s.localRekey == local {
 		s.localRekey = nil
 	}
 	// an adoption on the peer's Delete of local.old settled the rekey as a lost crossing, whatever the refusal says
 	if local.adopted {
+		s.stateMu.Unlock()
 		return nil
 	}
 	if _, refused := errors.AsType[*rejectedError](err); !refused || s.collision == nil || local.peerNonce == nil {
+		s.stateMu.Unlock()
 		return err
 	}
 	s.retainOldLocked(local.old)
 	s.current, s.collision = s.collision, nil
 	s.recordCollisionLocked(local.old, local)
+	s.stateMu.Unlock()
+	slog.Info("ike simultaneous rekey selected peer candidate")
 	return nil
 }
 
