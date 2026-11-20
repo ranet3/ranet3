@@ -81,6 +81,26 @@ func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Pe
 	return subtract(egress.Union(none), subtract(Ranges(learned), Ranges(SchemaPrefixes(overlay))))
 }
 
+// ConnectedNoneClass is the class of the first address outside overlay of
+// held's network whose class among classes, cap.egress translate, is none, and
+// whether there is one. On Linux the kernel routes the network of an address
+// held under a shorter length than its own into the tun, outside the order the
+// antispoof filter keeps between the reconciler's routes and its sets, so a
+// packet from outside the mesh could enter the tun toward such an address. An
+// address held at its full length has no network. A class is the longest one
+// covering an address, as NoneDestinations takes it.
+func ConnectedNoneClass(held netip.Prefix, overlay []schema.Prefix, classes []egress.Class) (egress.Class, bool) {
+	if held.IsSingleIP() {
+		return egress.Class{}, false
+	}
+	outside := Without(Ranges([]netip.Prefix{held}), Ranges(SchemaPrefixes(overlay)))
+	taken := Without(outside, Without(outside, NoneDestinations(classes, nil, nil)))
+	if len(taken) == 0 {
+		return egress.Class{}, false
+	}
+	return egress.Egress{Translate: classes}.ClassOf(taken[0].First), true
+}
+
 // learnedDestination is the masked destination of an entry NoneDestinations
 // takes out of the none sets outside overlay, and whether entry is one
 func learnedDestination(entry sadr.Route[*netstack.Peer], overlay []schema.Prefix) (netip.Prefix, bool) {

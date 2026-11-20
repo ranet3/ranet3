@@ -1003,16 +1003,10 @@ func (c *Config) validateConnected() error {
 	if c.Cap.Table == nil || c.Cap.Egress == nil {
 		return nil
 	}
-	inside := kernel.Ranges(kernel.SchemaPrefixes(c.Overlay))
 	for _, assigned := range c.Cap.Table.Assigned(c.Routes().Announced()) {
-		if assigned.IsSingleIP() {
-			continue
-		}
-		outside := kernel.Without(kernel.Ranges([]netip.Prefix{assigned}), inside)
-		none := kernel.NoneDestinations(c.Cap.Egress.Classes(egress.AddressFamily(assigned.Addr())), nil, nil)
-		if taken := kernel.Without(outside, kernel.Without(outside, none)); len(taken) > 0 {
+		if class, ok := kernel.ConnectedNoneClass(assigned, c.Overlay, c.Cap.Egress.Translate); ok {
 			return fmt.Errorf("config: cap.table assigns %s, whose network holds an address outside overlay under cap.egress translate class %s, which is none: assign %s at its full length or not at all, or give each such address a longer class that translates",
-				assigned, c.Cap.Egress.ClassOf(taken[0].First).From, assigned)
+				assigned, class.From, assigned)
 		}
 	}
 	return nil

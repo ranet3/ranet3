@@ -644,11 +644,16 @@ func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
 // the reconciler from it. See kernel.Runtime for what each field decides.
 func (c *Client) KernelRuntime() kernel.Runtime {
 	cfg := c.config()
+	var classes []egress.Class
+	if exit := cfg.Egress(); exit != nil {
+		classes = exit.Translate
+	}
 	return kernel.Runtime{
 		Interface:     c.Mesh.Name,
 		Underlay:      c.Underlay,
 		Announced:     cfg.Routes().Announced(),
 		Overlay:       cfg.Overlay,
+		Classes:       classes,
 		Advertised:    cfg.Advertised(),
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,

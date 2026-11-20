@@ -346,6 +346,25 @@ func TestKernelRuntimeCarriesTheOverlay(t *testing.T) {
 	}
 }
 
+// the reconciler is handed cap.egress translate, which it warns of an address on the tun by, and none without cap.egress
+func TestKernelRuntimeCarriesTheTranslateClasses(t *testing.T) {
+	classes := []egress.Class{{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{Auto: true}}}
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
+		egressNode(cfg)
+		cfg.Cap.Segment = nil
+		cfg.Cap.Egress.Translate = classes
+	})
+	c.Mesh = netstack.NewRoutesOnly()
+	if got := c.KernelRuntime().Classes; !slices.Equal(got, classes) {
+		t.Errorf("the reconciler's runtime carries the classes %v, want %v", got, classes)
+	}
+	c, _, _, _ = reloadOf(t, func(cfg *config.Config) {})
+	c.Mesh = netstack.NewRoutesOnly()
+	if got := c.KernelRuntime().Classes; got != nil {
+		t.Errorf("without cap.egress the reconciler's runtime carries the classes %v", got)
+	}
+}
+
 // the reconciler is handed cap.egress's LANs masked, which it leaves out of this node's own prefixes, and whether an egress segment makes the node an exit
 func TestKernelRuntimeCarriesTheEgressLANsAndTheEgressSegment(t *testing.T) {
 	for _, segments := range [][]srv6.Segment{nil, {egressSegment("3fff:b:0:106::3", "3fff:a::/32")}} {

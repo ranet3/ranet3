@@ -62,6 +62,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
@@ -188,6 +189,11 @@ type Runtime struct {
 	// schema.CapturesTheMachine reads to tell a route that counts as a default
 	// from a subnet. SetTable replaces it on a reload.
 	Overlay []schema.Prefix
+	// Classes is cap.egress translate, nil without cap.egress, which a pass
+	// reads to warn of an address on the tun it does not own whose network
+	// meets ConnectedNoneClass. A reload never changes it, since it refuses every
+	// change of cap.egress.
+	Classes []egress.Class
 	// Advertised is the prefixes cap.egress advertises for the LANs behind
 	// this node, masked, which the speaker originates beside cap.route's while
 	// cap.egress stands behind them, and which are no prefixes of this node's
@@ -673,6 +679,9 @@ type Reconciler struct {
 	// warnedAddrs is the addresses reported as held by another writer, a
 	// window ending with each listing of the tun's addresses
 	warnedAddrs warnOnce[netip.Prefix]
+	// warnedConnected is the addresses not owned reported as meeting
+	// ConnectedNoneClass, a window ending with each listing of the tun's addresses
+	warnedConnected warnOnce[netip.Prefix]
 	// bare is each family the tun held no address of at the last listing,
 	// which a covering platform skips the routes of, tun the addresses it held
 	// there, whoever wrote them, and unlisted says the listings since have
@@ -2146,6 +2155,14 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 		}
 		have[prefix] = true
 		held[prefix.Addr()] = prefix
+		// the kernel puts a link-local address on the tun itself, and RFC 4291 section 2.5.6 has nothing forwarded to its network
+		if r.owned[prefix] || len(r.rt.Classes) == 0 || prefix.Addr().Is6() && prefix.Addr().IsLinkLocalUnicast() {
+			continue
+		}
+		if class, ok := ConnectedNoneClass(prefix, r.rt.Overlay, r.rt.Classes); ok && r.warnedConnected.mark(prefix) {
+			slog.Warn("kernel is leaving an address it does not own whose network reaches a none class outside overlay",
+				"interface", r.rt.Interface, "address", prefix, "class", class.From, "fix", "delete the address")
+		}
 	}
 	var added []netip.Prefix
 	for _, prefix := range r.addresses {
@@ -2184,6 +2201,7 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 		r.changed = true
 	}
 	r.warnedAddrs.end()
+	r.warnedConnected.end()
 	tun = slices.DeleteFunc(slices.Clone(actual), func(prefix netip.Prefix) bool {
 		return slices.Contains(removed, prefix) || slices.Contains(gone, prefix)
 	})
