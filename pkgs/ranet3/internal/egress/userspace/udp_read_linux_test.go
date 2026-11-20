@@ -15,7 +15,6 @@ import (
 	"slices"
 	"syscall"
 	"testing"
-	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
@@ -45,14 +44,13 @@ func TestReaderWaitingPastAReceiveErrorHoldsNoBuffer(t *testing.T) {
 			dst.mu.Unlock()
 		}
 	}()
-	time.Sleep(10 * time.Millisecond)
+	// the mapping's two readers, its receiving socket's and the destination's
+	waitReadersInPoller(t, 2)
 	before := collected().HeapAlloc
 	sendICMP(t, outside.Addr(), append([]byte{3, 3, 0, 0, 0, 0, 0, 0}, udpDatagram(outside, to, payload)...))
-	for deadline := time.Now().Add(exitWait); len(lockWaiters("userspace.(*udpRelay).read(", "sync.Mutex.Lock")) == 0; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the destination's reader never waited on dst.mu past the failed receive")
-		}
-	}
+	waitFor(t, "wait of the destination's reader on dst.mu past the failed receive", func() bool {
+		return len(lockWaiters(udpReader, "sync.Mutex.Lock")) > 0
+	})
 	grown := int64(collected().HeapAlloc) - int64(before)
 	dst.mu.Unlock()
 	held = false
