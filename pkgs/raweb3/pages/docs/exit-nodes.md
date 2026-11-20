@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-20
+updated: 2026-11-21
 order: 50
 ---
 
@@ -677,20 +677,16 @@ set or object of the translator's that an earlier version wrote, or that reads
 back otherwise than written in a difference nf_tables will not change in place,
 as [sharing a host](coexistence.md#the-packet-filter) gives. The translator's
 own writes wake no pass of its own, and the antispoof filter's and the kill
-switch's writes of their chains, rules and sets in the same table wake none
-either. A flush of the ruleset deletes the table and another program setting it
-dormant sets a flag on it, so each wakes every writer once. The first writer's
-pass after it makes the table again or clears the flag, which wakes no other:
-the table it makes holds none of their chains, and with the flag cleared it
-bypasses none. Notifications the daemon lost, which another table's large
-transaction can overflow its socket with, wake a pass too and leave readiness as
-it was, since that pass reads the rules back. A pass that reads another writer's
-change back and cannot undo it holds the family the change is in not ready, IPv6
-alone for a change to `forward6`, and both families for a change to another
-chain, `forward` among them, since it holds IPv6's goto ahead of IPv4's lines,
-with a reason that names what of the translator's reads back otherwise and what
-holds it where anything does, and withholds its prefixes until a later pass
-does.
+switch's writes of their chains, rules and sets in the same table wake none of
+the translator's either. Lost notifications wake passes as
+[sharing a host](coexistence.md#the-nftables-table) gives, and those passes
+leave readiness as it was, since each reads the rules back. A pass that reads
+another writer's change back and cannot undo it holds the family the change is
+in not ready, IPv6 alone for a change to `forward6`, and both families for a
+change to another chain, `forward` among them, since it holds IPv6's goto ahead
+of IPv4's lines, with a reason that names what of the translator's reads back
+otherwise and what holds it where anything does, and withholds its prefixes
+until a later pass does.
 
 ## The exit on macOS
 

@@ -603,15 +603,11 @@ an element of one of its sets, wakes a pass at once, and the filter reads not
 ready until a pass puts them back in 1 transaction, and stays not ready while
 another writer holds a chain or set of the filter's that the pass would
 otherwise delete and make again, as above. Between the change and that
-transaction forged packets may pass. The filter's own writes wake nothing, nor
-do the translator's and the kill switch's writes of their chains, rules and
-sets. A flush of the ruleset deletes the table and another program setting it
-dormant sets a flag on it, so each wakes every writer once. The first writer's
-pass after it makes the table again or clears the flag, which wakes no other:
-the table it makes holds none of their chains, and with the flag cleared it
-bypasses none. Notifications the daemon lost, which another table's large
-transaction can overflow its socket with, wake a pass too and leave readiness as
-it was, since that pass reads the chains back.
+transaction forged packets may pass. The filter's own writes wake no pass of the
+filter's, nor do the translator's and the kill switch's writes of their chains,
+rules and sets. Lost notifications wake passes as
+[sharing a host](coexistence.md#the-nftables-table) gives, and those passes
+leave readiness as it was, since each reads the chains back.
 
 The lifetime of its chains and sets:
 

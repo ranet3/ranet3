@@ -795,8 +795,9 @@ the process that wrote them:
 - Nothing outlives a reboot, so the switch holds from ranet3's start, not from
   boot.
 
-Each pass reads its chains back, their hooks, priorities, lines and set
-elements. A read that fails with
+A pass that asks for the switch reads its chains back, their hooks, priorities,
+lines and set elements, unless it keeps what the last read found, as given
+below. A read that fails with
 [`ENOENT`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1008)
 is taken for a table that is not there when a fresh dump of the tables then
 holds no table `inet ranet3`: the pass logs
@@ -818,30 +819,44 @@ another line passes it. Status names the switch `not holding` with the reason,
 which for a flag another writer set on the table reads as
 [sharing a host](coexistence.md#the-nftables-table) gives, and the services on
 the uplink's address answer only where 5410 or 5445 routes the reply, or the
-mark 0x72 sends it past them to main, until the chains read back. The reconciler
-watches the notifications of the table and of its chains and sets, so a line
-another writer adds to or deletes from one of its chains, a flush of one of its
-chains or sets, and an element another writer adds to or deletes from one of its
-sets each start a pass 250 milliseconds later, as
-[when a pass runs](#when-a-pass-runs) gives, and the antispoof filter's and the
-translator's writes of their chains, rules and sets start none. A flush of the
-ruleset deletes the table and another program setting it dormant sets a flag on
-it, so each starts a pass in every writer once. The first writer's pass after it
-makes the table again or clears the flag, which starts none in another writer:
-the table it makes holds none of their chains, and with the flag cleared it
-bypasses none.
+mark 0x72 sends it past them to main, until the chains read back. The
+reconciler's monitor watches the notifications of the table and of the switch's
+chains and sets, so a line another writer adds to or deletes from one of its
+chains, a flush of one of its chains or sets and an element another writer adds
+to or deletes from one of its sets each start a pass 250 milliseconds later, as
+[when a pass runs](#when-a-pass-runs) gives. What else wakes the switch is as
+[sharing a host](coexistence.md#the-nftables-table) gives.
+
+A pass started by any trigger but a change in the mesh or a kernel notification
+reads the chains. A pass started only by one of those two keeps what the last
+read of the chains found, their drop counts with it, where all of these hold:
+
+- the reconciler's monitor still reads
+- it reported no change and no lost notification since that read began
+- the sets the pass derives are those that read found
+- that read found the chains as written
+
+A change the monitor reports while a pass runs has the next pass read. After the
+monitor loses notifications, each notification it reads until its queue is empty
+has the next pass read, and so does the read that finds it empty. The monitor
+stops reading at a read error that is not a loss of notifications, and no pass
+opens it again while the switch is asked for, so every pass then reads. The drop
+counts status and a scrape show are as old as the last read of the chains, which
+the periodic pass every `cap.table.reconcile` makes at the latest.
 
 A rule in a chain of another writer's own in the table `inet ranet3` that adds
-elements to the set `forwarded` leaves the switch reading that set back under a
-size it did not write. While that rule stays, the switch keeps the set under
-that size, fills it and writes its chains and its other sets, and reads
-`not holding` with a reason that names the set and the chain whose rule holds
-it, as [sharing a host](coexistence.md#a-writers-own-that-another-writer-holds)
-gives. Neither the rule nor an element a packet adds through it starts a pass:
-the rule's chain is not one the reconciler watches, and such an element sends no
-notification. The switch finds the set at a pass that runs for another reason,
-such as the periodic pass every `cap.table.reconcile`. The first write of the
-switch after the rule is gone makes the set again.
+elements to or deletes them from the set `forwarded` leaves the switch reading
+that set back under a size it did not write. While that rule stays, the switch
+keeps the set under that size, fills it and writes its chains and its other
+sets, and reads `not holding` with a reason that names the set and the chain
+whose rule holds it, as
+[sharing a host](coexistence.md#a-writers-own-that-another-writer-holds) gives.
+Neither the rule nor an element a packet adds or deletes through it starts a
+pass: the rule's chain is not one the reconciler watches, and such an element
+sends no notification. The switch finds the set at the next pass that reads its
+chains, as given above, the periodic pass every `cap.table.reconcile` at the
+latest. The first write of the switch after the rule is gone makes the set
+again.
 
 #### Mode 3 on Linux
 
@@ -1061,13 +1076,13 @@ fails no pass.
 
 - A change in the mesh, or a kernel notification, starts a pass 250 milliseconds
   later. Changes in that window join the same pass. On Linux the notifications
-  are a route of the mesh's table coming or going, a rule of the reconciler's
-  protocol going, and an address of the tun coming or going, another writer's
-  among them, and another writer deleting the table `inet ranet3` or setting a
-  flag on it, or changing the kill switch's chains and sets in it, while the
-  reconciler writes them. On macOS they are a route of the utun, or of `lo0`,
-  where the holds and the kill switch's rejects are, coming, going or changing,
-  another writer's among them.
+  are a route of the mesh's table coming or going that the reconciler did not
+  write itself, a rule of the reconciler's protocol going, and an address of the
+  tun coming or going, another writer's among them, and another writer deleting
+  the table `inet ranet3` or setting a flag on it, or changing the kill switch's
+  chains and sets in it, while the reconciler writes them. On macOS they are a
+  route of the utun, or of `lo0`, where the holds and the kill switch's rejects
+  are, coming, going or changing, another writer's among them.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
@@ -1791,7 +1806,8 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   [holds around live routes](#holds-around-live-routes-on-macos) gives. Under
   `fallback = "none"` it names the switch's state, `holding`, `passing` while an
   exit is live, or `not holding` with the reason the switch does not read back,
-  and on Linux what the last lines of both chains have dropped, summed, as
+  and on Linux what the last lines of both chains had dropped at
+  [the last read](#the-kill-switch-on-linux) of them, summed, as
   `fallback none holding, 12 packets, 720 B dropped`, or `drops not read yet` in
   place of the counts until a read of the chains by this process succeeds. On
   macOS it names no drops, since ranet3 reads no count of the rejects. It names
