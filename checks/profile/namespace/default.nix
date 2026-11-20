@@ -36,10 +36,10 @@ testers.runNixOSTest {
     ];
   };
 
-  testScript = ''
+  testScript = builtins.readFile ../../start-bound/start.py + ''
     import datetime as dt
 
-    start_all()
+    start_machines()
     machine.wait_for_unit("multi-user.target")
     # Keep the same private veth topology as the host benchmark. Profiling
     # inside this VM provides kernel symbols without host root permissions

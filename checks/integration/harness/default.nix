@@ -1116,7 +1116,7 @@ testers.runNixOSTest {
   testScript =
     { nodes, ... }:
     let
-      preamble = ''
+      preamble = builtins.readFile ../../start-bound/start.py + ''
         import datetime as dt
         import re
 
@@ -1191,7 +1191,7 @@ testers.runNixOSTest {
             retry(rekeyed, timeout=rekey_timeout)
             return journal
 
-        start_all()
+        start_machines()
 
         # The runtime directory is where the control socket is bound and the
         # group is who may then use it, so a typo in either leaves a node nobody

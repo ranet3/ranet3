@@ -37,6 +37,8 @@ exclude = [
   "checks.aarch64-linux.integration-tailscale",
   "checks.aarch64-linux.integration-k3s",
   "checks.aarch64-linux.netlink",
+  "checks.aarch64-linux.start-bound",
+  "checks.aarch64-linux.start-bound-teardown",
   # both linux arches put the same files in front of these, so the
   # x86_64-linux arm covers the aarch64 one exactly. go test stays on both,
   # since the race detector is the one check whose answer depends on the

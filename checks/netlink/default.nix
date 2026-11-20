@@ -90,9 +90,10 @@ testers.runNixOSTest {
   # ip_gre would add its fallback devices gre0, gretap0 and erspan0 to every namespace, where the labs read each link
   nodes.machine.boot.kernel.sysctl."net.core.fb_tunnels_only_for_init_net" = 2;
 
-  testScript = ''
+  testScript = builtins.readFile ../start-bound/start.py + ''
     import re
 
+    start_machines()
     machine.wait_for_unit("multi-user.target")
 
     # The host's own nftables tables, whatever they are. This machine runs the

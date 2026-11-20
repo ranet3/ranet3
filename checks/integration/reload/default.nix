@@ -122,7 +122,8 @@ testers.runNixOSTest {
 
   testScript =
     { nodes, ... }:
-    ''
+    builtins.readFile ../../start-bound/start.py
+    + ''
       import datetime as dt
       import json
 
@@ -150,6 +151,7 @@ testers.runNixOSTest {
                   return line.removeprefix("reloading the following units: ").split(", ")
           return []
 
+      start_machines()
       machine.wait_for_unit("multi-user.target")
       machine.wait_for_unit("ranet3.service")
       machine.wait_until_succeeds("ranet3 status", timeout=timeout)

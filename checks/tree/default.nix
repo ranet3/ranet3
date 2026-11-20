@@ -26,6 +26,32 @@ let
   stale = lib.filter (
     line: lib.hasPrefix prefix line && !(checks ? ${lib.removePrefix prefix line})
   ) exclude;
+  # every VM test, the profiles among them, by its evaluated script
+  helper = builtins.readFile ../start-bound/start.py;
+  vmTests =
+    map (name: {
+      inherit name;
+      script = builtins.unsafeDiscardStringContext checks.${name}.config.testScriptString;
+    }) kvm
+    ++ lib.mapAttrsToList (name: test: {
+      name = "profile.${name}";
+      script = builtins.unsafeDiscardStringContext test.config.testScriptString;
+    }) inputs.self.legacyPackages.aarch64-linux.profile;
+  unbounded = lib.concatMap (
+    test:
+    let
+      own = lib.removePrefix helper test.script;
+    in
+    lib.optional (
+      !lib.hasPrefix helper test.script
+    ) "${test.name}: its script does not begin with checks/start-bound/start.py"
+    ++ lib.optional (
+      !lib.any (line: builtins.match "[[:space:]]*start_machines\\(.*" line != null) (
+        lib.splitString "\n" own
+      )
+    ) "${test.name}: its script never calls start_machines() at the head of a line"
+    ++ lib.optional (lib.hasInfix "start_all(" own) "${test.name}: its script holds start_all( after checks/start-bound/start.py"
+  ) vmTests;
 in
 runCommand "ranet3-tree"
   {
@@ -99,6 +125,17 @@ runCommand "ranet3-tree"
     # count in it unread. A count built from a bound name inside an expression
     # is not seen either
     python3 checks/tree/absent.py checks pkgs
+
+    # each VM test's script begins with checks/start-bound/start.py, whose
+    # start_machines() bounds the wait for the machines' start. After it the
+    # script calls start_machines() at the head of a line. It never calls
+    # start_all
+    bounded=1
+    for line in ${lib.escapeShellArgs unbounded}; do
+      echo "$line" >&2
+      bounded=0
+    done
+    test "$bounded" = 1
 
     # reuse looks for the license texts in LICENSES alone. The rename goes
     # through a second name because a case-insensitive build directory reads
