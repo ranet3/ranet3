@@ -25,7 +25,7 @@ templ News(site ui.Site, c Content) {
 					<li>
 						<a href={ templ.SafeURL(p.Path) } class="group block">
 							// the image repeats the title, which follows
-							<img src={ p.Image } alt="" width="1200" height="630" loading="lazy" class="h-auto w-full border border-line"/>
+							<img src={ p.Image } alt="" width={ ui.OGWidth } height={ ui.OGHeight } loading="lazy" class="h-auto w-full border border-line"/>
 							<p class="mt-4 font-mono text-[13px] text-mute">
 								@date(p.Published)
 							</p>

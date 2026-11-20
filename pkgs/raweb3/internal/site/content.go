@@ -63,7 +63,7 @@ type frontmatter struct {
 		Label string `yaml:"label"`
 		Title string `yaml:"title"`
 		Meta  string `yaml:"meta"`
-		// Image names a file beside the page, 1200 by 630, used in place of
+		// Image names a file beside the page, ui.OGWidth by ui.OGHeight, used in place of
 		// the drawn one
 		Image string `yaml:"image"`
 	} `yaml:"og"`
@@ -358,8 +358,8 @@ func (p *page) imageOf(files fs.FS) error {
 		return fmt.Errorf("og.image: %w", err)
 	}
 	defer f.Close()
-	if c, _, err := img.DecodeConfig(f); err != nil || c.Width != 1200 || c.Height != 630 {
-		return fmt.Errorf("og.image %s is no PNG or JPEG of 1200 by 630", file)
+	if c, _, err := img.DecodeConfig(f); err != nil || c.Width != ui.OGWidth || c.Height != ui.OGHeight {
+		return fmt.Errorf("og.image %s is no PNG or JPEG of %d by %d", file, ui.OGWidth, ui.OGHeight)
 	}
 	p.image = "/" + file
 	return nil

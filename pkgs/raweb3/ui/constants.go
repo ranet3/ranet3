@@ -4,6 +4,9 @@
 package ui
 
 const (
+	// OGWidth and OGHeight are the size of the Open Graph image ui draws and
+	// the page head declares, which a page's own image matches
+	OGWidth, OGHeight = 1200, 630
 	// cardWidth is the width of the title and the lead, from the 72px margin
 	// on the left
 	cardWidth = 900
