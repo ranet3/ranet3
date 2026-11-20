@@ -272,11 +272,13 @@ did not reach, by `entry` and `reason`, and its `detail` is the sentence the
 command prints. A command whose answer holds a `missed` exits 1 once it has
 printed the answer.
 
-The reads answer JSON. A duration is a string such as `"4s"`. A time follows
-RFC 3339. An address or a prefix is its text form. An optional field with no
-value is left out, such as `down` on a node that is up or `err` after a pass
-that succeeded. `endpoints`, `originate` and `mesh_addresses` are always present
-and read `[]` when empty, and every counter is always present but
+The reads answer JSON. A duration is a string in Go's form, such as `"4s"` or
+`"26h0m0s"`, but for the bucket bounds and sums of `/v0/debug/sender`'s
+`head_waits` and `seals`, which count nanoseconds. A time follows RFC 3339. An
+address or a prefix is its text form. An optional field with no value is left
+out, such as `down` on a node that is up or `err` after a pass that succeeded.
+`endpoints`, `originate` and `mesh_addresses` are always present and read `[]`
+when empty, and every counter is always present but
 `kernel.exit.fallback.dropped`, which is absent until a read of the kill
 switch's chains by this process has succeeded, and on macOS always. Other lists,
 such as `segments`, `disabled`, `taken`, `acted` and `missed`, are left out when
