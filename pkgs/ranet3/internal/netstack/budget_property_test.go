@@ -322,16 +322,21 @@ func (m *budgetMachine) reach() int {
 }
 
 // RuleClose closes the peer with its transport open
-// the sender transmits every reservation sent before the first that was not, and gives back every other sent one, counting its packets
+// the sender transmits every reservation sent before the first that was not, or drops them all and counts their packets
+// a sender that found nothing sealed to take can meet their seal and the stop together in its select and take either
+// so the model reads which from what the transport took, all of their packets or none
+// every other sent reservation is given back and its packets counted
 // the reservations not yet sent keep what they hold until they are sent
 func (m *budgetMachine) RuleClose(tc hegel.TestCase) {
 	tc.Assume(!m.closed)
 	reach := m.reach()
 	var kept []*heldBatch
+	var reached uint64
 	for i, h := range m.held {
 		switch {
 		case i < reach:
 			m.giveBack(h)
+			reached += uint64(h.count)
 		case h.queued:
 			m.giveBack(h)
 			m.dropped += uint64(h.count)
@@ -339,9 +344,17 @@ func (m *budgetMachine) RuleClose(tc hegel.TestCase) {
 			kept = append(kept, h)
 		}
 	}
+	before := m.valve.transmitted.Load()
 	m.valve.set(true, false)
 	m.peer.Close()
 	m.stopped(tc)
+	switch transmitted := uint64(m.valve.transmitted.Load() - before); transmitted {
+	case reached:
+	case 0:
+		m.dropped += reached
+	default:
+		tc.Errorf("the closing peer transmitted %d of the %d packets sent before the first reservation that was not", transmitted, reached)
+	}
 	m.held, m.closed = kept, true
 }
 
@@ -463,6 +476,7 @@ func (m *budgetMachine) InvariantSentInReservationOrder(tc hegel.TestCase) {
 // a refusal counts all of its packets, and everything held comes back once its transmit returns
 // the transport is handed packets in the order of their reservations
 // the peer may close at any step, after which it refuses every reservation and every send and counts their packets
+// a close transmits the reservations sent before the first that was not, or drops them all
 // and at the end the peer closes, if it has not, with reservations still held, or sent and waiting behind one that is held
 // and every packet it was offered is counted once, as transmitted, lost in the transport or dropped
 // both budgets are back to empty, and no batch it handed out holds a token of its seal
