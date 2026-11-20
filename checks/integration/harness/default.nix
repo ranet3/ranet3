@@ -1415,7 +1415,6 @@ testers.runNixOSTest {
       # it as well, since the driver's lint refuses a module imported twice.
       stoppedRules = ''
         import json
-        import time
 
         def held_by(chain):
             """the packets the stopped rules' drops in chain have counted"""
