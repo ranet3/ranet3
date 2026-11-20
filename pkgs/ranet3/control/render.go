@@ -24,7 +24,7 @@ const ecnUnusedWords = "with an unused ECN combination"
 // table writes rows under a header, aligned. Every renderer goes through it so
 // the whole command speaks in one shape.
 func table(w io.Writer, header []string, rows [][]string) {
-	out := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	out := tabwriter.NewWriter(w, 0, 0, tablePadding, ' ', 0)
 	fmt.Fprintln(out, strings.Join(header, "\t"))
 	for _, row := range rows {
 		fmt.Fprintln(out, strings.Join(row, "\t"))
@@ -34,7 +34,7 @@ func table(w io.Writer, header []string, rows [][]string) {
 
 // pairs writes rows aligned under no header, most of them a name and its value
 func pairs(w io.Writer, rows [][]string) {
-	out := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	out := tabwriter.NewWriter(w, 0, 0, tablePadding, ' ', 0)
 	for _, row := range rows {
 		fmt.Fprintln(out, strings.Join(row, "\t"))
 	}
@@ -826,20 +826,33 @@ func countOf(n int, unit string) string {
 	return fmt.Sprintf("%d %ss", n, unit)
 }
 
-// shortDuration rounds to something a person reads at a glance. Go's own
-// String gives "1h3m0.5762s" for an uptime, where the seconds carry no
-// information and the digits make two rows harder to compare.
+// shortDuration rounds to something a person reads at a glance, Go's own form
+// under an hour and days, hours and minutes from it, each only where it is not
+// zero. Go's String gives "25h11m0.5762s" for an uptime, where the seconds
+// carry no information and the hours past a day have to be counted.
+//
+// The form is chosen after rounding to the second, so 59m59.5s reads as 1h
+// rather than as 1h0m0s.
 func shortDuration(d time.Duration) string {
 	switch {
 	case d < 0:
 		return "-"
 	case d < time.Second:
-		return d.Round(100 * time.Microsecond).String()
+		return d.Round(shortRoundUnderSecond).String()
 	case d < time.Minute:
-		return d.Round(100 * time.Millisecond).String()
-	case d < time.Hour:
-		return d.Round(time.Second).String()
-	default:
-		return d.Round(time.Minute).String()
+		return d.Round(shortRoundUnderMinute).String()
+	case d.Round(shortRoundUnderHour) < time.Hour:
+		return d.Round(shortRoundUnderHour).String()
 	}
+	d = d.Round(shortRoundFromHour)
+	var text strings.Builder
+	for _, part := range []struct {
+		count time.Duration
+		unit  string
+	}{{d / time.Hour / 24, "d"}, {d / time.Hour % 24, "h"}, {d / time.Minute % 60, "m"}} {
+		if part.count != 0 {
+			text.WriteString(strconv.FormatInt(int64(part.count), 10) + part.unit)
+		}
+	}
+	return text.String()
 }

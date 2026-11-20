@@ -1,6 +1,6 @@
 Node        example/gateway
 Version     v0.1.0
-Uptime      26h0m0s
+Uptime      1d2h
 Port        13000
 Endpoints   0/ip4 1/ip6
 TUN         ranet3 MTU 1400 queues 4
@@ -21,7 +21,7 @@ ESP         0 in, 0 dropped by their sessions, 0 datagrams refused
 
 Node        example/gateway
 Version     v0.1.0
-Uptime      26h0m0s
+Uptime      1d2h
 Port        13000
 Endpoints   0/ip4 1/ip6
 TUN         ranet3 MTU 1400 queues 4
