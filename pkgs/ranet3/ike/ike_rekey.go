@@ -170,7 +170,7 @@ func (s *Session) RekeyIKE() (err error) {
 	}
 	// a peer's rekey collides with this one once this end answered it, with an SA made or with a chain still open, and the nonces of the exchange that made each settle it
 	s.stateMu.Lock()
-	// only adoptCollisionOnPeerDelete clears the rekey before its end
+	// only peerDeletedIKE clears the rekey before its end
 	if s.localRekey != local {
 		s.stateMu.Unlock()
 		// RFC 7296 section 2.8.2: "If the peer that did notice the simultaneous rekey gets the delete request from the other peer for the old IKE SA, it knows that the other peer did not detect the simultaneous rekey, and the first peer can forget its own rekey attempt."

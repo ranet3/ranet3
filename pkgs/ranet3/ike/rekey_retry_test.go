@@ -1000,7 +1000,7 @@ func testChainedRekeyAdoptedDuringItsFollowupReturnsNil(t *testing.T) {
 	answer, _ := answerRekey(t, create.inner, 0, []byte("link"), nil)
 	create.result <- requestResult{inner: answer}
 	followup := requested(t, s, done, IKE_FOLLOWUP_KE)
-	if !s.adoptCollisionOnPeerDelete(old) {
+	if !s.peerDeletedIKE(old) {
 		t.Fatal("the peer's Delete of the old SA did not make its SA current")
 	}
 	followup.result <- requestResult{err: errors.New("ike: the IKE SA carrying this exchange was replaced")}

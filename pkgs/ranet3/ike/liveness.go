@@ -1297,7 +1297,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 				if err != nil {
 					return nil, err
 				}
-				if s.retire(ctx, retiredDeleted, "") || s.adoptCollisionOnPeerDelete(ctx) {
+				if s.peerDeletedIKE(ctx) {
 					return response, nil
 				}
 				return response, errPeerDeletedIKE

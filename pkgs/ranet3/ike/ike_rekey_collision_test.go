@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -385,7 +386,7 @@ func testOneSidedIKERekeyCollisionAdoptsPeersSA(t *testing.T) {
 	s.collision = peerSA
 	s.localRekey = &ikeRekey{old: old, nonce: make([]byte, 32)}
 
-	if !s.adoptCollisionOnPeerDelete(old) {
+	if !s.peerDeletedIKE(old) {
 		t.Fatal("the peer's Delete for the old SA closed the session instead of resolving the collision")
 	}
 	if s.current != peerSA {
@@ -394,10 +395,108 @@ func testOneSidedIKERekeyCollisionAdoptsPeersSA(t *testing.T) {
 	if s.collision != nil || s.localRekey != nil {
 		t.Error("the abandoned local rekey attempt was not forgotten")
 	}
-	// It applies only to that case: a Delete on any other SA still ends the
-	// session, and so does one with no collision outstanding.
-	if s.adoptCollisionOnPeerDelete(old) {
-		t.Error("a second Delete for the replaced SA resolved a collision that is over")
+	// a second Delete of the released SA finds it in no slot and changes nothing
+	if !s.peerDeletedIKE(old) || s.current != peerSA {
+		t.Error("a second Delete for the released SA changed the session")
+	}
+}
+
+// the peer's Delete of an IKE SA is taken by the slot that holds it: a retained SA is retired, an SA no slot holds changes nothing, the current SA gives way to the peer's candidate while this end's own rekey of it runs, and the current SA in any other state ends the session
+func TestPeerDeleteOfAnIKESAIsTakenByItsSlot(t *testing.T) {
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	type slots struct {
+		current, old, collision *ikeContext
+		local                   *ikeRekey
+	}
+	for name, test := range map[string]struct {
+		// held puts the SAs in their slots and names the SA the Delete came on
+		held  func(current, replaced, candidate, own, dropped *ikeContext) (slots, *ikeContext)
+		lives bool
+		// want is the slots after the Delete, and nil where they stay as they were
+		want    func(before slots) slots
+		retired int
+	}{
+		"a replaced SA is retired": {
+			held: func(current, replaced, _, _, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, old: replaced}, replaced
+			},
+			lives: true, want: func(before slots) slots { return slots{current: before.current} }, retired: 1,
+		},
+		"a candidate is retired": {
+			held: func(current, _, candidate, _, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, collision: candidate}, candidate
+			},
+			lives: true, want: func(before slots) slots { return slots{current: before.current} }, retired: 1,
+		},
+		"an SA no slot holds changes nothing": {
+			held: func(current, replaced, candidate, _, dropped *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, old: replaced, collision: candidate, local: &ikeRekey{old: current}}, dropped
+			},
+			lives: true,
+		},
+		"the current SA gives way to the peer's candidate while this end's rekey of it runs": {
+			held: func(current, _, candidate, _, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, collision: candidate, local: &ikeRekey{old: current}}, current
+			},
+			lives: true, want: func(before slots) slots { return slots{current: before.collision} },
+		},
+		"the current SA ends the session with no candidate held": {
+			held: func(current, _, _, _, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, local: &ikeRekey{old: current}}, current
+			},
+		},
+		"the current SA ends the session with this end's redundant SA held": {
+			held: func(current, _, _, own, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, collision: own, local: &ikeRekey{old: current}}, current
+			},
+		},
+		"the current SA ends the session with no rekey of this end's running": {
+			held: func(current, _, candidate, _, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, collision: candidate}, current
+			},
+		},
+		"the current SA ends the session while this end's rekey of another SA runs": {
+			held: func(current, replaced, candidate, _, _ *ikeContext) (slots, *ikeContext) {
+				return slots{current: current, old: replaced, collision: candidate, local: &ikeRekey{old: replaced}}, current
+			},
+		},
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			mux, _ := lifecycleMuxes(t)
+			sa := func(spiI uint64) *ikeContext { return &ikeContext{suite: suite, spiI: spiI, spiR: spiI + 1} }
+			own := sa(41)
+			own.ownDelete = true
+			before, deleted := test.held(sa(11), sa(21), sa(31), own, sa(51))
+			events := &recorder{}
+			s := &Session{mux: mux, current: before.current, old: before.old, collision: before.collision, localRekey: before.local, events: events.record}
+			if before.old != nil {
+				s.recovery.replaced = before.old
+			}
+			lives := s.peerDeletedIKE(deleted)
+			want := before
+			if test.want != nil {
+				want = test.want(before)
+			}
+			got := slots{current: s.current, old: s.old, collision: s.collision, local: s.localRekey}
+			if lives != test.lives || got != want {
+				t.Errorf("the Delete of %016x left the session living %v with %+v, want living %v with %+v", deleted.spiI, lives, got, test.lives, want)
+			}
+			if adopted := before.local != nil && before.local.adopted; adopted != (test.want != nil && test.retired == 0) {
+				t.Errorf("this end's rekey is marked adopted %v", adopted)
+			}
+			if deleted == before.old && s.recovery.replaced != nil {
+				t.Error("the record of the retired SA outlived it")
+			}
+			retired := 0
+			for _, line := range events.recorded() {
+				if strings.HasPrefix(line, "ike.sa.retired ") && strings.Contains(line, "reason=deleted") {
+					retired++
+				}
+			}
+			if retired != test.retired {
+				t.Errorf("the session told %d retirements as deleted, want %d: %q", retired, test.retired, events.recorded())
+			}
+		}))
 	}
 }
 

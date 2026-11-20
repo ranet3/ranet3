@@ -498,6 +498,14 @@ func (s *Session) retire(ctx *ikeContext, reason, failure string) bool {
 		s.stateMu.Unlock()
 		return false
 	}
+	s.retireRetainedLocked(ctx, reason, failure)
+	s.stateMu.Unlock()
+	s.tellRetired()
+	return true
+}
+
+// retireRetainedLocked drops ctx, which the old or the collision slot holds, with any record of it, queues its end for tellRetired and releases its SPI where no other slot routes it, with stateMu held
+func (s *Session) retireRetainedLocked(ctx *ikeContext, reason, failure string) {
 	s.retireLocked(ctx, reason, failure)
 	if s.old == ctx {
 		s.old = nil
@@ -508,34 +516,36 @@ func (s *Session) retire(ctx *ikeContext, reason, failure string) bool {
 		s.recovery = recoveryRecord{}
 	}
 	s.releaseSPILocked(ctx.spiI)
-	s.stateMu.Unlock()
-	s.tellRetired()
-	return true
 }
 
-// adoptCollisionOnPeerDelete is the second half of RFC 7296 section 2.8.2:
-// "If the peer that did notice the simultaneous rekey gets the delete request
-// from the other peer for the old IKE SA, it knows that the other peer did not
-// detect the simultaneous rekey, and the first peer can forget its own rekey
-// attempt." The peer's new SA is the candidate already held as the loser of a
-// collision only this end saw, so it becomes current. Without this the Delete
-// matches no retained context and closes a session the peer believes is fine,
-// and the window is not microseconds: localRekey is set before the request
-// goes out, so any exchange already pending widens it to that exchange's whole
-// lifetime.
-func (s *Session) adoptCollisionOnPeerDelete(ctx *ikeContext) bool {
+// peerDeletedIKE takes the peer's Delete of ctx, the IKE SA it came on, and reports whether the session lives on
+// a ctx the session retains, replaced or a candidate, is retired with any record of it, its SPI released where no other slot routes it, and its end told as deleted once stateMu is released
+// a ctx no slot holds any more is one this end dropped since dispatch found it, and its Delete changes nothing
+// RFC 7296 section 2.8.2: "If the peer that did notice the simultaneous rekey gets the delete request from the other peer for the old IKE SA, it knows that the other peer did not detect the simultaneous rekey, and the first peer can forget its own rekey attempt."
+// so while this end's own rekey of ctx runs, a current ctx gives way to the peer's candidate held beside it, which becomes current, ctx's SPI is released where no other slot routes it, and that rekey is marked adopted
+// the Delete of the current IKE SA in any other state ends the session
+// the cases read the slots in one hold of stateMu, since RekeyIKE's goroutine moves a current ctx to the old slot under that lock, and cases read in two holds could each miss it
+func (s *Session) peerDeletedIKE(ctx *ikeContext) bool {
 	s.stateMu.Lock()
-	// a collision this end's own rekey left over is the redundant SA it deletes, which the peer never made current, so the peer's Delete of the current SA then ends the session
-	if ctx != s.current || s.collision == nil || s.collision.ownDelete || s.localRekey == nil {
+	switch {
+	case s.old == ctx || s.collision == ctx:
+		s.retireRetainedLocked(ctx, retiredDeleted, "")
 		s.stateMu.Unlock()
-		return false
+		s.tellRetired()
+		return true
+	case ctx != s.current:
+		s.stateMu.Unlock()
+		return true
+	case s.collision != nil && !s.collision.ownDelete && s.localRekey != nil && s.localRekey.old == ctx:
+		s.localRekey.adopted = true
+		s.current, s.collision, s.localRekey = s.collision, nil, nil
+		s.releaseSPILocked(ctx.spiI)
+		s.stateMu.Unlock()
+		slog.Info("ike simultaneous rekey selected peer candidate")
+		return true
 	}
-	s.localRekey.adopted = true
-	s.current, s.collision, s.localRekey = s.collision, nil, nil
-	s.releaseSPILocked(ctx.spiI)
 	s.stateMu.Unlock()
-	slog.Info("ike simultaneous rekey selected peer candidate")
-	return true
+	return false
 }
 
 // contextRetired reports an IKE SA this session no longer holds in any role.
