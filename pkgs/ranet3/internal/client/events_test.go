@@ -277,6 +277,12 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
 	c := testClientOf(t, cfg, privateKey, reg)
 	c.dialRetry = time.Hour
+	// with no prepare the resolution is refused before any lookup, so an attempt never asks the host
+	c.prepare = nil
+	_, refusal := reg[0].Nodes[1].Endpoints[0].ResolveRemote(t.Context(), nil, nil)
+	if refusal == nil {
+		t.Fatal("the registry resolved an endpoint with no prepare")
+	}
 	bus := c.events
 
 	wake := make(chan struct{}, 1)
@@ -292,8 +298,13 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	path := d.path
 	woken := recorded(bus, "dial.woken")
 	failed := recorded(bus, "dial.failed")
-	if len(woken) != 1 || woken[0].Peer != path || failed[0].Peer != path || !strings.Contains(failed[0].Attrs["err"], "gateway.invalid") {
-		t.Errorf("the dialer recorded wakes %+v and failures %+v", woken, failed)
+	if len(woken) != 1 || woken[0].Peer != path {
+		t.Errorf("the dialer recorded wakes %+v, want one under %s", woken, path)
+	}
+	for _, failure := range failed {
+		if failure.Peer != path || failure.Attrs["err"] != refusal.Error() {
+			t.Errorf("the dialer recorded the failure %+v, want it under %s carrying the refusal %q", failure, path, refusal)
+		}
 	}
 }
 
