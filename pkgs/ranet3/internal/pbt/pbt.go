@@ -32,15 +32,15 @@ import (
 // Go package hashes the labels of nested generators with a seed each process
 // picks for itself, so a property built from them draws a different sample in
 // each run. A boundary the code branches on is drawn outright, through Spanning
-// or by name, rather than left to the sample. Each property gets 200 cases,
-// twice the engine's default, except under go test -short, where hegel.Test
-// replaces the count with 10.
+// or by name, rather than left to the sample. Each property gets propertyCases
+// cases, except under go test -short, where hegel.Test replaces the count with
+// 10.
 func Check(t *testing.T, fn func(*hegel.T)) {
 	t.Helper()
 	hegel.Test(t, fn,
 		hegel.WithDatabase(""),
 		hegel.WithDerandomize(true),
-		hegel.WithTestCases(200),
+		hegel.WithTestCases(propertyCases),
 	)
 }
 
@@ -49,12 +49,11 @@ type Integer interface {
 	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
 }
 
-// Spanning draws from lo to hi, with the two ends drawn outright a quarter of
-// the time, so every run meets them rather than only a run whose sample
-// happens to land there.
+// Spanning draws from lo to hi, with the two ends drawn outright at
+// boundaryChance.
 func Spanning[T Integer](lo, hi T) hegel.Generator[T] {
 	return hegel.Composite(func(tc hegel.TestCase) T {
-		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
+		if hegel.Draw(tc, hegel.WeightedBooleans(boundaryChance)) {
 			return hegel.Draw(tc, hegel.SampledFrom([]T{lo, hi}))
 		}
 		return hegel.Draw(tc, hegel.Integers(lo, hi))
@@ -74,10 +73,11 @@ func Subset[T any](tc hegel.TestCase, every []T, least, most int) []T {
 	return out
 }
 
-// List draws a list of names a configuration writes, left out one time in
-// four, which is nil, and otherwise a run of distinct names from every.
+// List draws a list of names a configuration writes, left out at
+// boundaryChance, which is nil, and otherwise a run of distinct names from
+// every.
 func List(tc hegel.TestCase, every []string) []string {
-	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
+	if hegel.Draw(tc, hegel.WeightedBooleans(boundaryChance)) {
 		return nil
 	}
 	return Subset(tc, every, 1, len(every))
