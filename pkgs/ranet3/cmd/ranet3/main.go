@@ -509,6 +509,7 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 	} else {
 		// no reconciler runs to delete a kill switch an earlier instance left, which holds the host's traffic whatever this file asks, or its overlay holds where they outlive it
 		kernel.DeleteFallback(d.cfg.Overlay)
+		kernel.WarnHeldOverlay(d.cfg.Overlay)
 		slog.Info(fmt.Sprintf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
 			mesh.Name, mesh.QueueCount()))
 	}

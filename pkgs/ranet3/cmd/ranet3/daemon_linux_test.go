@@ -43,12 +43,14 @@ import (
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/kernel/kerneltest"
 	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/sadr"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // the tests in this file start the daemon as runDaemon does, its tun, its sockets, its nftables and its netlink opened from
@@ -262,8 +264,7 @@ func openFiles(t *testing.T) int {
 
 // leftNothing fails t for any goroutine of the start still running once it settled, and for anything of the start's still
 // bound or held: a listener, a socket or file open, the control socket, the node's port, the tun, an nftables table or a rule
-// or route of the reconciler's protocol but the down set its stop leaves, which the routing page's "The overlay while a node is
-// down" tells. The start's tun is one it made, which goes with the mesh, so an exit's shutdown
+// or route of the reconciler's protocol but the down set its stop leaves. The start's tun is one it made, which goes with the mesh, so an exit's shutdown
 // withdraws its chains. One that outlives the daemon keeps the exit's stopped rules, which the exit nodes page tells.
 func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 	t.Helper()
@@ -312,27 +313,18 @@ func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, rule := range rules {
-		if rule.Protocol == kernel.DefaultProtocol && !heldByDownSet(rule) {
-			t.Errorf("the rule %+v is still there", rule)
-		}
+	// the tests of one binary share its namespace, so the down set an earlier test's stop left may be there or not
+	extra, _ := kerneltest.NotDownSet(rules, daemonOverlay)
+	for _, rule := range extra {
+		t.Errorf("the rule %+v is still there", rule)
 	}
 	if routes := ownRoutes(t); routes != 0 {
 		t.Errorf("%d routes of the reconciler's protocol are still there", routes)
 	}
 }
 
-// heldByDownSet reports whether rule is one of the down set a stop leaves: at 32765 the refusal of an overlay prefix, and at 32764
-// its lookup of main
-func heldByDownSet(rule kernel.DumpedRule) bool {
-	switch rule.Priority {
-	case 32765:
-		return rule.Action == "unreachable" && rule.To.IsValid()
-	case 32764:
-		return rule.Action == "lookup" && rule.Table == unix.RT_TABLE_MAIN && rule.To.IsValid()
-	}
-	return false
-}
+// daemonOverlay is the overlay writeDaemon writes
+var daemonOverlay = []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")}
 
 // ownRoutes counts the routes of the reconciler's protocol in every table
 func ownRoutes(t *testing.T) int {
@@ -880,6 +872,63 @@ func TestDaemonWarnsOfTheReloadItRefuses(t *testing.T) {
 	signalSelf(t, syscall.SIGTERM)
 	if got := exited(t, code); got != 0 {
 		t.Errorf("the daemon that refused a reload exited %d after SIGTERM", got)
+	}
+	leftNothing(t, f, was)
+}
+
+// A start with no cap.table over the down set an earlier start's stop left warns once naming each of its rules with the command
+// that deletes it, and leaves it, since no reconciler runs to take it
+func TestDaemonWithNoReconcilerWarnsOfTheDownSetLeft(t *testing.T) {
+	claimNamespace(t)
+	var logged lockedLog
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	f := writeDaemon(t, "")
+	was := before(t)
+	var first atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&first))
+	waitTill(t, "the start", func() bool { return recorded(&first, "daemon.started") != 0 })
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Fatalf("the start with a reconciler exited %d after SIGTERM", got)
+	}
+	rules, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extra, missing := kerneltest.NotDownSet(rules, daemonOverlay); len(extra)+len(missing) != 0 {
+		t.Fatalf("the stop left %+v beside the down set and lacks %+v of it", extra, missing)
+	}
+	var second atomic.Pointer[events.Bus]
+	s := watched(&second)
+	s.load = func(path string) (*config.Config, error) {
+		cfg, err := config.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Cap.Table = nil
+		return cfg, nil
+	}
+	code = runAsync(f, s)
+	waitTill(t, "the start with no reconciler", func() bool { return recorded(&second, "daemon.started") != 0 })
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the start with no reconciler exited %d after SIGTERM", got)
+	}
+	text := logged.String()
+	if n := strings.Count(text, "kernel found rules an earlier instance left to hold overlay prefixes"); n != 1 {
+		t.Errorf("the start with no reconciler warned of the down set %d times, want once:\n%s", n, text)
+	}
+	for _, want := range []string{"ip -4 rule del priority 32765 to 203.0.113.0/24 protocol 155", "ip -6 rule del priority 32764 to 3fff:a::/36 protocol 155"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the warning does not name %q:\n%s", want, text)
+		}
+	}
+	if rules, err = kernel.DumpRules(); err != nil {
+		t.Fatal(err)
+	}
+	if extra, missing := kerneltest.NotDownSet(rules, daemonOverlay); len(extra)+len(missing) != 0 {
+		t.Errorf("the start with no reconciler left %+v beside the down set and lacks %+v of it", extra, missing)
 	}
 	leftNothing(t, f, was)
 }
