@@ -48,19 +48,24 @@ func withEdges[T any](gen hegel.Generator[T], edges ...T) hegel.Generator[T] {
 	return hegel.OneOf(gen, hegel.SampledFrom(edges))
 }
 
+// the bounds of settle
+const (
+	settleTries = 20
+	settlePause = time.Millisecond
+)
+
 // settle collects what the property engine left behind and lets the cleanups
 // that free its native handles run before the next test starts. Those
 // cleanups allocate, and TestSealAllocations and the batch reuse test count
 // every allocation the process makes, so one landing in their window fails
-// them. It returns once a collection and the millisecond after it pass
-// without an allocation, or after twenty tries.
+// them.
 func settle() {
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
-	for range 20 {
+	for range settleTries {
 		before := stats.Mallocs
 		runtime.GC()
-		time.Sleep(time.Millisecond)
+		time.Sleep(settlePause)
 		runtime.ReadMemStats(&stats)
 		if stats.Mallocs == before {
 			return
