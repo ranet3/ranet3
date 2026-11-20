@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
 
@@ -321,6 +322,9 @@ type fallbackWatch struct {
 	monitor *nftables.Monitor
 	stop    chan struct{}
 	done    chan struct{}
+	// written is a write through conn that no read has followed yet, whose
+	// readback takes no table gone
+	written bool
 }
 
 // watchFallback is the socket the switch is written through, opening it with
@@ -380,8 +384,11 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	var tables map[uint8]uint32
 	var stale nftables.Contents
 	if remake {
-		var read nftables.Readback
-		if tables, read, err = readFallback(conn, s); err != nil {
+		if tables, err = nftables.Tables(conn, nftables.Table); err != nil {
+			return err
+		}
+		read, err := readFallback(conn, s, tables)
+		if err != nil {
 			return err
 		}
 		stale = read.Stale
@@ -390,33 +397,96 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	if err != nil {
 		return err
 	}
-	return p.fallbackHeld.Rewrite(conn, fallbackNamed, stale, func(stale nftables.Contents) ([]nftables.Request, error) {
+	err = p.fallbackHeld.Rewrite(conn, fallbackNamed, stale, func(stale nftables.Contents) ([]nftables.Request, error) {
 		return fallbackBatch(s, stale, leftovers)
 	})
+	p.fallback.written = err == nil
+	return err
 }
 
-// readFallback counts the switch among the table's holders where it finds any
-// of the switch's chains or sets, as a start that takes them over keeps them
+// readFallback is readFallbackThrough over nftables.Tables
 func (p *netlinkPlatform) readFallback(s fallbackSets) (fallbackRead, error) {
+	return p.readFallbackThrough(s, func(conn *nftables.Conn) (map[uint8]uint32, error) { return nftables.Tables(conn, nftables.Table) })
+}
+
+// readFallbackThrough reads the switch the watch's socket holds against what
+// writeFallback writes for s over tables dumped through dump, and counts the
+// switch among the table's holders where it finds any of its chains or sets,
+// as a start that takes them over keeps them. A readback of a write takes no
+// table gone, so a deletion after the write fails the pass.
+func (p *netlinkPlatform) readFallbackThrough(s fallbackSets, dump func(conn *nftables.Conn) (map[uint8]uint32, error)) (fallbackRead, error) {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return fallbackRead{}, err
 	}
-	out, found, err := fallbackFault(conn, s)
+	readback := p.fallback.written
+	p.fallback.written = false
+	reads := connReads(conn, s)
+	tables := func() (map[uint8]uint32, error) { return dump(conn) }
+	read := func(tables map[uint8]uint32) (fallbackRead, bool, error) { return faultOver(reads, tables) }
+	out, found, err := readOrGone(tables, read, !readback)
 	if err == nil && found {
 		err = p.fallbackHeld.Found(conn)
 	}
 	return out, err
 }
 
-// fallbackFault reads the switch conn holds against what writeFallback writes
-// for s, and reports whether it found any of the switch's chains or sets
-func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found bool, err error) {
-	tables, read, err := readFallback(conn, s)
+// readOrGone reads the switch over a dump of the tables. A dump of a table's
+// sets or of a set's elements fails ENOENT where the table is gone
+// (nft_table_lookup in nf_tables_api.c) and where the set alone is, so, where
+// confirm holds, a read that fails ENOENT reads again over a fresh dump that
+// holds no inet table, as over a table never there, and says so. Any other
+// failure is the read's. Where confirm does not hold, the read is a write's
+// readback, and a dump holding no inet table fails it ENOENT.
+func readOrGone(dump func() (map[uint8]uint32, error), read func(tables map[uint8]uint32) (fallbackRead, bool, error), confirm bool) (fallbackRead, bool, error) {
+	tables, err := dump()
 	if err != nil {
 		return fallbackRead{}, false, err
 	}
-	leftovers, err := nftables.Leftovers(conn, tables, fallbackRetired, fallbackScope)
+	if _, held := tables[unix.NFPROTO_INET]; !held && !confirm {
+		return fallbackRead{}, false, fmt.Errorf("kernel: read table inet %s back after its write: %w", nftables.Table, unix.ENOENT)
+	}
+	out, found, err := read(tables)
+	if !confirm || !errors.Is(err, unix.ENOENT) {
+		return out, found, err
+	}
+	if now, dumpErr := dump(); dumpErr == nil {
+		if _, held := now[unix.NFPROTO_INET]; !held {
+			slog.Warn("kernel's kill switch table was deleted during its read, and the pass writes the switch again", "where", tableForm.where, "err", err)
+			return read(now)
+		}
+	}
+	return out, found, err
+}
+
+// fallbackReads is the three reads of the switch faultOver folds, each over
+// the tables a dump gave or the lines the first read found
+type fallbackReads struct {
+	contents   func(tables map[uint8]uint32) (nftables.Readback, error)
+	leftovers  func(tables map[uint8]uint32) ([]nftables.Retired, error)
+	chainFault func(chain int, held []nftables.Installed) (string, error)
+}
+
+// connReads is fallbackReads through conn against what writeFallback writes
+// for s
+func connReads(conn *nftables.Conn, s fallbackSets) fallbackReads {
+	return fallbackReads{
+		contents: func(tables map[uint8]uint32) (nftables.Readback, error) { return readFallback(conn, s, tables) },
+		leftovers: func(tables map[uint8]uint32) ([]nftables.Retired, error) {
+			return nftables.Leftovers(conn, tables, fallbackRetired, fallbackScope)
+		},
+		chainFault: func(chain int, held []nftables.Installed) (string, error) { return chainFault(conn, s, chain, held) },
+	}
+}
+
+// faultOver folds the switch's reads over tables into a fallbackRead, and
+// reports whether it found any of the switch's chains or sets
+func faultOver(r fallbackReads, tables map[uint8]uint32) (out fallbackRead, found bool, err error) {
+	read, err := r.contents(tables)
+	if err != nil {
+		return fallbackRead{}, false, err
+	}
+	leftovers, err := r.leftovers(tables)
 	if err != nil {
 		return fallbackRead{}, false, err
 	}
@@ -437,7 +507,7 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (out fallbackRead, found
 		return out, found, nil
 	}
 	for i := range fallbackChains {
-		if out.fault, err = chainFault(conn, s, i, read.Rules); err != nil {
+		if out.fault, err = r.chainFault(i, read.Rules); err != nil {
 			return fallbackRead{}, false, err
 		}
 		if out.fault != "" {
@@ -519,24 +589,20 @@ func ReadFallback() (FallbackDebug, error) {
 	return out, nil
 }
 
-// readFallback reads the tables and the switch back, its chains missing from
-// the table or the table missing as a fault
-func readFallback(conn *nftables.Conn, s fallbackSets) (map[uint8]uint32, nftables.Readback, error) {
-	tables, err := nftables.Tables(conn, nftables.Table)
-	if err != nil {
-		return nil, nftables.Readback{}, err
-	}
+// readFallback reads the switch back, its chains missing from the table, or
+// the table missing from tables, as a fault
+func readFallback(conn *nftables.Conn, s fallbackSets, tables map[uint8]uint32) (nftables.Readback, error) {
 	contents := fallbackContents
 	contents.Elements = s.elements()
 	read, err := contents.Read(conn, tables, unix.NFPROTO_INET, fallbackScope)
 	if err != nil {
-		return nil, nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
+		return nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
 	}
 	// a flag on the table keeps the read's fault, which says whether a rewrite can mend the table
 	if !holdsSwitch(read.Chains) && tables[unix.NFPROTO_INET] == 0 {
 		read.Fault = "its chains are missing"
 	}
-	return tables, read, nil
+	return read, nil
 }
 
 // holdsSwitch is whether chains, a table's, hold either chain of the switch
