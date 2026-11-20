@@ -4,8 +4,13 @@
 package kernel
 
 import (
+	"cmp"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
@@ -104,6 +109,152 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		}
 	}
 	return out
+}
+
+// downRules is the pair of down rules of each prefix of overlay, the down set where overlay is as heldOverlay leaves it: for each
+// prefix of length n, in its family, 32765 refusing it and 32764 looking main up to it for a route of length n or longer, the refusal
+// first, the order a stop adds them in, so once the refusal's add succeeds no
+// lookup to the prefix meets 32764 alone and leaves by a shorter route of main. familyPrefixes holds no /0, so
+// n-1 is never negative.
+func downRules(overlay []schema.Prefix) []Rule {
+	var out []Rule
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		for _, prefix := range familyPrefixes(family, SchemaPrefixes(overlay)) {
+			to := schema.PrefixFrom(prefix)
+			out = append(out,
+				Rule{Family: family, Priority: priorityDownRefused, To: to, action: actionUnreachable},
+				Rule{Family: family, Priority: priorityDownMain, To: to, Table: schema.TableMain, suppress: SuppressUpTo(prefix.Bits() - 1)},
+			)
+		}
+	}
+	return out
+}
+
+// heldOverlay is the prefixes of overlay the down set holds: each but one a
+// carve-out of carved equals, which gets no hold while the node runs
+// (overlayHolds), so its addresses go onto the carve-out's link while down as
+// they do then
+func heldOverlay(overlay []schema.Prefix, carved []netip.Prefix) []schema.Prefix {
+	return slices.DeleteFunc(slices.Clone(overlay), func(prefix schema.Prefix) bool {
+		destination, ok := canonicalPrefix(prefix.Prefix)
+		return ok && slices.Contains(carved, destination)
+	})
+}
+
+// downSet is the down set a stop writes, of the overlay in force against the
+// host's network as the watch last read it, so a carve-out the watch sees come
+// or go while the node is down moves it at the next stopped pass
+func (r *Reconciler) downSet() []Rule {
+	return downRules(heldOverlay(r.rt.Overlay, r.readNetwork().carved))
+}
+
+// holdsOverlay reports whether the kernel, as the last route listing and its
+// writes left it, holds for every source the hold of wanted, the routes that
+// pass was handed, at the prefix of each refusal of down. A route the pass is
+// deleting, a throw and the mesh's own route hold nothing.
+func (r *Reconciler) holdsOverlay(down []Rule, wanted []Route) bool {
+	at := make(map[netip.Prefix]bool, len(wanted))
+	for _, route := range wanted {
+		if !route.Source.IsValid() && route.Unreachable && r.installed[route] {
+			at[route.Destination] = true
+		}
+	}
+	return !slices.ContainsFunc(down, func(rule Rule) bool { return rule.Priority == priorityDownRefused && !at[rule.To.Prefix] })
+}
+
+// heldPairs counts the distinct overlay prefixes whose pair of down rules, the
+// refusal at 32765 and the lookup of main at 32764, is among rules, a second
+// copy of either counting nothing more
+func heldPairs(rules []Rule) int {
+	refused, looked := map[schema.Prefix]bool{}, map[schema.Prefix]bool{}
+	for _, rule := range rules {
+		if !isDownRule(rule) {
+			continue
+		}
+		switch rule.Priority {
+		case priorityDownRefused:
+			refused[rule.To] = true
+		case priorityDownMain:
+			looked[rule.To] = true
+		}
+	}
+	held := 0
+	for to := range refused {
+		if looked[to] {
+			held++
+		}
+	}
+	return held
+}
+
+// isDownRule reports whether rule is one of the down set of its own
+// destination, which a stop left for this overlay or an earlier one
+func isDownRule(rule Rule) bool {
+	return rule.To.Prefix.IsValid() && slices.Contains(downRules([]schema.Prefix{rule.To}), rule)
+}
+
+// withdrawOrder is the order a withdrawal deletes rules in: from the last
+// priority to the first, each nop just after the goto that lands on it. A
+// marked lookup then jumps over the rules between a goto and its nop for as
+// long as the goto stands, and every rule that looks main up goes ahead of
+// 5110.
+func withdrawOrder(rules []Rule) []Rule {
+	// at is the priority a rule goes at, each nop's that of its goto, and after it
+	// derivedRules writes two pairs of a goto and its nop, 5100 to 5190 and 5400 to 5490, and a third pair needs its case
+	// here, or its nop goes at its own priority, ahead of the rules its goto jumps over
+	at := func(rule Rule) (uint32, int) {
+		switch rule.Priority {
+		case priorityOverlayEnd:
+			return priorityUnderlayPastOverlay, 1
+		case priorityMeshEnd:
+			return priorityUnderlayPastMesh, 1
+		}
+		return rule.Priority, 0
+	}
+	out := slices.Clone(rules)
+	slices.SortStableFunc(out, func(a, b Rule) int {
+		ap, an := at(a)
+		bp, bn := at(b)
+		return cmp.Or(cmp.Compare(bp, ap), cmp.Compare(an, bn))
+	})
+	return out
+}
+
+// WarnHeldOverlay warns once, for a start that runs no reconciler to remove
+// them, of each rule of overlay's down set under the default protocol that a
+// stop left, with the command that deletes it, and removes nothing. Only linux
+// holds policy rules.
+func WarnHeldOverlay(overlay []schema.Prefix) {
+	dumped, err := DumpRules()
+	if errors.Is(err, ErrUnsupported) {
+		return
+	}
+	if err != nil {
+		slog.Warn("kernel could not list the policy rules to find a down set an earlier instance may have left", "err", err)
+		return
+	}
+	warnOfDownSet(dumped, overlay)
+}
+
+// warnOfDownSet is WarnHeldOverlay's warning, of the rules of overlay's down
+// set that dumped holds
+func warnOfDownSet(dumped []DumpedRule, overlay []schema.Prefix) {
+	var rules, fix []string
+	for _, rule := range downRules(overlay) {
+		if !slices.Contains(dumped, rule.dumped(DefaultProtocol)) {
+			continue
+		}
+		version := "4"
+		if rule.Family == FamilyIPv6 {
+			version = "6"
+		}
+		rules = append(rules, fmt.Sprintf("%s protocol %d", rule, DefaultProtocol))
+		fix = append(fix, fmt.Sprintf("ip -%s rule del priority %d to %s protocol %d", version, rule.Priority, rule.To, DefaultProtocol))
+	}
+	if len(rules) > 0 {
+		slog.Warn("kernel found rules an earlier instance left to hold overlay prefixes, which refuse each prefix whose 32765 rule stands until they are deleted",
+			"rules", strings.Join(rules, ", "), "fix", strings.Join(fix, " && "))
+	}
 }
 
 // exitView is mode 2 or 3 as a pass derives its rules: the host's links

@@ -569,14 +569,12 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		if _, err := net.InterfaceByName(labTUN); err == nil {
 			return fmt.Errorf("%s outlived the node", labTUN)
 		}
-		rules, err := dumpRules()
+		wrong, err := notDownSet(cfg.Overlay)
 		if err != nil {
 			return err
 		}
-		for _, rule := range rules {
-			if rule.protocol == kernel.DefaultProtocol {
-				return fmt.Errorf("a rule of the reconciler's outlived it: %v", rule)
-			}
+		if len(wrong) > 0 {
+			return fmt.Errorf("the stop left %s", strings.Join(wrong, ", "))
 		}
 		return labLeftStopped()
 	}); err != nil {

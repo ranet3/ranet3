@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -506,14 +507,12 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 		if err := labLeftStopped(); err != nil {
 			return err
 		}
-		rules, err := dumpRules()
+		wrong, err := notDownSet(cfg.Overlay)
 		if err != nil {
 			return err
 		}
-		for _, rule := range rules {
-			if rule.protocol == kernel.DefaultProtocol {
-				return fmt.Errorf("a rule of the reconciler's outlived it: %v", rule)
-			}
+		if len(wrong) > 0 {
+			return fmt.Errorf("the stop left %s", strings.Join(wrong, ", "))
 		}
 		left, err := dumpRoutes()
 		if err != nil {

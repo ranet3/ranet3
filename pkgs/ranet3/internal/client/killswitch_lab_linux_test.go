@@ -122,12 +122,14 @@ func switchAt(family int) switchAddresses {
 
 // switchSocketProbes is every socket's probe of every destination in state: what the mode sends into the tun goes there while the
 // defaults are present and while they are retracted but for the internet, and nowhere once the tun is gone, the LAN and the own
-// prefix leave by the uplink from every socket, the underlay's mark leaves by it to every destination, and nothing else leaves by it
+// prefix leave by the uplink from every socket, the underlay's mark leaves by it to every destination but the overlay's after the
+// mesh failed, which the down set refuses, and nothing else leaves by it
 func switchSocketProbes(state switchState) []switchProbe {
 	out, tun, held := switchOut, switchTun, switchHeld
 	if state.tunGone() {
 		tun = held
 	}
+	overlay := switchOverlayMarked(state)
 	internet := tun
 	if state != switchPresent {
 		internet = held
@@ -137,13 +139,22 @@ func switchSocketProbes(state switchState) []switchProbe {
 		at := switchAt(family)
 		probes = slices.Concat(probes,
 			switchRow(at.internet, internet, internet, held, held, out, out),
-			switchRow(at.peer, tun, tun, tun, held, out, out),
-			switchRow(at.held, held, held, held, held, out, out),
+			switchRow(at.peer, tun, tun, tun, held, overlay, overlay),
+			switchRow(at.held, held, held, held, held, overlay, overlay),
 			switchRow(at.subnet, tun, tun, held, held, out, out),
 			switchRow(at.lan, out, out, out, out, out, out),
 			switchRow(at.own, out, out, out, out, out, out))
 	}
 	return probes
+}
+
+// switchOverlayMarked is where the underlay's mark sends an overlay destination in state: out of the uplink, but after the mesh
+// failed, whose stop leaves the down set, which refuses the overlay to every socket
+func switchOverlayMarked(state switchState) switchWant {
+	if state == switchFailed {
+		return switchRefused
+	}
+	return switchOut
 }
 
 // switchUnaddressedProbes is switchSocketProbes with the tun holding no IPv4 overlay address, so IPv4 runs mode off's rules with
@@ -159,11 +170,12 @@ func switchUnaddressedProbes(state switchState) []switchProbe {
 	if state == switchFailed {
 		refused = held
 	}
+	overlay := switchOverlayMarked(state)
 	at := switchAt(4)
 	return slices.Concat(
 		switchRow(at.internet, refused, held, refused, held, out, out),
-		switchRow(at.peer, tun, tun, tun, held, out, out),
-		switchRow(at.held, held, held, held, held, out, out),
+		switchRow(at.peer, tun, tun, tun, held, overlay, overlay),
+		switchRow(at.held, held, held, held, held, overlay, overlay),
 		switchRow(at.subnet, tun, tun, tun, held, out, out),
 		switchRow(at.lan, out, out, out, out, out, out),
 		switchRow(at.own, out, out, out, out, out, out),
@@ -1018,7 +1030,7 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 			lab.border = nil
 		}
 		var tables map[uint8]uint32
-		var rules []kernelRule
+		var wrong []string
 		if err := lab.leaf.Do(func() error {
 			conn, err := nftables.Dial()
 			if err != nil {
@@ -1028,7 +1040,7 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 			if tables, err = nftables.Tables(conn, nftables.Table); err != nil {
 				return err
 			}
-			rules, err = dumpRules()
+			wrong, err = notDownSet(lab.d.node.config().Overlay)
 			return err
 		}); err != nil {
 			t.Fatalf("read the leaf back: %v", err)
@@ -1036,10 +1048,8 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 		if len(tables) > 0 {
 			t.Errorf("the stop left the table %s in the families %v", nftables.Table, tables)
 		}
-		for _, rule := range rules {
-			if rule.protocol == kernel.DefaultProtocol {
-				t.Errorf("the stop left the rule %s", rule)
-			}
+		for _, rule := range wrong {
+			t.Errorf("the stop left %s", rule)
 		}
 	})
 }

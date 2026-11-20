@@ -83,8 +83,8 @@ func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 	}
 }
 
-// the monitor wakes on a route of its table that a socket other than the one the reconciler writes routes through wrote, the
-// kernel's own changes among them, which carry port 0, and on its deleted rules and the tun's addresses whichever socket wrote them
+// the monitor wakes on a route of its table and on a deleted rule of its protocol that a socket other than the one the reconciler
+// writes through wrote, the kernel's own changes among them, which carry port 0, and on the tun's addresses whichever socket wrote them
 func TestRouteMonitorWakesOnARouteOnlyWhereAnotherSocketWroteIt(t *testing.T) {
 	plat, _ := writePlatform(t)
 	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
@@ -98,16 +98,18 @@ func TestRouteMonitorWakesOnARouteOnlyWhereAnotherSocketWroteIt(t *testing.T) {
 			body []byte
 			want bool
 		}{
-			"its own route added":                {unix.RTM_NEWROUTE, ownPort, added, false},
-			"its own route deleted":              {unix.RTM_DELROUTE, ownPort, deleted, false},
-			"a route the kernel added":           {unix.RTM_NEWROUTE, 0, added, true},
-			"a route the kernel deleted":         {unix.RTM_DELROUTE, 0, deleted, true},
-			"another writer's route added":       {unix.RTM_NEWROUTE, otherPort, added, true},
-			"another writer's route deleted":     {unix.RTM_DELROUTE, otherPort, deleted, true},
-			"another table's route deleted":      {unix.RTM_DELROUTE, otherPort, elsewhere.routeMessage(route, true), false},
-			"its own rule deleted by its socket": {unix.RTM_DELRULE, ownPort, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40}), true},
-			"a tun address its socket added":     {unix.RTM_NEWADDR, ownPort, plat.addrMessage(prefix("192.0.2.1/32")), true},
-			"a tun address its socket took off":  {unix.RTM_DELADDR, ownPort, plat.addrMessage(prefix("192.0.2.1/32")), true},
+			"its own route added":                    {unix.RTM_NEWROUTE, ownPort, added, false},
+			"its own route deleted":                  {unix.RTM_DELROUTE, ownPort, deleted, false},
+			"a route the kernel added":               {unix.RTM_NEWROUTE, 0, added, true},
+			"a route the kernel deleted":             {unix.RTM_DELROUTE, 0, deleted, true},
+			"another writer's route added":           {unix.RTM_NEWROUTE, otherPort, added, true},
+			"another writer's route deleted":         {unix.RTM_DELROUTE, otherPort, deleted, true},
+			"another table's route deleted":          {unix.RTM_DELROUTE, otherPort, elsewhere.routeMessage(route, true), false},
+			"its own rule deleted by its socket":     {unix.RTM_DELRULE, ownPort, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40}), false},
+			"its own rule deleted by another socket": {unix.RTM_DELRULE, otherPort, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40}), true},
+			"its own rule deleted by the kernel":     {unix.RTM_DELRULE, 0, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40}), true},
+			"a tun address its socket added":         {unix.RTM_NEWADDR, ownPort, plat.addrMessage(prefix("192.0.2.1/32")), true},
+			"a tun address its socket took off":      {unix.RTM_DELADDR, ownPort, plat.addrMessage(prefix("192.0.2.1/32")), true},
 		} {
 			if got := wakesOn(netlink.Message{Kind: arm.kind, Pid: arm.port, Data: arm.body}); got != arm.want {
 				t.Errorf("%s, %s: the monitor woke %v, want %v", route.Destination, name, got, arm.want)

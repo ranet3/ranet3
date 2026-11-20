@@ -262,7 +262,8 @@ func openFiles(t *testing.T) int {
 
 // leftNothing fails t for any goroutine of the start still running once it settled, and for anything of the start's still
 // bound or held: a listener, a socket or file open, the control socket, the node's port, the tun, an nftables table or a rule
-// or route of the reconciler's protocol. The start's tun is one it made, which goes with the mesh, so an exit's shutdown
+// or route of the reconciler's protocol but the down set its stop leaves, which the routing page's "The overlay while a node is
+// down" tells. The start's tun is one it made, which goes with the mesh, so an exit's shutdown
 // withdraws its chains. One that outlives the daemon keeps the exit's stopped rules, which the exit nodes page tells.
 func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 	t.Helper()
@@ -312,13 +313,25 @@ func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 		t.Fatal(err)
 	}
 	for _, rule := range rules {
-		if rule.Protocol == kernel.DefaultProtocol {
+		if rule.Protocol == kernel.DefaultProtocol && !heldByDownSet(rule) {
 			t.Errorf("the rule %+v is still there", rule)
 		}
 	}
 	if routes := ownRoutes(t); routes != 0 {
 		t.Errorf("%d routes of the reconciler's protocol are still there", routes)
 	}
+}
+
+// heldByDownSet reports whether rule is one of the down set a stop leaves: at 32765 the refusal of an overlay prefix, and at 32764
+// its lookup of main
+func heldByDownSet(rule kernel.DumpedRule) bool {
+	switch rule.Priority {
+	case 32765:
+		return rule.Action == "unreachable" && rule.To.IsValid()
+	case 32764:
+		return rule.Action == "lookup" && rule.Table == unix.RT_TABLE_MAIN && rule.To.IsValid()
+	}
+	return false
 }
 
 // ownRoutes counts the routes of the reconciler's protocol in every table

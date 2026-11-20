@@ -734,11 +734,11 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 	})
 	t.Run("clean stop", func(t *testing.T) {
 		lab.stopRoutes()
-		var rules []kernelRule
+		var wrong []string
 		var left []kernelRoute
 		var chains []string
 		if err := leaf.ns.Do(func() (err error) {
-			if rules, err = dumpRules(); err != nil {
+			if wrong, err = notDownSet(leaf.client.config().Overlay); err != nil {
 				return err
 			}
 			if left, err = dumpRoutes(); err != nil {
@@ -757,10 +757,8 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 		if slices.Contains(chains, "fallback") || slices.Contains(chains, "output") {
 			t.Errorf("the stop left the kill switch's chains among %q in the table %s", chains, nftables.Table)
 		}
-		for _, rule := range rules {
-			if rule.protocol == kernel.DefaultProtocol {
-				t.Errorf("the stop left the rule %s", rule)
-			}
+		for _, rule := range wrong {
+			t.Errorf("the stop left %s", rule)
 		}
 		for _, route := range left {
 			if route.protocol == kernel.DefaultProtocol {

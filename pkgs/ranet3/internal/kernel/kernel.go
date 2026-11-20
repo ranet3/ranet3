@@ -59,6 +59,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -738,6 +739,25 @@ type Reconciler struct {
 	// last route listing that read the kernel, which may have landed. It
 	// belongs to the reconcile goroutine.
 	unanswered []Route
+	// routesListed says the route step of the pass under way listed the kernel's routes, so installed is this pass's own reading,
+	// and wanted is the routes that step was handed
+	// both belong to the reconcile goroutine
+	routesListed bool
+	wanted       []Route
+	// released says this reconciler's rules held the whole derived set since its last stop, so a down rule beside them is a delete
+	// still owed and never a reason to take them down again
+	released bool
+	// owedLogged is the writes the last warning of owed writes named. It belongs to the reconcile goroutine.
+	owedLogged []string
+	// standing is the rules of its protocol the last pass or withdrawal left standing, as its listing and its writes read them, nil
+	// where that listing failed, so a rule of them the next listing lacks is one another writer deleted, and warnedDeleted is those
+	// reported, a window ending with each such listing. Both belong to the reconcile goroutine.
+	standing      []Rule
+	warnedDeleted warnOnce[Rule]
+	// ending guards ended, which Run sets as it takes the last capability SetTable accepted, so a SetTable after it refuses
+	// rather than hand a capability no withdrawal reads
+	ending sync.Mutex
+	ended  bool
 
 	// liveness holds back the routes that would carry this machine's own
 	// traffic until the mesh has proved it can carry them. Only the reconcile
@@ -751,11 +771,17 @@ type Reconciler struct {
 
 	// enabled is whether this reconciler is writing to the kernel at all, and
 	// wake carries a change of it to the loop. Both are touched from outside
-	// the reconcile goroutine, while withdrawn is the loop's own record of having
-	// acted on a stop, and belongs to that goroutine like every field above.
-	enabled   atomic.Bool
-	wake      chan struct{}
-	withdrawn bool
+	// the reconcile goroutine, while stopped says the last pass ran stopped and
+	// succeeded, and belongs to that goroutine like every field above. It skips
+	// no pass: it is kept for the logs, one line when a stop completes and one
+	// when the reconciler starts again, which no write of a pass tells, since
+	// a stopped pass that puts back another writer's delete writes too.
+	enabled atomic.Bool
+	wake    chan struct{}
+	stopped bool
+	// dropHold is set by the operator's stop (DropHold) and cleared by a start,
+	// and touched from outside the reconcile goroutine
+	dropHold atomic.Bool
 	// next is the capability SetTable accepted last, which reload wakes the loop to take
 	next   atomic.Pointer[accepted]
 	reload chan struct{}
@@ -849,6 +875,18 @@ type Stats struct {
 	Exit *ExitStatus
 	// Path is cap.exit via's path as this pass judged it, nil outside mode 3
 	Path *PathStatus
+	// Held is the distinct overlay prefixes whose pair of down rules the last
+	// pass or withdrawal found in the kernel by its listing and its writes, 0
+	// where HeldUnknown says that listing failed
+	Held        int
+	HeldUnknown bool
+	// Owed is each write the last pass owes: beside the running set the
+	// delete of a pair of the down set or of its refusal alone, by prefix
+	// (debts), and the install of a rule of the set missing beside it, which
+	// each pass writes again while the node runs, and the delete of a rule a
+	// failed release put and could not take back, which the next pass deletes
+	// first
+	Owed []string
 	Err  string
 }
 
@@ -1055,23 +1093,33 @@ func (r *Reconciler) DerivedRules() []DumpedRule {
 }
 
 // SetEnabled stops or starts this reconciler while it runs. Stopping withdraws
-// every route, address and rule it installed and the kill switch, and starting
-// puts back on the next pass what that pass asks for, which is idempotent like
-// every other pass. A table left holding routes nobody maintains is the state
-// a stop exists to avoid, so the withdrawal is part of it rather than a
-// separate ask.
+// every route, address and rule it installed and the kill switch, and leaves
+// the down set in their place unless DropHold came first. Starting puts back on
+// the next pass what that pass asks for, which is idempotent like every other
+// pass, and takes the down set once that pass holds the overlay. A table left
+// holding routes nobody maintains is the state a stop exists to avoid, so the
+// withdrawal is part of it rather than a separate ask.
 //
 // The withdrawal runs on the reconcile goroutine rather than here, because
 // every field it touches belongs to that goroutine alone. This records the
 // request and wakes the loop, so a caller returns before the kernel has
 // caught up and reads Stats to see that it has.
 func (r *Reconciler) SetEnabled(on bool) {
+	if on {
+		r.dropHold.Store(false)
+	}
 	r.enabled.Store(on)
 	select {
 	case r.wake <- struct{}{}:
 	default:
 	}
 }
+
+// DropHold has the stop that follows it, the operator's, withdraw the down set
+// with the rest, and every stop after it until SetEnabled(true). A reconciler
+// already stopped withdraws the down set at its next pass, which the
+// SetEnabled(false) that follows wakes.
+func (r *Reconciler) DropHold() { r.dropHold.Store(true) }
 
 // FirstPass is closed once Run's first pass has ended, or its first
 // withdrawal for a reconciler started disabled, whether or not it failed
@@ -1106,6 +1154,11 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	if err != nil {
 		return err
 	}
+	r.ending.Lock()
+	defer r.ending.Unlock()
+	if r.ended {
+		return ErrStopping
+	}
 	r.next.Store(&accepted{table: t, overlay: overlay, announced: announced, addresses: addresses})
 	select {
 	case r.reload <- struct{}{}:
@@ -1113,6 +1166,9 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	}
 	return nil
 }
+
+// ErrStopping is SetTable's refusal once Run has begun its last withdrawal, which reads the capability it took before then
+var ErrStopping = errors.New("kernel: the reconciler is stopping, so it takes no reloaded cap.table")
 
 // NetworkChanged wakes the loop for a pass over the host's network as Runtime.Network reads it now
 // the watch has already let the change settle, so the pass runs at once
@@ -1158,8 +1214,8 @@ func (r *Reconciler) adopt() bool {
 }
 
 // Run reconciles until ctx is canceled, then withdraws everything this
-// reconciler installed, as withdraw gives for ctx's cause, and closes its
-// netlink sockets. It is called once.
+// reconciler installed, as withdraw gives for ctx's cause, leaving the down set
+// unless DropHold stopped it, and closes its netlink sockets. It is called once.
 //
 // Withdrawal is best effort by construction: the caller usually cancels the
 // mesh at the same moment, and the kernel drops routes and addresses on its
@@ -1195,29 +1251,31 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		switch {
 		case !r.enabled.Load():
-			// Stopped over the control socket. The withdrawal happens once per
-			// stop rather than once per wake-up, and the pass recorded after
-			// it reads zero installed, so a diagnostic does not go on
-			// reporting the routes of the last pass that ran.
-			// a withdrawal that failed is still owed
-			// it is retried on the backoff a failed pass takes rather than reported done
-			if !r.withdrawn {
-				started := time.Now()
-				err := r.withdraw(nil)
-				r.routePass = Stats{}
-				r.recordPass(err, time.Since(started))
-				grace.Stop()
-				if err != nil {
-					slog.Warn("kernel could not withdraw everything it was asked to stop holding, retrying", "err", err, "retry_in", retry.Failed(r.table.Reconcile.Duration()))
-				} else {
-					r.withdrawn = true
-					retry.Passed()
+			// Stopped over the control socket. Every pass converges as a
+			// running one does: the withdrawal lists the rules and the routes
+			// and writes what the stop asks now, the down set of the overlay
+			// in force unless DropHold came first, so a verb, a reload or
+			// another writer's change since the last pass meets this one, and
+			// a failure meets the retry. Where nothing differs it writes
+			// nothing. The pass recorded reads zero installed, so a diagnostic
+			// does not go on reporting the routes of the last pass that ran.
+			started := time.Now()
+			r.routePass = Stats{}
+			err := r.withdraw(errStopped)
+			r.recordPass(err, time.Since(started))
+			grace.Stop()
+			if err != nil {
+				slog.Warn("kernel could not withdraw everything it was asked to stop holding, retrying", "err", err, "retry_in", retry.Failed(r.table.Reconcile.Duration()))
+			} else {
+				retry.Passed()
+				if !r.stopped {
 					slog.Info("kernel reconciler stopped, its routes withdrawn", "where", r.Where())
 				}
+				r.stopped = true
 			}
 		default:
-			if r.withdrawn {
-				r.withdrawn = false
+			if r.stopped {
+				r.stopped = false
 				slog.Info("kernel reconciler started again", "where", r.Where())
 			}
 			if err := r.reconcile(); err != nil {
@@ -1276,7 +1334,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// anyway rather than skipping it on the flag keeps one exit path: what the
 	// kernel holds is read back rather than remembered, so anything installed
 	// between the stop and here still leaves.
-	return errors.Join(r.withdraw(context.Cause(ctx)), r.plat.Close())
+	// A capability SetTable accepted that the loop has not taken yet is the
+	// one this stop is for, so its overlay's down set is the one left, and
+	// one it accepts later is refused.
+	r.ending.Lock()
+	r.ended = true
+	r.ending.Unlock()
+	r.adopt()
+	cause := context.Cause(ctx)
+	return errors.Join(r.withdraw(cause), r.mendDownSet(cause), r.plat.Close())
 }
 
 // Close closes the netlink sockets and the monitors of a reconciler whose Run
@@ -1319,6 +1385,10 @@ func (r *Reconciler) reconcile() error {
 	snapshot := r.src.Snapshot()
 	// the routes and the rules carve what one reading of the network gives
 	network := r.readNetwork()
+	// ahead of the address and route writes, and whether the address listing fails or not
+	rules := r.enterRules(network)
+	// under fallback = "none" a pass that cannot list the rules puts the refusing ones in all the same, ahead of those writes
+	r.refuseBlind(rules)
 	held, listed, addressErr := r.applyAddresses()
 	// modes 2 and 3 cannot tell which families the tun holds an overlay address of without the listing, so the last pass's mode stands
 	// the address step's error has the pass retried
@@ -1347,11 +1417,9 @@ func (r *Reconciler) reconcile() error {
 	if judged && !asked {
 		fallback, fallbackErr = r.applyFallback(sets, asked)
 	}
-	routesErr := r.applyRoutes(desired, r.coverFamilies(status), r.bare)
+	routesErr := r.applyRoutes(desired, r.coverFamilies(status), r.bare, rules)
 	// a pass whose listing failed wrote nothing and tells the record the last pass
-	// left. A withdrawal leaves that record as it was, so after one such a pass
-	// tells the routes the withdrawal deleted too, and their addresses stay out
-	// of the antispoof filter's none sets until a listing reads the kernel.
+	// or withdrawal that listed the routes left.
 	if sink, ok := r.src.(InstalledSink); ok {
 		sink.Installed(append(slices.Collect(maps.Keys(r.installed)), r.unanswered...))
 	}
@@ -1366,7 +1434,7 @@ func (r *Reconciler) reconcile() error {
 		r.exitStatus.Fallback = fallback
 	}
 	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
-	err := errors.Join(addressErr, routesErr, r.applyRules(snapshot, exit, judged), fallbackErr)
+	err := errors.Join(addressErr, routesErr, r.applyRules(rules, snapshot, exit, judged), fallbackErr)
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1459,62 +1527,61 @@ func (r *Reconciler) audit() {
 // adopted, and withdrawn where no longer derived, rather than duplicated. It
 // adds in the set's order, which puts each nop ahead of its goto. exit is the
 // mode as the pass judged it, where judged, with the switch as the pass left
-// it.
-func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], exit exitView, judged bool) error {
-	if r.rules == nil || !judged {
+// it. It works from v, the view of the rules enterRules listed, which each
+// write updates and a failed write has reread, listed once more where the
+// entry's listing failed. Where the view holds a down rule a stop left,
+// applyRulesDown stages and releases. A pass that cannot judge the mode
+// writes no rule here and reports what the view shows.
+func (r *Reconciler) applyRules(v *ruleView, snapshot []sadr.Route[*netstack.Peer], exit exitView, judged bool) error {
+	if v == nil {
 		return nil
+	}
+	// broken with no write failed: the entry's listing failed and nothing was written since
+	if v.broken && !v.failed {
+		if v.list(); !v.broken {
+			r.noteDeleted(v.rules)
+		}
+	}
+	// what the pass leaves standing, for the next listing to read another writer's deletes against
+	defer func() {
+		r.standing = nil
+		if !v.broken {
+			r.standing = slices.Clone(v.rules)
+		}
+	}()
+	if !judged || v.broken {
+		var last []Rule
+		if set := r.derived.Load(); set != nil {
+			last = *set
+		}
+		r.reportRules(v, last)
+		return errors.Join(v.errs...)
 	}
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
 	r.derived.Store(&ruleSet)
-	actual, err := r.rules.Rules()
-	if err != nil {
-		return fmt.Errorf("list rules: %w", err)
+	if slices.ContainsFunc(v.rules, isDownRule) {
+		r.applyRulesDown(v, ruleSet)
+	} else {
+		r.converge(v, ruleSet)
 	}
-	var errs []error
-	added, removed := 0, 0
-	wanted := make(map[Rule]bool, len(ruleSet))
-	for _, rule := range ruleSet {
-		wanted[rule] = true
-	}
-	for _, rule := range actual {
-		if wanted[rule] {
-			continue
-		}
-		if err := r.rules.DelRule(rule); err != nil {
-			errs = append(errs, fmt.Errorf("delete rule %s: %w", rule, err))
-		} else {
-			removed++
-		}
-	}
-	present := make(map[Rule]bool, len(actual))
-	for _, rule := range actual {
-		present[rule] = true
-	}
-	for _, rule := range ruleSet {
-		if present[rule] {
-			continue
-		}
-		if err := r.rules.AddRule(rule); err != nil {
-			errs = append(errs, fmt.Errorf("add rule %s: %w", rule, err))
-		} else {
-			added++
-		}
-	}
-	if added > 0 || removed > 0 {
+	r.reportRules(v, ruleSet)
+	if v.added > 0 || v.removed > 0 {
 		r.changed = true
-		slog.Info("kernel rules reconciled", "added", added, "removed", removed)
+		slog.Info("kernel rules reconciled", "added", v.added, "removed", v.removed)
 	}
-	return errors.Join(errs...)
+	return errors.Join(v.errs...)
 }
 
 // applyRoutes removes before it installs, so a changed non-key attribute does
 // not collide with the old route under the exclusive-install policy.
-func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family) error {
+func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family, rules *ruleView) error {
 	// Cleared first, so a pass that fails before it can count anything reports
 	// nothing rather than the counts of the last pass that succeeded. The
 	// members stay, as r.installed does, since the cover that pass left stays
 	// installed.
-	r.routePass = Stats{Members: r.routePass.Members, Holes: r.routePass.Holes, Beneath: r.routePass.Beneath}
+	// Held stays too, for a pass that lists no rules.
+	r.routePass = Stats{Members: r.routePass.Members, Holes: r.routePass.Holes, Beneath: r.routePass.Beneath, Held: r.routePass.Held, HeldUnknown: r.routePass.HeldUnknown, Owed: r.routePass.Owed}
+	r.wanted = desired
 	// read once, so the scope of every route of the pass and its holes answer
 	// from one generation
 	var hosts hostTable
@@ -1525,10 +1592,12 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	if cover != nil {
 		cover.cover(r.rt.Overlay, families, addressless, hosts)
 	}
+	r.routesListed = false
 	actual, err := r.plat.Routes()
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
 	}
+	r.routesListed = true
 	// the listing read whether each add answered with an error landed
 	r.unanswered = nil
 	// Whether this pass leaves the mesh carrying this machine's own traffic,
@@ -1638,7 +1707,20 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// has to leave before its replacement arrives. Both lists are this
 	// reconciler's own routes, so the gap is within one pass and touches
 	// nothing else.
+	// while the pass stages, a write that moves an overlay prefix's hold goes only once that prefix's 5110 is out
+	blocked := r.unstageOverlay(rules, del, add)
+	// holdBack reports whether route's write waits for the next pass, and records why
+	holdBack := func(route Route, deleting bool) bool {
+		prefix, ok := r.holdTouched(route, deleting)
+		if ok && blocked[prefix] {
+			errs = append(errs, fmt.Errorf("route %s waits for the next pass, since the lookup of %s at 5110 could not be taken out ahead of it", route, prefix))
+		}
+		return ok && blocked[prefix]
+	}
 	for _, route := range del {
+		if holdBack(route, true) {
+			continue
+		}
 		if err := r.plat.DelRoute(route); err != nil {
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
 		} else {
@@ -1655,6 +1737,9 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		}
 		if route.Cover && broken[familyOf(route.Destination.Addr())] {
 			skipped++
+			continue
+		}
+		if holdBack(route, false) {
 			continue
 		}
 		err := r.plat.AddRoute(route)
@@ -1736,18 +1821,21 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	}
 	slices.SortFunc(members, comparePrefixes)
 	r.routePass = Stats{
-		Members:    members,
-		Holes:      holes,
-		Beneath:    beneath,
-		Desired:    desiredCount,
-		Installed:  len(actual) - removed + added,
-		Skipped:    skipped,
-		Added:      added,
-		Removed:    removed,
-		HoldPieces: cuts.pieces,
-		HoldsWhole: cuts.whole,
-		Cover:      coveredFamilies(slices.Collect(maps.Keys(held))),
-		Path:       r.pathPass(held),
+		Held:        r.routePass.Held,
+		HeldUnknown: r.routePass.HeldUnknown,
+		Owed:        r.routePass.Owed,
+		Members:     members,
+		Holes:       holes,
+		Beneath:     beneath,
+		Desired:     desiredCount,
+		Installed:   len(actual) - removed + added,
+		Skipped:     skipped,
+		Added:       added,
+		Removed:     removed,
+		HoldPieces:  cuts.pieces,
+		HoldsWhole:  cuts.whole,
+		Cover:       coveredFamilies(slices.Collect(maps.Keys(held))),
+		Path:        r.pathPass(held),
 	}
 	if scopes != nil {
 		r.routePass.HoldPieceBudget = holdPieceBudget
@@ -1966,13 +2054,14 @@ func (r *Reconciler) overlayHolds(out []Route, carved []netip.Prefix) []Route {
 // after the mesh's table and meets main's route for the link. A carve-out
 // lies inside an overlay prefix, so it holds no address of a class either. An
 // entry of the mesh's table for the carve-out's own prefix and every source
-// keeps the prefix in the mesh.
+// keeps the prefix in the mesh where desired installs it, which it does not for
+// an address cap.table assigns.
 func (r *Reconciler) carveThrows(out []Route, carved []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) []Route {
 	for _, destination := range carved {
 		throw := Route{Destination: destination, Metric: holdMetric, Throw: true}
 		held := slices.ContainsFunc(snapshot, func(entry sadr.Route[*netstack.Peer]) bool {
 			prefix, ok := canonicalPrefix(entry.Destination)
-			return ok && prefix == destination && !entry.Source.IsValid()
+			return ok && prefix == destination && !entry.Source.IsValid() && entry.Value != netstack.Assigned
 		})
 		if !held && !slices.Contains(out, throw) {
 			out = append(out, throw)
@@ -2208,6 +2297,33 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 	return append(tun, added...), true, errors.Join(errs...)
 }
 
+// mendDownSet lists the rules once more after the last withdrawal for cause,
+// which no pass follows, and adds each rule of the down set the listing lacks,
+// a rule another writer deleted between that withdrawal's listing and its
+// writes among them
+func (r *Reconciler) mendDownSet(cause error) error {
+	if r.rules == nil || !r.leavesDownSet(cause) {
+		return nil
+	}
+	held, err := r.rules.Rules()
+	if err != nil {
+		return fmt.Errorf("list rules: %w", err)
+	}
+	var errs []error
+	for _, rule := range r.downSet() {
+		if slices.Contains(held, rule) {
+			continue
+		}
+		if err := r.rules.AddRule(rule); err != nil {
+			errs = append(errs, fmt.Errorf("add rule %s: %w", rule, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// errStopped is the cause of a withdrawal the control socket's stop asks for
+var errStopped = errors.New("stopped over the control socket")
+
 // withdraw removes what this reconciler holds for a stop of cause: every route
 // and rule still carrying its marker, every address it added itself, and the
 // kill switch, whoever wrote it, but where cause is ErrMeshFailed and the
@@ -2215,10 +2331,19 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 // to say in a warning whether one is there.
 // Routes are read back rather than remembered, so routes an earlier crashed
 // instance left behind go with them.
+//
+// What the rules become is withdrawRules'. A family whose rules did not all
+// go as asked keeps its routes, and the error says so.
+// The rules go first, and the routes after them.
 func (r *Reconciler) withdraw(cause error) error {
 	r.report(nil)
 	r.reportExit(nil)
-	var errs []error
+	kept, rules, added, errs := r.withdrawRules(cause)
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		if kept[family] {
+			errs = append(errs, fmt.Errorf("left the %s routes and every %s rule not deleted in place", family, family))
+		}
+	}
 	routes, err := r.plat.Routes()
 	// the capture stands where the listing failed or a capturing route's delete does
 	r.capturing = r.capturing && err != nil
@@ -2228,18 +2353,25 @@ func (r *Reconciler) withdraw(cause error) error {
 	withdrawn := 0
 	var stayed []Route
 	for _, route := range routes {
-		if err := r.plat.DelRoute(route); err != nil {
+		if !kept[familyOf(route.Destination.Addr())] {
+			err := r.plat.DelRoute(route)
+			if err == nil {
+				withdrawn++
+				continue
+			}
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
-			r.capturing = r.capturing || r.captures(route)
-			stayed = append(stayed, route)
-		} else {
-			withdrawn++
 		}
+		r.capturing = r.capturing || r.captures(route)
+		stayed = append(stayed, route)
 	}
 	// where the listing failed, what the last pass left stands as told. The
 	// routes whose delete failed stay, and the listing read every add.
 	if err == nil {
 		r.unanswered = nil
+		r.installed = make(map[Route]bool, len(stayed))
+		for _, route := range stayed {
+			r.installed[route] = true
+		}
 		if sink, ok := r.src.(InstalledSink); ok {
 			sink.Installed(stayed)
 		}
@@ -2261,24 +2393,6 @@ func (r *Reconciler) withdraw(cause error) error {
 	}
 	removed, failed := r.release(addresses, held)
 	errs = append(errs, failed...)
-	// Rules go the same way routes do, read back under this reconciler's own
-	// protocol rather than remembered, so one an earlier instance left behind
-	// leaves with them.
-	rules := 0
-	if r.rules != nil {
-		r.derived.Store(nil)
-		held, err := r.rules.Rules()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("list rules: %w", err))
-		}
-		for _, rule := range held {
-			if err := r.rules.DelRule(rule); err != nil {
-				errs = append(errs, fmt.Errorf("delete rule %s: %w", rule, err))
-			} else {
-				rules++
-			}
-		}
-	}
 	// the switch goes after the rules and the routes, so it holds the host's traffic while they go
 	if sw := r.sw; sw != nil && !r.fallbackClear {
 		where := sw.form().where
@@ -2303,9 +2417,101 @@ func (r *Reconciler) withdraw(cause error) error {
 		}
 	}
 	// Every count is of something that left, so a line reporting nothing
-	// removed is a shutdown that removed nothing.
-	slog.Info("kernel reconciler withdrawn", "routes", withdrawn, "addresses", len(removed), "rules", rules)
+	// removed is a shutdown that removed nothing. A pass of a stopped reconciler
+	// logs only where it wrote.
+	if !logsOnlyAWrite(cause) || withdrawn+len(removed)+rules+added > 0 {
+		slog.Info("kernel reconciler withdrawn", "routes", withdrawn, "addresses", len(removed), "rules", rules, "held", r.routePass.Held)
+	}
 	return errors.Join(errs...)
+}
+
+// leavesDownSet reports whether a withdrawal for cause leaves the down set: a
+// stop has a cause, and a withdrawal with none, which only a test asks for,
+// takes the down set with the rest, as DropHold has the operator's stop do
+func (r *Reconciler) leavesDownSet(cause error) bool {
+	return cause != nil && !r.dropHold.Load()
+}
+
+// logsOnlyAWrite reports whether a withdrawal for cause logs only where it
+// wrote: a pass of a stopped reconciler, which runs at every wake, does
+func logsOnlyAWrite(cause error) bool { return cause == errStopped }
+
+// withdrawRules brings this reconciler's rules to what a stop of cause leaves:
+// it lists them, brings the down rules to the down set where the stop leaves
+// it, in the order a start that stages writes them (rePair), so a withdrawal
+// that finds the kernel as the stop asks writes nothing, and deletes every
+// other rule of its protocol in withdrawOrder. Where the listing fails it adds
+// the down set whole. Rules go the same way routes do, read back under this
+// reconciler's own protocol rather than remembered, so one an earlier instance
+// left behind leaves with them. A family whose down set did not all go in, or
+// whose rules could not all be listed or deleted, is kept: it keeps every rule
+// not deleted. It records the count of the pairs that stand, or that the count
+// is not known where the rules could not be listed, and returns the families
+// kept, the rules deleted and the rules added.
+func (r *Reconciler) withdrawRules(cause error) (kept map[Family]bool, deleted, added int, errs []error) {
+	kept = map[Family]bool{}
+	r.released = false
+	if r.rules == nil {
+		r.routePass.Held, r.routePass.HeldUnknown = 0, false
+		return kept, 0, 0, nil
+	}
+	r.derived.Store(nil)
+	held, listErr := r.rules.Rules()
+	if listErr != nil {
+		errs = append(errs, fmt.Errorf("list rules: %w", listErr))
+		kept[FamilyIPv4], kept[FamilyIPv6] = true, true
+	} else {
+		r.noteDeleted(held)
+	}
+	leaves := r.leavesDownSet(cause)
+	v := &ruleView{r: r, rules: held, broken: listErr != nil}
+	if leaves {
+		v.held = heldOverlay(r.rt.Overlay, r.readNetwork().carved)
+	}
+	down := downRules(v.held)
+	switch {
+	case listErr != nil:
+		for _, rule := range down {
+			if err := r.rules.AddRule(rule); err != nil {
+				errs = append(errs, fmt.Errorf("add rule %s: %w", rule, err))
+				continue
+			}
+			added++
+		}
+	case leaves:
+		r.rePair(v)
+		errs = append(errs, v.errs...)
+		held, added, deleted = v.rules, v.added, v.removed
+		for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+			kept[family] = slices.ContainsFunc(down, func(rule Rule) bool { return rule.Family == family && !v.has(rule) }) ||
+				slices.ContainsFunc(held, func(rule Rule) bool { return rule.Family == family && isDownRule(rule) && !slices.Contains(down, rule) })
+		}
+	}
+	var standing []Rule
+	for _, rule := range withdrawOrder(held) {
+		if leaves && isDownRule(rule) {
+			standing = append(standing, rule)
+			continue
+		}
+		if !kept[rule.Family] {
+			err := r.rules.DelRule(rule)
+			if err == nil {
+				deleted++
+				continue
+			}
+			errs = append(errs, fmt.Errorf("delete rule %s: %w", rule, err))
+			kept[rule.Family] = true
+		}
+		standing = append(standing, rule)
+	}
+	// a listing or a reread that failed reads no count, as the writes alone do not say what stands
+	r.routePass.HeldUnknown = v.broken
+	if v.broken {
+		r.routePass.Held, r.standing = 0, nil
+	} else {
+		r.routePass.Held, r.standing = heldPairs(standing), standing
+	}
+	return kept, deleted, added, errs
 }
 
 // release takes each address of ours in prefixes off the link while held shows it as it was added

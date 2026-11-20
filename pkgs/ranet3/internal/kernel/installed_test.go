@@ -130,11 +130,12 @@ func TestReconcilerTellsItsSourceWhatEachPassMayHaveLeftInTheKernel(t *testing.T
 	step("a pass whose delete the kernel took")
 }
 
-// A withdrawal leaves the reconciler's record of what it installed as it was,
-// so a pass whose listing fails after one tells the routes the withdrawal
-// deleted, until a pass whose listing reads the kernel. An add answered with
-// an error before the withdrawal, whose listing read it, is not told again.
-func TestPassWhoseListingFailsAfterAWithdrawalTellsWhatTheWithdrawalDeleted(t *testing.T) {
+// A withdrawal whose listing read the kernel leaves the reconciler's record of
+// what it installed as that listing and its deletes left it, so a pass whose
+// listing fails after one tells none of the routes the withdrawal deleted. An
+// add answered with an error before the withdrawal, whose listing read it, is
+// not told again.
+func TestPassWhoseListingFailsAfterAWithdrawalTellsWhatTheWithdrawalLeft(t *testing.T) {
 	lan, refused := prefix("198.51.100.32/27"), prefix("192.0.2.128/25")
 	reconciler, src, fake := newToldReconciler(t, lan)
 	_ = reconciler.reconcile()
@@ -160,8 +161,8 @@ func TestPassWhoseListingFailsAfterAWithdrawalTellsWhatTheWithdrawalDeleted(t *t
 	fake.failList = syscall.EBUSY
 	fake.mu.Unlock()
 	_ = reconciler.reconcile()
-	if told, _ := src.last(); !slices.Equal(told, []netip.Prefix{lan}) {
-		t.Fatalf("a pass whose listing failed after the withdrawal told %v, want %v, the record the pass before the withdrawal left", told, lan)
+	if told, _ := src.last(); told != nil {
+		t.Fatalf("a pass whose listing failed after the withdrawal told %v, want none, the record the withdrawal left", told)
 	}
 	fake.mu.Lock()
 	fake.failList = nil

@@ -441,10 +441,10 @@ func promoteSecondaries(conn netlinkConn, index uint32) error {
 // routeMonitor turns unsolicited route notifications into one coalesced
 // wake-up. It parses just enough of each message to drop notifications for
 // tables the reconciler does not own, which stops another daemon's
-// route churn from waking it. A route its own pass writes wakes nothing, and
-// an address its own pass writes or a rule it deletes wakes one more pass,
-// which finds nothing to do.
-// it wakes as well on a deleted rule carrying proto
+// route churn from waking it. A route its own pass writes or a rule it deletes
+// wakes nothing, and an address its own pass writes wakes one more pass, which
+// finds nothing to do.
+// it wakes as well on a rule carrying proto that another socket deleted
 // systemd-networkd removes every rule it did not ask for when it configures a link
 // the network watch reads its own groups through the same type
 type routeMonitor struct {
@@ -503,7 +503,9 @@ func (m *routeMonitor) run() {
 // reconcilerWakes takes a notification touching what the reconciler owns
 // a route is woken on only where another socket wrote it, since the ack of each write tells the pass that sent it how it went
 // (rtmsg_fib in fib_semantics.c, inet6_rt_notify in route.c)
-// a rule is woken on only when it goes, since the pass that follows puts it back
+// a rule is woken on only when it goes, since the pass that follows puts it back, and only where another socket deleted it, since
+// the ack of the pass's own delete tells it how it went and a pass that takes back the same rules at every pass would otherwise run
+// again at each settle, ahead of the retry's backoff (notify_rule_change in fib_rules.c carries the requester's port)
 // an address is woken on only where it is the tun's, whoever wrote it, since the rules of modes 2 and 3 follow the tun's overlay addresses
 func reconcilerWakes(table uint32, proto uint8, tun, ownPort uint32) func(netlink.Message) bool {
 	return func(message netlink.Message) bool {
@@ -511,7 +513,7 @@ func reconcilerWakes(table uint32, proto uint8, tun, ownPort uint32) func(netlin
 		case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
 			return notificationTable(message) == table && message.Pid != ownPort
 		case unix.RTM_DELRULE:
-			return ruleProtocol(message) == proto
+			return ruleProtocol(message) == proto && message.Pid != ownPort
 		case unix.RTM_NEWADDR, unix.RTM_DELADDR:
 			return len(message.Data) >= unix.SizeofIfAddrmsg && binary.NativeEndian.Uint32(message.Data[4:]) == tun
 		}

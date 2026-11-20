@@ -27,6 +27,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/kernel/kerneltest"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -497,10 +498,10 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 
 	t.Run("a clean stop", func(t *testing.T) {
 		stop()
-		var rules []kernelRule
+		var wrong []string
 		var left []kernelRoute
 		if err := leaf.Do(func() (err error) {
-			if rules, err = dumpRules(); err != nil {
+			if wrong, err = notDownSet(cfg.Overlay); err != nil {
 				return err
 			}
 			left, err = dumpRoutes()
@@ -509,10 +510,8 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 			t.Fatalf("read the leaf back: %v", err)
 		}
 		proto := uint8(kernel.DefaultProtocol)
-		for _, rule := range rules {
-			if rule.protocol == proto {
-				t.Errorf("the stop left the rule %s", rule)
-			}
+		for _, rule := range wrong {
+			t.Errorf("the stop left %s", rule)
 		}
 		for _, route := range left {
 			if route.protocol == proto {
@@ -990,4 +989,22 @@ func rulesKeyOf(raw []byte) (rulesKey, netip.Addr, bool) {
 		return rulesKey{"echo", int(binary.BigEndian.Uint16(l4[4:]))}, source, true
 	}
 	return rulesKey{}, netip.Addr{}, false
+}
+
+// notDownSet reads the namespace's rules on the calling thread and describes each rule of the reconciler's protocol outside the down
+// set of overlay a stop leaves, and each rule of that set missing
+func notDownSet(overlay []schema.Prefix) ([]string, error) {
+	dumped, err := kernel.DumpRules()
+	if err != nil {
+		return nil, err
+	}
+	extra, missing := kerneltest.NotDownSet(dumped, overlay)
+	var out []string
+	for _, rule := range extra {
+		out = append(out, fmt.Sprintf("the rule %+v outside the down set", rule))
+	}
+	for _, rule := range missing {
+		out = append(out, fmt.Sprintf("no rule %+v of the down set", rule))
+	}
+	return out, nil
 }

@@ -1298,12 +1298,13 @@ func fallbackNoneOverUplink(t *testing.T, device, uplink string) (Table, Runtime
 }
 
 // A Run the failed mesh's stop ends leaves the kill switch's chains, which a
-// listing finds, and no rule, route or address of its own, so the switch's drop
-// alone refuses the host's datagram beyond the LAN. The next Run puts the rules
-// back and takes the chains over as it finds them, its drop's count kept, and a
-// Run stopped plainly leaves nothing for a listing to find, the table with it,
-// since the switch it took over holds the table as a write would, and leaves
-// no switch even with the antispoof filter's entry chain in the table.
+// listing finds, and no rule, route or address of its own but the down set, so
+// the switch's drop refuses the host's datagram beyond the LAN and the down set
+// one to the overlay. The next Run puts the rules back and takes the chains
+// over as it finds them, its drop's count kept, and a Run stopped plainly
+// leaves the down set alone for a listing to find, the table gone with the
+// switch it took over, which holds the table as a write would, and leaves no
+// switch even with the antispoof filter's entry chain in the table.
 func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	const device, uplink = "ranetsw0", "ranetup0"
 	plat := rootRulePlatform(t, device)
@@ -1323,7 +1324,7 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	}
 	type leftover struct {
 		read                     fallbackRead
-		listed                   bool
+		listed, down             bool
 		rules, routes, addresses int
 	}
 	reader, err := nftables.Dial()
@@ -1342,7 +1343,8 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		if err := errors.Join(err, listErr, ruleErr, routeErr, addressErr); err != nil {
 			t.Fatalf("read the namespace back: %v", err)
 		}
-		out = leftover{read: read, listed: listed, rules: len(rules), routes: len(routes)}
+		down := sameRules(rules, downRules(exitPassOverlay))
+		out = leftover{read: read, listed: listed, down: down, rules: len(rules), routes: len(routes)}
 		for _, address := range addresses {
 			if slices.Contains(first.addresses, address) {
 				out.addresses++
@@ -1354,19 +1356,22 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	stop := runThroughFirstPass(t, first)
 	written := held().rules
 	stop(ErrMeshFailed)
-	if left := held(); left.read.fault != "" || !left.listed || left.rules+left.routes+left.addresses > 0 {
-		t.Fatalf("the failed mesh's stop left %+v, want the table as written alone", left)
+	if left := held(); left.read.fault != "" || !left.listed || left.routes+left.addresses > 0 || !left.down {
+		t.Fatalf("the failed mesh's stop left %+v, want the table as written and the rules of the down set alone", left)
 	}
 	if err := sendFrom(t, netip.MustParseAddr("203.0.113.9"), 9, ""); !errors.Is(err, unix.EPERM) {
-		t.Errorf("with the table alone a datagram beyond the LAN left with %v, want EPERM", err)
+		t.Errorf("with the table and the down set a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+	if err := sendFrom(t, netip.MustParseAddr("192.0.2.7"), 9, ""); !errors.Is(err, unix.ENETUNREACH) {
+		t.Errorf("with the table and the down set a datagram to the overlay left with %v, want ENETUNREACH", err)
 	}
 	stop = runThroughFirstPass(t, open())
 	if left := held(); left.read.fault != "" || left.read.dropped != 1 || left.rules != written {
 		t.Errorf("the next start holds %+v, want the table as written with the one drop and %d rules", left, written)
 	}
 	stop(nil)
-	if left := held(); left.read.fault != "its chains are missing" || left.listed || left.rules+left.routes+left.addresses > 0 {
-		t.Errorf("a plain stop left %+v, want nothing", left)
+	if left := held(); left.read.fault != "its chains are missing" || left.listed || left.routes+left.addresses > 0 || !left.down {
+		t.Errorf("a plain stop left %+v, want the rules of the down set alone", left)
 	}
 	if tables, err := nftables.Tables(reader, nftables.Table); err != nil || len(tables) != 0 {
 		t.Errorf("after the plain stop of the start that took the switch over, the table %s is in the families %v (%v), want none", nftables.Table, tables, err)
@@ -1473,7 +1478,7 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 		if refused := step.table.ID != off.ID; (err != nil) != refused {
 			t.Fatalf("%s: SetTable returned %v, want refused %v", step.name, err, refused)
 		}
-		// a stopped Run takes the reload and runs no pass
+		// a stopped Run takes the reload, and the stopped pass it runs then writes nothing to the switch the stop cleared
 		r.adopt()
 		if !step.stopped {
 			if err := r.reconcile(); err != nil {

@@ -126,7 +126,8 @@ func classWhole(prefix netip.Prefix) bool {
 // one a class holds whole, and on a platform with the policy rules an
 // unreachable hold for each overlay prefix and a throw for each carve-out,
 // which takes the place of the hold of an overlay prefix it equals and gives
-// way to an entry of its own destination for every source. policy is a
+// way to an entry of its own destination for every source that the table
+// installs, so not to an address only cap.table assigns. policy is a
 // platform with the policy rules, capture whether capture is allowed.
 func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []netip.Prefix, exit, capture, policy bool) map[Route]bool {
 	out := map[Route]bool{}
@@ -164,7 +165,9 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 		}
 	}
 	for _, prefix := range carved {
-		own := slices.ContainsFunc(entries, func(entry mirrorEntry) bool { return entry.destination == prefix && !entry.source.IsValid() })
+		own := slices.ContainsFunc(entries, func(entry mirrorEntry) bool {
+			return entry.destination == prefix && !entry.source.IsValid() && entry.value != netstack.Assigned
+		})
 		if policy && !own {
 			out[Route{Destination: prefix, Metric: holdMetric, Throw: true}] = true
 		}

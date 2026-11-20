@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -283,9 +284,10 @@ func logged(t *testing.T) *strings.Builder {
 }
 
 // A Run the mesh's failure stops withdraws every route, address and rule of
-// its own and leaves the switch, warning once with the switch's state, and the
-// next Run reads the switch back as written and keeps it while it puts the
-// rules back. A Run stopped plainly deletes it with no warning.
+// its own but the down set and leaves the switch, warning once with the
+// switch's state, and the next Run reads the switch back as written and keeps
+// it while it puts the rules back. A Run stopped plainly deletes it with no
+// warning.
 func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN}).Normalized()
@@ -296,20 +298,21 @@ func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		return runThroughFirstPass(t, newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), fake))
 	}
 	type leftover struct {
-		table                            bool
+		table, down                      bool
 		routes, addresses, rules, writes int
 	}
 	held := func() leftover {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		return leftover{fake.fallback != nil, len(fake.routes), len(fake.addrs), len(fake.rules), fake.fallbackWrites}
+		down := sameRules(slices.Collect(maps.Keys(fake.rules)), downRules(exitPassOverlay))
+		return leftover{fake.fallback != nil, down, len(fake.routes), len(fake.addrs), len(fake.rules), fake.fallbackWrites}
 	}
 
 	stop := start()
 	written := held().rules
 	stop(ErrMeshFailed)
-	if left := held(); !left.table || left.routes+left.addresses+left.rules > 0 {
-		t.Fatalf("the failed mesh's stop left %+v, want the table alone", left)
+	if left := held(); !left.table || left.routes+left.addresses > 0 || !left.down {
+		t.Fatalf("the failed mesh's stop left %+v, want the table and the rules of the down set alone", left)
 	}
 	if n := strings.Count(said.String(), leftLine); n != 1 || !strings.Contains(said.String(), leftLine+fakeWhere+" state=holding") {
 		t.Errorf("the failed mesh's stop warned %d times, want once with the state holding:\n%s", n, said)
@@ -319,8 +322,8 @@ func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		t.Errorf("the next start holds %+v, want the table kept from the one write before and %d rules", left, written)
 	}
 	stop(nil)
-	if left := held(); left.table || left.routes+left.addresses+left.rules > 0 {
-		t.Errorf("a plain stop left %+v, want nothing", left)
+	if left := held(); left.table || left.routes+left.addresses > 0 || !left.down {
+		t.Errorf("a plain stop left %+v, want the rules of the down set alone", left)
 	}
 	if n := strings.Count(said.String(), leftLine); n != 1 {
 		t.Errorf("after a plain stop the warning was written %d times, want the failed stop's alone", n)

@@ -711,10 +711,10 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 
 	t.Run("a clean stop", func(t *testing.T) {
 		d.stop()
-		var rules []kernelRule
+		var wrong []string
 		var left []kernelRoute
 		if err := lab.leaf.Do(func() (err error) {
-			if rules, err = dumpRules(); err != nil {
+			if wrong, err = notDownSet(d.node.config().Overlay); err != nil {
 				return err
 			}
 			left, err = dumpRoutes()
@@ -722,10 +722,8 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("read the leaf back: %v", err)
 		}
-		for _, rule := range rules {
-			if rule.protocol == kernel.DefaultProtocol {
-				t.Errorf("the stop left the rule %s", rule)
-			}
+		for _, rule := range wrong {
+			t.Errorf("the stop left %s", rule)
 		}
 		for _, route := range left {
 			if route.protocol == kernel.DefaultProtocol {

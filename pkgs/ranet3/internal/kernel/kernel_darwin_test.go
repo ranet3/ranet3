@@ -26,7 +26,7 @@ func TestNewOnAPlatformWithoutRulesRunsNoRulePass(t *testing.T) {
 	if reconciler.rules != nil {
 		t.Fatal("darwin's platform answers for policy rules")
 	}
-	if err := reconciler.applyRules(reconciler.src.Snapshot(), exitView{}, true); err != nil || reconciler.DerivedRules() != nil {
+	if err := reconciler.applyRules(reconciler.enterRules(passNetwork{}), reconciler.src.Snapshot(), exitView{}, true); err != nil || reconciler.DerivedRules() != nil {
 		t.Errorf("a rule pass on darwin answered %v and published %v", err, reconciler.DerivedRules())
 	}
 	want := []Route{{Destination: prefix("192.0.2.0/24"), Metric: holdMetric, Unreachable: true}}
