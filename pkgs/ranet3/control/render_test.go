@@ -506,8 +506,9 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-border.txt", []byte(out.String()))
 }
 
-// Go's own form below an hour, and from an hour the nonzero days, hours and
-// minutes, rounded to the minute with a half rounded up
+// Go's own form below an hour, the hour compared after rounding to the
+// second, and from an hour the nonzero days, hours and minutes, rounded to
+// the minute with a half rounded up. A negative duration prints a dash
 func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {
 	const days = 24 * time.Hour
 	for _, test := range []struct {
