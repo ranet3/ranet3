@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-19
+updated: 2026-11-20
 order: 30
 ---
 
@@ -30,8 +30,12 @@ for.
 ## Debug paths
 
 A debug path takes the callers every other path takes, as
-[who may use it](../control-socket.md#who-may-use-it) says. The snapshots carry
-no key material.
+[who may use it](../control-socket.md#who-may-use-it) says. Every debug path of
+the control socket but `probe` and `trace` answers with a snapshot, `events`
+only when asked without `follow`. `events` with `follow` answers with the
+recorded events and then with each later event as the node records it. No answer
+of a debug path of the control socket but `probe` and `trace` carries key
+material. `probe` and `trace` return live results and are outside that promise.
 
 The daemon serves 12 debug paths:
 
@@ -1157,8 +1161,9 @@ commands in [the CLI](../cli.md). The 3 files:
 
 - `control/debug_<view>.go` holds the wire types, the interface the daemon
   implements, the path registered from `init`, the text renderer and the client
-  method. `debugRead` registers a snapshot. `registerDebug` registers a view
-  that takes a query or acts, as `pmtu` and `probe` do.
+  method. `debugRead` registers a view that takes no query. A view that takes a
+  query or acts, as `pmtu` and `probe` do, is registered by `registerDebug`
+  directly.
 - `internal/client/debug_<view>.go` implements that interface on the daemon's
   side.
 - `cmd/ranet3/debug_<view>.go` appends the command to `debugCommands` from
@@ -1176,11 +1181,24 @@ trip through JSON. The first passes one field by name, a trace record's
 `payload`, the packet's bytes `--payload` asks for, which hold none of the
 node's keys. Any other field of bytes fails it. It reads types and no value, so
 a string, an event's attributes among them, passes it whatever it holds. The
-walk over a live session's views reads the values. Two nodes hold one session,
-which the dialing node rekeys, and the walk looks in every string, map key and
-field of bytes of each view of both nodes for the keys of the dialing node's
-Child SA and of the one its rekey replaced, each whole and less its salt, and
-for the private key both nodes are built from, whole and as its seed, as octets,
-hex, base64 or the list of numbers `fmt` prints them as. It leaves out `probe`
-and `trace`, whose answers are the call's result and a stream of decisions
-rather than a state the node holds, and looks for no key of the IKE SA.
+walk over a live session's views reads the values. Two nodes, each with a
+private key of its own, hold one session. The dialing node rekeys its Child SA
+and then its IKE SA. The walk reads each [snapshot](#debug-paths) of both nodes
+twice, `route`'s for one packet only. Each node's snapshots are first read while
+that node still holds the IKE SA that the IKE SA rekey replaced, and the test
+checks that hold at the node once the node's snapshots are read. The second
+reading is once both nodes have dropped the IKE SA that the IKE SA rekey
+replaced. In every string, map key and field of bytes of a snapshot it looks for
+each node's private key, its seed, its PKCS #8 DER and the PEM body of its key
+file. It also looks for the keys of the live Child SA and IKE SA and of the
+Child SA and IKE SA the rekeys replaced. A Child SA's keys and an IKE SA's
+`SK_ei` and `SK_er` are looked for whole and less their salt. An IKE SA's
+`SK_d`, `SK_pi` and `SK_pr` are looked for whole, and so is the keying material
+that `SK_d`, `SK_ei`, `SK_er`, `SK_pi` and `SK_pr` are cut from. Each is looked
+for in every spelling that `keyTexts` in `internal/client/debug_keys_test.go`
+gives, among them hex, the list of numbers `fmt` prints and base64. The base64
+looked for, in either alphabet, is that of the whole thing looked for, with and
+without padding, and that of its whole 3-octet groups from each of its first
+three octets. The base64 of any longer run of octets that holds the thing looked
+for contains the base64 of its groups from one of those three octets, unless a
+line break cuts that base64.
