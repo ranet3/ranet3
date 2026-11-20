@@ -463,11 +463,20 @@ passes fail, the routes to the LANs learned inside a `none` class since its last
 good pass wait, and the filter reads not ready. Every other route, every removal
 and every route of a node with no `none` class reach the kernel as before. A
 route the kernel makes itself lies outside both orders: the connected route of
-an address `cap.table` assigns under a shorter length than its own takes a
-packet into the tun that no set orders. At an exit in `cap.exit`'s mode, a
-forwarded link's packet meets the mesh's default from a LAN's learn until the
-hold lands or the filter's pass writes the sets without the LAN, as
-[the limits](design/limits.md#the-antispoof-filter) say.
+an address `cap.table` assigns under a shorter length than its own. The load
+refuses such an address in the cases
+[`cap.table`](configuration-reference.md#captable) lists, so `none4` and `none6`
+hold no address outside the overlay that such a route covers. An address that an
+earlier instance left on a tun the operator created, such as one left by an
+instance killed outright, stays there as another writer's address, as
+[addresses and the tun](coexistence.md#addresses-and-the-tun) gives. Where it
+lies under a shorter length than its own, its connected route stays with it
+until the operator deletes the address or the device, since the load reads the
+file alone. A pass warns `kernel is leaving an address another writer holds`
+only where the file asks for the same address at another length. At an exit in
+`cap.exit`'s mode, a forwarded link's packet meets the mesh's default from a
+LAN's learn until the hold lands or the filter's pass writes the sets without
+the LAN, as [the limits](design/limits.md#the-antispoof-filter) say.
 
 Two kinds of route are reported, each by an event and a line: a route the source
 holds back, `held`, and a route whose addresses the sets leave out while no

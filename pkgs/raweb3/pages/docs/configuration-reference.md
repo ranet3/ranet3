@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-16
+updated: 2026-11-20
 order: 35
 ---
 
@@ -389,6 +389,14 @@ configure.
 - An `addresses` entry is assigned when missing and removed at shutdown or when
   a reload drops it. The reconciler removes only addresses it added. Each entry
   needs a length above 0.
+- An address this block assigns under a length shorter than its own, including a
+  prefix `assign_announced` assigns, is refused at load, on every platform,
+  where its network holds an address outside `overlay` whose longest covering
+  `cap.egress` class is `none`. On Linux the kernel itself routes that network
+  into the tun, and [the entry chain's order](antispoof.md#the-entry-chain) does
+  not reach that route. The refusal ends once the address is assigned at its
+  full length or not at all, or once no address of its network outside `overlay`
+  has `none` as its longest covering class.
 - On Linux an IPv4 route through the tun names no source, so the kernel picks
   one of the tun's own IPv4 addresses for a socket bound to no address, or
   another link's address where the tun has none.
