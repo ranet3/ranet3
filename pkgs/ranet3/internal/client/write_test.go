@@ -356,6 +356,11 @@ func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
 	}
 }
 
+const (
+	dialerUnwokenWait = 200 * time.Millisecond
+	dialerWokenWait   = 5 * time.Second
+)
+
 // A dialer waiting out its reconnect delay comes round as soon as it is woken
 // rather than at the end of it, which is the difference between a redial that
 // acts now and one that acts in ten seconds. The loop under test is the real
@@ -363,13 +368,14 @@ func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
 // success and changes nothing.
 func TestDialerWakesBeforeItsReconnectDelay(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	// A name the dialer takes and the resolver refuses, so each pass is one
-	// attempt and then the wait this test is about. RFC 6761 reserves
-	// .invalid for it.
+	// a name the dialer takes, so each pass is one attempt and then the wait this test is about
+	// RFC 6761 reserves .invalid for a name that names no host
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
 	c := testClientOf(t, cfg, privateKey, reg)
 	c.dialRetry = time.Hour
+	// with no prepare the resolution is refused before any lookup, so an attempt never asks the host
+	c.prepare = nil
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
@@ -378,21 +384,24 @@ func TestDialerWakesBeforeItsReconnectDelay(t *testing.T) {
 		close(done)
 	}()
 
-	// Taking the node out of the registry ends the loop on its next pass, so
-	// whether the loop came round is observable without a counter.
-	time.Sleep(100 * time.Millisecond)
+	// the loop records its attempt's failure on its way into the wait
+	// and taking the node out of the registry ends it on its next pass, so whether it came round is observable without a counter
+	waitFor(t, convergeBudget, "the dialer's first attempt to fail", func() bool { return len(recorded(c.events, "dial.failed")) > 0 })
 	c.storeIndex(trust(t, registry.Registry{}))
 	select {
 	case <-done:
 		t.Fatal("the dialer came round with no wake, so this measures nothing about one")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(dialerUnwokenWait):
 	}
 
 	wake <- struct{}{}
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(dialerWokenWait):
 		t.Error("a woken dialer waited out its reconnect delay")
+	}
+	if woken := recorded(c.events, "dial.woken"); len(woken) != 1 || woken[0].Peer != d.path {
+		t.Errorf("the dialer ended with dial.woken %+v, want one for %s", woken, d.path)
 	}
 }
 
