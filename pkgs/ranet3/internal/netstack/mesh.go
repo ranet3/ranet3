@@ -131,6 +131,26 @@ type outboundShare struct {
 	mtu   int
 }
 
+// readShare is the peer take was last given in the read with that peer's share of the read so far, and empty before the first take
+// take's pointer receiver keeps classify's readShare in its frame rather than among the values its loop carries in registers
+type readShare struct {
+	peer *Peer
+	outboundShare
+}
+
+// take files s in b's shares where s holds a peer, then makes s peer's share as b's shares hold it, or where they hold none makes a share of no packets at peer's MTU and enters peer in b's peerOrder
+func (s *readShare) take(b *outboundBatch, peer *Peer) {
+	if s.peer != nil {
+		b.shares[s.peer] = s.outboundShare
+	}
+	var seen bool
+	if s.outboundShare, seen = b.shares[peer]; !seen {
+		s.mtu = peer.MTU()
+		b.peerOrder = append(b.peerOrder, peer)
+	}
+	s.peer = peer
+}
+
 // outboundFragment is one fragment cut for a peer, with the next header its ESP trailer names
 type outboundFragment struct {
 	peer   *Peer
@@ -432,9 +452,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 	// read once a read, so every change in force as the read begins reaches each of its packets
 	b.answers.keepFor(m.Routes.generation.Load())
 	var last pairLookup
-	var sharePeer *Peer
-	// share is sharePeer's share of the read, written back to b.shares when a packet is decided for another peer and at the read's end
-	var share outboundShare
+	var share readShare
 	for i := range b.n {
 		r := b.reads[i]
 		raw := b.slab[r.Offset : r.Offset+r.Size : r.Offset+r.Size]
@@ -530,16 +548,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 			}
 			continue
 		}
-		if peer != sharePeer {
-			if sharePeer != nil {
-				b.shares[sharePeer] = share
-			}
-			var seen bool
-			if share, seen = b.shares[peer]; !seen {
-				share.mtu = peer.MTU()
-				b.peerOrder = append(b.peerOrder, peer)
-			}
-			sharePeer = peer
+		if peer != share.peer {
+			share.take(b, peer)
 		}
 		// a steered packet sits behind the header steering put on it, which the session carries as well
 		overhead := len(sent) - len(raw)
@@ -566,8 +576,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 			share.bytes += len(sent)
 		}
 	}
-	if sharePeer != nil {
-		b.shares[sharePeer] = share
+	if share.peer != nil {
+		b.shares[share.peer] = share.outboundShare
 	}
 }
 
