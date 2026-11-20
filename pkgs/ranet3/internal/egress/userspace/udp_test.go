@@ -1586,21 +1586,34 @@ func TestLeafsLargestDatagramReachesItsServer(t *testing.T) {
 // reading, so neither reading holds what a process sets up once. The heap is
 // first read until it settles, so what earlier tests leave to the collector
 // moves neither reading, and the later readers holding one each would pass the
-// bound many times over.
+// bound many times over. Each reading waits for every reader of the mapping to
+// wait in the poller, since a reply is laid before its reader puts the buffer
+// back, and a reader waits there only once it put back every buffer it took.
 func TestReadersAtRestHoldNoBuffer(t *testing.T) {
 	const destinations = 16
+	const reader = "(*udpRelay).read("
 	h := newRelayHarness(t, nil)
 	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	servers := make([]*net.UDPConn, destinations)
 	var outside netip.AddrPort
-	// a reader's last read moves on first
+	// the mapping's readers once a destination opened, its receiving socket's and each destination's
+	readers := 1
 	live := func() int64 {
-		time.Sleep(10 * time.Millisecond)
+		for deadline := time.Now().Add(exitWait); ; runtime.Gosched() {
+			waiting := len(lockWaiters(reader, "IO wait"))
+			if waiting == readers {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d of the mapping's %d readers wait in the poller after %s", waiting, readers, exitWait)
+			}
+		}
 		return int64(collected().HeapAlloc)
 	}
 	open := func(server *net.UDPConn) {
 		h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens")), false)
 		outside = readDatagramFrom(t, server, []byte("opens"))
+		readers++
 	}
 	reply := func(server *net.UDPConn) {
 		if _, err := server.WriteToUDPAddrPort([]byte("reply"), outside); err != nil {
