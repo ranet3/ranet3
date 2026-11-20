@@ -506,18 +506,34 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-border.txt", []byte(out.String()))
 }
 
-// Go's own String gives "1h3m0.5762s" for an uptime, where the digits make two
-// rows harder to compare and carry nothing.
+// Go's own form below an hour, and from an hour the nonzero days, hours and
+// minutes, rounded to the minute with a half rounded up
 func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {
+	const days = 24 * time.Hour
 	for _, test := range []struct {
 		in   time.Duration
 		want string
 	}{
+		{-time.Second, "-"},
+		{0, "0s"},
 		{27234 * time.Microsecond, "27.2ms"},
 		{9*time.Second + 470*time.Millisecond, "9.5s"},
 		{time.Minute + 30*time.Second + 400*time.Millisecond, "1m30s"},
-		{time.Hour + 3*time.Minute + 576*time.Millisecond, "1h3m0s"},
-		{-time.Second, "-"},
+		{59*time.Minute + 59*time.Second + 400*time.Millisecond, "59m59s"},
+		{59*time.Minute + 59*time.Second + 500*time.Millisecond, "1h"},
+		{time.Hour, "1h"},
+		{time.Hour + 29*time.Second + 900*time.Millisecond, "1h"},
+		{time.Hour + 30*time.Second, "1h1m"},
+		{time.Hour + 3*time.Minute + 576*time.Millisecond, "1h3m"},
+		{23*time.Hour + 59*time.Minute + 30*time.Second, "1d"},
+		{days, "1d"},
+		{days + 30*time.Second, "1d1m"},
+		{25*time.Hour + 11*time.Minute, "1d1h11m"},
+		{26 * time.Hour, "1d2h"},
+		{41*days + 23*time.Hour + 59*time.Minute + 45*time.Second, "42d"},
+		{42*days + 6*time.Hour, "42d6h"},
+		{400 * days, "400d"},
+		{1<<63 - 1, "106751d23h47m"},
 	} {
 		if got := shortDuration(test.in); got != test.want {
 			t.Errorf("shortDuration(%s) = %s, want %s", test.in, got, test.want)

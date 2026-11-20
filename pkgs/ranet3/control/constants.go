@@ -68,6 +68,20 @@ const (
 	maxTracePrefixes = 16
 )
 
+// how durations and columns are written for a person to read
+const (
+	// tablePadding is the spaces between two aligned columns, more than the single space inside a header such as Invalid SPI
+	tablePadding = 2
+	// shortRoundUnderSecond is the compact form's precision under a second, which a round trip across a LAN is told apart by
+	shortRoundUnderSecond = 100 * time.Microsecond
+	// shortRoundUnderMinute is its precision under a minute, which a session's idle time is read at
+	shortRoundUnderMinute = 100 * time.Millisecond
+	// shortRoundUnderHour is its precision under an hour, where a tenth of a second beside the minutes tells nothing
+	shortRoundUnderHour = time.Second
+	// shortRoundFromHour is its precision from an hour on, where the seconds of an uptime or of a session's age tell nothing
+	shortRoundFromHour = time.Minute
+)
+
 // a trace's bounds, which the daemon's tracer holds to as well
 const (
 	// TraceRateMin and TraceRateMax bound the records one trace takes a second, and TraceRateDefault is a trace's where it names none
