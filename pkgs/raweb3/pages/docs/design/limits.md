@@ -751,6 +751,13 @@ source matches wins. Among that destination's entries, the longest matching
 source wins. A destination with no matching source falls back to a shorter
 destination.
 
+The route of a packet read off the tun is decided, where it is at all, by the
+table as it stands then. A route that changes reaches every route decided after
+it, that of the next packet of the same source and destination in the same read
+included. [The checks at the mesh's edge](../routing.md#transit) judge a
+packet's source by answers they may keep until the first read that begins after
+the write of the change completes.
+
 ## The tun device
 
 **The daemon does not manage the tun device's address or routes unless you ask
