@@ -41,6 +41,11 @@ const (
 	// dirMode and fileMode are the modes of what a build writes
 	dirMode  = 0o755
 	fileMode = 0o644
+	// highlightPriority puts the code highlighter ahead of goldmark's own
+	// renderer, which registers at 1000, a lower value going first
+	highlightPriority = 100
+	// readingRate is the words a minute a page's reading time counts
+	readingRate = 200
 )
 
 // mediaTypes are the types of the files the site renders, by extension. A

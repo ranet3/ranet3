@@ -100,8 +100,7 @@ var markdown = goldmark.New(
 	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 	goldmark.WithRendererOptions(
 		html.WithUnsafe(),
-		// ahead of goldmark's own renderer at 1000
-		renderer.WithNodeRenderers(util.Prioritized(highlighter{}, 100)),
+		renderer.WithNodeRenderers(util.Prioritized(highlighter{}, highlightPriority)),
 	),
 )
 
@@ -312,8 +311,7 @@ func (p *page) render(bySrc map[string]*page, files fs.FS) []error {
 		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 	}
 	p.html = out
-	// at 200 words a minute of the rendered text
-	p.minutes = max(1, (len(strings.Fields(htmlTag.ReplaceAllString(p.html, "")))+100)/200)
+	p.minutes = max(1, (len(strings.Fields(htmlTag.ReplaceAllString(p.html, "")))+readingRate/2)/readingRate)
 	if p.front.OG.Image != "" {
 		err = p.imageOf(files)
 	} else {
