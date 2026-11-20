@@ -5,11 +5,11 @@ package ui
 
 import "fmt"
 
-// OG is a page's Open Graph image, 1200 by 630 in Noto Sans Mono on nord-0.
+// OG is a page's Open Graph image in Noto Sans Mono on nord-0.
 // The colors are written out, since resvg, which turns it into a PNG, reads
 // no CSS variable.
 templ OG(site Site, c Card) {
-	<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" font-family="Noto Sans Mono">
+	<svg xmlns="http://www.w3.org/2000/svg" width={ OGWidth } height={ OGHeight } viewBox={ fmt.Sprintf("0 0 %d %d", OGWidth, OGHeight) } font-family="Noto Sans Mono">
 		<defs>
 			<pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
 				<circle cx="0" cy="0" r="1.5" fill="#3B4252"></circle>
@@ -18,8 +18,8 @@ templ OG(site Site, c Card) {
 				<circle cx="24" cy="24" r="1.5" fill="#3B4252"></circle>
 			</pattern>
 		</defs>
-		<rect width="1200" height="630" fill="#2E3440"></rect>
-		<rect width="1200" height="630" fill="url(#dots)"></rect>
+		<rect width={ OGWidth } height={ OGHeight } fill="#2E3440"></rect>
+		<rect width={ OGWidth } height={ OGHeight } fill="url(#dots)"></rect>
 		// the mark again, large and faint behind the text
 		<svg x="600" y="-65" width="760" height="760" viewBox="0 0 100 100">
 			<path d={ orbitOuter } fill="none" stroke="#3B4252" stroke-width="1.2" stroke-linecap="round"></path>
