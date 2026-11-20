@@ -191,7 +191,7 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 			if receiver.(*udpBind).v4 == nil {
 				index = 0
 			}
-			if err := socket.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
 				t.Fatal(err)
 			}
 			sender, _, _, err := openPacketBind(0, testPrepare(), nil, nil)

@@ -21,6 +21,7 @@ const (
 	// copyClasses is how many sizes a copy comes in, each twice the one before from smallestCopy and the largest half a receive buffer
 	// so a copy is charged under twice its datagram above half the smallest, and a datagram past half a receive buffer would gain nothing from one
 	copyClasses = 5
+	largestCopy = smallestCopy << (copyClasses - 1)
 	// espHeldBytes is the receive storage one mux's batches hold from dispatch to release, queued or on their way to the tun, each receive buffer and copy counted whole
 	// without it a mux would hold espChanSize batches of whole buffers
 	// the queue fills before anything is authenticated, from an SPI anyone who saw one packet can aim at it

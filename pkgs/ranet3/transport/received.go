@@ -51,10 +51,10 @@ func (p *blockPool) home(size int) *sync.Pool {
 }
 
 // copySize is the size of the copy a datagram of n bytes alone in its receive buffer goes into, the least power of two from smallestCopy that holds it
-// and 0 past half a receive buffer, where its batch holds a view of the receive buffer instead
+// and 0 past largestCopy, where its batch holds a view of the receive buffer instead
 func copySize(n int) int {
 	size := max(smallestCopy, 1<<bits.Len(uint(n-1)))
-	if size > readBufferSize/2 {
+	if size > largestCopy {
 		return 0
 	}
 	return size

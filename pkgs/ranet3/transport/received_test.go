@@ -211,8 +211,8 @@ func TestCopySizes(t *testing.T) {
 	if smallestCopy != least {
 		t.Errorf("smallestCopy is %d, want %d, the least power of two holding %d bytes", smallestCopy, least, path)
 	}
-	if largest := smallestCopy << (copyClasses - 1); largest != readBufferSize/2 {
-		t.Errorf("the largest of %d copy sizes is %d, want half a block", copyClasses, largest)
+	if largestCopy != readBufferSize/2 {
+		t.Errorf("the largest of %d copy sizes is %d, want half a block", copyClasses, largestCopy)
 	}
 	var pool blockPool
 	homes := map[*sync.Pool]bool{pool.home(readBufferSize): true}

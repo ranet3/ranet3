@@ -33,6 +33,7 @@ const (
 	silenceWait = 20 * time.Millisecond
 	// pollInterval is how often a test looks again at a counter or a queue it waits on
 	pollInterval = 5 * time.Millisecond
+	listenPoll   = time.Millisecond
 	// settleWait gives the receive loop time to work through a flood before a test reads a counter that should stay still
 	settleWait = 200 * time.Millisecond
 )
@@ -559,7 +560,7 @@ func TestStoppedListenDropsWhatItQueuedAndQueuesNothingUntilListenAgain(t *testi
 	}
 	waitFor := func(what string, done func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(arrivalBudget); !done(); time.Sleep(time.Millisecond) {
+		for deadline := time.Now().Add(arrivalBudget); !done(); time.Sleep(listenPoll) {
 			if time.Now().After(deadline) {
 				t.Fatalf("%s within %s", what, arrivalBudget)
 			}

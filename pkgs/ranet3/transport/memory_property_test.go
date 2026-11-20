@@ -31,6 +31,8 @@ const (
 // scriptArrivalBudget is how long a script on loopback waits for a datagram it sent to arrive
 const scriptArrivalBudget = 5 * time.Second
 
+const scriptPoll = time.Millisecond
+
 // scriptLoopbacks is the loopback address of each family, IPv4 first
 var scriptLoopbacks = []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
 
@@ -110,7 +112,7 @@ func (n *scriptNetwork) gather(h, want int) {
 			n.note("hub %d refused %d keepalives %d dropped %d", h, hub.Refused(), hub.Keepalives(), hub.Dropped())
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(scriptPoll)
 	}
 }
 

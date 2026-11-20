@@ -19,6 +19,15 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
+// the waits of the memory network's tests, on a bubble's clock, which passes each at once
+const (
+	// bubbleWait is long enough that a real sleep would outlast the test run, so only the bubble's clock ends it in time
+	bubbleWait = time.Hour
+	// readerWait may be any length, since the bubble's clock moves only once its reader waits in the read
+	readerWait     = time.Minute
+	bubbleReadWait = 30 * time.Second
+)
+
 // memoryNetworkAt opens a network with a hub, a mux dialed from a hub of its own to that hub and a socket, and closes them at cleanup
 func memoryNetworkAt(t *testing.T) (*MemoryNetwork, *Hub, *Mux, *MemoryConn) {
 	t.Helper()
@@ -46,9 +55,9 @@ func TestMemoryNetworkLeavesTheBubblesClockToRun(t *testing.T) {
 	bubble.Run(func(t *testing.T) {
 		memoryNetworkAt(t)
 		start := time.Now()
-		time.Sleep(time.Hour)
-		if slept := time.Since(start); slept != time.Hour {
-			t.Errorf("the sleep took %v, want an hour", slept)
+		time.Sleep(bubbleWait)
+		if slept := time.Since(start); slept != bubbleWait {
+			t.Errorf("the sleep took %v, want %v", slept, bubbleWait)
 		}
 	})(t)
 }
@@ -63,7 +72,7 @@ func TestMemorySocketReadEndsAtItsDeadline(t *testing.T) {
 			_, _, err := conn.ReadFromUDP(make([]byte, 16))
 			read <- err
 		}()
-		time.Sleep(time.Minute)
+		time.Sleep(readerWait)
 		if err := conn.SetDeadline(time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -71,12 +80,12 @@ func TestMemorySocketReadEndsAtItsDeadline(t *testing.T) {
 			t.Errorf("the read waiting when its deadline moved to now answered %v, want os.ErrDeadlineExceeded", err)
 		}
 		start := time.Now()
-		if err := conn.SetReadDeadline(start.Add(30 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(start.Add(bubbleReadWait)); err != nil {
 			t.Fatal(err)
 		}
 		_, _, err := conn.ReadFromUDP(make([]byte, 16))
-		if waited := time.Since(start); waited != 30*time.Second {
-			t.Errorf("the read waited %v, want its deadline's 30s", waited)
+		if waited := time.Since(start); waited != bubbleReadWait {
+			t.Errorf("the read waited %v, want its deadline's %v", waited, bubbleReadWait)
 		}
 		var timeout net.Error
 		if !errors.Is(err, os.ErrDeadlineExceeded) || !errors.As(err, &timeout) || !timeout.Timeout() {
