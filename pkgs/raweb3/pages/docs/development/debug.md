@@ -600,8 +600,11 @@ connections to the reads.
 | `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete                                                                                                                                                                                                                                                                           |
 | `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                                                                                                                                                                                                                                                                                        |
 | `ike.rekey.failed`                    | the same rekey failing, with its error                                                                                                                                                                                                                                                                                                            |
+| `ike.rekey.repeat_answered`           | a repeat of the peer's IKE SA rekey drew the answer kept for it, 2 minutes or more after this end replaced the IKE SA                                                                                                                                                                                                                             |
+| `ike.rekey.confirmed`                 | the peer's first fresh request reached the IKE SA its rekey made                                                                                                                                                                                                                                                                                  |
 | `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane                                                                                                                                                                                                                                                                                  |
 | `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                                                                                                                                                                                                                                                                                                   |
+| `ike.sa.retired`                      | a replaced or redundant IKE SA the session held ended, and why                                                                                                                                                                                                                                                                                    |
 | `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement                                                                                                                                                                                                                                                                           |
 | `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request or answer                                                                                                                                                                                                                                                                     |
 | `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                                                                                                                                                                                                                                                                               |
@@ -708,8 +711,11 @@ Each kind carries these attributes:
 | `ike.rekey.started`                           | `sa`, which is `child` or `ike`                                                                                                                                                                                                                                                                            |
 | `ike.rekey.completed`                         | `sa`, which is `child` or `ike`, `suite`                                                                                                                                                                                                                                                                   |
 | `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                                                                                                                                                                                |
+| `ike.rekey.repeat_answered`                   | `sa`, which is always `ike`, `message_id`                                                                                                                                                                                                                                                                  |
+| `ike.rekey.confirmed`                         | `sa`, which is always `ike`, `spi`                                                                                                                                                                                                                                                                         |
 | `ike.sa.expired`                              | `spi_in`, `spi_out`, and `sa`, which is always `child`                                                                                                                                                                                                                                                     |
 | `ike.sa.closed`                               | `sa`, which is `child` or `ike`, `reason`, `err`                                                                                                                                                                                                                                                           |
+| `ike.sa.retired`                              | `sa`, which is always `ike`, `spi`, `replaced`, `reason`, and `failure` where `reason` is `failed`                                                                                                                                                                                                         |
 | `ike.suite.unlisted`                          | `sa`, which is `child` or `ike`, `suite`, `action`                                                                                                                                                                                                                                                         |
 | `ike.endpoint.moved`                          | `endpoint`, `packet`, which is `request` or `response`                                                                                                                                                                                                                                                     |
 | `ike.send.failed`                             | `err`                                                                                                                                                                                                                                                                                                      |
@@ -809,18 +815,27 @@ peer's answer that selected an additional key exchange or carried its link,
 `kex rejected` when the peer's ML-KEM ciphertext was refused, and
 `state not found` when 3 rekeys in a row drew `STATE_NOT_FOUND`. Each closes the
 IKE SA with a Delete. `err` says what ended it, and the `ike.session.ended` that
-follows carries it as well. While a session deletes its IKE SA for a new
-handshake, after an `ike.suite.unlisted` with `action=replace`, an
-`ike.sa.closed` recorded before that Delete is answered sends no Delete of its
-own. The `ike.session.ended` that follows carries the replacement's `err`, which
-the node that dialed the session reads to dial again at once, and can carry the
-`ike.sa.closed`'s `err` after it only where the session ended before that Delete
-was answered. An `INVALID_SYNTAX` this end sends on the current IKE SA records
-no `ike.sa.closed`: the session logs a warning and ends with
-`ike.session.ended`. Nor does the peer's Delete of the IKE SA, and the
-`ike.session.ended` that follows carries `ike: the peer deleted the IKE SA` in
-its `err`. Any reason the session finds once that Delete has closed it records
-no `ike.sa.closed` either, and logs no `ike deleting the IKE SA`.
+follows carries it as well. A peer whose crossing rekey this node refused holds
+this node's SA undecided until the kept refusal reaches it and answers this
+node's Child SA rekey on that SA with `TEMPORARY_FAILURE` meanwhile, so where
+such a rekey starts as a loss of that refusal does, `temporary failure` ends the
+session once the loss outlasts the peer's resend 316 seconds after its rekey
+first reached this node, with the rekey's retries unjittered, a bound a probe
+measured at 283 seconds at the most jitter they draw, and the peer's session
+then ends with its resends unanswered, as
+[Rekeying](../design/protocol-deviations.md#rekeying) gives. While a session
+deletes its IKE SA for a new handshake, after an `ike.suite.unlisted` with
+`action=replace`, an `ike.sa.closed` recorded before that Delete is answered
+sends no Delete of its own. The `ike.session.ended` that follows carries the
+replacement's `err`, which the node that dialed the session reads to dial again
+at once, and can carry the `ike.sa.closed`'s `err` after it only where the
+session ended before that Delete was answered. An `INVALID_SYNTAX` this end
+sends on the current IKE SA records no `ike.sa.closed`: the session logs a
+warning and ends with `ike.session.ended`. Nor does the peer's Delete of the IKE
+SA, and the `ike.session.ended` that follows carries
+`ike: the peer deleted the IKE SA` in its `err`. Any reason the session finds
+once that Delete has closed it records no `ike.sa.closed` either, and logs no
+`ike deleting the IKE SA`.
 
 The `ike` of an `ike.session.established` names the IKE SA's cipher, PRF and kex
 entry by their `cap.crypto` names, joined by `/`, such as
@@ -837,16 +852,51 @@ such as `aes128gcm/p256` or `aes128gcm/x25519+mlkem768`, in the `suite` of an
 `ike.suite.unlisted`. Where the peer refuses this node's IKE SA rekey with an
 error notify after this node answered the peer's own rekey of the same SA, its
 `IKE_FOLLOWUP_KE` included where it ran one, this node takes the SA the peer's
-rekey made, and the `ike.rekey.completed` names that SA. Every error notify does
-so but `INVALID_SYNTAX`, which ends the IKE SA, and an `INVALID_KE_PAYLOAD`
-naming a group this node offered is retried once in that group first. A refusal
-that comes while the peer's rekey still runs its `IKE_FOLLOWUP_KE` records
+rekey made, logs `ike simultaneous rekey selected peer candidate`, and the
+`ike.rekey.completed` names that SA. Every error notify does so but
+`INVALID_SYNTAX`, which ends the IKE SA, and an `INVALID_KE_PAYLOAD` naming a
+group this node offered is retried once in that group first. A refusal that
+comes while the peer's rekey still runs its `IKE_FOLLOWUP_KE` records
 `ike.rekey.failed`, and that exchange then makes the peer's SA current with no
 `ike.rekey.completed`, since a peer's rekey records none. An IKE SA rekey whose
 Delete of the replaced or redundant IKE SA goes unanswered or is refused records
 `ike.rekey.completed`, since the surviving IKE SA is current by then. The
 session logs `ike replaced IKE SA was not deleted by this end` or
-`ike redundant IKE SA was not deleted by this end` with the error.
+`ike redundant IKE SA was not deleted by this end` with the error. Where the
+peer's Delete of the IKE SA both rekeys of a crossing replace reaches this node
+while its own rekey runs, this node takes the peer's SA, logs
+`ike simultaneous rekey selected peer candidate`, and its rekey records
+`ike.rekey.completed`, as one that lost the crossing does.
+
+An `ike.sa.retired` is recorded when a session stops holding a replaced or
+redundant IKE SA beside its current one. Its `spi` is that IKE SA's initiator
+SPI in hexadecimal. Its `replaced` is `own` for an IKE SA this node's rekey
+replaced, `peer` for one the peer's rekey replaced or a crossing replaced with
+the peer's SA, and `collision` for an SA a crossing rekey made that the session
+held beside the current IKE SA. Its `reason` is `deleted` for the peer's Delete
+of it, `answered` for this node's Delete of it answered, `unanswered` for this
+node's Delete or other request on it deemed failed or refused, `displaced` when
+a later rekey took its place, `bound` when its hold ended short of its lifetime,
+`lifetime` when it reached its lifetime, and `failed` when a request of the
+peer's on it failed. Its `failure` then says how: `message id` for a request at
+the last Message ID, `request` for a request this node failed to handle,
+`answer` for one whose answer it could not keep, `fragments` for fragments of 1
+message past the reassembly limit [limits](../design/limits.md#ike) gives, and
+`syntax` for a request that did not decode or that this node answered
+`INVALID_SYNTAX`. The event writes no log line of its own. An SA a crossing
+makes current and the end of the session record none.
+
+An `ike.rekey.repeat_answered` is recorded at most once for each answer an IKE
+SA keeps for the peer's resends of its rekey, a refusal of a crossing rekey
+among them, as [Rekeying](../design/protocol-deviations.md#rekeying) gives, at
+its first send to a repeat 2 minutes or more after this node replaced the IKE
+SA. Its `message_id` is that of the peer's request the kept answer answers. It
+says a repeat was answered, not that the peer took the answer. An
+`ike.rekey.confirmed` is recorded at most once for each IKE SA a peer's rekey
+made, at the peer's first fresh authenticated request on it while it is current,
+with its initiator SPI in hexadecimal in `spi`. The IKE SA of a handshake and
+one this node's own rekey made record none, since the handshake and the answer
+to that rekey show the peer holds them.
 
 An `ike.suite.unlisted` is recorded when a session schedules a rekey or a
 replacement for an SA running a transform the lists in force leave out. An SA
@@ -1070,18 +1120,19 @@ message, as
 that comes from another peer address or port, or, in a session the peer opened,
 reaches this node at an address other than the one the session's sends name. Its
 `packet` is `request` or `response`. In a session that names an interface, as it
-does on Linux and for an IPv6 link-local address on macOS, a fresh message on
-any IKE SA but a replaced one kept past this end's Delete arriving on another
-interface records it too. Its `endpoint` names the peer's address and port,
-which in these two cases can be the same as before. A session whose sends fell
-back from an address that is gone names no address, and its next fresh message
-on any IKE SA but a replaced one kept past this end's Delete records an
-`ike.endpoint.moved` wherever it arrives. A session that fell back after the
-kernel refused its address with `EHOSTUNREACH` moves back to it, recording an
-`ike.endpoint.moved`, only at the first fresh message on any IKE SA but a
-replaced one kept past this end's Delete 1 minute or more after the fallback,
-and one that fell back after any other refusal at its next such message that
-reaches the address, as [moving hosts](../platforms.md#moving-hosts) describes.
+does on Linux and for an IPv6 link-local address on macOS, a fresh message
+arriving on another interface records it too, unless it came on a replaced IKE
+SA kept past this end's Delete, or is a request on a replaced IKE SA that kept
+an answer for the peer's resends 2 minutes or more after this end replaced it.
+Its `endpoint` names the peer's address and port, which in these two cases can
+be the same as before. A session whose sends fell back from an address that is
+gone names no address, and its next fresh message not of the 2 kinds that record
+nothing records an `ike.endpoint.moved` wherever it arrives. A session that fell
+back after the kernel refused its address with `EHOSTUNREACH` moves back to it,
+recording an `ike.endpoint.moved`, only at the first fresh message not of those
+2 kinds that comes 1 minute or more after the fallback, and one that fell back
+after any other refusal at its next such message that reaches the address, as
+[moving hosts](../platforms.md#moving-hosts) describes.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` event is recorded once for an
