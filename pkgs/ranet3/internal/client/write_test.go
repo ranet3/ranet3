@@ -52,8 +52,13 @@ func writable(t *testing.T) *Client {
 // meets.
 func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	c := writable(t)
-	var reconciler []bool
-	c.SetReconciler(Reconciler{Enable: func(on bool) { reconciler = append(reconciler, on) }})
+	var reconciler []string
+	c.SetReconciler(Reconciler{
+		Enable: func(on bool) {
+			reconciler = append(reconciler, map[bool]string{true: "start", false: "stop"}[on])
+		},
+		DropHold: func() { reconciler = append(reconciler, "drop the hold") },
+	})
 
 	if _, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, false); err != nil {
 		t.Fatal(err)
@@ -73,8 +78,9 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	if got := c.Status().Disabled; len(got) != 3 {
 		t.Errorf("the status reports %v stopped, want all three", got)
 	}
-	if len(reconciler) != 1 || reconciler[0] {
-		t.Errorf("the reconciler was told %v, want one stop", reconciler)
+	// the operator's stop takes the down set a down would leave, so the reconciler hears of it before the stop
+	if want := []string{"drop the hold", "stop"}; !slices.Equal(reconciler, want) {
+		t.Errorf("the reconciler was told %v, want %v", reconciler, want)
 	}
 
 	result, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, true)

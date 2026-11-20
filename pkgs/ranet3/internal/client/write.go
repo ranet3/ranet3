@@ -98,6 +98,11 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 		}
 	}
 	if c.running[name] == on {
+		// a stopped reconciler asked to stop again is woken for a pass at once,
+		// which takes up a withdrawal still owed without waiting out its retry
+		if name == control.SubsystemReconciler && !on {
+			c.applySubsystem(name, on)
+		}
 		return control.Result{Acted: []string{string(name)},
 			Detail: fmt.Sprintf("The %s was already %s", name, startedStopped(on))}, nil
 	}
@@ -145,7 +150,11 @@ func (c *Client) subsystemRuns(name control.Subsystem) error {
 func (c *Client) applySubsystem(name control.Subsystem, on bool) {
 	switch name {
 	case control.SubsystemReconciler:
-		if set := c.reconcilerNow().Enable; set != nil {
+		r := c.reconcilerNow()
+		if !on && r.DropHold != nil {
+			r.DropHold()
+		}
+		if set := r.Enable; set != nil {
 			set(on)
 		}
 	case control.SubsystemSteering:

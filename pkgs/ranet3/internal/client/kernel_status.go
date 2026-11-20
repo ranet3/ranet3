@@ -20,6 +20,8 @@ type Reconciler struct {
 	Status func() control.KernelStatus
 	// Enable stops and starts it, for the write path and for down and up
 	Enable func(bool)
+	// DropHold has its next stop, the operator's, take the down set a down leaves
+	DropHold func()
 	// Table hands it a reloaded cap.table with the overlay and the prefixes cap.route announces
 	Table func(kernel.Table, []schema.Prefix, []netip.Prefix) error
 	// Network wakes it for a change of the host's network
@@ -45,6 +47,7 @@ func ReconcilerOf(routes *kernel.Reconciler) Reconciler {
 	return Reconciler{
 		Status:    func() control.KernelStatus { return kernelStatus(routes) },
 		Enable:    routes.SetEnabled,
+		DropHold:  routes.DropHold,
 		Table:     routes.SetTable,
 		Network:   routes.NetworkChanged,
 		Endpoints: routes.EndpointsChanged,
@@ -82,10 +85,14 @@ func (c *Client) reconcilerNow() Reconciler {
 // comes from the capability the reconciler resolved rather than from the file,
 // so the defaults it filled in are the ones reported.
 func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
-	table, stats := routes.Table(), routes.Stats()
+	return kernelStatusOf(routes.Where(), routes.Table(), routes.Stats())
+}
+
+// kernelStatusOf is kernelStatus of a reconciler at where under table whose last pass recorded stats
+func kernelStatusOf(where string, table kernel.Table, stats kernel.Stats) control.KernelStatus {
 	return control.KernelStatus{
 		Enabled:         true,
-		Where:           routes.Where(),
+		Where:           where,
 		Table:           uint32(table.ID),
 		Protocol:        table.Proto,
 		PassAt:          stats.At,
@@ -93,6 +100,9 @@ func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 		Skipped:         stats.Skipped,
 		Added:           stats.Added,
 		Removed:         stats.Removed,
+		Held:            stats.Held,
+		HeldUnknown:     stats.HeldUnknown,
+		Owed:            stats.Owed,
 		HoldPieces:      stats.HoldPieces,
 		HoldsWhole:      stats.HoldsWhole,
 		HoldPieceBudget: stats.HoldPieceBudget,

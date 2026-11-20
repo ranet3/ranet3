@@ -77,3 +77,24 @@ func TestExitPathStatusCarriesEachState(t *testing.T) {
 		}
 	}
 }
+
+// The control surface carries the reconciler's count of the overlay prefixes its down set refuses, and says where its last pass
+// could not list the rules so the count is not known
+func TestKernelStatusCarriesTheHeldCountOrThatItIsNotKnown(t *testing.T) {
+	table := kernel.Table{ID: kernel.DefaultTable, Proto: kernel.DefaultProtocol}
+	for _, stats := range []kernel.Stats{{Held: 2}, {HeldUnknown: true}} {
+		got := kernelStatusOf("table 200 protocol 155", table, stats)
+		if got.Held != stats.Held || got.HeldUnknown != stats.HeldUnknown {
+			t.Errorf("the record %+v reports held %d, unknown %v", stats, got.Held, got.HeldUnknown)
+		}
+	}
+}
+
+// The control surface carries each write the reconciler's last pass owes beside a running set, by prefix
+func TestKernelStatusCarriesTheWritesOwed(t *testing.T) {
+	table := kernel.Table{ID: kernel.DefaultTable, Proto: kernel.DefaultProtocol}
+	owed := []string{"delete the pair of 192.0.2.0/25 (32765, 32764)", "delete the refusal of 3fff::/21 (32765)"}
+	if got := kernelStatusOf("table 200 protocol 155", table, kernel.Stats{Owed: owed}); !reflect.DeepEqual(got.Owed, owed) || got.Held != 0 {
+		t.Errorf("the record owing %q reports %q and held %d", owed, got.Owed, got.Held)
+	}
+}

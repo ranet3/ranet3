@@ -703,3 +703,17 @@ func TestRunDialsNothingOnceTheStopHasBegun(t *testing.T) {
 		t.Errorf("the node whose stop began before it ran runs %s", what)
 	}
 }
+
+// a disable of a reconciler already stopped hands it the stop again, which wakes it for a pass at once, so a withdrawal it
+// still owes need not wait out its retry
+func TestRepeatedDisableHandsTheReconcilerItsStopAgain(t *testing.T) {
+	c, reconciler, _ := downable(t, t.TempDir())
+	for range 2 {
+		if _, err := c.SetSubsystem(context.Background(), control.SubsystemReconciler, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if on, _ := reconciler.calls(); !slices.Equal(on, []bool{false, false}) {
+		t.Errorf("two disables told the reconciler %v, want two stops", on)
+	}
+}

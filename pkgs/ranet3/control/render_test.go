@@ -614,6 +614,33 @@ func TestKernelLineNamesTheCoveredFamilies(t *testing.T) {
 	}
 }
 
+// The kernel line counts the overlay prefixes refused while the node is down
+// where there are any, says nothing of them where there are none, and says the
+// count is not known where the last pass could not list the rules
+func TestKernelLineCountsTheOverlayPrefixesRefusedWhileDown(t *testing.T) {
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155", HeldUnknown: true}); !strings.Contains(line, ", refused while down not known") {
+		t.Errorf("with the count not known the kernel line reads %q, want it to say so", line)
+	}
+	for held, want := range map[int]string{1: ", 1 refused while down", 2: ", 2 refused while down"} {
+		if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155", Held: held}); !strings.Contains(line, want) {
+			t.Errorf("with %d prefixes refused the kernel line reads %q, want it to hold %q", held, line, want)
+		}
+	}
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155"}); strings.Contains(line, "refused") {
+		t.Errorf("with no prefix refused the kernel line reads %q, want no clause of refusals", line)
+	}
+}
+
+// A node that runs with a delete owed reads neither as refusing while down nor as clean: the kernel line counts the writes owed,
+// and leaves each to --json and the warning
+func TestKernelLineCountsTheWritesOwed(t *testing.T) {
+	owed := []string{"delete the pair of 192.0.2.0/25 (32765, 32764)", "delete the refusal of 3fff::/21 (32765)"}
+	line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155", Owed: owed})
+	if want := ", 2 writes owed"; !strings.Contains(line, want) || strings.Contains(line, "refused while down") || strings.Contains(line, "32765") {
+		t.Errorf("with writes owed the kernel line reads %q, want it to hold %q and neither a refusal while down nor a write's text", line, want)
+	}
+}
+
 // The kernel line counts the pieces the last pass put in place of the holds it
 // cut and the holds it left whole past the budget, which it gives, beside the
 // routes it installed and skipped, and says nothing of either where it has

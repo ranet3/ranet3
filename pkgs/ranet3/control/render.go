@@ -135,6 +135,15 @@ func kernelLine(k KernelStatus) string {
 	if k.Skipped > 0 {
 		fmt.Fprintf(&line, ", %d skipped", k.Skipped)
 	}
+	switch {
+	case k.HeldUnknown:
+		line.WriteString(", refused while down not known")
+	case k.Held > 0:
+		fmt.Fprintf(&line, ", %d refused while down", k.Held)
+	}
+	if len(k.Owed) > 0 {
+		line.WriteString(", " + countOf(len(k.Owed), "write") + " owed")
+	}
 	if k.HoldPieces > 0 {
 		line.WriteString(", " + countOf(k.HoldPieces, "piece") + " of cut holds")
 	}

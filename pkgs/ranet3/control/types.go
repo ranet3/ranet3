@@ -443,6 +443,22 @@ type KernelStatus struct {
 	Skipped   int       `json:"skipped"`
 	Added     int       `json:"added"`
 	Removed   int       `json:"removed"`
+	// Held is the distinct overlay prefixes whose pair of down rules the last
+	// pass or withdrawal found standing by its listing of the rules and its
+	// writes: rules that stand, not packets refused. A running node counts them
+	// until it releases them, and a node that holds the overlay or a platform
+	// with no policy rules counts 0. It is 0 where that pass could not list
+	// the rules, so the count is not known for it, which HeldUnknown says.
+	Held        int  `json:"held"`
+	HeldUnknown bool `json:"held_unknown,omitempty"`
+	// Owed is each write the last pass owes, which each pass writes again
+	// until it lands: beside the running set the delete of a pair of the down
+	// set or of its refusal alone, by prefix, and the install of a rule of the
+	// set missing beside it, and beside the down set the delete of a rule
+	// outside the staged set, which a failed release's take-back or another
+	// writer left. The status line counts them. It is absent where none is
+	// owed.
+	Owed []string `json:"owed,omitempty"`
 	// HoldPieces is the pieces the last pass's routes put in place of the
 	// holds it cut around the live routes inside them on macOS, a piece the
 	// platform refused among them
