@@ -69,7 +69,7 @@ func testLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the peer may retire the original IKE SA while the Delete of the losing candidate is outstanding, and completing that Delete must not bring the original back
-	s.removeRetainedContext(old)
+	s.retire(old, retiredDeleted, "")
 	if !s.dispatch(response, s.mux.Endpoint(), &pending) {
 		deleteRequest.result <- requestResult{err: fmt.Errorf("test cleanup")}
 		ended(t, s, done)
@@ -736,7 +736,7 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 			if err := mux.RegisterIKE(retained.spiI); err != nil {
 				t.Fatal(err)
 			}
-			if !s.removeRetainedContext(retained) {
+			if !s.retire(retained, retiredDeleted, "") {
 				t.Fatal("the retained context was not dropped")
 			}
 			err := other.RegisterIKE(retained.spiI)

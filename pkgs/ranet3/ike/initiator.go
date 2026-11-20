@@ -133,7 +133,9 @@ type Session struct {
 	oldBy       time.Time
 	collisionBy time.Time
 	// recovery is the record of the SA in old while it serves, and stateMu guards it
-	recovery      recoveryRecord
+	recovery recoveryRecord
+	// retiredIKE holds the ends of retained IKE SAs retireLocked queued for tellRetired, and stateMu guards it
+	retiredIKE    []ikeRetirement
 	localRekey    *ikeRekey
 	ikeRekeyNonce func([]byte) error
 	// peerChain is the peer's rekey whose additional key exchange this end answers, nil while none is open, and stateMu guards it
@@ -302,7 +304,7 @@ func (s *Session) nextPeerMessageID(ctx *ikeContext) uint32 {
 func (s *Session) retainOldLocked(ctx *ikeContext) {
 	displaced := s.old
 	s.old, s.oldBy = ctx, s.retainedUntil(ctx, time.Now())
-	s.releaseDisplacedLocked(displaced)
+	s.releaseDisplacedLocked(displaced, false)
 }
 
 // RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
@@ -320,7 +322,7 @@ func (s *Session) retainedUntil(ctx *ikeContext, now time.Time) time.Time {
 func (s *Session) retainCollisionLocked(ctx *ikeContext) {
 	displaced := s.collision
 	s.collision, s.collisionBy = ctx, s.retainedUntil(ctx, time.Now())
-	s.releaseDisplacedLocked(displaced)
+	s.releaseDisplacedLocked(displaced, true)
 }
 
 // releaseSPILocked stops routing an SPI no slot dispatches on any more. Every
@@ -336,10 +338,12 @@ func (s *Session) releaseSPILocked(spi uint64) {
 
 // releaseDisplacedLocked is the same for a context a second rekey displaced,
 // which is the one release nothing in the session asked for.
-func (s *Session) releaseDisplacedLocked(displaced *ikeContext) {
+// collision says the context was the collision's, and its end is queued for tellRetired, which dispatch and RekeyIKE, the callers that place an IKE SA, run once stateMu is released
+func (s *Session) releaseDisplacedLocked(displaced *ikeContext, collision bool) {
 	if displaced == nil || s.routedLocked(displaced.spiI) {
 		return
 	}
+	s.queueRetiredLocked(displaced, collision, retiredDisplaced, "")
 	if displaced.kept {
 		slog.Info("ike dropping a replaced IKE SA kept after this end's unanswered Delete, which a later rekey replaced", "spi", displaced.spiI)
 	} else {
@@ -408,6 +412,11 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 					keptTo = "its lifetime"
 				}
 			}
+			reason := retiredBound
+			if atLifetime || s.ikeExpired(held.ctx) {
+				reason = retiredLifetime
+			}
+			s.queueRetiredLocked(held.ctx, held.out == &s.collision, reason, "")
 			dropped, *held.out = append(dropped, drop{held.ctx, keptTo, recordTo}), nil
 		}
 	}
@@ -415,6 +424,7 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 		s.releaseSPILocked(d.ctx.spiI)
 	}
 	s.stateMu.Unlock()
+	s.tellRetired()
 	for _, d := range dropped {
 		ctx := d.ctx
 		if d.recordTo != "" {
@@ -449,26 +459,29 @@ func (s *Session) nextRetainedExpiry() (time.Time, bool) {
 	return earliest, !earliest.IsZero()
 }
 
-// removeRetainedContext drops ctx when the session retains it as a replaced or
-// redundant IKE SA, with any record of it, and reports whether it did. Its SPI stays registered while
+// retire drops ctx when the session retains it as a replaced or
+// redundant IKE SA, with any record of it, tells ike.sa.retired with reason and failure, and reports whether it did. Its SPI stays registered while
 // another context is routed by it, since unregistering it would make that one
 // deaf, which is a session that keeps sending ESP into a peer that answers
 // nothing until its own liveness check expires.
-func (s *Session) removeRetainedContext(ctx *ikeContext) bool {
+func (s *Session) retire(ctx *ikeContext, reason, failure string) bool {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	switch {
-	case s.old == ctx:
-		s.old = nil
-	case s.collision == ctx:
-		s.collision = nil
-	default:
+	if s.old != ctx && s.collision != ctx {
+		s.stateMu.Unlock()
 		return false
+	}
+	s.retireLocked(ctx, reason, failure)
+	if s.old == ctx {
+		s.old = nil
+	} else {
+		s.collision = nil
 	}
 	if s.recovery.replaced == ctx {
 		s.recovery = recoveryRecord{}
 	}
 	s.releaseSPILocked(ctx.spiI)
+	s.stateMu.Unlock()
+	s.tellRetired()
 	return true
 }
 

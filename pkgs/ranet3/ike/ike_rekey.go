@@ -31,6 +31,8 @@ func (e *saEnding) Unwrap() error { return e.err }
 func (s *Session) RekeyIKE() (err error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
+	// the SA this rekey places displaces a retained IKE SA under stateMu, whose end is told once the lock is released
+	defer s.tellRetired()
 	s.emit("ike.rekey.started", slog.String("sa", "ike"))
 	defer func() { s.rekeyEnded("ike", err) }()
 	defer func() {
@@ -218,19 +220,35 @@ func (s *Session) RekeyIKE() (err error) {
 
 	// RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 	// the replacement is current from here, so the rekey has taken effect whatever this exchange does, a peer's own Delete of the old SA arriving first and a refusal among them
-	if err := s.sendOwnDeleteLocked(old); err != nil {
-		slog.Info("ike replaced IKE SA was not deleted by this end", "spi", old.spiI, "err", err)
-		if errors.Is(err, errReplacedKept) {
+	deleted := s.sendOwnDeleteLocked(old)
+	if deleted != nil {
+		slog.Info("ike replaced IKE SA was not deleted by this end", "spi", old.spiI, "err", deleted)
+		if errors.Is(deleted, errReplacedKept) {
 			return nil
 		}
 	}
-	s.stateMu.Lock()
-	if s.old == old {
-		s.old = nil
-	}
-	s.releaseSPILocked(old.spiI)
-	s.stateMu.Unlock()
+	s.retireOwn(old, deleted)
 	return nil
+}
+
+// retireOwn ends ctx, an IKE SA this end deleted, where the session still holds it once deleted, the outcome of that Delete, is known
+func (s *Session) retireOwn(ctx *ikeContext, deleted error) {
+	reason := retiredAnswered
+	if deleted != nil {
+		reason = retiredUnanswered
+	}
+	s.stateMu.Lock()
+	switch {
+	case s.old == ctx:
+		s.retireLocked(ctx, reason, "")
+		s.old = nil
+	case s.collision == ctx:
+		s.retireLocked(ctx, reason, "")
+		s.collision = nil
+	}
+	s.releaseSPILocked(ctx.spiI)
+	s.stateMu.Unlock()
+	s.tellRetired()
 }
 
 // replaceLocked makes replacement, the SA this end's rekey of old made, current, and keeps old for this end's Delete of it, with stateMu held
@@ -262,17 +280,13 @@ func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext, local *ikeRe
 	// the redundant SA goes whether or not the peer answers
 	// one left in s.collision refuses every later peer rekey
 	// and the next rekey of this end's would collide with it, with no peer nonce to settle on
-	if err := s.sendOwnDeleteLocked(candidate); err != nil {
-		slog.Info("ike redundant IKE SA was not deleted by this end", "spi", candidate.spiI, "err", err)
+	deleted := s.sendOwnDeleteLocked(candidate)
+	if deleted != nil {
+		slog.Info("ike redundant IKE SA was not deleted by this end", "spi", candidate.spiI, "err", deleted)
 	}
 	// released only while nothing else routes by it
 	// unregistering the SA the session is current on leaves the control channel deaf while ESP flows
-	s.stateMu.Lock()
-	if s.collision == candidate {
-		s.collision = nil
-	}
-	s.releaseSPILocked(candidate.spiI)
-	s.stateMu.Unlock()
+	s.retireOwn(candidate, deleted)
 	return nil
 }
 

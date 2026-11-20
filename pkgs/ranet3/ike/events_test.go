@@ -5,6 +5,7 @@ package ike
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -88,6 +89,7 @@ func testSessionsRecordTheirRekeys(t *testing.T) {
 	if err := initiator.RekeyChild(); err != nil {
 		t.Fatalf("the initiator could not rekey its Child SA: %v", err)
 	}
+	first := responder.currentContext().spiI
 	if err := responder.RekeyIKE(); err != nil {
 		t.Fatalf("the responder could not rekey the IKE SA: %v", err)
 	}
@@ -95,16 +97,20 @@ func testSessionsRecordTheirRekeys(t *testing.T) {
 	if err := initiator.RekeyChild(); err == nil {
 		t.Fatal("a rekey over a closed session succeeded")
 	}
+	// the IKE SA the rekey replaced ends at the responder's Delete of it, which the initiator answers
 	if got, want := dialed.recorded(), []string{
 		"ike.id.resolved testorg/client:2>testorg/server:1 type=dn sent=dn",
 		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.completed testorg/client:2>testorg/server:1 sa=child suite=aes256gcm",
+		fmt.Sprintf("ike.sa.retired testorg/client:2>testorg/server:1 sa=ike spi=%016x replaced=peer reason=deleted", first),
 		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.failed testorg/client:2>testorg/server:1 sa=child",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the dialed session recorded %q, want %q", got, want)
 	}
 	if got, want := answered.recorded(), []string{
 		"ike.id.resolved testorg/server:1>testorg/client:2 type=dn sent=dn",
-		"ike.rekey.started testorg/server:1>testorg/client:2 sa=ike", "ike.rekey.completed testorg/server:1>testorg/client:2 sa=ike suite=aes256gcm/sha384/x25519",
+		"ike.rekey.started testorg/server:1>testorg/client:2 sa=ike",
+		fmt.Sprintf("ike.sa.retired testorg/server:1>testorg/client:2 sa=ike spi=%016x replaced=own reason=answered", first),
+		"ike.rekey.completed testorg/server:1>testorg/client:2 sa=ike suite=aes256gcm/sha384/x25519",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the answered session recorded %q, want %q", got, want)
 	}

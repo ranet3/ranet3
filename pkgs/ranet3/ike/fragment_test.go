@@ -3131,8 +3131,9 @@ func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
 		for _, raw := range cutInto(t, old.suite, old.sker, Header{SPIInitiator: old.spiI, SPIResponder: old.spiR, ExchangeType: INFORMATIONAL}, []RawPayload{bulkyStatus(reassemblyLimit)}, 4000) {
 			s.dispatch(raw, s.mux.Endpoint(), &pending)
 		}
-		if now, retained := s.contexts(); s.mux.IsClosed() || now != current || retained != nil || len(events.recorded()) != 0 {
-			t.Errorf("fragments past the limit on the retained IKE SA closed the session %v, left current %p and retained %p, and recorded %q, want the retained IKE SA gone alone", s.mux.IsClosed(), now, retained, events.recorded())
+		retiredAlone := []string{"ike.sa.retired > sa=ike spi=2122232425262728 replaced=peer reason=failed failure=fragments"}
+		if now, retained := s.contexts(); s.mux.IsClosed() || now != current || retained != nil || !slices.Equal(events.recorded(), retiredAlone) {
+			t.Errorf("fragments past the limit on the retained IKE SA closed the session %v, left current %p and retained %p, and recorded %q, want the retained IKE SA gone alone, told as %q", s.mux.IsClosed(), now, retained, events.recorded(), retiredAlone)
 		}
 	}))
 	t.Run("wait after IKE_AUTH", bubble.Run(func(t *testing.T) {

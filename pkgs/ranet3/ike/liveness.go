@@ -804,7 +804,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 					pending = nil
 					continue
 				}
-				if s.removeRetainedContext(pending.context) {
+				if s.retire(pending.context, retiredUnanswered, "") {
 					pending.result <- requestResult{err: fmt.Errorf("ike: IKE SA %d deemed failed after %d unanswered attempts", pending.context.spiI, pending.sent)}
 					pending = nil
 					continue
@@ -1020,6 +1020,8 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 // a request on a kept IKE SA that dispatch fails ends that SA alone and never the session, while a Child SA a Delete on it names that the dataplane refuses to close fails the session as one named on the current IKE SA does
 // a request on an IKE SA a peer's rekey replaced, past retainedContextDeadline from its retention, is taken by requestPastRetention, and neither it nor a repeat on that SA moves the endpoint or counts as the peer alive
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
+	// a peer's rekey placed here displaces a retained IKE SA under stateMu, whose end is told once the lock is released
+	defer s.tellRetired()
 	hdr, err := decodeHeader(raw)
 	if err != nil || higherVersion(s.mux.SendIKETo, hdr, source) {
 		return false
@@ -1094,7 +1096,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
 	if matching == nil && nextPeerMID == maxMessageID {
 		if kept {
-			s.endKept(ctx, errMessageIDExhausted)
+			s.endKept(ctx, errMessageIDExhausted, failedMessageID)
 			return false
 		}
 		s.closeFor(errMessageIDExhausted)
@@ -1118,7 +1120,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if err != nil {
 		// section 2.21.3's "the IKE SA is deleted" names the IKE SA the message came on, so a retained one ends alone, as when the peer answers INVALID_SYNTAX on it
 		// an answer's SA goes before its request ends, since the rekey waiting on that request releases the SA once it ends, and the SA would then not read as retained here
-		retained := s.removeRetainedContext(ctx)
+		retained := s.retire(ctx, retiredFailed, failedSyntax)
 		if matching != nil {
 			matching.result <- requestResult{err: fmt.Errorf("ike: malformed authenticated response: %w", err)}
 			*pending = nil
@@ -1168,11 +1170,11 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		if response != nil {
 			s.answer(response, message.form, source)
 		}
-		if _, refused := errors.AsType[invalidSyntaxSent](err); refused && s.removeRetainedContext(ctx) {
+		if _, refused := errors.AsType[invalidSyntaxSent](err); refused && s.retire(ctx, retiredFailed, failedSyntax) {
 			return !kept
 		}
 		if kept {
-			s.endKept(ctx, err)
+			s.endKept(ctx, err, failedRequest)
 			return false
 		}
 		s.closeFor(err)
@@ -1182,7 +1184,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if err != nil {
 		err = fmt.Errorf("ike: keep the answer at Message ID %d: %w", hdr.MessageID, err)
 		if kept {
-			s.endKept(ctx, err)
+			s.endKept(ctx, err, failedAnswer)
 			return false
 		}
 		s.closeFor(err)
@@ -1198,11 +1200,12 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	return !kept
 }
 
-// endKept warns that the kept IKE SA ctx ends for err, a request on it that failed, and removes ctx through removeRetainedContext where the session still holds it, ending nothing else, so the session runs on over its current IKE SA
+// endKept warns that the kept IKE SA ctx ends for err, a request on it that failed, and removes ctx through retire where the session still holds it, ending nothing else, so the session runs on over its current IKE SA
 // dispatch calls it in place of closing the session for a request on a kept IKE SA at the last Message ID, one whose handling fails other than by an INVALID_SYNTAX refusal on an SA the session still holds, and one whose answer it cannot keep
-func (s *Session) endKept(ctx *ikeContext, err error) {
+// failure is the kind ike.sa.retired gives the end
+func (s *Session) endKept(ctx *ikeContext, err error, failure string) {
 	slog.Warn("ike dropping a replaced IKE SA kept after this end's unanswered Delete, since a request on it failed", "spi", ctx.spiI, "err", err)
-	s.removeRetainedContext(ctx)
+	s.retire(ctx, retiredFailed, failure)
 }
 
 // fragmentLimit ends ctx's IKE SA, alone where it is a retained one or one keepReplaced kept, once the peer's fragments of one message at mid passed reassemblyLimit
@@ -1210,7 +1213,7 @@ func (s *Session) endKept(ctx *ikeContext, err error) {
 // a kept IKE SA this end's next rekey displaced since dispatch read it is still marked kept, since nothing clears the mark, so it ends alone all the same
 func (s *Session) fragmentLimit(ctx *ikeContext, mid uint32, err error) {
 	slog.Warn("ike the peer's fragments of one message passed the reassembly limit, which ends the IKE SA", "message_id", mid, "limit", reassemblyLimit)
-	if s.removeRetainedContext(ctx) || s.keptContext(ctx) {
+	if s.retire(ctx, retiredFailed, failedFragments) || s.keptContext(ctx) {
 		return
 	}
 	s.tellClosed("fragment limit", err)
@@ -1294,7 +1297,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 				if err != nil {
 					return nil, err
 				}
-				if s.removeRetainedContext(ctx) || s.adoptCollisionOnPeerDelete(ctx) {
+				if s.retire(ctx, retiredDeleted, "") || s.adoptCollisionOnPeerDelete(ctx) {
 					return response, nil
 				}
 				return response, errPeerDeletedIKE
@@ -1364,7 +1367,7 @@ func (e invalidSyntaxSent) Unwrap() error { return e.error }
 // a retained IKE SA is one this end is deleting already, and its request reads the answer as any other refusal
 func (s *Session) endAtInvalidSyntax(ctx *ikeContext, request *pendingRequest, answer []RawPayload) {
 	slog.Warn("ike the peer answered INVALID_SYNTAX, which ends the IKE SA without a Delete", "exchange", request.exchange, "spi", ctx.spiI)
-	if s.removeRetainedContext(ctx) {
+	if s.retire(ctx, retiredUnanswered, "") {
 		request.result <- requestResult{inner: answer}
 		return
 	}

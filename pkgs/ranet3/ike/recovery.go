@@ -4,6 +4,8 @@
 package ike
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -13,10 +15,12 @@ import (
 // recoveryRecord keeps the answer that replaced an IKE SA at a peer's rekey for the peer's resends of that rekey, so a busy peer that lost the answer draws it again for as long as it resends
 // replaced stays in Session.old while the record lives, its lastPeer holding the answer at mid, and replacement is the SA that answer made
 // lastSent is the last time the answer went out and until the record's end, never past the replaced SA's lifetime
+// told marks a record whose first answer past the retention ike.rekey.repeat_answered told
 type recoveryRecord struct {
 	replaced, replacement *ikeContext
 	mid                   uint32
 	lastSent, until       time.Time
+	told                  bool
 }
 
 // recordLocked makes the record of replaced, which the answer at mid that went out at sent replaced with replacement, retained at at, with stateMu held
@@ -71,12 +75,21 @@ func (s *Session) servesRepeat(ctx *ikeContext, mid uint32) bool {
 	return r != nil && r.replaced == ctx && r.mid == mid && time.Now().Before(r.until)
 }
 
-// repeatAnswered notes that the answer ctx keeps at mid went out again
+// repeatAnswered notes that the answer ctx keeps at mid went out again, and records ike.rekey.repeat_answered at the record's first such answer past ctx's retention
+// that tells a repeat was answered, and not that the peer took the answer
 func (s *Session) repeatAnswered(ctx *ikeContext, mid uint32) {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
+	tell := false
 	if r := s.liveRecordLocked(); r != nil && r.replaced == ctx && r.mid == mid {
 		r.lastSent = time.Now()
+		if !r.told && !r.lastSent.Before(ctx.replacedAt.Add(retainedContextDeadline)) {
+			r.told, tell = true, true
+		}
+	}
+	s.stateMu.Unlock()
+	if tell {
+		slog.Info("ike answered a repeat of the peer's rekey past the replaced IKE SA's retention", "spi", ctx.spiI, "message_id", mid)
+		s.emit("ike.rekey.repeat_answered", slog.String("sa", "ike"), slog.Uint64("message_id", uint64(mid)))
 	}
 }
 
@@ -89,12 +102,12 @@ func (s *Session) answeredOn(ctx *ikeContext) {
 	}
 }
 
-// confirm takes a fresh authenticated request on ctx as the peer's switch to it where ctx is the current IKE SA and unconfirmed
+// confirm takes a fresh authenticated request on ctx as the peer's switch to it where ctx is the current IKE SA and unconfirmed, and records ike.rekey.confirmed
 // the record whose replacement ctx is then ends, its SA kept for the peer's Delete for the retention counted from the last send of the answer
 func (s *Session) confirm(ctx *ikeContext) {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
 	if ctx != s.current || !ctx.unconfirmed {
+		s.stateMu.Unlock()
 		return
 	}
 	ctx.unconfirmed = false
@@ -104,6 +117,8 @@ func (s *Session) confirm(ctx *ikeContext) {
 		}
 		s.endRecordLocked(r.lastSent)
 	}
+	s.stateMu.Unlock()
+	s.emit("ike.rekey.confirmed", slog.String("sa", "ike"), slog.String("spi", fmt.Sprintf("%016x", ctx.spiI)))
 }
 
 // requestPastRetention takes message, a fresh request on ctx from source, where ctx is a replaced IKE SA past its retention and nextPeerMID the Message ID ctx expected
@@ -124,7 +139,11 @@ func (s *Session) requestPastRetention(ctx *ikeContext, hdr *Header, outer *Mess
 		if response != nil {
 			s.answer(response, message.form, source)
 		}
-		s.removeRetainedContext(ctx)
+		failure := failedRequest
+		if _, refused := errors.AsType[invalidSyntaxSent](err); refused {
+			failure = failedSyntax
+		}
+		s.retire(ctx, retiredFailed, failure)
 		return
 	}
 	if sent, err := s.keepAnswer(ctx, hdr.MessageID, response, message); err == nil {

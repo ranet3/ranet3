@@ -120,7 +120,7 @@ func (c *ikeCrossing) takes(t *testing.T, e *ikeCrossingEnd, answer []RawPayload
 		request.result <- requestResult{inner: answer}
 	case deletesIKE(request.inner) && e.s.keepReplaced(request.context):
 		request.result <- requestResult{err: errReplacedKept}
-	case e.s.removeRetainedContext(request.context):
+	case e.s.retire(request.context, retiredUnanswered, ""):
 		request.result <- requestResult{err: errors.New("ike: the retained IKE SA was deemed failed")}
 	default:
 		t.Fatalf("exchange %d on the current IKE SA found no SA at the peer", request.exchange)

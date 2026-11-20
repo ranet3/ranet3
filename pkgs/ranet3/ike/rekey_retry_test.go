@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,8 +26,8 @@ import (
 const (
 	// espEvery is how often authenticated ESP passes each way, well inside the liveness interval
 	espEvery = defaultDPDInterval / 4
-	// repliesHeldPast is how long past retainedContextDeadline the answers to the rekey stay suppressed, short of the initiator's next send after that deadline
-	repliesHeldPast = 5 * time.Second
+	// repliesHeldPast is how long past retainedContextDeadline the answers to the rekey stay suppressed, past the initiator's first two sends after that deadline and short of its third
+	repliesHeldPast = 40 * time.Second
 	// settledWithin is how long a test leaves both ends to take what it delivered before it reads them
 	settledWithin = time.Second
 	// pastRetentionBy is how far past retainedContextDeadline from its retention a request reaches the replaced IKE SA
@@ -209,7 +210,8 @@ func TestRekeyRetriedPastTheResponderRetentionConverges(t *testing.T) {
 }
 
 func testRekeyRetriedPastTheResponderRetentionConverges(t *testing.T) {
-	h := newResponderHarness(t, nil)
+	events := &recorder{}
+	h := newResponderHarness(t, nil, events.record)
 	// releaseAt is when the answers to the rekey go through again, in Unix nanoseconds, none held while zero
 	var releaseAt atomic.Int64
 	var suppressed, passed atomic.Int32
@@ -308,6 +310,21 @@ func testRekeyRetriedPastTheResponderRetentionConverges(t *testing.T) {
 	carriesBothWays(t, initiator, responder, children)
 	stillRunning(t, initiatorRun)
 	stillRunning(t, responderRun)
+	// the repeats past the retention drew the answer the record kept, which the responder tells once
+	if got, want := recordedOf(events, "ike.rekey.repeat_answered"), []string{fmt.Sprintf("sa=ike message_id=%d", record.mid)}; !slices.Equal(got, want) {
+		t.Errorf("the responder recorded %q, want %q", got, want)
+	}
+}
+
+// recordedOf is the attributes of each event of kind r recorded, in order, without the identities
+func recordedOf(r *recorder, kind string) []string {
+	var of []string
+	for _, line := range r.recorded() {
+		if fields := strings.SplitN(line, " ", 3); len(fields) == 3 && fields[0] == kind {
+			of = append(of, fields[2])
+		}
+	}
+	return of
 }
 
 // RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
@@ -389,13 +406,15 @@ type delayedDelete struct {
 	// answeredAtWatched counts the responder's answers of any exchange on the handshake's IKE SA at the Message ID watched holds
 	watched           atomic.Uint32
 	answeredAtWatched atomic.Int32
+	// events keeps the responder's events
+	events recorder
 }
 
 // newDelayedDelete dials, runs both sessions with ESP flowing, and rekeys the handshake's IKE SA from the initiator with its Delete held
 func newDelayedDelete(t *testing.T) *delayedDelete {
 	t.Helper()
 	d := &delayedDelete{}
-	h := newResponderHarness(t, nil)
+	h := newResponderHarness(t, nil, d.events.record)
 	// first is the initiator's SPI of the handshake's IKE SA, on which the path holds the initiator's requests and counts the responder's answers once holding is set
 	var first atomic.Uint64
 	var holding atomic.Bool
@@ -742,6 +761,64 @@ func testDeleteWithAPayloadThatDoesNotDecodePastTheRetentionEndsTheReplacedSAAlo
 		t.Errorf("the responder moved from the replacement %016x to %016x", d.replaced.spiI, current.spiI)
 	}
 	d.usable(t)
+}
+
+// the responder tells the end of the SA the first rekey replaced once, with the reason it ended for: the peer's Delete, a second rekey that displaced it, the end of its record, or a refused Delete past its retention
+// and it tells the confirmation of the replacement once, at the first fresh request on it
+func TestRetiredAndConfirmedSAsAreRecorded(t *testing.T) {
+	retired := func(d *delayedDelete, reason string) []string {
+		return []string{fmt.Sprintf("sa=ike spi=%016x replaced=peer reason=%s", d.oldest.spiI, reason)}
+	}
+	for _, c := range []struct {
+		name string
+		// end ends the SA the first rekey replaced, and want gives the responder's ike.sa.retired events then
+		end  func(t *testing.T, d *delayedDelete)
+		want func(d *delayedDelete) []string
+	}{
+		{"the peer's Delete", func(t *testing.T, d *delayedDelete) { d.deliver(t) },
+			func(d *delayedDelete) []string { return retired(d, "deleted") }},
+		{"a second rekey", func(t *testing.T, d *delayedDelete) {
+			if err := rekeyedWithin(t, d.initiator, "the rekey of the replacement"); err != nil {
+				t.Fatalf("the rekey of the replacement ended with %v", err)
+			}
+		}, func(d *delayedDelete) []string {
+			// the initiator's Delete of the replacement, which its own rekey replaced, then ends the replacement at the responder
+			return append(retired(d, "displaced"), fmt.Sprintf("sa=ike spi=%016x replaced=peer reason=deleted", d.replaced.spiI))
+		}},
+		{"the end of its record", func(t *testing.T, d *delayedDelete) {
+			_, record, _ := d.responderSlots()
+			time.Sleep(time.Until(record.until.Add(settledWithin)))
+		}, func(d *delayedDelete) []string { return retired(d, "bound") }},
+		{"a Delete past its retention that does not decode", func(t *testing.T, d *delayedDelete) {
+			time.Sleep(time.Until(d.replacedAt(t).Add(retainedContextDeadline + pastRetentionBy)))
+			inner := append([]RawPayload{{Type: PayloadD, Body: []byte{3}}}, deleteIKEPayloads()...)
+			d.inject(d.sealOnOldest(t, d.nextOnOldest(t, INFORMATIONAL), inner))
+			time.Sleep(settledWithin)
+		}, func(d *delayedDelete) []string {
+			return []string{fmt.Sprintf("sa=ike spi=%016x replaced=peer reason=failed failure=syntax", d.oldest.spiI)}
+		}},
+	} {
+		t.Run(c.name, bubble.Run(func(t *testing.T) {
+			d := newDelayedDelete(t)
+			c.end(t, d)
+			stillRunning(t, d.initiatorRun)
+			stillRunning(t, d.responderRun)
+			if got, want := recordedOf(&d.events, "ike.sa.retired"), c.want(d); !slices.Equal(got, want) {
+				t.Errorf("the responder recorded %q, want %q", got, want)
+			}
+			replacement := d.responder.currentContext()
+			if !unconfirmedAt(d.responder, replacement) {
+				return
+			}
+			if _, err := d.initiator.request(INFORMATIONAL, nil); err != nil {
+				t.Fatalf("a request on the current IKE SA failed: %v", err)
+			}
+			got, want := recordedOf(&d.events, "ike.rekey.confirmed"), fmt.Sprintf("sa=ike spi=%016x", replacement.spiI)
+			if n := len(slices.DeleteFunc(slices.Clone(got), func(line string) bool { return line != want })); n != 1 {
+				t.Errorf("the responder recorded %q, want %q once", got, want)
+			}
+		}))
+	}
 }
 
 // RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
