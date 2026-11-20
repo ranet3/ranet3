@@ -873,6 +873,9 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateBorder(); err != nil {
 		return err
 	}
+	if err := c.validateConnected(); err != nil {
+		return err
+	}
 	if err := c.validateExit(); err != nil {
 		return err
 	}
@@ -985,6 +988,31 @@ func (c *Config) validateBorder() error {
 			if advertised.Overlaps(overlay.Prefix) {
 				return fmt.Errorf("config: cap.egress advertise %s overlaps overlay %s, so the hosts behind this node arrive on a link outside the mesh with a mesh source and the antispoof filter drops them", advertised, overlay)
 			}
+		}
+	}
+	return nil
+}
+
+// validateConnected refuses an address cap.table assigns under a length
+// shorter than its own where an address of its network outside the overlay has
+// none as its longest class. On Linux the kernel itself routes that network
+// into the tun, outside the order the antispoof filter keeps between the
+// reconciler's routes and its sets, so a packet from outside the mesh could
+// reach a host inside that network on a LAN another node advertises.
+func (c *Config) validateConnected() error {
+	if c.Cap.Table == nil || c.Cap.Egress == nil {
+		return nil
+	}
+	inside := kernel.Ranges(kernel.SchemaPrefixes(c.Overlay))
+	for _, assigned := range c.Cap.Table.Assigned(c.Routes().Announced()) {
+		if assigned.IsSingleIP() {
+			continue
+		}
+		outside := kernel.Without(kernel.Ranges([]netip.Prefix{assigned}), inside)
+		none := kernel.NoneDestinations(c.Cap.Egress.Classes(egress.AddressFamily(assigned.Addr())), nil, nil)
+		if taken := kernel.Without(outside, kernel.Without(outside, none)); len(taken) > 0 {
+			return fmt.Errorf("config: cap.table assigns %s, whose network holds an address outside overlay under cap.egress translate class %s, which is none: assign %s at its full length or not at all, or give each such address a longer class that translates",
+				assigned, c.Cap.Egress.ClassOf(taken[0].First).From, assigned)
 		}
 	}
 	return nil
