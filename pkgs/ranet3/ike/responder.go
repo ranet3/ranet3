@@ -844,14 +844,20 @@ func (s *Session) answerInitRepeat(c *repeatCredits, request, response, raw []by
 // the answer goes within the datagrams that drew it, fragment 1 from the origin and the largest of the set from elsewhere, and its octets are counted as that send cuts it
 // it returns errFragmentLimit once a repeat's fragments pass reassemblyLimit, and nothing for a send that fails, so a repeat from an address that takes nothing never ends the IKE SA, and the peer repeats the request
 func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source transport.Endpoint) error {
+	_, err := s.repeatAnswer(ctx, raw, m, source)
+	return err
+}
+
+// repeatAnswer is answerRepeat, and reports whether the repeat drew the answer, whose send may have failed
+func (s *Session) repeatAnswer(ctx *ikeContext, raw []byte, m *Message, source transport.Endpoint) (bool, error) {
 	a := &ctx.lastPeer
 	if a.response == nil {
-		return nil
+		return false, nil
 	}
 	moved := s.moved(source)
 	// ahead of the answer's cut and the path MTU read it takes, which draw would refuse the origin after
 	if !moved && a.spent() {
-		return nil
+		return false, nil
 	}
 	suite := ctx.suite
 	var from *credit
@@ -861,40 +867,40 @@ func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source t
 		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 		// a repeat whole carries no fragment size, so the answer goes again cut for the path alone
 		if sha256.Sum256(raw) != a.digest {
-			return nil
+			return false, nil
 		}
 		if moved {
 			from = a.account(source, onWire(source, 1, len(raw)))
 		}
 	case !moved:
 		if !s.asksAgain(suite, a.key, raw, m, a.response.request) {
-			return nil
+			return false, nil
 		}
 		fit = len(raw)
 	default:
 		// a fragment that does not authenticate moves nothing, so only the key holder, or a replay of what it sent, makes or moves a credit
 		if !s.repeats(suite, a.key, raw, m, a.response.request) {
-			return nil
+			return false, nil
 		}
 		from = a.account(source, onWire(source, 1, len(raw)))
 		message, err := from.repeat.take(suite, a.key, raw, m, time.Now())
 		if err != nil {
-			return err
+			return false, err
 		}
 		if message == nil {
-			return nil
+			return false, nil
 		}
 		if content, err := contentDigest(message); err != nil || content != a.content {
-			return nil
+			return false, nil
 		}
 		fit = message.largest
 	}
 	threshold, size := s.cutFor(a.response, fit)
 	if datagrams, octets := a.response.carried(size); !a.draw(from, source, datagrams, octets) {
-		return nil
+		return false, nil
 	}
 	_, _ = s.sendCut(a.response, threshold, size, s.to(source))
-	return nil
+	return true, nil
 }
 
 // contentDigest is the SHA-256 of what m carries, the type of its first inner payload and its inner payloads, which a repeat holds however it is cut

@@ -163,7 +163,7 @@ func (s *Session) RekeyIKE() (err error) {
 		s.stateMu.Unlock()
 		// RFC 7296 section 2.8.2: "If the peer that did notice the simultaneous rekey gets the delete request from the other peer for the old IKE SA, it knows that the other peer did not detect the simultaneous rekey, and the first peer can forget its own rekey attempt."
 		// the peer's SA is current already, and the SA this end's exchange made goes as a redundant one
-		return s.yieldIKERekey(old, candidate, nil)
+		return s.yieldIKERekey(old, candidate, nil, nil)
 	}
 	collision, chain := s.collision, s.peerChain
 	// a peer's chain opened as this rekey started collides with it only where it rekeys the IKE SA
@@ -184,7 +184,7 @@ func (s *Session) RekeyIKE() (err error) {
 	if lost {
 		slog.Info("ike simultaneous rekey selected peer candidate")
 		// the peer's SA is current from here where its exchange made it, so the rekey has taken effect whatever the Delete of this end's does
-		if err := s.yieldIKERekey(old, candidate, collision); err != nil || collision != nil {
+		if err := s.yieldIKERekey(old, candidate, collision, local); err != nil || collision != nil {
 			return err
 		}
 		// RFC 9370 section 2.2.4: "if additional key exchanges are negotiated in the CREATE_CHILD_SA exchange in which the smallest nonce is used, then, because there is nothing to delete yet, the initiator of this exchange just stops the rekeying process, and it MUST NOT initiate the IKE_FOLLOWUP_KE exchange."
@@ -242,12 +242,14 @@ func (s *Session) replaceLocked(old, replacement *ikeContext) {
 
 // yieldIKERekey ends this end's rekey of old in favor of a peer's rekey of it, making winner current where it is the SA the peer's exchange made
 // candidate is the SA this end's exchange made at the peer, nil where its additional key exchange never ran, and it goes with a Delete of its own
-func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext) error {
+// local is this end's rekey, which holds the peer's rekey that made winner, nil with no winner
+func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext, local *ikeRekey) error {
 	// the winner and the redundant context both stay visible to dispatch while the Delete is outstanding
 	s.stateMu.Lock()
 	if winner != nil {
 		s.retainOldLocked(old)
 		s.current, s.collision = winner, nil
+		s.recordCollisionLocked(old, local)
 	}
 	if candidate != nil {
 		candidate.ownDelete = true
@@ -378,6 +380,7 @@ func (s *Session) refusedIKERekey(local *ikeRekey, err error) error {
 	}
 	s.retainOldLocked(local.old)
 	s.current, s.collision = s.collision, nil
+	s.recordCollisionLocked(local.old, local)
 	return nil
 }
 
@@ -483,7 +486,8 @@ func selectsAddition(body []byte) bool {
 func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) (*outbound, error) {
 	s.stateMu.RLock()
 	// an SA kept after this end's Delete of it serves only a peer still on it, so it gives way to a peer's rekey of the current SA
-	accept := !s.rekeyTakenLocked(ctx) && (s.old == nil || s.old.kept || s.localRekey != nil) && s.collision == nil
+	// an SA this end does not delete itself waits for the peer's Delete, which a peer that rekeys the current SA may still owe, and the record of it gives way alike
+	accept := !s.rekeyTakenLocked(ctx) && (s.old == nil || s.old.kept || s.localRekey != nil || !s.old.ownDelete) && s.collision == nil
 	childChain := s.chainKindLocked() == "child"
 	s.stateMu.RUnlock()
 	// RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
@@ -618,14 +622,28 @@ func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool 
 		s.releaseSPILocked(made.spiI)
 		return false
 	case local != nil && local.old == ctx && !local.lost:
+		made.unconfirmed = true
 		local.peerNonce, local.peerResponseNonce = ni, nr
+		local.peerMID, local.peerAnswered = ctx.nextPeerMID, time.Now()
 		s.retainCollisionLocked(made)
 	// with no rekey of this end's on ctx, or one that lost a simultaneous rekey and stopped, the peer's replaces the SA as one with no collision does
 	default:
 		s.retainOldLocked(ctx)
-		s.current = made
+		s.current, made.unconfirmed = made, true
+		// placement runs while the peer's request at ctx.nextPeerMID is handled, before keepAnswer keeps its answer and moves the window past it
+		now := time.Now()
+		s.recordLocked(ctx, made, ctx.nextPeerMID, now, now)
 	}
 	return true
+}
+
+// recordCollisionLocked makes the record of old, which the peer's rekey held as the collision replaced once this end's own rekey of old gave way to it, with stateMu held
+// it runs after keepAnswer kept the answer to that rekey, so the record is made only where old still keeps it
+func (s *Session) recordCollisionLocked(old *ikeContext, local *ikeRekey) {
+	if local == nil || local.peerAnswered.IsZero() || old.lastPeer.response == nil || old.lastPeerResponseID != local.peerMID {
+		return
+	}
+	s.recordLocked(old, s.current, local.peerMID, local.peerAnswered, time.Now())
 }
 
 func randomIKERekeyNonce(nonce []byte) error {

@@ -1934,7 +1934,7 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 
 // a refusal of this end's IKE SA rekey ends the rekey with the decision it takes, adopting or not
 // so the IKE_FOLLOWUP_KE of the peer's rekey of the same SA, coming after a decision that adopted nothing, makes the peer's SA current, as the peer makes it on reading the answer
-// and a peer rekey of the SA the decision adopted is refused until the peer's Delete of the SA it replaced, as a rekey of any SA that replaced another is
+// and a peer rekey of the SA the decision adopted is answered before the peer's Delete of the SA it replaced, which this end does not delete itself
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 	// opened is a session whose rekey of its IKE SA old, recorded as RekeyIKE records it before its request, crosses the peer's chained rekey of old, its chain open
@@ -1993,8 +1993,8 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the peer's next rekey ended the IKE SA: %v", err)
 		}
-		if answer := sealedAnswer(t, adopted, raw.whole); !notified(answer, N_TEMPORARY_FAILURE, nil) {
-			t.Errorf("the peer's rekey of the adopted SA before its Delete of the SA it replaced drew %v, want TEMPORARY_FAILURE", payloadTypes(answer))
+		if answer := sealedAnswer(t, adopted, raw.whole); notified(answer, N_TEMPORARY_FAILURE, nil) || findType(answer, PayloadKE) == nil {
+			t.Errorf("the peer's rekey of the adopted SA before its Delete of the SA it replaced drew %v, want its KEr", payloadTypes(answer))
 		}
 		peerDeletes(t, s, old)
 	}))

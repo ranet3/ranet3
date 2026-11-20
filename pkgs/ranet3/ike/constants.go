@@ -51,7 +51,7 @@ const (
 	childRetireDelay = 5 * time.Second
 	// a replaced Child SA refuses every rekey until the peer's Delete, which RFC 7296 section 2.8 cannot make a peer send
 	retirementDeadline = 30 * time.Second
-	// while a replaced IKE SA awaits the peer's Delete and this end runs no IKE SA rekey of its own, a peer's IKE SA rekey is refused, as while a replaced Child SA awaits its Delete
+	// while a simultaneous rekey's candidate is held beside the current IKE SA, a peer's IKE SA rekey is refused, as while a replaced Child SA awaits its Delete
 	// it exceeds the retransmission budget of an exchange the peer does not answer, so a Delete still in flight finds its SA
 	retainedContextDeadline = 2 * time.Minute
 	// a peer-initiated Child SA rekey retains the SA it replaces, and a legitimate one is minutes apart
@@ -62,6 +62,8 @@ const (
 	// a request too large to go whole at its family's floor is cut for it at the step and starts its waits over there, as one cut again for a path MTU that fell does, so its sends run past the budget
 	// the sends of a step and of one or two falls still come within it, and a chain of falls can carry the last past it
 	requestBudget = requestTimeout * (1<<maxRetransmits - 1)
+	// busyRequestBudget is the sends of one request whose peer keeps authenticated traffic flowing, from its first send to deeming the IKE SA failed
+	busyRequestBudget = requestBudget + (maxRetransmitsWhileBusy-maxRetransmits)*(requestTimeout<<(maxRetransmits-1))
 	// RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
 	// this end's own IKE_FOLLOWUP_KE is resent as any request is, and a STATE_NOT_FOUND answering a send past the wait from the answer before, where a chain of falls carried it, fails the rekey without counting toward stateNotFoundLimit, and the rekey is retried on its schedule with the IKE SA kept
 	followupWait = requestBudget

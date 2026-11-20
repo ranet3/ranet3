@@ -1018,6 +1018,7 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 // dispatch reports whether raw is a fresh authenticated message on an IKE SA other than one keepReplaced kept, which Run takes as the peer alive
 // an authenticated repeat may draw the kept response but neither refreshes dead peer detection nor moves the endpoint, and neither does any message on a kept IKE SA, which the session no longer runs on
 // a request on a kept IKE SA that dispatch fails ends that SA alone and never the session, while a Child SA a Delete on it names that the dataplane refuses to close fails the session as one named on the current IKE SA does
+// a request on an IKE SA a peer's rekey replaced, past retainedContextDeadline from its retention, is taken by requestPastRetention, and neither it nor a repeat on that SA moves the endpoint or counts as the peer alive
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
 	hdr, err := decodeHeader(raw)
 	if err != nil || higherVersion(s.mux.SendIKETo, hdr, source) {
@@ -1056,10 +1057,20 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			if nextPeerMID == 0 || hdr.MessageID != nextPeerMID-1 || lastPeerResponseID != hdr.MessageID {
 				return false
 			}
+			// past its retention a replaced IKE SA answers the repeat of the rekey its record keeps the answer to, and no other
+			past := s.pastRetention(ctx)
+			if past && !s.servesRepeat(ctx, hdr.MessageID) {
+				dropPastRetention(ctx, hdr.MessageID, "a repeat its record does not serve")
+				return false
+			}
 			// a replay can come from any address, so this send says nothing about the path to the peer
-			if err := s.answerRepeat(ctx, raw, outer, source); err != nil {
+			sent, err := s.repeatAnswer(ctx, raw, outer, source)
+			if err != nil {
 				s.fragmentLimit(ctx, hdr.MessageID, err)
-				return !kept
+				return !kept && !past
+			}
+			if sent {
+				s.repeatAnswered(ctx, hdr.MessageID)
 			}
 			return false
 		}
@@ -1068,9 +1079,14 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	message, err := s.open(ctx, queue, raw, outer)
 	if err != nil {
 		s.fragmentLimit(ctx, hdr.MessageID, err)
-		return !kept
+		return !kept && !s.pastRetention(ctx)
 	}
 	if message == nil {
+		return false
+	}
+	// a request in fragments is read in the window of its last fragment's arrival, which is now
+	if matching == nil && s.pastRetention(ctx) {
+		s.requestPastRetention(ctx, hdr, outer, message, nextPeerMID, source)
 		return false
 	}
 	outer, innerFirst, plaintext := message.outer, message.innerFirst, message.plaintext
@@ -1083,6 +1099,9 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		}
 		s.closeFor(errMessageIDExhausted)
 		return true
+	}
+	if matching == nil {
+		s.confirm(ctx)
 	}
 	// RFC 7296 section 2.23: "SHOULD send all packets (including retransmission packets) to the IP address and port in the validated packet, and SHOULD store this as the new address and port combination for the SA"
 	// and: "dynamic address update should only be done in response to a new packet"
@@ -1169,6 +1188,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		s.closeFor(err)
 		return true
 	}
+	s.answeredOn(ctx)
 	// a failed reply keeps the session, since the peer retransmits and is answered from the reply kept above
 	// a kept IKE SA's reply goes to the request's source, which need not be the endpoint the record of sends is about, so it neither ends an outage of sends there nor starts one
 	err = s.sendTo(sent.datagrams, source)
