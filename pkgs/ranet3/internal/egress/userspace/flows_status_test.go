@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -16,8 +17,15 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
-// flowsStatusAt is the function whose waits on a lock the tests read
-const flowsStatusAt = "(*Exit).flowsStatus("
+const (
+	// flowsStatusAt is the function whose waits on a lock the tests read
+	flowsStatusAt = "(*Exit).flowsStatus("
+	// starveAttempts bounds the attempts at starving the status's locks, each
+	// undone where the scheduler runs the status between the test's release
+	// of a lock and its taking the lock back, a window of a few instructions,
+	// so the bound runs out only after that many preemptions there in a row
+	starveAttempts = 8
+)
 
 // Past each state at rest, which TestStatusCountsHeldSocketsSharingAFlow
 // reads, the status counts the flows the exit counts against Flows and the
@@ -113,7 +121,8 @@ func waitReleased(release *sync.Mutex, then func()) {
 // connections and the flows in that one section.
 func TestStatusReadsTheFlowsUnderTheRelaysLock(t *testing.T) {
 	// one processor, so the test takes the relay's lock and the flows' lock
-	// back each before the status it wakes on that lock runs
+	// back each before the status it wakes on that lock runs, unless the
+	// scheduler preempts the test in between, which starve reports
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	h := newRelayHarness(t, nil)
 	allowLoopback(t, h.x.stack)
@@ -155,69 +164,111 @@ func TestStatusReadsTheFlowsUnderTheRelaysLock(t *testing.T) {
 	// the head waiter, a goroutine that calls Lock queues at the tail, and the
 	// mode ends once a waiter takes the lock that waited less than
 	// mutexStarving or is the last in the queue.
-	read = readAtTheRelaysLock()
-	free := make(chan struct{})
-	hold := func(mu *sync.Mutex, waiters int) chan struct{} {
-		holding := make(chan struct{})
-		go func() {
-			mu.Lock()
-			close(holding)
-			<-free
+	attempt := func() bool {
+		read = readAtTheRelaysLock()
+		free := make(chan struct{})
+		var holders sync.WaitGroup
+		hold := func(mu *sync.Mutex, waiters int) chan struct{} {
+			holding := make(chan struct{})
+			holders.Add(1)
+			go func() {
+				defer holders.Done()
+				mu.Lock()
+				close(holding)
+				<-free
+				mu.Unlock()
+			}()
+			waitFor(t, "a holder queued behind the status", func() bool { return len(lockWaiters(t.Name(), mutex)) == waiters })
+			return holding
+		}
+		// starve wakes the status at the head of mu's queue past mutexStarving
+		// of waiting, takes mu back before the status runs, and waits until the
+		// status has run, found mu held and queued again at the place at, which
+		// leaves mu starving whichever goroutine the scheduler ran first. Where
+		// the scheduler ran the status between the release and the taking back,
+		// so that the status no longer stands woken at the place at, the status
+		// took mu itself, and starve ends the attempt once the status and the
+		// holders are done and reports false. A read that finishes after a
+		// TryLock that succeeded is such a hand-off, since the status ran whole
+		// through mu in the gap and gave it up, so the attempt is tried again.
+		starve := func(mu *sync.Mutex, at string) bool {
+			time.Sleep(starveWait)
 			mu.Unlock()
-		}()
-		waitFor(t, "a holder queued behind the status", func() bool { return len(lockWaiters(t.Name(), mutex)) == waiters })
-		return holding
-	}
-	// starve wakes the status at the head of mu's queue past mutexStarving of
-	// waiting, takes mu back before the status runs, and waits until the
-	// status has run, found mu held and queued again at the place at, which
-	// leaves mu starving whichever goroutine the scheduler ran first
-	starve := func(mu *sync.Mutex, at string) {
-		time.Sleep(starveWait)
-		mu.Unlock()
-		mu.Lock()
-		waitFor(t, "the status woken to the lock held and queued again", func() bool {
-			places := lockWaiters(flowsStatusAt, mutex)
-			return len(places) == 1 && places[0] == at
+			taken := mu.TryLock()
+			if !taken || !slices.Equal(lockWaiters(flowsStatusAt, "runnable"), []string{at}) {
+				if taken {
+					mu.Unlock()
+				}
+				close(free)
+				<-read
+				holders.Wait()
+				return false
+			}
+			waitFor(t, "the status woken to the lock held and queued again", func() bool {
+				places := lockWaiters(flowsStatusAt, mutex)
+				return len(places) == 1 && places[0] == at
+			})
+			return true
+		}
+		relayHolding := hold(&h.x.tcp.mu, 2)
+		if !starve(&h.x.tcp.mu, relay[0]) {
+			return false
+		}
+		h.x.flows.mu.Lock()
+		h.x.tcp.mu.Unlock()
+		var flows []string
+		waitFor(t, "the status read at the flows' lock", func() bool {
+			flows = lockWaiters(flowsStatusAt, mutex)
+			return len(flows) == 1 && flows[0] != relay[0]
 		})
-	}
-	relayHolding := hold(&h.x.tcp.mu, 2)
-	starve(&h.x.tcp.mu, relay[0])
-	h.x.flows.mu.Lock()
-	h.x.tcp.mu.Unlock()
-	var flows []string
-	waitFor(t, "the status read at the flows' lock", func() bool {
-		flows = lockWaiters(flowsStatusAt, mutex)
-		return len(flows) == 1 && flows[0] != relay[0]
-	})
-	select {
-	case <-relayHolding:
-		t.Error("the status waits for the flows' lock with the relay's lock given up")
-		close(free)
-		h.x.flows.mu.Unlock()
-		<-read
-		return
-	default:
-	}
-	flowsHolding := hold(&h.x.flows.mu, 3)
-	starve(&h.x.flows.mu, flows[0])
-	h.x.flows.mu.Unlock()
-	<-flowsHolding
-	<-relayHolding
-	var done *egress.Flows
-	waitFor(t, "the status read done or waiting for a lock again", func() bool {
 		select {
-		case done = <-read:
+		case <-relayHolding:
+			t.Error("the status waits for the flows' lock with the relay's lock given up")
+			close(free)
+			h.x.flows.mu.Unlock()
+			<-read
 			return true
 		default:
-			return len(lockWaiters(flowsStatusAt, mutex)) == 1
 		}
-	})
-	close(free)
-	if done == nil {
-		t.Error("the status waits for the flows' lock or the relay's again past its one section under both")
-		<-read
+		hold(&h.x.flows.mu, 3)
+		if !starve(&h.x.flows.mu, flows[0]) {
+			return false
+		}
+		h.x.flows.mu.Unlock()
+		// a status that takes a lock again waits for it behind that lock's holder
+		var done *egress.Flows
+		waitingAgain := func() bool { return len(lockWaiters(flowsStatusAt, mutex)) == 1 }
+		waitFor(t, "the relay's holder holding or the status waiting for a lock again", func() bool {
+			select {
+			case <-relayHolding:
+				return true
+			default:
+				return waitingAgain()
+			}
+		})
+		if !waitingAgain() {
+			waitFor(t, "the status read done or waiting for a lock again", func() bool {
+				select {
+				case done = <-read:
+					return true
+				default:
+					return waitingAgain()
+				}
+			})
+		}
+		close(free)
+		if done == nil {
+			t.Error("the status waits for the flows' lock or the relay's again past its one section under both")
+			<-read
+		}
+		return true
 	}
+	for range starveAttempts {
+		if attempt() {
+			return
+		}
+	}
+	t.Errorf("the status took the lock it waited for between its release and its taking back in each of %d attempts to starve it", starveAttempts)
 }
 
 // A status read while flows move past its read of the TCP connections and of
