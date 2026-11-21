@@ -277,9 +277,9 @@ type borderBackend interface {
 	// Fill moves each set sets names from the ranges was gives it, which the
 	// host holds under rules, to those sets gives it, in one transaction that
 	// leaves the chains as they are. nftables sends the ranges that differ
-	// alone, and pf sends each table rules read whole. It returns a refused
-	// where the host answered the transaction with an error, and any other
-	// error may leave the transaction committed.
+	// alone, and pf sends each table rules read whole. It may return a refused
+	// only where the host answered the transaction with an error, which commits
+	// nothing of it, and any other error may leave the transaction committed.
 	Fill(rules []BorderRule, was, sets borderSets) error
 	// Withdraw removes what the filter writes and reports whether it removed
 	// any, what is already gone being success. nftables removes the filter's
@@ -335,7 +335,9 @@ type borderBackend interface {
 }
 
 // refused is a transaction the host answered with an error, which commits
-// nothing of it, where another error of a write leaves the commit unknown
+// nothing of it, where another error of a write leaves the commit unknown.
+// This file builds on every platform and nftables.Refused is Linux's alone,
+// so the Linux backend's Fill wraps that one in this through asRefused.
 type refused struct{ error }
 
 func (r refused) Unwrap() error { return r.error }
@@ -1062,8 +1064,9 @@ func (f *BorderFilter) reconcile() error {
 		// a rewrite makes what the filter writes again whole, and touches nothing beside it
 		// but what nf_tables ties to a rule of another writer's in the filter's chains
 		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
-			// a refused rewrite leaves the fault the next read finds against either
-			// sets, and one that may have committed is read against the sets
+			// the next read checks the host against the sets this pass wanted, so a
+			// host that holds them, whether this rewrite committed with its answer
+			// lost or the host held them before, is adopted with no second rewrite
 			f.written = nil
 			err = fmt.Errorf("%s, and the write failed: %w", read.fault, applyErr)
 		} else {

@@ -92,23 +92,26 @@ func (c *countedBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	}
 	c.sets = next
 	c.counted++
-	if c.lost {
-		c.lost = false
-		return errors.New("the answer did not come")
+	return c.lostAnswer()
+}
+
+// lostAnswer is the error of a transaction that committed and whose answer
+// was lost where lost is set, which it clears, and nil otherwise. c.mu is held.
+func (c *countedBorder) lostAnswer() error {
+	if !c.lost {
+		return nil
 	}
-	return nil
+	c.lost = false
+	return errors.New("the answer did not come")
 }
 
 func (c *countedBorder) Apply(rules []BorderRule, sets borderSets) error {
 	err := c.fakeBorder.Apply(rules, sets)
 	if err == nil {
 		c.mu.Lock()
+		defer c.mu.Unlock()
 		c.counted++
-		c.mu.Unlock()
-		if c.lost {
-			c.lost = false
-			return errors.New("the answer did not come")
-		}
+		err = c.lostAnswer()
 	}
 	return err
 }

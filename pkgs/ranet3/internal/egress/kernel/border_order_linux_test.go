@@ -77,28 +77,26 @@ func orderTake(n *atomic.Int32) bool {
 func (b *orderBackend) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	defer b.read.Store(true)
 	if d := b.holdRules.Swap(0); d > 0 {
-		b.meet(b.filled.Load())
+		if b.filled.Load() {
+			b.skippedRead.Store(true)
+		}
 		time.Sleep(time.Duration(d))
 	}
 	if orderTake(&b.failRules) {
-		b.meet(b.filled.Load())
+		if b.filled.Load() {
+			b.skippedRead.Store(true)
+		}
 		return chainReadback{}, fmt.Errorf("dump rules: %w", netlink.ErrDumpInterrupted)
 	}
 	return b.borderBackend.Rules(rules, sets)
 }
 
-// meet marks an armed failure or hold that met a pass that skipped its read
-// before its fill
-func (b *orderBackend) meet(skipped bool) {
-	if skipped {
-		b.skippedRead.Store(true)
-	}
-}
-
 func (b *orderBackend) Fill(rules []BorderRule, was, sets borderSets) error {
 	defer b.filled.Store(true)
 	if orderTake(&b.failFill) {
-		b.meet(!b.read.Load())
+		if !b.read.Load() {
+			b.skippedRead.Store(true)
+		}
 		return unix.ENOBUFS
 	}
 	return b.borderBackend.Fill(rules, was, sets)
@@ -381,8 +379,9 @@ func (l *orderLab) passNow(what string) bool {
 }
 
 // moveGeneration commits another writer's transaction that makes a table
-// elsewhere, which moves the namespace's generation and wakes no pass, so the
-// next pass of the filter reads before it fills, and removes the table again
+// elsewhere and another that removes it again, which move the namespace's
+// generation and wake no pass, so the next pass of the filter reads before it
+// fills
 func (l *orderLab) moveGeneration() {
 	l.t.Helper()
 	if err := l.ns.Do(func() error {

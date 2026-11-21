@@ -228,13 +228,53 @@ func TestBorderRunRetriesAFaultTheReadAfterAFillFoundOnNftables(t *testing.T) {
 	}
 }
 
+// A fill nf_tables refuses commits nothing, so the filter keeps the sets its
+// last read found: where the host still holds them, the retry reads, fills
+// and reads after, and writes the filter whole nowhere
+func TestBorderFillNftablesRefusedKeepsTheSetsTheLastReadFound(t *testing.T) {
+	f, be, step, _ := generationLab(t)
+	other, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	// another writer's interval across the start of the range the fill adds,
+	// which nf_tables will not let the fill's add overlap, taken again once the
+	// fill is refused, so the host holds what the last read found
+	none6 := borderNamed[5]
+	straddle := []nftables.Interval{{First: netip.MustParseAddr("2001:db8:0:11:ffff:ffff:ffff:ff00").AsSlice(), Last: netip.MustParseAddr("2001:db8:0:12::ff").AsSlice()}}
+	write := func(held, want []nftables.Interval) {
+		requests, err := none6.Update(unix.NFPROTO_INET, held, want)
+		if err == nil {
+			err = other.Batch(requests)
+		}
+		if err != nil {
+			t.Errorf("another writer's interval across the moving range: %v", err)
+		}
+	}
+	be.before = func() { write(nil, straddle) }
+	be.after = func() { write(straddle, nil) }
+	step()
+	be.fills.Store(0)
+	f.trigger = "routes"
+	if err := f.reconcile(); !errors.As(err, new(refused)) || be.fills.Load() != 1 {
+		t.Fatalf("a fill over another writer's overlapping interval: %d fills, %v, want the fill refused", be.fills.Load(), err)
+	}
+	be.reads.Store(0)
+	be.fills.Store(0)
+	f.trigger = "retry"
+	if err := f.reconcile(); err != nil || be.reads.Load() != 2 || be.fills.Load() != 1 || !f.ready {
+		t.Errorf("the retry: %d reads, %d fills, %v, ready %v (%s), want a read, a fill and the read after it, with no rewrite", be.reads.Load(), be.fills.Load(), err, f.ready, f.unready)
+	}
+}
+
 // A fill the kernel acknowledged with an errno reads as refused, and one
 // whose acknowledgment did not come does not
 func TestBorderTableFillTakesOnlyAnAcknowledgedErrnoAsRefused(t *testing.T) {
-	if !errors.As(refusal(fmt.Errorf("write: %w", &nftables.Refused{Err: unix.ENOENT})), new(refused)) {
+	if !errors.As(asRefused(fmt.Errorf("write: %w", &nftables.Refused{Err: unix.ENOENT})), new(refused)) {
 		t.Error("an errno the kernel acknowledged read as a commit left unknown")
 	}
-	if errors.As(refusal(errors.New("netlink: the kernel did not answer in time")), new(refused)) {
+	if errors.As(asRefused(errors.New("netlink: the kernel did not answer in time")), new(refused)) {
 		t.Error("an answer that did not come read as refused")
 	}
 }
