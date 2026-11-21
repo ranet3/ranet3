@@ -394,6 +394,10 @@ type BorderFilter struct {
 	carveOuts []egress.CarveOut
 	conflicts []egress.ExemptConflict
 	last      []BorderRule
+	// cleanGeneration is the backend's generation read before the last read
+	// that found the filter as written, 0 where the last read did not or the
+	// backend counts none, since nf_tables counts from 1 and skips 0 at a wrap
+	cleanGeneration uint32
 	// heldOnFault is whether the last pass ended on a readback fault with the
 	// source holding a route back. Run then retries the pass on its own timer,
 	// since no change of the table or the configuration may come to wake it.
@@ -987,7 +991,9 @@ func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
 // and by what it does, sending the sets' changed ranges alone where only they
 // moved, and reports ready only when the readback equals it. A pass woken
 // by the mesh's table or the host's links that asks for what the last good
-// pass read back reads nothing.
+// pass read back reads nothing, and one that fills where no transaction moved
+// the backend's generation since the last clean read reads only after the fill
+// (unmoved).
 func (f *BorderFilter) reconcile() error {
 	started := time.Now()
 	before := f.config.Load()
@@ -1012,13 +1018,20 @@ func (f *BorderFilter) reconcile() error {
 		want = sets
 	}
 	wrote := ""
-	read, err := f.be.Rules(rules, want)
+	generation := f.readGeneration()
+	var read chainReadback
+	var err error
+	skipped := f.unmoved(generation, rules, sets)
+	if !skipped {
+		read, err = f.be.Rules(rules, want)
+	}
 	if f.trigger == "start" {
 		// a failed read tells nothing of the filter, which is then left
 		f.made, f.found = err == nil && !read.held, err == nil && read.held
 	}
+	f.cleanGeneration = 0
 	if err == nil && read.fault == "" {
-		f.written = want
+		f.written, f.cleanGeneration = want, generation
 	}
 	changed := sets.changed(want)
 	switch {
@@ -1044,8 +1057,12 @@ func (f *BorderFilter) reconcile() error {
 		}
 	}
 	if err == nil && wrote != "" {
+		generation = f.readGeneration()
 		if read, err = f.be.Rules(rules, sets); err != nil {
 			err = fmt.Errorf("list rules: %w", err)
+		}
+		if err == nil && read.fault == "" {
+			f.cleanGeneration = generation
 		}
 	}
 	installed := read.rules
@@ -1068,7 +1085,12 @@ func (f *BorderFilter) reconcile() error {
 	if f.ready {
 		f.last = rules
 	}
-	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, Kinds: dropKinds(rules), CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
+	count := len(installed)
+	if last := f.stats.Load(); skipped && wrote == "" && last != nil {
+		// a fill that failed with no read before it leaves the count the last read found
+		count = last.Installed
+	}
+	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: count, Dropped: f.dropped, Kinds: dropKinds(rules), CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
 	if err != nil {
 		stats.Err = err.Error()
 	} else {
@@ -1086,6 +1108,40 @@ func (f *BorderFilter) reconcile() error {
 		f.rt.Events.Emit("antispoof.pass", "", attrs...)
 	}
 	return err
+}
+
+// unmoved reports whether the pass fills from written with no read before the
+// fill: it would fill, the last pass read the filter back as written with
+// these rules at generation, which no transaction has moved since, and it is
+// no sweep and no start, which read in full. The kernel moves its generation
+// before it applies a transaction's set elements, so a read can pair a
+// generation with the elements before it, and the read after the fill, which
+// stays, then finds what the fill wrote on a wrong base: a fill that fails or
+// faults and the pass's retry, never a fault left unread.
+func (f *BorderFilter) unmoved(generation uint32, rules []BorderRule, sets borderSets) bool {
+	return generation != 0 && generation == f.cleanGeneration && f.trigger != "sweep" && f.trigger != "start" &&
+		f.ready && slices.Equal(rules, f.last) && f.written != nil && sets.changed(f.written) != nil
+}
+
+// generationCounter is the optional half of a backend whose kernel counts the
+// transactions that change it, as nf_tables does. pf counts none, so its
+// filter reads before every fill.
+type generationCounter interface {
+	generation() (uint32, error)
+}
+
+// readGeneration is the backend's generation now, 0 where the backend counts
+// none or the read fails, which no pass fills on unread
+func (f *BorderFilter) readGeneration() uint32 {
+	counter, ok := f.be.(generationCounter)
+	if !ok {
+		return 0
+	}
+	generation, err := counter.generation()
+	if err != nil {
+		return 0
+	}
+	return generation
 }
 
 // reportCarveOuts reports each carve-out that came since the last pass at
