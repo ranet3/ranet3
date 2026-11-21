@@ -33,6 +33,12 @@ const (
 	loopbackProbeWait = time.Second
 	// datagramAllocRuns is the datagrams an allocation count averages over
 	datagramAllocRuns = 100
+	// datagramAllocCount marks the run of a test in a process of its own that
+	// counts its datagrams' allocations
+	datagramAllocCount = "RANET3_DATAGRAM_ALLOC_COUNT"
+	// goroutineStacksBytes holds the stacks of every goroutine a counting
+	// process names where its count is not zero
+	goroutineStacksBytes = 1 << 20
 )
 
 // relayHarness is an exit a test drives through its lanes' handling and its
@@ -493,8 +499,11 @@ func TestMappingKeepsTheLeafsPortWhereFree(t *testing.T) {
 // A datagram toward a destination a mapping of its leaf holds open readies no
 // socket, so reads no route, and allocates nothing, toward the second of two
 // mappings of one leaf as well: a class's, and under auto one on the address
-// the route picks
+// the route picks. The allocations are counted in a process of its own, since
+// testing.AllocsPerRun counts every goroutine of the process and one another
+// test left running may allocate while the datagram's write waits.
 func TestDatagramToAnOpenDestinationReadiesNoSocketAndAllocatesNothing(t *testing.T) {
+	counting := os.Getenv(datagramAllocCount) != ""
 	class := netip.MustParseAddr("127.0.0.2")
 	first, second := loopbackServer(t, netip.MustParseAddr("127.0.0.1")), loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
 	_ = loopbackServer(t, class)
@@ -507,9 +516,32 @@ func TestDatagramToAnOpenDestinationReadiesNoSocketAndAllocatesNothing(t *testin
 	raw := udpDatagram(leaf, serverAt(second), []byte("second"))
 	h.x.udp.take(raw, false)
 	readDatagramFrom(t, second, []byte("second"))
+	if counting {
+		allocs := testing.AllocsPerRun(datagramAllocRuns, func() { h.x.udp.take(raw, false) })
+		if allocs != 0 {
+			stacks := make([]byte, goroutineStacksBytes)
+			t.Logf("%d goroutines:\n%s", runtime.NumGoroutine(), stacks[:runtime.Stack(stacks, true)])
+		}
+		t.Logf("datagram allocations: %v", allocs)
+		return
+	}
+	child := childOf(t)
+	child.Env = append(os.Environ(), datagramAllocCount+"=1")
+	out, err := child.CombinedOutput()
+	_, logged, _ := bytes.Cut(out, []byte("datagram allocations: "))
+	var allocs float64
+	if _, scanned := fmt.Sscan(string(logged), &allocs); scanned != nil {
+		t.Fatalf("the counting process ended with %v and logged no count:\n%s", err, out)
+	}
+	if err != nil {
+		t.Fatalf("the counting process ended with %v:\n%s", err, out)
+	}
+	if allocs != 0 {
+		t.Errorf("a datagram toward an open destination allocated %v times in a process of its own:\n%s", allocs, out)
+	}
 	readied := len(h.preparedSoFar())
-	if allocs := testing.AllocsPerRun(datagramAllocRuns, func() { h.x.udp.take(raw, false) }); allocs != 0 {
-		t.Errorf("a datagram toward an open destination allocated %v times", allocs)
+	for range datagramAllocRuns {
+		h.x.udp.take(raw, false)
 	}
 	if got := h.preparedSoFar()[readied:]; len(got) != 0 {
 		t.Errorf("datagrams toward an open destination readied sockets toward %v, want none", got)

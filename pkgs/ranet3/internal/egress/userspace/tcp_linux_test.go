@@ -959,9 +959,6 @@ const (
 	// its namespace was made and refused a step the test needs, a status no
 	// test binary ends with otherwise
 	unusableExit = 77
-	// childMargin is the part of a test's time left to it past its child's
-	// timeout, to read the child's end and report it
-	childMargin = 5 * time.Second
 )
 
 // claimProcess is netnstest.ClaimProcess, or where ownNetworkClaimRefused is
@@ -972,17 +969,6 @@ func claimProcess() (skip string, err error) {
 		return "", fmt.Errorf("bring lo up: %w", unix.EPERM)
 	}
 	return netnstest.ClaimProcess()
-}
-
-// childOf is a run of t alone in a process of its own, which t's end kills,
-// and which times out childMargin short of t's deadline where t has one
-func childOf(t *testing.T) *exec.Cmd {
-	t.Helper()
-	args := []string{"-test.run", "^" + t.Name() + "$", "-test.count=1", "-test.v"}
-	if deadline, ok := t.Deadline(); ok {
-		args = append(args, "-test.timeout", max(time.Until(deadline)-childMargin, time.Second).String())
-	}
-	return exec.CommandContext(t.Context(), os.Args[0], args...)
 }
 
 // inOwnNetwork reports whether t runs in a network namespace of its own, with
