@@ -65,8 +65,8 @@ func (b *readCountedTable) Missed() <-chan struct{} { return nil }
 // generationLab is a filter on nf_tables in an empty namespace at 8 learned
 // IPv6 LANs, its counted backend, the step that adds or takes a ninth, which
 // stands apart from the others so that a fill adds or deletes its one range
-// alone, and another writer's flush of none6
-func generationLab(t *testing.T) (*BorderFilter, *readCountedTable, func(), func()) {
+// alone, another writer's flush of none6, and that writer's connection
+func generationLab(t *testing.T) (*BorderFilter, *readCountedTable, func(), func(), *nftables.Conn) {
 	t.Helper()
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -108,7 +108,7 @@ func generationLab(t *testing.T) (*BorderFilter, *readCountedTable, func(), func
 			t.Errorf("another writer's flush of none6: %v", err)
 		}
 	}
-	return f, be, step, flush
+	return f, be, step, flush, other
 }
 
 // The filter on nf_tables at 8 learned IPv6 LANs, each pass changing none6
@@ -121,7 +121,7 @@ func generationLab(t *testing.T) (*BorderFilter, *readCountedTable, func(), func
 // a sweep where nothing moved it. A flush before a fill that deletes makes
 // nf_tables refuse the fill, and the retry rewrites the filter.
 func TestBorderFillsOnAnUnmovedGenerationAndTheReadAfterFindsEachFault(t *testing.T) {
-	f, be, step, flush := generationLab(t)
+	f, be, step, flush, _ := generationLab(t)
 	pass := func(trigger string, change bool) (reads, fills int, err error) {
 		if change {
 			step()
@@ -185,7 +185,7 @@ func TestBorderFillsOnAnUnmovedGenerationAndTheReadAfterFindsEachFault(t *testin
 // before it leaves the set short after the fill, and the retry rewrites the
 // filter within its delay
 func TestBorderRunRetriesAFaultTheReadAfterAFillFoundOnNftables(t *testing.T) {
-	f, be, step, flush := generationLab(t)
+	f, be, step, flush, _ := generationLab(t)
 	runBorder(t, f)
 	woken := func(what string) egress.BorderStats {
 		t.Helper()
@@ -232,19 +232,19 @@ func TestBorderRunRetriesAFaultTheReadAfterAFillFoundOnNftables(t *testing.T) {
 // last read found: where the host still holds them, the retry reads, fills
 // and reads after, and writes the filter whole nowhere
 func TestBorderFillNftablesRefusedKeepsTheSetsTheLastReadFound(t *testing.T) {
-	f, be, step, _ := generationLab(t)
-	other, err := nftables.Dial()
+	f, be, step, _, other := generationLab(t)
+	// another writer's interval across the start of the range the fill adds,
+	// which nf_tables will not let the fill's add overlap, taken again once the
+	// fill is refused, so the host holds what the last read found, each write
+	// moving none6 between the ranges it held and those with the interval
+	none6 := borderSet(noneSet + "6")
+	held, err := none6.Elements(other, unix.NFPROTO_INET)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = other.Close() })
-	// another writer's interval across the start of the range the fill adds,
-	// which nf_tables will not let the fill's add overlap, taken again once the
-	// fill is refused, so the host holds what the last read found
-	none6 := borderNamed[5]
-	straddle := []nftables.Interval{{First: netip.MustParseAddr("2001:db8:0:11:ffff:ffff:ffff:ff00").AsSlice(), Last: netip.MustParseAddr("2001:db8:0:12::ff").AsSlice()}}
-	write := func(held, want []nftables.Interval) {
-		requests, err := none6.Update(unix.NFPROTO_INET, held, want)
+	straddled := append(slices.Clone(held), nftables.Interval{First: netip.MustParseAddr("2001:db8:0:11:ffff:ffff:ffff:ff00").AsSlice(), Last: netip.MustParseAddr("2001:db8:0:12::ff").AsSlice()})
+	write := func(from, to []nftables.Interval) {
+		requests, err := none6.Update(unix.NFPROTO_INET, from, to)
 		if err == nil {
 			err = other.Batch(requests)
 		}
@@ -252,8 +252,8 @@ func TestBorderFillNftablesRefusedKeepsTheSetsTheLastReadFound(t *testing.T) {
 			t.Errorf("another writer's interval across the moving range: %v", err)
 		}
 	}
-	be.before = func() { write(nil, straddle) }
-	be.after = func() { write(straddle, nil) }
+	be.before = func() { write(held, straddled) }
+	be.after = func() { write(straddled, held) }
 	step()
 	be.fills.Store(0)
 	f.trigger = "routes"
