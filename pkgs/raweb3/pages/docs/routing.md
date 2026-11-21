@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-20
+updated: 2026-11-21
 order: 45
 ---
 
@@ -1309,15 +1309,16 @@ gives.
 
 #### Holds around live routes on macOS
 
-A hold scoped to the utun refuses such an IPv6 datagram to a live route of the
-mesh inside it that goes in unscoped and is no host route, so the reconciler
-cuts that hold around its live routes. Its live routes are the routes of the
-mesh's table inside it and longer than it that carry traffic, scoped to the utun
-or not, of a family the utun holds an address of, and from no source or from a
-source holding an address of the utun. A host route is none of them, since it
-answers ahead of the hold, as rows D2 and D3 give. Neither is a route the hold
-lies inside nor a part another cut leaves of one, so the hold stays over such a
-part as Linux's does (rows L4 and L9).
+A hold scoped to the utun refuses such an IPv6 datagram to an address the host
+has not yet sent to through a live route of the mesh inside it that goes in
+unscoped and is no host route, so the reconciler cuts that hold around its live
+routes. Its live routes are the routes of the mesh's table inside it and longer
+than it that carry traffic, scoped to the utun or not, of a family the utun
+holds an address of, and from no source or from a source holding an address of
+the utun. A host route is none of them, since it answers ahead of the hold, as
+rows D2 and D3 give. Neither is a route the hold lies inside nor a part another
+cut leaves of one, so the hold stays over such a part as Linux's does (rows L4
+and L9).
 
 The hold goes in as its pieces: the fewest prefixes that hold every address of
 it outside its live routes, each a reject route scoped to the utun with the
@@ -1348,12 +1349,19 @@ datagrams meet the refusal above, and its IPv4 holds after them. Within a family
 it takes them in address order, a shorter prefix before a longer one at the same
 address. It cuts each while its pieces fit in what is left of
 [the budget](design/limits.md#kernel-routes) of pieces in place of the holds a
-pass cuts, and a hold whose pieces do not fit goes in whole and refuses as
-above. A hold inside a cut hold is charged its pieces again, though the outer
-hold's pieces hold the same addresses. A hold of a family the utun holds no
-address of, from a source holding none of the utun's addresses, or at a
-destination another scoped route of the mesh takes is not cut. It goes in or is
-skipped as it would whole.
+pass cuts, and a hold whose pieces do not fit goes in whole, and answers at an
+address of its live routes as the next paragraph gives. A hold inside a cut hold
+is charged its pieces again, though the outer hold's pieces hold the same
+addresses. A hold of a family the utun holds no address of, from a source
+holding none of the utun's addresses, or at a destination another scoped route
+of the mesh takes is not cut. It goes in or is skipped as it would whole.
+
+In the runs on macOS, a hold that went in whole refused an IPv6 datagram from a
+socket bound to no address to an address of a live route inside it that the host
+had not yet sent to through that route. An IPv6 datagram from such a socket to
+an address already sent to through that route kept being carried. The runs
+watched an address already sent to for under a second and do not show how long
+it stays carried. They did not cover a socket bound to the interface or TCP.
 
 A pass deletes before it adds, so the pieces and holds it deletes, as many as
 [limits](design/limits.md#kernel-routes) gives, leave before what replaces them

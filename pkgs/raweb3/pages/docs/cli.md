@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-15
+updated: 2026-11-21
 order: 75
 ---
 

@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-20
+updated: 2026-11-21
 order: 10
 ---
 
@@ -1508,7 +1508,7 @@ pieces than the table has entries. The budget is one for every peer, taken in
 the order
 [holds around live routes](../routing.md#holds-around-live-routes-on-macos)
 gives, so one peer's routes inside a prefix it withdrew can spend it ahead of
-another peer's hold, which then goes in whole and refuses as before.
+another peer's hold, which then goes in whole and answers as that section gives.
 `ranet3 status` and the pass's event count the pieces and the holds left whole,
 and name neither whose routes spent the budget nor whose hold went in whole.
 

@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-18
+updated: 2026-11-21
 order: 90
 ---
 

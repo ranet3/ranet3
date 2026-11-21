@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-20
+updated: 2026-11-21
 order: 55
 ---
 
@@ -482,8 +482,8 @@ Linux pass lists the tun only while `cap.table` assigns an address or this
 process still holds one it added, so a node that assigns none writes neither
 line. A pass judges an address by the address and length the listing gives, so
 an address another program added with a peer address is judged on its own
-network and not on the peer's network the kernel routes. At an exit in
-`cap.exit`'s mode, a forwarded link's packet meets the mesh's default from a
+network and not on the peer's network, which a Linux kernel routes. At an exit
+in `cap.exit`'s mode, a forwarded link's packet meets the mesh's default from a
 LAN's learn until the hold lands or the filter's pass writes the sets without
 the LAN, as [the limits](design/limits.md#the-antispoof-filter) say.
 
