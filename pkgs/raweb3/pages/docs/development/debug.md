@@ -813,16 +813,17 @@ refused a change to a Child SA. An IKE SA rekey of this node's that runs
 `IKE_FOLLOWUP_KE` adds 3 more: `rekey answer refused` when this node refused the
 peer's answer that selected an additional key exchange or carried its link,
 `kex rejected` when the peer's ML-KEM ciphertext was refused, and
-`state not found` when 3 rekeys in a row drew `STATE_NOT_FOUND`. Each closes the
-IKE SA with a Delete. `err` says what ended it, and the `ike.session.ended` that
-follows carries it as well. A peer whose crossing rekey this node refused holds
-this node's SA undecided until the kept refusal reaches it and answers this
-node's Child SA rekey on that SA with `TEMPORARY_FAILURE` meanwhile, so where
-such a rekey starts as a loss of that refusal does, `temporary failure` ends the
-session once the loss outlasts the peer's resend 316 seconds after its rekey
-first reached this node, with the rekey's retries unjittered, a bound a probe
-measured at 283 seconds at the most jitter they draw, and the peer's session
-then ends with its resends unanswered, as
+`state not found` when 3 rekeys in a row drew `STATE_NOT_FOUND` with no SA of
+the peer's crossing rekey with an additional key exchange held to take. Each
+closes the IKE SA with a Delete. `err` says what ended it, and the
+`ike.session.ended` that follows carries it as well. A peer whose crossing rekey
+this node refused holds this node's SA undecided until the kept refusal reaches
+it and answers this node's Child SA rekey on that SA with `TEMPORARY_FAILURE`
+meanwhile, so where such a rekey starts as a loss of that refusal does,
+`temporary failure` ends the session once the loss outlasts the peer's resend
+316 seconds after its rekey first reached this node, with the rekey's retries
+unjittered, a bound a probe measured at 283 seconds at the most jitter they
+draw, and the peer's session then ends with its resends unanswered, as
 [Rekeying](../design/protocol-deviations.md#rekeying) gives. While a session
 deletes its IKE SA for a new handshake, after an `ike.suite.unlisted` with
 `action=replace`, an `ike.sa.closed` recorded before that Delete is answered
@@ -858,10 +859,14 @@ rekey made, logs `ike simultaneous rekey selected peer candidate`, and the
 group this node offered is retried once in that group first. A refusal that
 comes while the peer's rekey still runs its `IKE_FOLLOWUP_KE` records
 `ike.rekey.failed`, and that exchange then makes the peer's SA current with no
-`ike.rekey.completed`, since a peer's rekey records none. An IKE SA rekey whose
-Delete of the replaced or redundant IKE SA goes unanswered or is refused records
-`ike.rekey.completed`, since the surviving IKE SA is current by then. The
-session logs `ike replaced IKE SA was not deleted by this end` or
+`ike.rekey.completed`, since a peer's rekey records none. Where this node's
+rekey won the crossing and its own `IKE_FOLLOWUP_KE` then draws
+`STATE_NOT_FOUND`, this node takes the peer's SA in the same way where the
+peer's rekey ran an additional key exchange of its own, and no other refusal of
+that exchange does. An IKE SA rekey whose Delete of the replaced or redundant
+IKE SA goes unanswered or is refused records `ike.rekey.completed`, since the
+surviving IKE SA is current by then. The session logs
+`ike replaced IKE SA was not deleted by this end` or
 `ike redundant IKE SA was not deleted by this end` with the error. Where the
 peer's Delete of the IKE SA both rekeys of a crossing replace reaches this node
 while its own rekey runs, this node takes the peer's SA, logs

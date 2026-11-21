@@ -468,7 +468,18 @@ reply goes out. A peer's rekey placed after this end's rekey won its decision is
 answered `TEMPORARY_FAILURE`, even where the check before it found nothing
 taken, for as long as this end keeps the old IKE SA, as [limits](limits.md#ike)
 gives, after which a rekey on that SA draws nothing. One placed after this end's
-rekey lost its decision draws no refusal for it.
+rekey lost its decision draws no refusal for it. Where this end's rekey with an
+additional key exchange wins its decision against a peer's rekey that completed
+before it, and its `IKE_FOLLOWUP_KE` then draws `STATE_NOT_FOUND`, the peer
+having dropped this end's rekey, this end takes the peer's SA where the peer's
+rekey ran an additional key exchange whose `IKE_FOLLOWUP_KE` this end answered,
+even where that answer is the third in a row, since a peer runs that exchange
+only where its rekey did not give way. A peer's rekey without one crosses such a
+rekey only where the two ends' lists differ, and is not taken then: this end
+stays on the old IKE SA and records `ike.rekey.failed`. The peer's Delete of the
+old IKE SA makes the peer's SA current where it comes while this end's rekey
+still runs, and one that comes after that ends the session. Where it is lost the
+two ends run on different IKE SAs until liveness ends the session.
 [Section 2.8.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8.2) asks
 that answer for an IKE SA an end "has already successfully rekeyed", and
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
