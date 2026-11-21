@@ -1333,6 +1333,62 @@ func TestDecisionTakesWhatAnEndDT46DeliversToTheMesh(t *testing.T) {
 	}
 }
 
+// RFC 4007 section 9 takes a source's zone from the interface the packet arrived on, and an End.DT46's inner packet arrived on none, the session having carried its outer packet
+// so an inner packet from an IPv6 link-local source to a wider destination is dropped as martian and answered nowhere, neither on the session that delivered the outer packet nor toward the outer source
+// while the plain packets of the same batch, before and after it, are answered beyond the scope of their source, RFC 4443 section 3.1 code 2, on the session they came through, traced or not
+func TestDecisionAnswersNoInnerPacketOfAnEndDT46BeyondScope(t *testing.T) {
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(transitSID), Behavior: srv6.BehaviorEndDT46}}, transitOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the outer source, which routes back through a peer of its own rather than through the session that delivers the batch
+	headendSource := segAddr("3fff::6")
+	linkLocal := segAddr("fe80::9")
+	for _, traced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("traced %t", traced), func(t *testing.T) {
+			n := newTransitNode(t, DefaultMTU)
+			n.m.SetSegments(table)
+			headend, def := &recordingPeer{}, &recordingPeer{}
+			n.m.Routes.Set(netip.Prefix{}, hostPrefix(headendSource), headend.peer(t, "headend"))
+			n.m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), def.peer(t, "default"))
+			var feed *TraceFeed
+			if traced {
+				feed = openTrace(t, n.m, TraceFilter{}, 0, control.TraceRateMax)
+			}
+			before, after := udpPacket(linkLocal, transitFar[6], 100, false), udpPacket(linkLocal, transitFar[6], 300, false)
+			inner := udpPacket(linkLocal, transitFar[6], 200, false)
+			tun, out, back := n.deliver(t, before, steered(t, inner, headendSource, transitSID), after)
+			if len(tun)+len(out) != 0 {
+				t.Errorf("the batch reached the tun %x or the next hop %x", tun, out)
+			}
+			if sent, everyone := headend.packets(t), def.packets(t); len(sent)+len(everyone) != 0 {
+				t.Errorf("the outer source's peer was sent %x and the default's %x, want nothing", sent, everyone)
+			}
+			if len(back) != 2 {
+				t.Fatalf("the session the batch came through was sent %d answers, want one for each plain packet", len(back))
+			}
+			checkError(t, back[0], before, transitOwn[6], 1, 2)
+			checkError(t, back[1], after, transitOwn[6], 1, 2)
+			if got := n.m.TransitCounters(); got != (TransitCounters{Martian: 3, Answered: 2}) {
+				t.Errorf("the batch counted %+v, want 3 martians and 2 answers", got)
+			}
+			if !traced {
+				return
+			}
+			answered := TraceRecord{Arrival: TraceArrivedSession, From: "from", Decision: TraceAnswer, Reason: "martian", Answer: "beyond_scope", Outcome: TraceSent}
+			want := []TraceRecord{answered, {Arrival: TraceArrivedSession, From: "from", Decision: TraceDrop, Reason: "martian"}, answered}
+			records := queued(feed)
+			got := make([]TraceRecord, len(records))
+			for i, record := range records {
+				got[i] = decisionOf(record)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("the trace took %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
 // a session delivering a batch of more forwarded packets than one forward batch holds sends each on, in order
 func TestDecisionForwardsMoreThanOneBatchInOrder(t *testing.T) {
 	n := newTransitNode(t, DefaultMTU)

@@ -380,8 +380,8 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) []
 		if invalid := martianDestination(dst); packet.InvalidSource(src) || invalid {
 			m.dropTransit(&tally, transitMartian, src, dst)
 			// RFC 4443 section 3.1 code 2, on the session it came from, the one link its source can be on
-			// RFC 3927 section 7 has no answer for an IPv4 link-local source
-			if linkLocalUnicast(src) && !invalid {
+			// RFC 3927 section 7 has no answer for an IPv4 link-local source, and an End.DT46's inner packet has no arrival zone to answer it in, since its outer packet came on a session from a peer that need not be on its source's link
+			if linkLocalUnicast(src) && !invalid && (granted == nil || !granted[i]) {
 				if trace != nil {
 					trace.beyondScope(m, from, raw)
 				} else {
