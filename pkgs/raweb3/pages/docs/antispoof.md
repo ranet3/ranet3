@@ -588,19 +588,25 @@ to 6 for a LAN enclosing no other, and more for one that does, since the ranges
 of the LANs inside it go or come with it.
 
 A pass that changes only a set sends its transaction with no read before it
-where no nf_tables transaction of any writer has
-[committed](https://github.com/torvalds/linux/blob/c03c1a14507dfaf8b856c2608f9ac216021fc222/net/netfilter/nf_tables_api.c#L10927)
-since the last read that found the filter as written and ready. The sweep and
-the start read first, and so does a pass that another writer's change wakes. The
-read after the transaction stays in every pass that writes, so a pass whose
-transaction wrote what was not meant finds it at once. A transaction another
-writer commits while that last read runs can be missed by it, and so can one
-committed between the pass's own read of the generation and its transaction. A
-pass that skipped its read over such a transaction either has its transaction
-refused by nf_tables, which logs `antispoof filter pass failed, retrying` and
-emits `antispoof.pass` with the error, or finds the sets otherwise in its read
-after, which emits `antispoof.pass`. Such a pass reads not ready and is retried
-as below.
+where the nf_tables generation it reads equals the one read before the last read
+that found the filter as written and ready. Each nf_tables transaction of any
+writer that
+[commits](https://github.com/torvalds/linux/blob/c03c1a14507dfaf8b856c2608f9ac216021fc222/net/netfilter/nf_tables_api.c#L10927)
+moves the generation. The sweep and the start attempt a read first, and so does
+a pass that another writer's change wakes. Two equal readings of the generation
+do not show that nothing committed between them. nf_tables moves the generation
+[before it applies a transaction's set elements](https://github.com/torvalds/linux/blob/c03c1a14507dfaf8b856c2608f9ac216021fc222/net/netfilter/nf_tables_api.c#L11021-L11037),
+so a read can miss a transaction that the reading of the generation before it
+already counts. A transaction that commits between the pass's own reading of the
+generation and its transaction goes unseen by that reading. A pass reads the
+filter after each transaction of its own that nf_tables acknowledges. A pass
+that skipped its read is retried where nf_tables refuses its transaction, which
+logs `antispoof filter pass failed, retrying` and emits `antispoof.pass` with
+the error. It is retried too where its read after finds the sets otherwise,
+which emits `antispoof.pass`. A pass whose transaction's answer is lost fails as
+on a refusal, with no read after it, and the retry reads. Each of these reads
+not ready until a pass puts the filter back. An unseen transaction that changed
+nothing the pass writes brings none of them, and the pass ends ready.
 
 A pass runs every 30 seconds, and a failed one is retried after 1 second,
 doubling up to the 30. Another writer deleting the table or setting a flag on
