@@ -587,18 +587,19 @@ nf_tables listener a notification for each element of the ranges that differ: 2
 to 6 for a LAN enclosing no other, and more for one that does, since the ranges
 of the LANs inside it go or come with it.
 
-Such a pass reads the sets only after its transaction where no nf_tables
-transaction of any writer has committed since the last read that found the
-filter as written, by the generation nf_tables counts them with, and sends the
-difference from what that read found. The periodic pass and the start read
-before the transaction as well, and so does every pass after another writer's
-transaction or a read that found the filter otherwise. The read after the
-transaction stays in every pass that writes, so a transaction that wrote what
-was not meant reads not ready at once. nf_tables moves its generation before it
-applies a transaction's set elements, so a read can meet the new generation
-beside the old elements, and the next such pass then sends its difference from
-what that transaction changed: its transaction fails or the read after it finds
-the sets otherwise, and the pass is retried.
+A pass that changes only a set sends its transaction with no read before it
+where no nf_tables transaction of any writer has
+[committed](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/netfilter/nf_tables_api.c#L10917)
+since the last read that found the filter as written. The sweep and the start
+read first, and so does a pass that another writer's change wakes. The read
+after the transaction stays in every pass that writes, so a pass whose
+transaction wrote what was not meant reads not ready at once. A transaction
+another writer committed while that last read ran can be missed by it. A pass
+whose transaction nf_tables then refuses logs
+`antispoof filter pass failed, retrying` and emits `antispoof.pass` with the
+error. One whose read after finds the sets otherwise emits `antispoof.pass` and
+reads not ready. Either pass is retried as below, and the filter reads not
+ready until the retry.
 
 A pass runs every 30 seconds, and a failed one is retried after 1 second,
 doubling up to the 30. Another writer deleting the table or setting a flag on
