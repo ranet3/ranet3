@@ -589,17 +589,18 @@ of the LANs inside it go or come with it.
 
 A pass that changes only a set sends its transaction with no read before it
 where no nf_tables transaction of any writer has
-[committed](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/netfilter/nf_tables_api.c#L10917)
-since the last read that found the filter as written. The sweep and the start
-read first, and so does a pass that another writer's change wakes. The read
-after the transaction stays in every pass that writes, so a pass whose
-transaction wrote what was not meant reads not ready at once. A transaction
-another writer committed while that last read ran can be missed by it. A pass
-whose transaction nf_tables then refuses logs
-`antispoof filter pass failed, retrying` and emits `antispoof.pass` with the
-error. One whose read after finds the sets otherwise emits `antispoof.pass` and
-reads not ready. Either pass is retried as below, and the filter reads not ready
-until the retry.
+[committed](https://github.com/torvalds/linux/blob/c03c1a14507dfaf8b856c2608f9ac216021fc222/net/netfilter/nf_tables_api.c#L10927)
+since the last read that found the filter as written and ready. The sweep and
+the start read first, and so does a pass that another writer's change wakes. The
+read after the transaction stays in every pass that writes, so a pass whose
+transaction wrote what was not meant finds it at once. A transaction another
+writer commits while that last read runs can be missed by it, and so can one
+committed between the pass's own read of the generation and its transaction. A
+pass that skipped its read over such a transaction either has its transaction
+refused by nf_tables, which logs `antispoof filter pass failed, retrying` and
+emits `antispoof.pass` with the error, or finds the sets otherwise in its read
+after, which emits `antispoof.pass`. Such a pass reads not ready and is retried
+as below.
 
 A pass runs every 30 seconds, and a failed one is retried after 1 second,
 doubling up to the 30. Another writer deleting the table or setting a flag on
