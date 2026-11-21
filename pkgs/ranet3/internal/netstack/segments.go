@@ -376,6 +376,12 @@ func martian(source, destination netip.Addr) bool {
 	return mappedAddress(source) || packet.InvalidSource(source) || martianDestination(destination)
 }
 
+// unforwardedSource is a source no router forwards, one packet.InvalidSource holds or one of the IPv4-mapped block, the source half of martian
+// martian tests the two itself rather than call it, since it does not inline and every packet of an egress segment runs martian
+func unforwardedSource(source netip.Addr) bool {
+	return mappedAddress(source) || packet.InvalidSource(source)
+}
+
 // refuseEgress counts an egress segment's refusal of a packet, dropped and refused, and claims the interval's report as segmentDropDue does
 // so a caller boxes the addresses it reports only for the one line an interval writes
 func (m *Mesh) refuseEgress() bool {
@@ -655,6 +661,8 @@ func (m *Mesh) answerNextSegment(segment *forwardedSegment, src, dst netip.Addr,
 
 // segmentTooBig takes a forwarded segment larger than mtu, the largest the session to its next segment carries
 // the packet it carries is held to mtu less the headers in front of it, which each fragment keeps
+// an error about the packet it carries goes to that packet's source, and where no router forwards that source the segment is answered about its own size in its place, RFC 8200 section 4.4
+// since such a source is on no link a session leads to
 // it reports how many fragments it queued in cut and their bytes, and an answer goes back as sendTooBig sends it
 // for a segment it queued none of it reports the answer's kind and fate as tooBig does, TraceNoAnswer for one carrying an IPv4 header that fails its checks
 func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
@@ -663,13 +671,17 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 	kind := answerTooBig
 	if offset, ok := carriedPacket(segment.raw, segment.srh); ok {
 		inner := segment.raw[offset:]
+		version := inner[0] >> 4
+		source, _ := addressesOf(inner, version)
 		var fragment bool
-		if answer, fragment, tun = m.answerTooBig(inner, mtu-offset, true, segment.sid, take); fragment {
+		if unfragmentable(inner, version) && unforwardedSource(source) {
+			answer, tun = m.answerSegmentTooBig(segment, mtu, take)
+		} else if answer, fragment, tun = m.answerTooBig(inner, mtu-offset, true, segment.sid, take); fragment {
 			count, bytes, fault := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu)
 			switch {
 			case count != 0:
 				return count, bytes, answerNone, TraceNoAnswer
-			case fault != 0:
+			case fault != 0 && !unforwardedSource(source):
 				// a packet that was to be cut is answered about its options, not its size
 				kind = answerParameter
 				answer, tun = m.answerOptions(inner, fault, true, take)
@@ -679,7 +691,7 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 				m.dropTooBig(segment, mtu)
 				return 0, 0, answerNone, TraceNoAnswer
 			default:
-				// every other refusal of the cut is about size
+				// every other refusal of the cut is about size, and so is the answer to one about the options of a packet whose source no router forwards
 				answer, tun = m.answerSegmentTooBig(segment, mtu, take)
 			}
 		}
@@ -701,10 +713,17 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 
 // answerSegmentTooBig is the packet too big about segment itself, as End rewrote it, to its outer source, naming mtu, and reports one that goes into the tun
 // RFC 8200 section 4.4 has a node discard a packet its routing header sends onto a link too small for it and answer the packet's source
+// it comes from sid, whatever router-id the node holds, since RFC 4443 section 2.2 (a) has an answer come from the address its packet was sent to
+// sid is that address where the segment arrived, and where its list names two SIDs of this node in a row sid is the second, an address of this node too
+// an answer into the tun comes from the segment's destination as End rewrote it instead, as answersIntoTun says
 // the builder draws through take, on no limit, as every packet too big does
 func (m *Mesh) answerSegmentTooBig(segment *forwardedSegment, mtu int, take takeAnswer) ([]byte, bool) {
-	source, tun := m.answerFrom(segment.raw, true, segment.sid)
-	return srv6.PacketTooBig(segment.raw, source, mtu, m.allowAnswer(take, netip.Addr{})), tun
+	allow := m.allowAnswer(take, netip.Addr{})
+	src, dst := addressesOf(segment.raw, 6)
+	if m.answersIntoTun(src, dst) {
+		return srv6.PacketTooBig(segment.raw, dst, mtu, allow), true
+	}
+	return srv6.PacketTooBig(segment.raw, segment.sid, mtu, allow), false
 }
 
 func (m *Mesh) dropTooBig(segment *forwardedSegment, mtu int) {
@@ -780,18 +799,12 @@ func (m *Mesh) answerOptions(inner []byte, fault int, end bool, take takeAnswer)
 
 // answerFrom is the address an answer to inner, a packet past its next link, comes from, and reports whether the answer goes into the tun
 // end is a packet End answers, a forwarded segment that matched sid or the packet one carries, and otherwise inner was read off the tun
-// a tun read is answered into the tun from its destination, the one source every check of the sending host takes
-// the host drops a packet arriving from one of its own addresses, under nftables' fib in either family and over IPv4 by fib_validate_source unless accept_local is set
-// and its strict reverse path check drops one from an address it routes out of another link, a SID or a router-id it routes elsewhere among them
-// so an answer to this host or a network behind it comes from inner's destination too, as the forwarding decision's does
+// a tun read is answered into the tun from its destination, and so is a packet End answers where answersIntoTun says
 // with no router-id an IPv6 answer comes from sid, as RFC 4443 section 2.2 (b) asks
 func (m *Mesh) answerFrom(inner []byte, end bool, sid netip.Addr) (netip.Addr, bool) {
 	version := inner[0] >> 4
 	src, dst := addressesOf(inner, version)
-	if !end {
-		return dst, true
-	}
-	if _, verdict, match := m.replyRoute(src, dst); verdict == RouteLocal && !match.Counted {
+	if !end || m.answersIntoTun(src, dst) {
 		return dst, true
 	}
 	sources := m.AnswerSources()
@@ -799,6 +812,17 @@ func (m *Mesh) answerFrom(inner []byte, end bool, sid netip.Addr) (netip.Addr, b
 		return cmp.Or(sources.Router6, sid), false
 	}
 	return cmp.Or(sources.Router4, dst), false
+}
+
+// answersIntoTun reports an answer End sends about a packet from source to destination one that goes into the tun, from destination
+// where the reply's route is an entry of this node's own that counts as no default, so the source is this host or a network behind it
+// destination is the one source every check of the host takes, since the host drops a packet arriving from one of its own addresses
+// under nftables' fib in either family and over IPv4 by fib_validate_source unless accept_local is set
+// and its strict reverse path check drops one from an address it routes out of another link, a SID or a router-id it routes elsewhere among them
+// answerTaking tests the same route but leaves a source only a counted entry reaches unanswered, which End answers through the mesh
+func (m *Mesh) answersIntoTun(source, destination netip.Addr) bool {
+	_, verdict, match := m.replyRoute(source, destination)
+	return verdict == RouteLocal && !match.Counted
 }
 
 // TooBigAnswered is how many answers with packet too big or fragmentation needed this node sent, to packets past their session's budget and from

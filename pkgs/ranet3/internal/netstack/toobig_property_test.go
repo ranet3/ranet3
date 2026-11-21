@@ -197,3 +197,124 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		check(ht, family, segments, mtu, excess, df, shape, held)
 	})
 }
+
+// the destinations no error leaves on a session for, modeled from their prefixes: link scope, loopback, unspecified, multicast, the IPv4-mapped form and the IPv4 class E
+// RFC 4291 sections 2.5.2, 2.5.3, 2.5.6 and 2.7 and RFC 6890 table 20 over IPv6
+// RFC 3927 and the limited broadcast for link scope, network 127, network 0 as the unspecified form, RFC 1122 section 3.2.1.3, 224/4 and 240/4, RFC 1112 section 4, over IPv4
+var noSessionReaches = []netip.Prefix{
+	netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("::/128"), netip.MustParsePrefix("ff00::/8"), netip.MustParsePrefix("::ffff:0:0/96"),
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("255.255.255.255/32"), netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+// innerClass is a block a carried packet's source is drawn from, and whether a host route on a peer of its own leads back to it
+type innerClass struct {
+	block  netip.Prefix
+	routed bool
+}
+
+// the blocks the source of a packet a segment carries is drawn from, those of noSessionReaches with fe80:: alone beside them
+// and their neighbors a router forwards: site-local, which RFC 3879 deprecated and a router forwards as global unicast, RFC 4291 section 2.5.7, the NAT64 prefix, RFC 6052, an overlay address and documentation addresses
+// each routed back, but for one block of each family only the default reaches
+var innerClasses = []innerClass{
+	{netip.MustParsePrefix("fe80::/10"), true}, {netip.MustParsePrefix("fe80::/128"), true}, {netip.MustParsePrefix("::1/128"), true}, {netip.MustParsePrefix("::/128"), true},
+	{netip.MustParsePrefix("ff00::/8"), true}, {netip.MustParsePrefix("::ffff:0:0/96"), true}, {netip.MustParsePrefix("fec0::/10"), true}, {netip.MustParsePrefix("64:ff9b::/96"), true},
+	{netip.MustParsePrefix("3fff:a::/32"), true}, {netip.MustParsePrefix("2001:db8::/32"), false},
+	{netip.MustParsePrefix("169.254.0.0/16"), true}, {netip.MustParsePrefix("127.0.0.0/8"), true}, {netip.MustParsePrefix("0.0.0.0/8"), true}, {netip.MustParsePrefix("224.0.0.0/4"), true},
+	{netip.MustParsePrefix("240.0.0.0/4"), true}, {netip.MustParsePrefix("255.255.255.255/32"), true}, {netip.MustParsePrefix("198.51.100.0/24"), true}, {netip.MustParsePrefix("203.0.113.0/24"), false},
+}
+
+// addressIn is the address of block whose bits past the prefix are those of bits
+func addressIn(block netip.Prefix, bits [16]byte) netip.Addr {
+	raw := block.Addr().AsSlice()
+	for i := range raw {
+		var keep byte
+		switch fixed := block.Bits() - 8*i; {
+		case fixed >= 8:
+			keep = 0xff
+		case fixed > 0:
+			keep = 0xff << (8 - fixed)
+		}
+		raw[i] = raw[i]&keep | bits[i]&^keep
+	}
+	address, _ := netip.AddrFromSlice(raw)
+	return address
+}
+
+// errorTo is the destination of raw where it is an ICMP or ICMPv6 error, RFC 792 and RFC 4443 section 2.1, built with no extension header
+func errorTo(raw []byte) (netip.Addr, bool) {
+	switch raw[0] >> 4 {
+	case 6:
+		if len(raw) >= 48 && raw[6] == 58 && raw[40] < 128 {
+			return netip.AddrFrom16([16]byte(raw[24:40])), true
+		}
+	case 4:
+		if len(raw) >= 28 && raw[9] == 1 {
+			switch raw[20] {
+			case 3, 4, 5, 11, 12:
+				return netip.AddrFrom4([4]byte(raw[16:20])), true
+			}
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// a segment too large for its next session sends no ICMP or ICMPv6 error onto any session to a destination noSessionReaches holds
+// whatever source the packet it carries has, routed back on a session of its own or reached only by a default on another
+// it shows what is not sent, and the tests above show what is
+// over each family, with and without DF, router-ids and a trace, the outer source routed back on a peer of its own
+// each block is tried at a low address and at its last before anything is drawn
+func TestEndSendsNoSessionAnErrorToADestinationNoSessionReaches(t *testing.T) {
+	after := netip.MustParseAddr("3fff:b:0:206::1")
+	check := func(tb testing.TB, class innerClass, bits [16]byte, df, held, traced bool, mtu, excess int) {
+		tb.Helper()
+		e := newEndAnswering(tb, after, mtu, true, true)
+		e.m.SetAnswerSources(holding(map[int]bool{4: held, 6: held}))
+		source := addressIn(class.block, bits)
+		if class.routed {
+			e.m.Routes.Set(netip.Prefix{}, hostPrefix(source), e.sender.sender)
+		}
+		family := familyOf(source)
+		inner := udpPacket(source, tooBigDestination[family], mtu+excess-srv6.Overhead(2), df)
+		e.apply(tb, steeredThrough(tb, inner, after), traced)
+		for way, packets := range e.sent(tb) {
+			if way == "tun" {
+				continue
+			}
+			for _, raw := range packets {
+				to, isError := errorTo(raw)
+				if !isError {
+					continue
+				}
+				for _, block := range noSessionReaches {
+					if block.Contains(to) {
+						tb.Fatalf("a segment carrying a packet from %s sent %s an error to %s", source, way, to)
+					}
+				}
+			}
+		}
+	}
+	mtu := srv6.MinimumIPv6MTU + srv6.Overhead(2)
+	var last [16]byte
+	for i := range last {
+		last[i] = 0xff
+	}
+	for _, class := range innerClasses {
+		for _, bits := range [][16]byte{{15: 1}, last} {
+			for _, df := range []bool{false, true} {
+				for _, held := range []bool{false, true} {
+					for _, traced := range []bool{false, true} {
+						check(t, class, bits, df, held, traced, mtu, 1)
+					}
+				}
+			}
+		}
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		class := innerClasses[hegel.Draw(ht, hegel.Integers(0, len(innerClasses)-1))]
+		bits := [16]byte(hegel.Draw(ht, hegel.Binary(16, 16)))
+		df, held, traced := hegel.Draw(ht, hegel.Booleans()), hegel.Draw(ht, hegel.Booleans()), hegel.Draw(ht, hegel.Booleans())
+		mtu := hegel.Draw(ht, pbt.Spanning(srv6.MinimumIPv6MTU, 9000))
+		check(ht, class, bits, df, held, traced, mtu, hegel.Draw(ht, pbt.Spanning(1, 512)))
+	})
+}
