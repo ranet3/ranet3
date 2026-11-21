@@ -598,8 +598,8 @@ another writer committed while that last read ran can be missed by it. A pass
 whose transaction nf_tables then refuses logs
 `antispoof filter pass failed, retrying` and emits `antispoof.pass` with the
 error. One whose read after finds the sets otherwise emits `antispoof.pass` and
-reads not ready. Either pass is retried as below, and the filter reads not
-ready until the retry.
+reads not ready. Either pass is retried as below, and the filter reads not ready
+until the retry.
 
 A pass runs every 30 seconds, and a failed one is retried after 1 second,
 doubling up to the 30. Another writer deleting the table or setting a flag on
