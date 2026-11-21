@@ -49,6 +49,12 @@ const (
 	noticedWithin = liveFor / 5
 	// fibRuleHeader is the size of struct fib_rule_hdr, which leads every rule message
 	fibRuleHeader = 12
+	// alphaPort and bravoPort are the two nodes' ports, outside the namespace's automatic range, so a bind of port 0 is never handed them
+	// the fixture runs only in a network namespace the process owns, where no other process binds, and no other fixture of the package binds these two
+	alphaPort uint16 = 15000
+	bravoPort uint16 = 15001
+	// portRangePath holds the namespace's automatic range, its first and last port
+	portRangePath = "/proc/sys/net/ipv4/ip_local_port_range"
 )
 
 var (
@@ -265,13 +271,14 @@ func newKernelMesh(t *testing.T) (alpha, bravo *kernelNode) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	outsideAutomaticRange(t, alphaPort, bravoPort)
 	mesh := meshCounter.Add(1)
 	alpha = &kernelNode{
-		name: fmt.Sprintf("alpha-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.1/32"),
+		name: fmt.Sprintf("alpha-%d", mesh), port: alphaPort, prefix: netip.MustParsePrefix("10.77.0.1/32"),
 		tun: "updown0", table: 100, protocol: 200,
 	}
 	bravo = &kernelNode{
-		name: fmt.Sprintf("bravo-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.2/32"),
+		name: fmt.Sprintf("bravo-%d", mesh), port: bravoPort, prefix: netip.MustParsePrefix("10.77.0.2/32"),
 		tun: "updown1", table: 101, protocol: 201,
 	}
 	nodes := []*kernelNode{alpha, bravo}
@@ -301,6 +308,24 @@ func newKernelMesh(t *testing.T) (alpha, bravo *kernelNode) {
 		writeKernelConfig(t, node, nodes[1-i], keyPath, registryPath)
 	}
 	return alpha, bravo
+}
+
+// outsideAutomaticRange fails the test where the namespace's automatic range holds any of ports
+func outsideAutomaticRange(t *testing.T, ports ...uint16) {
+	t.Helper()
+	raw, err := os.ReadFile(portRangePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, last uint16
+	if _, err := fmt.Sscan(string(raw), &first, &last); err != nil {
+		t.Fatalf("%s reads %q: %v", portRangePath, raw, err)
+	}
+	for _, port := range ports {
+		if port >= first && port <= last {
+			t.Fatalf("the namespace hands ports %d to %d to a bind of port 0, which holds the fixed port %d of a node", first, last, port)
+		}
+	}
 }
 
 // writeKernelConfig writes the file of node, which dials peer and reconciles into its own table on its own tun
