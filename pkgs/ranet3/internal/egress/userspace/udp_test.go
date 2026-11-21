@@ -149,21 +149,61 @@ type fataler interface {
 }
 
 // waitLaid waits for a packet the exit sent toward a leaf that match picks,
-// and reports it
+// and reports it. It reads its deadline at each look, and the look that finds
+// it past takes each packet queued then and no other, so a wait whose
+// goroutine ran again only past the deadline still takes a packet the exit
+// laid meanwhile, and packets that never match end it at its bound.
 func (h *relayHarness) waitLaid(t fataler, what string, match func(raw []byte) bool) []byte {
 	deadline := time.Now().Add(exitWait)
-	for time.Now().Before(deadline) {
+	for {
 		raw := h.laid()
-		if raw == nil {
-			time.Sleep(layPoll)
-			continue
-		}
-		if match(raw) {
+		switch {
+		case raw != nil && match(raw):
 			return raw
+		case time.Now().After(deadline):
+			for range len(h.x.link.queue) {
+				if raw := h.laid(); raw != nil && match(raw) {
+					return raw
+				}
+			}
+			t.Fatalf("no %s toward a leaf within %s", what, exitWait)
+			return nil
+		case raw == nil:
+			time.Sleep(layPoll)
 		}
 	}
-	t.Fatalf("no %s toward a leaf within %s", what, exitWait)
-	return nil
+}
+
+// fatalSaid is a fataler that keeps what it was told to fail with
+type fatalSaid struct{ said string }
+
+func (f *fatalSaid) Fatalf(format string, args ...any) { f.said = fmt.Sprintf(format, args...) }
+
+// waitLaid on a link that never empties of packets that do not match gives up
+// at its bound, with its failure naming what it waited for: each packet it
+// reads lays the next
+func TestWaitLaidGivesUpOnPacketsThatNeverMatch(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	never := udpDatagram(netip.AddrPortFrom(server4, 9), netip.AddrPortFrom(leaf4, 9), []byte("never"))
+	if !h.x.link.send(never) {
+		t.Fatal("the link refused a packet")
+	}
+	var failed fatalSaid
+	start := time.Now()
+	got := h.waitLaid(&failed, "packet that matches", func([]byte) bool {
+		if !h.x.link.send(never) {
+			t.Error("the link refused a packet")
+		}
+		return false
+	})
+	took := time.Since(start)
+	if want := fmt.Sprintf("no packet that matches toward a leaf within %s", exitWait); got != nil || failed.said != want {
+		t.Errorf("waitLaid on packets that never match reported %d bytes and failed with %q, want none and %q", len(got), failed.said, want)
+	}
+	// the bound, and the last look's packets past it
+	if took > 2*exitWait {
+		t.Errorf("waitLaid on packets that never match gave up after %s, want within %s", took, 2*exitWait)
+	}
 }
 
 // layPoll is how often waitLaid and noneLaid look at what the exit sent
