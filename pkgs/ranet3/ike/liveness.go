@@ -107,6 +107,12 @@ func (s *Session) currentChildGeneration() uint64 {
 	return s.childGeneration
 }
 
+func (s *Session) childWithGeneration() (ChildSA, uint64) {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	return s.child, s.childGeneration
+}
+
 func (s *Session) ikeEstablishedAt() (time.Time, bool) { return s.currentContext().established, true }
 
 // an IKE SA past its lifetime is one this end is closing
@@ -554,6 +560,18 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		fragmentsExpire, fragmentsHeld := s.expireFragments(now)
 		if err := settleChildRekeys(); err != nil {
 			fail(childSchedule, err)
+		}
+		// a replaced SA made current again rekeys at its own due time, which a schedule counted from its canceled replacement may have passed
+		// while a failed exchange's retry delay holds every Child SA exchange, a rekey started now would be refused with nothing to wake the schedule, so the schedule wakes at the delay's end and rekeys the SA from there
+		// the SA is checked against the lists with any check already asked for, since a forced rekey armed for its replacement does not carry over
+		if s.childRestored {
+			s.childRestored = false
+			if opens := s.childRetry.opens(); time.Now().Before(opens) {
+				childSchedule.reset(time.Until(opens))
+			} else if err := s.rearm(childSchedule); err != nil {
+				fail(childSchedule, err)
+			}
+			resuiteDue = true
 		}
 		// a check the lists asked for runs here, taken here or by the wait below, which may take a datagram that came after it first
 		// so a peer's Delete crossing this end's own finds the IKE SA's replacement under way, and the session ends for a new handshake

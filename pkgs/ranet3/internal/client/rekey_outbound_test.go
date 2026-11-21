@@ -4,14 +4,182 @@
 package client
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
+	"log/slog"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 )
+
+// how long the test of a restored then spent Child SA waits for a session to answer, for a hold, a restore, the rekey the dataplane asks for and the outcome, and how often it looks
+const (
+	restoredSpentAnswer = 10 * time.Second
+	restoredSpentWait   = 5 * time.Second
+	restoredSpentPoll   = time.Millisecond
+	// restoredSpentRetry is the answering end's retry delay
+	restoredSpentRetry = 500 * time.Millisecond
+)
+
+var errRestoredSpentRefused = errors.New("the asking end's dataplane refuses the Child SA")
+
+// restoredSpentPair is two running sessions over loopback: the answering end responder with the tunnel serveSession builds, the asking end initiator whose dataplane refuses its next Child SA
+type restoredSpentPair struct {
+	asker, answerer *ike.Session
+	tun             *tunnel
+	// rekeyStarted is closed once the answering end records the start of a Child SA rekey
+	rekeyStarted chan struct{}
+	// answered is closed when the asking end's dataplane is handed the new Child SA, which the answering end holds by then, and the refusal waits for refuse to close
+	answered, refuse chan struct{}
+	ended            chan error
+	cancel           context.CancelFunc
+	runs             sync.WaitGroup
+}
+
+func dialRestoredSpent(t *testing.T) *restoredSpentPair {
+	t.Helper()
+	alpha, bravo := newLoopbackMesh(t)
+	t.Cleanup(func() { alpha.client.Close(); bravo.client.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &restoredSpentPair{rekeyStarted: make(chan struct{}), answered: make(chan struct{}), refuse: make(chan struct{}), ended: make(chan error, 1), cancel: cancel}
+	var startedOnce sync.Once
+	events := func(_, _ identity.Identity, kind string, attrs ...slog.Attr) {
+		if kind == "ike.rekey.started" {
+			startedOnce.Do(func() { close(p.rekeyStarted) })
+		}
+	}
+	timing := bravo.cfg.Crypto().Timing()
+	timing.RekeyRetryInitial, timing.RekeyRetryMax = restoredSpentRetry, restoredSpentRetry
+	askerTiming := timing
+	askerTiming.RekeyRetryInitial, askerTiming.RekeyRetryMax = time.Hour, time.Hour
+	bc := bravo.client
+	responder, err := ike.NewResponder(ike.ResponderConfig{
+		Hub: bc.hub, Local: bc.config().LocalFamilies(), LocalPrivateKey: bc.privateKey, Trust: liveTrust{bc},
+		Aliases: func() ike.Aliases { return bc.config().Auth.Aliases }, RekeyTiming: timing, Suites: bc.suites, CookieAnswers: &bc.cookieAnswers, Events: events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan *ike.Session, 1)
+	go func() { _ = responder.Serve(ctx, func(s *ike.Session, _ ike.Accepted) { accepted <- s }) }()
+	x := alpha.client.index()
+	d := dials(alpha.cfg, x)[0]
+	ep, remoteIP, err := resolveEndpoint(ctx, x, nil, testPrepare(), d.peer, d.local.Family, &names{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePub, err := x.Key(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.asker, err = ike.InitiateContext(ctx, ike.PeerConfig{Local: d.localID, LocalPrivateKey: alpha.client.privateKey, Remote: ep.ID, RemotePublicKey: remotePub,
+		RemoteAddr: remoteIP, RemotePort: int(bravo.port), Aliases: alpha.cfg.Auth.Aliases, Hub: alpha.client.hub, RekeyTiming: askerTiming, Suites: alpha.client.suites})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case p.answerer = <-accepted:
+	case <-time.After(restoredSpentAnswer):
+		t.Fatal("no session answered")
+	}
+	if p.tun, err = sessionTunnel(p.answerer, p.answerer.Child(), bc.config().Crypto().ReplayWindow(), func(error) {}); err != nil {
+		t.Fatal(err)
+	}
+	askerTun, err := sessionTunnel(p.asker, p.asker.Child(), alpha.client.config().Crypto().ReplayWindow(), func(error) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := false
+	p.asker.SetChildHandler(func(child esp.ChildSA) error {
+		if !refused {
+			refused = true
+			close(p.answered)
+			<-p.refuse
+			return errRestoredSpentRefused
+		}
+		return askerTun.install(child)
+	})
+	p.runs.Go(func() { _ = p.asker.Run(ctx) })
+	p.runs.Go(func() { p.ended <- p.answerer.Run(ctx) })
+	t.Cleanup(func() {
+		p.cancel()
+		_ = p.asker.Mux().Close()
+		_ = p.answerer.Mux().Close()
+		p.runs.Wait()
+	})
+	return p
+}
+
+// untilRestoredSpent polls cond until it holds or restoredSpentWait passes, and reports whether it held
+func untilRestoredSpent(cond func() bool) bool {
+	for deadline := time.Now().Add(restoredSpentWait); time.Now().Before(deadline); time.Sleep(restoredSpentPoll) {
+		if cond() {
+			return true
+		}
+	}
+	return cond()
+}
+
+// a reservation meets the answering end's outbound SA spent while a peer's rekey is held, the peer refuses the new SA and its Delete makes the replaced SA current again, and only then does the reservation move off the spent SA
+// the dataplane leaves the spent SA selected and asks the running session for a rekey, which replaces it, and the IKE SA stays
+// the session hears of the spent SA once that rekey has started, the order the ask's goroutine usually wins, since the session closes the IKE SA for a spent Child SA with no rekey running
+func TestRestoredThenSpentChildSAIsRekeyedThroughTheTunnel(t *testing.T) {
+	p := dialRestoredSpent(t)
+	old := p.answerer.Child()
+	p.tun.spent = func(spi uint32) {
+		select {
+		case <-p.rekeyStarted:
+		case <-time.After(restoredSpentWait):
+		}
+		p.answerer.ChildSequenceSpent(spi)
+	}
+	refused := make(chan error, 1)
+	go func() { refused <- p.asker.RekeyChild() }()
+	select {
+	case <-p.answered:
+	case <-time.After(restoredSpentWait):
+		t.Fatal("the asking end's dataplane was handed no new Child SA")
+	}
+	met := p.tun.sas.Load()
+	if met.replacement == nil {
+		t.Fatal("the answering end's tunnel holds no replacement once its answer is in")
+	}
+	for range 4 {
+		_, _ = met.outbound.ReserveSequenceRange(1 << 30)
+	}
+	close(p.refuse)
+	if err := <-refused; !errors.Is(err, errRestoredSpentRefused) {
+		t.Fatalf("the asking end's rekey ended with %v, want its dataplane's refusal", err)
+	}
+	if !untilRestoredSpent(func() bool {
+		current := p.tun.sas.Load()
+		return p.answerer.Child().LocalSPI == old.LocalSPI && current.replacement == nil
+	}) {
+		t.Fatalf("the answering end holds %08x after the asking end's Delete, want the replaced SA %08x again", p.answerer.Child().LocalSPI, old.LocalSPI)
+	}
+	if p.tun.moveOffSpent(met) {
+		t.Error("the reservation that met the spent SA before the restore reports another outbound SA")
+	}
+	var ended error
+	replaced := untilRestoredSpent(func() bool {
+		select {
+		case ended = <-p.ended:
+			return true
+		default:
+		}
+		child := p.answerer.Child()
+		return child.LocalSPI != old.LocalSPI && child.LocalSPI != 0
+	})
+	if child := p.answerer.Child(); ended != nil || !replaced || child.LocalSPI == old.LocalSPI {
+		t.Errorf("the answering end holds %08x with Run ended by %v, want the restored spent SA %08x replaced and Run going on", child.LocalSPI, ended, old.LocalSPI)
+	}
+}
 
 // heldReplacementWatch is how long the test of a served session's hold reads what the answering end sends once the asking end's rekey returns, five hellos of the loopback nodes
 const heldReplacementWatch = time.Second

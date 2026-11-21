@@ -205,6 +205,10 @@ type Session struct {
 	retiring  ChildSA
 	// retiringEnds is where the replaced SA's lifetime ends, which its drain does not pass
 	retiringEnds time.Time
+	// retiringKex is the replaced SA's childKex, which it takes back where the peer deletes its replacement before outbound traffic moved to it
+	retiringKex keyedEntry
+	// childRestored marks a replaced SA made current again, for Run's loop to rearm the Child SA schedule on, and only Run's goroutine touches it, where the peer's Delete that sets it is dispatched
+	childRestored bool
 	// retiringBy bounds how long the replaced SA waits for the peer's Delete.
 	retiringBy       time.Time
 	retiringDeleting bool

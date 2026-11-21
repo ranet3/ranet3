@@ -116,11 +116,11 @@ func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry, held bool) er
 			return err
 		}
 	}
-	old, oldEnds := s.child, s.childEstablished.Add(s.timing.ChildRekeyInterval)
+	old, oldEnds, oldKex := s.child, s.childEstablished.Add(s.timing.ChildRekeyInterval), s.childKex
 	s.child, s.childEstablished, s.childGeneration = child, time.Now(), s.childGeneration+1
 	s.childKex = keyedEntry{spi: child.LocalSPI, entry: entry}
 	if old.LocalSPI != 0 {
-		s.retiring, s.retiringEnds = old, oldEnds
+		s.retiring, s.retiringEnds, s.retiringKex = old, oldEnds, oldKex
 		// The peer owes a Delete for it, and a peer is free not to send one.
 		// Nothing else bounds this, and while it is set every rekey in both
 		// directions is refused, so it has a deadline of its own, past which
@@ -178,7 +178,37 @@ func (s *Session) overdueRetiring(now time.Time) (ChildSA, bool) {
 		return ChildSA{}, false
 	}
 	s.retiringDeleting = true
+	// the outbound SA leaves the replaced SA before the Delete goes out, so a crossing Delete of the peer's finds its outgoing half stopped
+	s.takeReplacementLocked()
 	return s.retiring, true
+}
+
+func (s *Session) takeReplacementLocked() {
+	s.handlerMu.RLock()
+	fn := s.onTake
+	s.handlerMu.RUnlock()
+	if fn != nil && s.child.LocalSPI != 0 {
+		fn(s.child.LocalSPI)
+	}
+}
+
+// restoreReplacedLocked makes the replaced SA current again where the current Child SA is canceled before outbound traffic moved to it, and reports whether it did
+// the replaced SA keeps its lifetime and its kex entry, and takes a generation no SA had, so nothing counted from the canceled SA counts it, and Run puts the Child SA schedule back on its rekey
+func (s *Session) restoreReplacedLocked() bool {
+	if s.retiring.LocalSPI == 0 {
+		return false
+	}
+	s.handlerMu.RLock()
+	fn := s.onCancel
+	s.handlerMu.RUnlock()
+	if fn == nil || !fn(s.child.LocalSPI) {
+		return false
+	}
+	s.mux.UnregisterESP(s.child.LocalSPI)
+	s.child, s.childEstablished, s.childGeneration, s.childKex = s.retiring, s.retiringEnds.Add(-s.timing.ChildRekeyInterval), s.childGeneration+1, s.retiringKex
+	s.retiring, s.retiringEnds, s.retiringBy, s.retiringDeleting = ChildSA{}, time.Time{}, time.Time{}, false
+	s.childRestored = true
+	return true
 }
 
 // RFC 7296 section 2.4: "If an IKE endpoint chooses to delete Child SAs, it MUST send Delete payloads to the other end notifying it of the deletion."
@@ -380,17 +410,27 @@ func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	localSPIs := make([]uint32, 0, len(remoteSPIs))
+	// a Delete that names the replaced SA as well closes it first, as the peer's Delete of it alone does, so it drains and its replacement is closed and not canceled
+	if i := slices.Index(remoteSPIs, s.retiring.RemoteSPI); s.retiring.LocalSPI != 0 && i > 0 {
+		remoteSPIs = slices.Concat(remoteSPIs[i:i+1], remoteSPIs[:i], remoteSPIs[i+1:])
+	}
 	for _, remoteSPI := range remoteSPIs {
 		var child *ChildSA
 		switch {
 		case s.child.LocalSPI != 0 && s.child.RemoteSPI == remoteSPI:
+			if canceled := s.child.LocalSPI; s.restoreReplacedLocked() {
+				localSPIs = append(localSPIs, canceled)
+				continue
+			}
 			child = &s.child
 		case s.retiring.LocalSPI != 0 && s.retiring.RemoteSPI == remoteSPI:
 			// RFC 7296 section 1.4.1: "If a node receives a delete request for SAs for which it has already issued a delete request, it MUST delete the outgoing SAs while processing the request and the incoming SAs while processing the response. In that case, the responses MUST NOT include Delete payloads for the deleted SAs, since that would result in duplicate deletion and could in theory delete the wrong SA."
-			// its outgoing half stopped carrying traffic when its replacement was installed, and its incoming half goes when this end's own Delete is answered
+			// its outgoing half stopped carrying traffic before this end's own Delete went out, and its incoming half goes when that Delete is answered
 			if s.retiringDeleting {
 				continue
 			}
+			// RFC 7296 section 2.8: "the new SA rekeys an existing SA and it receives an IKE request to close the replaced SA"
+			s.takeReplacementLocked()
 			child = &s.retiring
 		default:
 			continue

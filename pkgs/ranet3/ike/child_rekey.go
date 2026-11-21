@@ -58,6 +58,13 @@ func (r *childRetry) held(now time.Time) bool {
 	return now.Before(r.until) || slices.ContainsFunc(r.ended, func(outcome childOutcome) bool { return outcome.err != nil })
 }
 
+// opens is when the retry delay Run gave the last failure ends
+func (r *childRetry) opens() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.until
+}
+
 func (r *childRetry) end(outcome childOutcome) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -120,8 +127,9 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		}
 		return errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
 	}
-	rekeyed := s.currentChildGeneration()
 	s.emit("ike.rekey.started", slog.String("sa", "child"))
+	// the SA and its generation are read together, so the outcome counts against the SA this exchange rekeys, whatever a restore makes current meanwhile
+	old, rekeyed := s.childWithGeneration()
 	defer func() {
 		s.childRetry.end(childOutcome{rekeyed, err})
 		s.rekeyEnded("child", err)
@@ -131,7 +139,6 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 	if s.chainKind() != "" {
 		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchange")
 	}
-	old := s.Child()
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
 		return s.negotiateChild(nil)
 	}
