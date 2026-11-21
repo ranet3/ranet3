@@ -16,7 +16,9 @@ import (
 
 // The generation moves by one at each committed transaction, however many
 // requests it carries and whichever socket sent it, and stays where a
-// transaction the kernel refuses leaves it
+// transaction commits nothing or the kernel refuses it. Each read asks for no
+// ack, and the next request on the socket is answered as its own. A read on a
+// closed socket answers 0 with its error.
 func TestNftablesGenerationMovesByOneACommittedTransaction(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -46,6 +48,7 @@ func TestNftablesGenerationMovesByOneACommittedTransaction(t *testing.T) {
 	}{
 		{"a table and a chain in one transaction", conn, []Request{table, chain.Create(unix.NFPROTO_INET)}, false, 1},
 		{"another socket's chain", other, []Request{Chain{Table: Table, Name: "other", Type: "filter", Hook: unix.NF_INET_LOCAL_IN}.Create(unix.NFPROTO_INET)}, false, 1},
+		{"the table again, which changes nothing", conn, []Request{table}, false, 0},
 		{"a chain in a table that is not there", conn, []Request{Chain{Table: "absent", Name: "forward", Type: "filter", Hook: unix.NF_INET_FORWARD}.Create(unix.NFPROTO_INET)}, true, 0},
 	} {
 		was := generation()
@@ -56,5 +59,10 @@ func TestNftablesGenerationMovesByOneACommittedTransaction(t *testing.T) {
 		if got := generation() - was; got != step.moved {
 			t.Errorf("%s moved the generation by %d, want %d", step.what, got, step.moved)
 		}
+	}
+	closed := dial(t)
+	_ = closed.Close()
+	if g, err := closed.Generation(); err == nil || g != 0 {
+		t.Errorf("a read on a closed socket answered %d with %v, want 0 and an error", g, err)
 	}
 }
