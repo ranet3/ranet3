@@ -218,6 +218,9 @@ type Session struct {
 	handlerMu     sync.RWMutex
 	onChild       func(ChildSA) error
 	onRetire      func(uint32) error
+	onHold        func(ChildSA) error
+	onTake        func(uint32)
+	onCancel      func(uint32) bool
 	trafficSeen   atomic.Bool
 	childRekeying atomic.Bool
 	childRetry    childRetry

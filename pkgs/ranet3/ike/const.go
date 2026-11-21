@@ -31,9 +31,10 @@
 //     identities and both keys, and returns a [Session] holding the negotiated
 //     [ChildSA]. [Session.Run] then drives that SA for its lifetime, answering
 //     the peer's liveness checks and deletes and rekeying before a key
-//     expires. [Session.SetChildHandler] and [Session.SetChildRetireHandler]
-//     are where a rekey hands the caller the replacement keys and takes the
-//     old SPI back, so the caller's dataplane swaps without dropping a packet.
+//     expires. [Session.SetChildHandler], [Session.SetChildRetireHandler] and
+//     [Session.SetChildReplacementHandler] are where a rekey hands the caller
+//     the replacement keys, tells it when outbound traffic moves to them and
+//     takes the old SPI back.
 //   - Answering. [NewResponder] takes a [ResponderConfig] whose [Trust]
 //     gives the key that has to verify an initiator's asserted identity,
 //     and [Responder.Serve] calls back with a [Session] and an [Accepted]

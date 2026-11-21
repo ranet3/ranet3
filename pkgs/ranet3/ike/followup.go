@@ -232,7 +232,7 @@ func (made *peerChild) install(s *Session, ctx *ikeContext, shared, added, ni, n
 	s.stateMu.Unlock()
 	initKey, respKey, err := childSAKeymat(ctx.suite.PRFID, ctx.skD, shared, ni, nr, made.encr.ID, made.encr.KeyLengthBits, added)
 	if err == nil {
-		err = s.replaceKeyedChild(ChildSA{EncrID: made.encr.ID, EncrKeyBits: made.encr.KeyLengthBits, LocalSPI: made.localSPI, RemoteSPI: made.remoteSPI, InboundKey: initKey, OutboundKey: respKey}, made.entry)
+		err = s.replaceKeyedChild(ChildSA{EncrID: made.encr.ID, EncrKeyBits: made.encr.KeyLengthBits, LocalSPI: made.localSPI, RemoteSPI: made.remoteSPI, InboundKey: initKey, OutboundKey: respKey}, made.entry, true)
 	}
 	return err == nil, err
 }

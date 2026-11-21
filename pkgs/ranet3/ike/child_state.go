@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
-// SetChildHandler installs replacement ESP SAs before Run acknowledges a
-// peer-initiated rekey, as required by RFC 7296 section 2.8.
+// SetChildHandler installs a Child SA's ESP SAs with outbound traffic moved to
+// it: one this end's own exchange made, and one a peer's exchange made where no
+// replacement handler is set, which is then installed before Run acknowledges
+// the exchange, as required by RFC 7296 section 2.8.
 func (s *Session) SetChildHandler(fn func(ChildSA) error) {
 	s.handlerMu.Lock()
 	s.onChild = fn
@@ -21,12 +23,27 @@ func (s *Session) SetChildHandler(fn func(ChildSA) error) {
 }
 
 // SetChildRetireHandler removes a Child SA's ESP keys, named by its inbound
-// SPI: the inbound SA, and the outbound SA paired with it while that one is in
-// use. Replaced SAs are removed after the overlap period, while an active SA
-// deleted without replacement or reaching its lifetime is removed immediately.
+// SPI: the inbound SA, and the outbound SA paired with it, whose place a
+// replacement waiting on it takes. Replaced SAs are removed after the overlap
+// period, while an active SA deleted without replacement or reaching its
+// lifetime is removed immediately.
 func (s *Session) SetChildRetireHandler(fn func(uint32) error) {
 	s.handlerMu.Lock()
 	s.onRetire = fn
+	s.handlerMu.Unlock()
+}
+
+// SetChildReplacementHandler installs the Child SA a peer's exchange made
+// before Run acknowledges it, with outbound traffic left on the SA it replaces
+// until the session or the dataplane moves it, as RFC 7296 section 2.8 has the
+// responder do. hold installs it, take moves outbound traffic to it by its
+// inbound SPI, and cancel removes it where outbound traffic has not moved to it
+// and reports whether it did. The dataplane also moves outbound traffic to it
+// on its own, at a packet that authenticates on it, at the retirement of the
+// SA it replaces and when that SA runs out of sequence numbers.
+func (s *Session) SetChildReplacementHandler(hold func(ChildSA) error, take func(uint32), cancel func(uint32) bool) {
+	s.handlerMu.Lock()
+	s.onHold, s.onTake, s.onCancel = hold, take, cancel
 	s.handlerMu.Unlock()
 }
 
@@ -72,11 +89,13 @@ func (s *Session) halfClosedBy(answer []RawPayload, spi uint32) bool {
 	return true
 }
 
-func (s *Session) replaceChild(child ChildSA) error { return s.replaceKeyedChild(child, kexEntry{}) }
+func (s *Session) replaceChild(child ChildSA) error {
+	return s.replaceKeyedChild(child, kexEntry{}, false)
+}
 
 // replaceKeyedChild installs child keyed by the key exchanges of entry
 // the zero entry is a Child SA SK_d alone keyed
-func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry) error {
+func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry, held bool) error {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	if err := s.canReplaceChildLocked(child.LocalSPI); err != nil {
@@ -87,6 +106,9 @@ func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry) error {
 	}
 	s.handlerMu.RLock()
 	fn := s.onChild
+	if held && s.onHold != nil {
+		fn = s.onHold
+	}
 	s.handlerMu.RUnlock()
 	if fn != nil {
 		if err := fn(child); err != nil {

@@ -190,7 +190,8 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 		// and of that SPI: "this is the SPI the exchange initiator would expect in inbound ESP or AH packets."
 		inner = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Protocol: ProtoESP, SPI: oldLocalSPI, Type: N_REKEY_SA})}}, inner...)
 	}
-	// the peer sends on the SA it makes as soon as it answers, so an SPI this end could not then install is refused before the request goes out
+	// RFC 7296 section 2.8: "the responder MAY begin sending on an SA as soon as it sends its response to the CREATE_CHILD_SA request"
+	// so an SPI this end could not then install is refused before the request goes out
 	if err := s.canReplaceChild(localSPI); err != nil {
 		return err
 	}

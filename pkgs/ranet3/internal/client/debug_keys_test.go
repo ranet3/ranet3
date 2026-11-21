@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"maps"
@@ -25,7 +24,6 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/ike"
-	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
 // keyTexts is the texts the walk looks for a key as. They are the octets
@@ -258,26 +256,7 @@ func newDeleteRelay(t *testing.T, alpha, bravo *loopbackNode) *deleteRelay {
 		t.Fatal(err)
 	}
 	r := &deleteRelay{alphaSide: alphaSide, bravoSide: bravoSide, bravo: &net.UDPAddr{IP: loopback.IP, Port: int(bravo.port)}, caught: make(chan struct{})}
-	raw, err := os.ReadFile(alpha.cfg.Auth.Trust)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document registry.Registry
-	if err := json.Unmarshal(raw, &document); err != nil {
-		t.Fatal(err)
-	}
-	moved := false
-	for _, organization := range document {
-		for _, node := range organization.Nodes {
-			if node.CommonName == bravo.name {
-				node.Endpoints[0].Port, moved = uint16(alphaSide.LocalAddr().(*net.UDPAddr).Port), true
-			}
-		}
-	}
-	if !moved {
-		t.Fatalf("alpha's trust document names no %s", bravo.name)
-	}
-	alpha.client.storeIndex(trust(t, document))
+	pointAlphaAt(t, alpha, bravo, alphaSide.LocalAddr().(*net.UDPAddr).Port)
 	var relaying sync.WaitGroup
 	relaying.Go(r.fromAlpha)
 	relaying.Go(r.fromBravo)

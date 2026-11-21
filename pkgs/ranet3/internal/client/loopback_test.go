@@ -47,6 +47,31 @@ type loopbackNode struct {
 	events     *events.Bus
 }
 
+// pointAlphaAt stores in alpha a trust index that names port in place of bravo's endpoint, so it must run before either node does
+func pointAlphaAt(t *testing.T, alpha, bravo *loopbackNode, port int) {
+	t.Helper()
+	raw, err := os.ReadFile(alpha.cfg.Auth.Trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document registry.Registry
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	moved := false
+	for _, organization := range document {
+		for _, node := range organization.Nodes {
+			if node.CommonName == bravo.name {
+				node.Endpoints[0].Port, moved = uint16(port), true
+			}
+		}
+	}
+	if !moved {
+		t.Fatalf("alpha's trust document names no %s", bravo.name)
+	}
+	alpha.client.storeIndex(trust(t, document))
+}
+
 // freeUDPPort asks the kernel for a port and gives it straight back, the only way to name one in a config before the hub binds it
 // it binds as the hub does, udp4 and then udp6 on the wildcard
 // it asks again while udp6 refuses the port udp4 was handed

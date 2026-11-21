@@ -45,25 +45,15 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 		slog.String("spi_in", fmt.Sprintf("%08x", child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", child.RemoteSPI)),
 		slog.String("ike", suite.IKE()), slog.String("esp", suite.ESP())}
 
-	tunnel := &tunnel{replayWindow: c.config().Crypto().ReplayWindow(), started: time.Now()}
-	tunnel.askedAt.Store(-int64(rekeyAskInterval))
-	// requestRekey owns the goroutine and the one-at-a-time guard
-	// so this may block
-	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA"
-	// a failed rekey leaves the IKE SA up and the schedule retries
-	tunnel.rekey = func() {
-		if err := sess.RekeyChildProactively(); err != nil && !sess.Mux().IsClosed() {
+	tunnel, err := sessionTunnel(sess, child, c.config().Crypto().ReplayWindow(), func(err error) {
+		if !sess.Mux().IsClosed() {
 			slog.Warn(fmt.Sprintf("peer %s: proactive Child SA rekey: %v", sessionName, err))
 		}
-	}
-	tunnel.spent = sess.ChildSequenceSpent
-	tunnel.failed = sess.ChildFailed
-	if err := tunnel.install(child); err != nil {
+	})
+	if err != nil {
 		c.sessions.close(sess)
 		return &servedEnd{err: err}
 	}
-	sess.SetChildHandler(tunnel.install)
-	sess.SetChildRetireHandler(tunnel.retire)
 	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
 	peer := netstack.NewPeer(sessionName, tunnel.reserve, pmtu.transmit, c.events.Emit)
 	pmtu.peer = peer
