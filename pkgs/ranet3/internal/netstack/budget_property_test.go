@@ -324,7 +324,6 @@ func (m *budgetMachine) reach() int {
 // RuleClose closes the peer with its transport open
 // the sender transmits every reservation sent before the first that was not, or drops them all and counts their packets
 // a sender that found nothing sealed to take can meet their seal and the stop together in its select and take either
-// so the model reads which from what the transport took, all of their packets or none
 // every other sent reservation is given back and its packets counted
 // the reservations not yet sent keep what they hold until they are sent
 func (m *budgetMachine) RuleClose(tc hegel.TestCase) {
