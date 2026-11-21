@@ -11,13 +11,16 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/net/ipv4"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -108,6 +111,460 @@ func TestTunnelRekeyPreservesInflightKeys(t *testing.T) {
 	}
 	if _, err := tunnel.reserve(1); err == nil {
 		t.Fatal("reserved a sequence after the active Child SA was deleted")
+	}
+}
+
+// heldTunnel is a tunnel sending on old, holding next, which a peer's rekey made, as its replacement
+// skippedAskGap is less than rekeyAskInterval, the time between an ask a hold skipped and the ask made at a spent SA left in place by a cancel
+const skippedAskGap = rekeyAskInterval / 3
+
+func heldTunnel(t *testing.T) (tun *tunnel, old, next esp.ChildSA) {
+	t.Helper()
+	tun = &tunnel{replayWindow: 4096, started: time.Now()}
+	tun.askedAt.Store(-int64(rekeyAskInterval))
+	old, next = tunnelChild(1), tunnelChild(2)
+	if err := tun.install(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.hold(next); err != nil {
+		t.Fatal(err)
+	}
+	return tun, old, next
+}
+
+// sendingOn is the SPI the next batch the tunnel reserves goes out under, 0 for a reservation refused
+func sendingOn(t *testing.T, tun *tunnel) uint32 {
+	t.Helper()
+	reserved, err := tun.reserve(1)
+	if err != nil {
+		return 0
+	}
+	packets, err := reserved([][]byte{{1}}, []byte{esp.NextHeaderIPv4}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binary.BigEndian.Uint32(packets[0][:4])
+}
+
+// opens reports whether each result of the batch opened
+func opens(t *testing.T, tun *tunnel, packets ...[]byte) []bool {
+	t.Helper()
+	results := tun.decryptBatch(packets, nil)
+	esp.CommitBatch(results)
+	opened := make([]bool, len(results))
+	for i := range results {
+		_, _, err := results[i].Plaintext()
+		opened[i] = err == nil
+	}
+	return opened
+}
+
+// RFC 7296 section 2.8: "When rekeying an SA, the responder continues to send traffic on the old SA until one of those events occurs."
+// a Child SA held for a peer's rekey opens the peer's packets at once and takes the outbound SA on the first of them that authenticates, on the retirement of the SA it replaces or on that SA's spent sequence space, a held SA that goes leaves the outbound SA where it is, and a hold with no outbound SA left takes it at once
+// a packet authenticated against a replacement since canceled moves nothing, and a batch reserved before a move goes out on the SA it reserved
+func TestHeldReplacementTakesTheOutboundSA(t *testing.T) {
+	t.Run("held", func(t *testing.T) {
+		tun, old, _ := heldTunnel(t)
+		if got := opens(t, tun, sealTestPacket(t, remoteSA(t, old), 1)); !got[0] {
+			t.Fatal("the replaced SA does not open the peer's packets")
+		}
+		if got, current := sendingOn(t, tun), tun.sas.Load(); got != old.RemoteSPI || current.replacement == nil {
+			t.Errorf("a held replacement sends on %08x with a replacement held %v, want the replaced SA's %08x and the replacement held", got, current.replacement != nil, old.RemoteSPI)
+		}
+	})
+	t.Run("replaced SA before a failed run of the replacement", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		forged := sealTestPacket(t, remoteSA(t, next), 1)
+		forged[len(forged)-1] ^= 1
+		if got := opens(t, tun, sealTestPacket(t, remoteSA(t, old), 1), forged); !got[0] || got[1] {
+			t.Fatalf("a batch of a good packet on the replaced SA and a forged one on the replacement opened %v, want the first alone", got)
+		}
+		if got := sendingOn(t, tun); got != old.RemoteSPI {
+			t.Errorf("a packet that authenticated on the replaced SA moved the outbound SA to %08x, want %08x", got, old.RemoteSPI)
+		}
+	})
+	t.Run("packet before cancel", func(t *testing.T) {
+		tun, _, next := heldTunnel(t)
+		if got := opens(t, tun, sealTestPacket(t, remoteSA(t, next), 1)); !got[0] {
+			t.Fatal("the replacement does not open the peer's packet")
+		}
+		if tun.cancel(next.LocalSPI) {
+			t.Error("a replacement a packet moved the outbound SA to was canceled")
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("a refused cancel left the outbound SA on %08x, want %08x", got, next.RemoteSPI)
+		}
+	})
+	t.Run("cancel before a stale packet", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		stale := tun.sas.Load().replacement
+		if !tun.cancel(next.LocalSPI) {
+			t.Fatal("the held replacement was not canceled")
+		}
+		if err := tun.hold(next); err != nil {
+			t.Fatal(err)
+		}
+		tun.promote(stale)
+		if got, current := sendingOn(t, tun), tun.sas.Load(); got != old.RemoteSPI || current.replacement == nil || current.replacement == stale {
+			t.Errorf("a packet authenticated against the canceled replacement moved the outbound SA to %08x, want %08x with the later replacement still held", got, old.RemoteSPI)
+		}
+	})
+	t.Run("reservation across a take", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		reserved, err := tun.reserve(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tun.take(next.LocalSPI)
+		packets, err := reserved([][]byte{{1}}, []byte{esp.NextHeaderIPv4}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := binary.BigEndian.Uint32(packets[0][:4]); got != old.RemoteSPI {
+			t.Errorf("a batch reserved before the take went out under %08x, want the replaced SA's %08x", got, old.RemoteSPI)
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("the next batch goes out under %08x, want the replacement's %08x", got, next.RemoteSPI)
+		}
+	})
+	t.Run("packet", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		if got := opens(t, tun, sealTestPacket(t, remoteSA(t, old), 1), sealTestPacket(t, remoteSA(t, next), 1)); !got[0] || !got[1] {
+			t.Fatalf("a batch across the rekey opened %v, want both", got)
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("a packet opened on the replacement left the outbound SA on %08x, want %08x", got, next.RemoteSPI)
+		}
+	})
+	t.Run("unauthenticated", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		forged := sealTestPacket(t, remoteSA(t, next), 1)
+		forged[len(forged)-1] ^= 1
+		if got := opens(t, tun, forged); got[0] {
+			t.Fatal("a packet whose ICV does not verify opened")
+		}
+		if got := sendingOn(t, tun); got != old.RemoteSPI {
+			t.Errorf("a packet that did not authenticate on the replacement moved the outbound SA to %08x, want %08x", got, old.RemoteSPI)
+		}
+	})
+	t.Run("retire held", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		if err := tun.retire(next.LocalSPI); err != nil {
+			t.Fatal(err)
+		}
+		if got, current := sendingOn(t, tun), tun.sas.Load(); got != old.RemoteSPI || current.replacement != nil {
+			t.Errorf("retiring the held replacement left the outbound SA on %08x with a replacement held %v, want %08x and none", got, current.replacement != nil, old.RemoteSPI)
+		}
+		if got := opens(t, tun, sealTestPacket(t, remoteSA(t, next), 1)); got[0] {
+			t.Error("the retired replacement still opens")
+		}
+	})
+	t.Run("retire replaced", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		if err := tun.retire(old.LocalSPI); err != nil {
+			t.Fatal(err)
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("retiring the replaced SA left the outbound SA on %08x, want the replacement's %08x", got, next.RemoteSPI)
+		}
+	})
+	t.Run("spent", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		var asks atomic.Int32
+		tun.rekey = func() { asks.Add(1) }
+		var told []uint32
+		tun.spent = func(spi uint32) { told = append(told, spi) }
+		for range 3 {
+			if _, err := tun.reserve(1 << 30); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tun.reserve(1<<30 - 1); err != nil {
+			t.Fatal(err)
+		}
+		reserved, err := tun.reserve(1)
+		if err != nil {
+			t.Fatalf("the reservation that met the spent sequence space = %v, want it carried by the replacement", err)
+		}
+		packets, err := reserved([][]byte{{1}}, []byte{esp.NextHeaderIPv4}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := binary.BigEndian.Uint32(packets[0][:4]); got != next.RemoteSPI {
+			t.Errorf("the batch that met the spent sequence space went out under %08x, want the replacement's %08x", got, next.RemoteSPI)
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("a spent sequence space left the outbound SA on %08x, want the replacement's %08x", got, next.RemoteSPI)
+		}
+		if !slices.Equal(told, []uint32{old.LocalSPI}) || asks.Load() != 0 {
+			t.Errorf("the spent sequence space told the session %08x and asked %d times for a rekey, want %08x and none", told, asks.Load(), old.LocalSPI)
+		}
+	})
+	t.Run("cancel between a spent reservation and its promotion", bubble.Run(func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		var asks atomic.Int32
+		tun.rekey = func() { asks.Add(1) }
+		var told []uint32
+		tun.spent = func(spi uint32) { told = append(told, spi) }
+		met := tun.sas.Load()
+		for range 3 {
+			if _, err := met.outbound.ReserveSequenceRange(1 << 30); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := met.outbound.ReserveSequenceRange(1 << 30); !errors.Is(err, esp.ErrSequenceExhausted) {
+			t.Fatalf("a reservation past the replaced SA's sequence space = %v, want ErrSequenceExhausted", err)
+		}
+		if !tun.cancel(next.LocalSPI) {
+			t.Fatal("the held replacement was not canceled")
+		}
+		if tun.moveOffSpent(met) {
+			t.Error("a reservation that met the spent SA after the cancel reports another outbound SA")
+		}
+		synctest.Wait()
+		if !slices.Equal(told, []uint32{old.LocalSPI}) || asks.Load() != 1 {
+			t.Errorf("the spent SA left selected told the session %08x and asked %d times for a rekey, want %08x and once", told, asks.Load(), old.LocalSPI)
+		}
+	}))
+	t.Run("ask skipped during the hold before a cancel", bubble.Run(func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		var asks atomic.Int32
+		tun.rekey = func() { asks.Add(1) }
+		tun.spent = func(uint32) {}
+		// an ask past the sequence mark while the replacement waits
+		if tun.requestRekey() {
+			t.Error("an ask while the replacement waits reported a rekey started")
+		}
+		synctest.Wait()
+		time.Sleep(skippedAskGap)
+		met := tun.sas.Load()
+		for range 4 {
+			_, _ = met.outbound.ReserveSequenceRange(1 << 30)
+		}
+		if !tun.cancel(next.LocalSPI) {
+			t.Fatal("the held replacement was not canceled")
+		}
+		tun.moveOffSpent(met)
+		synctest.Wait()
+		if got := asks.Load(); got != 1 {
+			t.Errorf("the spent SA %08x left selected %v after a skipped ask asked %d times for a rekey, want once", old.LocalSPI, skippedAskGap, got)
+		}
+	}))
+	t.Run("nothing to keep", func(t *testing.T) {
+		tun := &tunnel{replayWindow: 4096}
+		old, next := tunnelChild(1), tunnelChild(2)
+		if err := tun.install(old); err != nil {
+			t.Fatal(err)
+		}
+		if err := tun.retire(old.LocalSPI); err != nil {
+			t.Fatal(err)
+		}
+		if err := tun.hold(next); err != nil {
+			t.Fatal(err)
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("a hold with no outbound SA left sends on %08x, want %08x", got, next.RemoteSPI)
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		if !tun.cancel(next.LocalSPI) {
+			t.Fatal("the held replacement was not canceled")
+		}
+		if got := sendingOn(t, tun); got != old.RemoteSPI {
+			t.Errorf("canceling the replacement left the outbound SA on %08x, want %08x", got, old.RemoteSPI)
+		}
+		if got := opens(t, tun, sealTestPacket(t, remoteSA(t, next), 1)); got[0] {
+			t.Error("the canceled replacement still opens")
+		}
+		if err := tun.hold(next); err != nil {
+			t.Fatal(err)
+		}
+		tun.take(next.LocalSPI)
+		if tun.cancel(next.LocalSPI) {
+			t.Error("a replacement that took the outbound SA was canceled")
+		}
+		if got := sendingOn(t, tun); got != next.RemoteSPI {
+			t.Errorf("a refused cancel left the outbound SA on %08x, want %08x", got, next.RemoteSPI)
+		}
+	})
+	t.Run("take once", func(t *testing.T) {
+		tun, old, next := heldTunnel(t)
+		tun.take(old.LocalSPI)
+		if got := sendingOn(t, tun); got != old.RemoteSPI {
+			t.Errorf("taking an SPI no replacement waits under moved the outbound SA to %08x", got)
+		}
+		tun.take(next.LocalSPI)
+		tun.take(next.LocalSPI)
+		if got, current := sendingOn(t, tun), tun.sas.Load(); got != next.RemoteSPI || len(current.inbound) != 2 {
+			t.Errorf("two takes send on %08x with %d inbound SAs, want %08x with both", got, len(current.inbound), next.RemoteSPI)
+		}
+	})
+	t.Run("concurrent", func(t *testing.T) {
+		tun, _, next := heldTunnel(t)
+		peer := remoteSA(t, next)
+		var workers sync.WaitGroup
+		for id := range uint32(8) {
+			raw := sealTestPacket(t, peer, id)
+			workers.Go(func() { tun.decryptBatch([][]byte{raw}, nil) })
+		}
+		workers.Wait()
+		if got, current := sendingOn(t, tun), tun.sas.Load(); got != next.RemoteSPI || current.replacement != nil || len(current.inbound) != 2 {
+			t.Errorf("packets opened at once on the replacement send on %08x with %d inbound SAs, want %08x with both", got, len(current.inbound), next.RemoteSPI)
+		}
+	})
+}
+
+// handlerSession records what a session gets from sessionTunnel
+type handlerSession struct {
+	install, hold func(esp.ChildSA) error
+	retire        func(uint32) error
+	take          func(uint32)
+	cancel        func(uint32) bool
+	asked         int
+	spent         []uint32
+	failed        []error
+}
+
+func (h *handlerSession) RekeyChildProactively() error {
+	h.asked++
+	return errSessionRekeyRefused
+}
+
+func (h *handlerSession) ChildSequenceSpent(spi uint32) { h.spent = append(h.spent, spi) }
+
+func (h *handlerSession) ChildFailed(err error) { h.failed = append(h.failed, err) }
+
+func (h *handlerSession) SetChildHandler(fn func(esp.ChildSA) error) { h.install = fn }
+
+func (h *handlerSession) SetChildRetireHandler(fn func(uint32) error) { h.retire = fn }
+
+func (h *handlerSession) SetChildReplacementHandler(hold func(esp.ChildSA) error, take func(uint32), cancel func(uint32) bool) {
+	h.hold, h.take, h.cancel = hold, take, cancel
+}
+
+var errSessionRekeyRefused = errors.New("the session refuses the rekey")
+
+// serveSession takes its tunnel from sessionTunnel, which installs the handshake's Child SA and sets the session's handler for each change of its Child SAs, the hold of a peer's rekey and the two ends the session gives that hold among them
+func TestSessionTunnelSetsEveryChildSAHandler(t *testing.T) {
+	var sess handlerSession
+	old, next, other := tunnelChild(1), tunnelChild(2), tunnelChild(3)
+	var refused []error
+	tun, err := sessionTunnel(&sess, old, 4096, func(err error) { refused = append(refused, err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sendingOn(t, tun); got != old.RemoteSPI {
+		t.Errorf("the session's tunnel sends on %08x, want the handshake's Child SA %08x", got, old.RemoteSPI)
+	}
+	tun.rekey()
+	tun.spent(old.LocalSPI)
+	tun.failed(errSessionRekeyRefused)
+	if sess.asked != 1 || !slices.Equal(refused, []error{errSessionRekeyRefused}) || !slices.Equal(sess.spent, []uint32{old.LocalSPI}) || !slices.Equal(sess.failed, []error{errSessionRekeyRefused}) {
+		t.Errorf("the tunnel asked %d rekeys with refusals %v, told spent %08x and failures %v, want one ask refused, %08x and the failure", sess.asked, refused, sess.spent, sess.failed, old.LocalSPI)
+	}
+	if err := sess.hold(next); err != nil {
+		t.Fatal(err)
+	}
+	if got := sendingOn(t, tun); got != old.RemoteSPI {
+		t.Errorf("after the session's hold the tunnel sends on %08x, want the replaced SA's %08x", got, old.RemoteSPI)
+	}
+	if !sess.cancel(next.LocalSPI) {
+		t.Error("the session's cancel removed no replacement")
+	}
+	if err := sess.hold(other); err != nil {
+		t.Fatal(err)
+	}
+	sess.take(other.LocalSPI)
+	if got := sendingOn(t, tun); got != other.RemoteSPI {
+		t.Errorf("after the session's take the tunnel sends on %08x, want %08x", got, other.RemoteSPI)
+	}
+	if err := sess.retire(other.LocalSPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.install(next); err != nil {
+		t.Fatal(err)
+	}
+	if got := sendingOn(t, tun); got != next.RemoteSPI {
+		t.Errorf("after the session's retire and install the tunnel sends on %08x, want %08x", got, next.RemoteSPI)
+	}
+}
+
+// an outbound SA past its sequence mark asks for no rekey while a replacement waits to take over, since the session refuses a rekey until the replaced SA is deleted and holds the next one for the retry delay, and asks again once the replacement is canceled
+func TestHeldReplacementSilencesTheAskPastTheMark(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		tun, _, next := heldTunnel(t)
+		tun.askJitter = func(time.Duration) time.Duration { return 0 }
+		var asks atomic.Int32
+		tun.rekey = func() { asks.Add(1) }
+		for range 3 {
+			if _, err := tun.reserve(1 << 30); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tun.reserve(int(esp.ProactiveRekeySequence - 3<<30)); err != nil {
+			t.Fatal(err)
+		}
+		sendingOn(t, tun)
+		synctest.Wait()
+		if got := asks.Load(); got != 0 {
+			t.Fatalf("the replaced SA past its mark asked %d times for a rekey with a replacement held, want none", got)
+		}
+		time.Sleep(rekeyAskInterval)
+		tun.cancel(next.LocalSPI)
+		sendingOn(t, tun)
+		synctest.Wait()
+		if got := asks.Load(); got != 1 {
+			t.Errorf("the SA past its mark asked %d times for a rekey once the replacement was canceled, want once", got)
+		}
+	})(t)
+}
+
+// an ask whose goroutine runs once a hold has begun asks for no rekey and gives the floor back, so the spent SA a cancel then leaves selected asks at once
+// the test runs the ask's goroutine body itself after the hold, so no schedule decides the order
+func TestHoldBeforeTheAsksGoroutineRunsSilencesTheAsk(t *testing.T) {
+	old, next := tunnelChild(100), tunnelChild(101)
+	tun := &tunnel{replayWindow: 64, started: time.Now()}
+	primed := -int64(rekeyAskInterval)
+	tun.askedAt.Store(primed)
+	var asks atomic.Int32
+	tun.rekey = func() { asks.Add(1) }
+	tun.spent = func(uint32) {}
+	var launched []func()
+	tun.launchAsk = func(ask func()) { launched = append(launched, ask) }
+	if err := tun.install(old); err != nil {
+		t.Fatal(err)
+	}
+	if !tun.requestRekey() || len(launched) != 1 {
+		t.Fatalf("the ask did not start, %d launched", len(launched))
+	}
+	if err := tun.hold(next); err != nil {
+		t.Fatal(err)
+	}
+	launched[0]()
+	if got := asks.Load(); got != 0 {
+		t.Errorf("an ask whose goroutine ran after a hold asked %d rekeys, want none", got)
+	}
+	if got := tun.askedAt.Load(); got != primed {
+		t.Errorf("an ask whose goroutine ran after a hold left the floor at %d, want %d", got, primed)
+	}
+	if tun.rekeying.Load() {
+		t.Error("an ask whose goroutine returned left rekeying set")
+	}
+	met := tun.sas.Load()
+	for range 4 {
+		_, _ = met.outbound.ReserveSequenceRange(1 << 30)
+	}
+	if !tun.cancel(next.LocalSPI) {
+		t.Fatal("the held replacement was not canceled")
+	}
+	tun.moveOffSpent(met)
+	if len(launched) != 2 {
+		t.Fatalf("the spent SA a cancel left selected started %d asks after the silenced one, want 1", len(launched)-1)
+	}
+	launched[1]()
+	if got := asks.Load(); got != 1 {
+		t.Errorf("the spent SA a cancel left selected asked %d rekeys, want 1", got)
 	}
 }
 

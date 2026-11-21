@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,13 +21,16 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
-// Each socket batch captures one immutable SA set. Rekeys publish replacements
+// Each socket batch captures one immutable SA set. Changes publish a new set
 // without holding a lock through crypto. In-flight batches retain the old keys, while
-// new batches see only the SAs that are still installed.
+// new batches see only the SAs that are still installed, and send on outbound alone.
 type tunnelSAs struct {
 	outbound    *esp.OutboundSA
 	outboundSPI uint32
-	inbound     map[uint32]*esp.InboundSA
+	// replacement is the outbound SA of the Child SA a peer's rekey made, named by its inbound SPI, which takes outbound's place when outbound traffic moves to it
+	replacement    *esp.OutboundSA
+	replacementSPI uint32
+	inbound        map[uint32]*esp.InboundSA
 }
 
 type tunnel struct {
@@ -48,6 +52,8 @@ type tunnel struct {
 	replacing atomic.Bool
 	// askJitter draws the first ask's delay past the sequence mark below its bound, and nil draws it at random
 	askJitter func(bound time.Duration) time.Duration
+	// launchAsk runs the body of an ask requestRekey started, and nil runs it on a goroutine of its own
+	launchAsk func(ask func())
 }
 
 // rekeyAskInterval is the floor between two attempts to replace the Child SA.
@@ -94,19 +100,30 @@ func dialerWasDropped(dial, node context.Context) bool {
 // requestRekey asks for a replacement Child SA, at most one attempt at a time,
 // and reports whether it started one.
 func (t *tunnel) requestRekey() bool {
-	if t.rekey == nil || !t.rekeying.CompareAndSwap(false, true) {
+	// a replacement already waits to take over, and the session refuses a rekey until the SA it replaces is deleted, so the ask is skipped before it uses the floor, which the ask made once the replacement is canceled needs
+	if current := t.sas.Load(); t.rekey == nil || (current != nil && current.replacement != nil) || !t.rekeying.CompareAndSwap(false, true) {
 		return false
 	}
 	now := int64(time.Since(t.started))
-	if previous := t.askedAt.Load(); now-previous < int64(rekeyAskInterval) ||
-		!t.askedAt.CompareAndSwap(previous, now) {
+	previous := t.askedAt.Load()
+	if now-previous < int64(rekeyAskInterval) || !t.askedAt.CompareAndSwap(previous, now) {
 		t.rekeying.Store(false)
 		return false
 	}
-	go func() {
+	ask := func() {
 		defer t.rekeying.Store(false)
+		// a replacement held since the ask still waits, and the session would refuse the rekey and hold the next one for the retry delay, so the ask is skipped and gives the floor back, as the skip before it does
+		if current := t.sas.Load(); current != nil && current.replacement != nil {
+			t.askedAt.CompareAndSwap(now, previous)
+			return
+		}
 		t.rekey()
-	}()
+	}
+	if t.launchAsk != nil {
+		t.launchAsk(ask)
+	} else {
+		go ask()
+	}
 	return true
 }
 
@@ -134,7 +151,47 @@ func (t *tunnel) askDelay(bound time.Duration) time.Duration {
 	return rand.N(bound)
 }
 
-func (t *tunnel) install(child esp.ChildSA) error {
+// tunnelSession is the session whose Child SAs a tunnel carries, which the tunnel asks for rekeys and tells of spent and failed SAs, and which takes the tunnel's handlers for the Child SAs it installs, retires and holds
+type tunnelSession interface {
+	RekeyChildProactively() error
+	ChildSequenceSpent(uint32)
+	ChildFailed(error)
+	SetChildHandler(func(esp.ChildSA) error)
+	SetChildRetireHandler(func(uint32) error)
+	SetChildReplacementHandler(func(esp.ChildSA) error, func(uint32), func(uint32) bool)
+}
+
+// sessionTunnel is the tunnel of sess with child, the Child SA its handshake established, installed, and every handler of sess set to it
+// refused gets a proactive rekey's error
+func sessionTunnel(sess tunnelSession, child esp.ChildSA, replayWindow uint32, refused func(error)) (*tunnel, error) {
+	t := &tunnel{replayWindow: replayWindow, started: time.Now()}
+	t.askedAt.Store(-int64(rekeyAskInterval))
+	// requestRekey owns the goroutine and the one-at-a-time guard
+	// so this may block
+	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA"
+	// a failed rekey leaves the IKE SA up and the schedule retries
+	t.rekey = func() {
+		if err := sess.RekeyChildProactively(); err != nil {
+			refused(err)
+		}
+	}
+	t.spent = sess.ChildSequenceSpent
+	t.failed = sess.ChildFailed
+	if err := t.install(child); err != nil {
+		return nil, err
+	}
+	sess.SetChildHandler(t.install)
+	sess.SetChildRetireHandler(t.retire)
+	sess.SetChildReplacementHandler(t.hold, t.take, t.cancel)
+	return t, nil
+}
+
+func (t *tunnel) install(child esp.ChildSA) error { return t.place(child, false) }
+
+// RFC 7296 section 2.8: "When rekeying an SA, the responder continues to send traffic on the old SA until one of those events occurs."
+func (t *tunnel) hold(child esp.ChildSA) error { return t.place(child, true) }
+
+func (t *tunnel) place(child esp.ChildSA, hold bool) error {
 	out, err := esp.NewOutbound(child)
 	if err != nil {
 		return err
@@ -147,16 +204,51 @@ func (t *tunnel) install(child esp.ChildSA) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	inbound := make(map[uint32]*esp.InboundSA)
-	if current := t.sas.Load(); current != nil {
+	current := t.sas.Load()
+	if current != nil {
 		maps.Copy(inbound, current.inbound)
 	}
 	if _, exists := inbound[child.LocalSPI]; exists {
 		return fmt.Errorf("inbound ESP SPI %08x already installed", child.LocalSPI)
 	}
 	inbound[child.LocalSPI] = in
-	t.sas.Store(&tunnelSAs{outbound: out, outboundSPI: child.LocalSPI, inbound: inbound})
+	next := &tunnelSAs{outbound: out, outboundSPI: child.LocalSPI, inbound: inbound}
+	if hold && current != nil && current.outbound != nil {
+		next.outbound, next.outboundSPI, next.replacement, next.replacementSPI = current.outbound, current.outboundSPI, out, child.LocalSPI
+	}
+	t.sas.Store(next)
 	t.replacing.Store(false)
 	return nil
+}
+
+// take moves outbound traffic to the replacement whose inbound SPI is spi, and changes nothing where none waits under it
+func (t *tunnel) take(spi uint32) {
+	if current := t.sas.Load(); current != nil && current.replacement != nil && current.replacementSPI == spi {
+		t.promote(current.replacement)
+	}
+}
+
+// promote moves outbound traffic to replacement while it is still the one held, so a packet or a reservation that met a replacement since canceled moves nothing
+func (t *tunnel) promote(replacement *esp.OutboundSA) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if current := t.sas.Load(); current != nil && current.replacement == replacement {
+		next := *current
+		next.outbound, next.outboundSPI, next.replacement, next.replacementSPI = current.replacement, current.replacementSPI, nil, 0
+		t.sas.Store(&next)
+	}
+}
+
+// cancel removes the replacement whose inbound SPI is spi with its inbound SA and reports whether one waited under it, and leaves an outbound SA that took its place
+func (t *tunnel) cancel(spi uint32) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	current := t.sas.Load()
+	if current == nil || current.replacement == nil || current.replacementSPI != spi {
+		return false
+	}
+	t.sas.Store(current.without(spi))
+	return true
 }
 
 func (t *tunnel) retire(spi uint32) error {
@@ -166,14 +258,21 @@ func (t *tunnel) retire(spi uint32) error {
 	if current == nil || current.inbound[spi] == nil {
 		return fmt.Errorf("retiring inbound ESP SPI %08x was not installed", spi)
 	}
-	next := *current
-	next.inbound = maps.Clone(current.inbound)
-	delete(next.inbound, spi)
-	if next.outboundSPI == spi {
-		next.outbound, next.outboundSPI = nil, 0
-	}
-	t.sas.Store(&next)
+	t.sas.Store(current.without(spi))
 	return nil
+}
+
+func (s *tunnelSAs) without(spi uint32) *tunnelSAs {
+	next := *s
+	next.inbound = maps.Clone(s.inbound)
+	delete(next.inbound, spi)
+	switch spi {
+	case s.replacementSPI:
+		next.replacement, next.replacementSPI = nil, 0
+	case s.outboundSPI:
+		next.outbound, next.outboundSPI, next.replacement, next.replacementSPI = s.replacement, s.replacementSPI, nil, 0
+	}
+	return &next
 }
 
 func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
@@ -187,12 +286,9 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 	}
 	r, err := current.outbound.ReserveSequenceRange(count)
 	if err != nil {
-		// The SA that ran out is still installed, so nothing else will ask.
-		if errors.Is(err, esp.ErrSequenceExhausted) {
-			t.requestRekey()
-			if t.spent != nil {
-				t.spent(current.outboundSPI)
-			}
+		// a second try ends, since it runs only on another outbound SA, which a replacement or a retirement put in the spent one's place
+		if errors.Is(err, esp.ErrSequenceExhausted) && t.moveOffSpent(current) {
+			return t.reserve(count)
 		}
 		if fatalReserveError(err) && t.failed != nil {
 			t.failed(err)
@@ -200,6 +296,24 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 		return nil, err
 	}
 	return r.SealBatchInto, nil
+}
+
+// moveOffSpent moves outbound traffic off current's spent outbound SA to the replacement held for it, asks for a rekey where none took its place, tells the session the spent SA, and reports whether another outbound SA now carries outbound traffic
+// a cancel can take the replacement first, and the spent SA left in place is still installed, so nothing else asks for its rekey
+func (t *tunnel) moveOffSpent(current *tunnelSAs) bool {
+	if current.replacement != nil {
+		t.promote(current.replacement)
+	}
+	moved := false
+	if now := t.sas.Load(); now != nil && now.outbound != current.outbound {
+		moved = true
+	} else {
+		t.requestRekey()
+	}
+	if t.spent != nil {
+		t.spent(current.outboundSPI)
+	}
+	return moved
 }
 
 var errUnknownSPI = errors.New("no matching inbound ESP SA")
@@ -219,6 +333,11 @@ func (t *tunnel) decryptBatch(packets [][]byte, results []inboundDecrypted) []in
 					end++
 				}
 				results = sa.AuthenticateBatchInPlace(packets[:end], results)
+				// RFC 7296 section 2.8: "The responder can be assured that the initiator is prepared to receive messages on an SA if either (1) it has received a cryptographically valid message on the other half of the SA pair"
+				// so a packet that authenticates under the new SA's key takes it, whether or not the replay window then accepts it
+				if spi == current.replacementSPI && slices.ContainsFunc(results[len(results)-end:], func(result inboundDecrypted) bool { return result.Err == nil }) {
+					t.promote(current.replacement)
+				}
 				packets = packets[end:]
 				continue
 			}
