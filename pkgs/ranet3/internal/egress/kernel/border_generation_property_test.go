@@ -42,12 +42,13 @@ func (v hostView) same(o hostView) bool {
 
 // watchedBorder is a counted host that keeps what the last read found where
 // it found the filter as written, nil where it did not, whether a step of
-// another writer's committed during a read, and a step that the read after
-// the next fill takes after it has read the host
+// another writer's committed during the last read, which that read missed,
+// and a step that the read after the next fill takes after it has read the
+// host
 type watchedBorder struct {
 	*countedBorder
 	clean     *hostView
-	fired     bool
+	missed    bool
 	afterFill func()
 }
 
@@ -74,6 +75,7 @@ func (w *watchedBorder) view() hostView {
 
 func (w *watchedBorder) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	seen := w.view()
+	w.missed = w.during != nil
 	read, err := w.countedBorder.Rules(rules, sets)
 	w.clean = nil
 	if err == nil && read.fault == "" {
@@ -87,13 +89,16 @@ func (w *watchedBorder) Rules(rules []BorderRule, sets borderSets) (chainReadbac
 var borderTriggers = []string{"sweep", "retry", "reload", "routes", "kernel", "network", "changed", "missed"}
 
 // Over a drawn order of another writer's transactions, committed, empty or
-// refused, transactions that commit while a read runs, changes of the sets and
-// the rules, fills short or refused, failed reads and passes of every
-// trigger, on a host whose generation each committed transaction moves, a pass
-// that skips its read fills only over the sets and chains the last read found
-// as written for the rules the pass writes, and a pass that touched the host
-// and ended ready leaves the host as written, so a filter not as written is
-// found by the pass that fills it or the next pass that reads
+// refused, some the generation does not show, transactions that commit while
+// a read runs, changes of the sets and the rules, fills short or refused,
+// failed reads and passes of every trigger, on a host whose generation each
+// committed transaction moves, a pass that skips its read fills only over the
+// sets and chains the last read found as written for the rules the pass
+// writes, but where a transaction the generation does not show came since the
+// last read, and a pass that touched the host and ended ready leaves the host
+// as written, but where its last read missed a transaction that committed
+// while it ran, so a filter not as written is found by the pass that fills it
+// or the next pass that reads
 func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 	cfg := overlay(t)
 	pbt.Check(t, func(ht *hegel.T) {
@@ -116,6 +121,9 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 			ht.Fatalf("start: %v", err)
 		}
 		var steps []string
+		// unseen is whether a transaction the generation does not show came
+		// since the last read
+		unseen := false
 		lans := []string{"2001:db8::/48", "198.51.100.0/24"}
 		for range hegel.Draw(ht, pbt.Spanning(1, 60)) {
 			kind := hegel.Draw(ht, hegel.Integers(0, 99))
@@ -152,9 +160,14 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 				default:
 					host.fault = "its chain antispoof holds another writer's rule"
 				}
-				host.counted++
+				if hegel.Draw(ht, hegel.WeightedBooleans(0.75)) {
+					host.counted++
+					steps = append(steps, "another writer's transaction "+what)
+				} else {
+					unseen = true
+					steps = append(steps, "another writer's transaction the generation does not show "+what)
+				}
 				host.mu.Unlock()
-				steps = append(steps, "another writer's transaction "+what)
 				continue
 			case kind < 71:
 				host.mu.Lock()
@@ -166,10 +179,7 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 				steps = append(steps, "an empty or a refused transaction")
 				continue
 			case kind < 82:
-				during := func() {
-					be.fired = true
-					host.another(noneSet + "4")
-				}
+				during := func() { host.another(noneSet + "4") }
 				if hegel.Draw(ht, hegel.Booleans()) {
 					host.during = during
 					steps = append(steps, "a transaction during the next read")
@@ -198,7 +208,7 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 			rules, _, _ := f.desired()
 			before, clean := be.view(), be.clean
 			mark := len(host.entries())
-			be.fired = false
+			be.missed = false
 			if trigger == "changed" {
 				// as Run takes another writer's change
 				f.setReady(false, "another writer changed its table")
@@ -209,10 +219,13 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 			host.mu.Lock()
 			host.failFill, host.failRules = false, false
 			host.mu.Unlock()
-			if len(log) > 0 && strings.HasPrefix(log[0], "fill ") && (clean == nil || !clean.same(before) || !slices.Equal(clean.rules, rules)) {
+			if len(log) > 0 && strings.HasPrefix(log[0], "fill ") && !unseen && (clean == nil || !clean.same(before) || !slices.Equal(clean.rules, rules)) {
 				ht.Fatalf("after %q the pass went %q, filling with no read over %+v, where the last read found as written %+v", steps, log, before, clean)
 			}
-			if len(log) > 0 && !be.fired && f.Stats().Ready {
+			if slices.Contains(log, "rules") {
+				unseen = false
+			}
+			if len(log) > 0 && !be.missed && f.Stats().Ready {
 				wantRules, wantSets, _ := f.desired()
 				host.mu.Lock()
 				read := host.readback(wantRules, wantSets)

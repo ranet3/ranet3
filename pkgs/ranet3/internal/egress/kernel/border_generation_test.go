@@ -185,8 +185,8 @@ func TestBorderFillsWithNoReadBeforeWhereNoTransactionCommitted(t *testing.T) {
 		for i := range 3 {
 			step()
 			got, err := be.woken(t, f, trigger)
-			if err != nil || !slices.Equal(got, fillRead) || !f.ready {
-				t.Errorf("%s pass %d went %q with %v, ready %v, want %q", trigger, i, got, err, f.ready, fillRead)
+			if err != nil || !slices.Equal(got, fillRead) || !f.ready || f.retryOnFault {
+				t.Errorf("%s pass %d went %q with %v, ready %v, retry armed %v, want %q, ready and no retry", trigger, i, got, err, f.ready, f.retryOnFault, fillRead)
 			}
 		}
 	}
@@ -242,6 +242,58 @@ func TestBorderPassThatWouldFillNothingReads(t *testing.T) {
 		if got, err := be.woken(t, f, trigger); err != nil || !slices.Equal(got, []string{"rules"}) || !f.ready {
 			t.Errorf("a %s pass with nothing to fill went %q with %v, ready %v, want one read", trigger, got, err, f.ready)
 		}
+	}
+}
+
+// A read that finds the filter as written but not ready records no
+// generation, so the next pass that fills reads before it
+func TestBorderReadsBeforeTheFillAfterAReadThatFoundTheFilterNotReady(t *testing.T) {
+	f, be, step := countedFilter(t)
+	be.mu.Lock()
+	be.unready = "its host is not ready"
+	be.mu.Unlock()
+	if got, err := be.woken(t, f, "sweep"); err != nil || !slices.Equal(got, []string{"rules"}) || f.ready {
+		t.Fatalf("a sweep over a host not ready went %q with %v, ready %v, want one read and not ready", got, err, f.ready)
+	}
+	step()
+	if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, readFillRead) {
+		t.Errorf("the change after went %q with %v, want %q", got, err, readFillRead)
+	}
+}
+
+// The pass after a refused fill reads the sets against what the last read
+// found and fills from there
+func TestBorderPassAfterARefusedFillReadsAndFillsFromWhatTheLastReadFound(t *testing.T) {
+	f, be, step := countedFilter(t)
+	be.mu.Lock()
+	be.failFill = true
+	be.mu.Unlock()
+	step()
+	if got, err := be.woken(t, f, "routes"); err == nil || !slices.Equal(got, []string{"fill " + noneSet + "6"}) || f.ready {
+		t.Fatalf("a refused fill went %q with %v, ready %v, want it refused", got, err, f.ready)
+	}
+	be.mu.Lock()
+	be.failFill = false
+	be.mu.Unlock()
+	if got, err := be.woken(t, f, "retry"); err != nil || !slices.Equal(got, readFillRead) || !f.ready {
+		t.Errorf("the retry went %q with %v, ready %v, want %q", got, err, f.ready, readFillRead)
+	}
+}
+
+// A pass that fills with no read before it reports the count of rules its
+// read after found
+func TestBorderSkippedPassReportsTheCountItsReadAfterFound(t *testing.T) {
+	f, be, step := countedFilter(t)
+	installed := f.Stats().Installed
+	be.mu.Lock()
+	be.held = append(be.held, Installed{Spec: "another writer's rule"})
+	be.mu.Unlock()
+	step()
+	if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, fillRead) {
+		t.Fatalf("the change went %q with %v, want %q", got, err, fillRead)
+	}
+	if stats := f.Stats(); installed == 0 || stats.Installed != installed+1 {
+		t.Errorf("the pass reported %d rules installed, want the %d its read after found", stats.Installed, installed+1)
 	}
 }
 
@@ -374,6 +426,29 @@ func TestBorderFillThatDeletesWhatAnotherWriterTookIsRefused(t *testing.T) {
 	}
 	if got, err := be.woken(t, f, "retry"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
 		t.Errorf("the retry went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+	}
+}
+
+// Under Run, with no sweep due, a pass that fills with no read before it and
+// whose read after finds the filter as written arms no retry, so no read
+// follows over a stretch longer than the retry's delay
+func TestBorderRunReadsNothingAfterACleanSkippedPass(t *testing.T) {
+	be := &countedBorder{fakeBorder: &fakeBorder{every: lateSweep}, counted: 1}
+	f, step := movingFilter(t, be)
+	runBorder(t, f)
+	mark := len(be.entries())
+	step()
+	f.kernel <- struct{}{}
+	started := time.Now()
+	for !slices.Equal(be.entries()[mark:], fillRead) {
+		if time.Since(started) > retryWait {
+			t.Fatalf("%v after the wake the host saw %q, want %q", retryWait, be.entries()[mark:], fillRead)
+		}
+		time.Sleep(passPoll)
+	}
+	time.Sleep(retryWait)
+	if got := be.entries()[mark:]; !slices.Equal(got, fillRead) {
+		t.Errorf("%v after the pass the host saw %q, want %q alone", retryWait, got, fillRead)
 	}
 }
 

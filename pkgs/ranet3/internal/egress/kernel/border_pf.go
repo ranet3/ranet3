@@ -103,8 +103,8 @@ func (b *borderPF) holds(set string) bool { return set == carvedSet }
 
 func (b *borderPF) sweep() time.Duration { return b.every }
 
-// generation is 0, since pf counts no transactions, so the filter reads before
-// every fill
+// generation is 0, since pf has no generation the filter reads, so the filter
+// reads before every fill
 func (b *borderPF) generation() uint32 { return 0 }
 
 // wildcards is false, since pf matches an interface by its exact name, with no

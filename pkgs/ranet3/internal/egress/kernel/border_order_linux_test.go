@@ -26,6 +26,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -49,11 +50,13 @@ const (
 )
 
 // orderBackend is the real nftables backend with the failures and the hold a
-// phase arms before a learn
+// phase arms before a learn, whether a fill came since the phase armed, and
+// whether an armed failure or hold met a read after a fill
 type orderBackend struct {
 	borderBackend
 	failRules, failFill atomic.Int32
 	holdRules           atomic.Int64
+	filled, late        atomic.Bool
 }
 
 // orderTake takes one of n, reporting whether there was one
@@ -71,15 +74,25 @@ func orderTake(n *atomic.Int32) bool {
 
 func (b *orderBackend) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	if d := b.holdRules.Swap(0); d > 0 {
+		b.meet()
 		time.Sleep(time.Duration(d))
 	}
 	if orderTake(&b.failRules) {
+		b.meet()
 		return chainReadback{}, fmt.Errorf("dump rules: %w", netlink.ErrDumpInterrupted)
 	}
 	return b.borderBackend.Rules(rules, sets)
 }
 
+// meet marks an armed failure or hold that meets a read after a fill
+func (b *orderBackend) meet() {
+	if b.filled.Load() {
+		b.late.Store(true)
+	}
+}
+
 func (b *orderBackend) Fill(rules []BorderRule, was, sets borderSets) error {
+	b.filled.Store(true)
 	if orderTake(&b.failFill) {
 		return unix.ENOBUFS
 	}
@@ -362,6 +375,26 @@ func (l *orderLab) passNow(what string) bool {
 	return l.filter.Stats().Ready
 }
 
+// moveGeneration commits another writer's transaction in another table, which
+// moves the namespace's generation and wakes no pass, so the next pass of the
+// filter reads before it fills
+func (l *orderLab) moveGeneration() {
+	l.t.Helper()
+	if err := l.ns.Do(func() error {
+		other, err := nftables.Dial()
+		if err != nil {
+			return err
+		}
+		defer other.Close()
+		if err := other.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, "elsewhere")}); err != nil {
+			return err
+		}
+		return other.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, "elsewhere")})
+	}); err != nil {
+		l.t.Fatalf("another writer's transaction in another table: %v", err)
+	}
+}
+
 // learnRead learns lan while a pass of the reconciler, which a reload wakes
 // at once, waits at its read of the source, arming the backend before the
 // learn, and lets the pass read on as the learn lands: the reconciler reads
@@ -448,12 +481,20 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		host := phase.lan.Addr().Next()
 		start := time.Now()
 		if phase.arm != nil {
+			// the generation moved, so the learn's pass reads before its fill and the
+			// armed failure or hold meets that read
+			arm := func(b *orderBackend) {
+				lab.moveGeneration()
+				b.filled.Store(false)
+				b.late.Store(false)
+				phase.arm(b)
+			}
 			if phase.read {
-				lab.learnRead(phase.lan, phase.arm)
+				lab.learnRead(phase.lan, arm)
 				// the wait for the reconciler's pass is no part of the phase
 				start = time.Now()
 			} else {
-				phase.arm(lab.be)
+				arm(lab.be)
 				lab.routes.Set(netip.Prefix{}, phase.lan, lab.peer)
 			}
 			lab.awaitHold(phase.name, phase.lan)
@@ -473,6 +514,9 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		}
 		want++
 		lab.awaitInstalled(phase.name, want)
+		if lab.be.late.Load() {
+			t.Errorf("%s: the armed failure or hold met the read after a fill, want the read before it", phase.name)
+		}
 		entered, dropped := lab.send(host)
 		t.Logf("%s: the route landed by %v, then the datagram entered the tun %v, the chain entry dropped %d", phase.name, time.Since(start), entered, dropped)
 		if entered || dropped != 1 {
