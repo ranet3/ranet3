@@ -318,7 +318,16 @@ func (b *borderTable) Fill(_ []BorderRule, was, sets borderSets) error {
 	if err != nil {
 		return err
 	}
-	return b.holder.Write(b.conn, requests)
+	return refusal(b.holder.Write(b.conn, requests))
+}
+
+// refusal is err a refused where the kernel acknowledged the transaction with
+// an errno, as nftables.Refused holds, and err as it is otherwise
+func refusal(err error) error {
+	if errors.As(err, new(*nftables.Refused)) {
+		return refused{err}
+	}
+	return err
 }
 
 // fillBatch is the transaction Fill sends: each set sets names moved from what

@@ -50,13 +50,15 @@ const (
 )
 
 // orderBackend is the real nftables backend with the failures and the hold a
-// phase arms before a learn, whether a fill came since the phase armed, and
-// whether an armed failure or hold met a read after a fill
+// phase arms before a learn, whether a read and whether a fill came since the
+// phase armed, and whether an armed failure or hold met a pass that skipped
+// its read before its fill: a read after a fill, or a fill with no read
+// before it
 type orderBackend struct {
 	borderBackend
-	failRules, failFill atomic.Int32
-	holdRules           atomic.Int64
-	filled, late        atomic.Bool
+	failRules, failFill       atomic.Int32
+	holdRules                 atomic.Int64
+	read, filled, skippedRead atomic.Bool
 }
 
 // orderTake takes one of n, reporting whether there was one
@@ -73,27 +75,30 @@ func orderTake(n *atomic.Int32) bool {
 }
 
 func (b *orderBackend) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
+	defer b.read.Store(true)
 	if d := b.holdRules.Swap(0); d > 0 {
-		b.meet()
+		b.meet(b.filled.Load())
 		time.Sleep(time.Duration(d))
 	}
 	if orderTake(&b.failRules) {
-		b.meet()
+		b.meet(b.filled.Load())
 		return chainReadback{}, fmt.Errorf("dump rules: %w", netlink.ErrDumpInterrupted)
 	}
 	return b.borderBackend.Rules(rules, sets)
 }
 
-// meet marks an armed failure or hold that meets a read after a fill
-func (b *orderBackend) meet() {
-	if b.filled.Load() {
-		b.late.Store(true)
+// meet marks an armed failure or hold that met a pass that skipped its read
+// before its fill
+func (b *orderBackend) meet(skipped bool) {
+	if skipped {
+		b.skippedRead.Store(true)
 	}
 }
 
 func (b *orderBackend) Fill(rules []BorderRule, was, sets borderSets) error {
-	b.filled.Store(true)
+	defer b.filled.Store(true)
 	if orderTake(&b.failFill) {
+		b.meet(!b.read.Load())
 		return unix.ENOBUFS
 	}
 	return b.borderBackend.Fill(rules, was, sets)
@@ -375,9 +380,9 @@ func (l *orderLab) passNow(what string) bool {
 	return l.filter.Stats().Ready
 }
 
-// moveGeneration commits another writer's transaction in another table, which
-// moves the namespace's generation and wakes no pass, so the next pass of the
-// filter reads before it fills
+// moveGeneration commits another writer's transaction that makes a table
+// elsewhere, which moves the namespace's generation and wakes no pass, so the
+// next pass of the filter reads before it fills, and removes the table again
 func (l *orderLab) moveGeneration() {
 	l.t.Helper()
 	if err := l.ns.Do(func() error {
@@ -481,12 +486,13 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		host := phase.lan.Addr().Next()
 		start := time.Now()
 		if phase.arm != nil {
-			// the generation moved, so the learn's pass reads before its fill and the
-			// armed failure or hold meets that read
+			// the generation moved, so the learn's pass reads before its fill, and the
+			// armed failure or hold meets that read or the fill after it
 			arm := func(b *orderBackend) {
 				lab.moveGeneration()
+				b.read.Store(false)
 				b.filled.Store(false)
-				b.late.Store(false)
+				b.skippedRead.Store(false)
 				phase.arm(b)
 			}
 			if phase.read {
@@ -514,8 +520,8 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		}
 		want++
 		lab.awaitInstalled(phase.name, want)
-		if lab.be.late.Load() {
-			t.Errorf("%s: the armed failure or hold met the read after a fill, want the read before it", phase.name)
+		if lab.be.skippedRead.Load() {
+			t.Errorf("%s: the armed failure or hold met a pass that skipped its read before its fill, want a pass that reads first", phase.name)
 		}
 		entered, dropped := lab.send(host)
 		t.Logf("%s: the route landed by %v, then the datagram entered the tun %v, the chain entry dropped %d", phase.name, time.Since(start), entered, dropped)

@@ -11,8 +11,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
@@ -23,12 +25,14 @@ const retryWait = 3 * time.Second
 // countedBorder is the fake host with nf_tables' generation, which each
 // transaction the host commits moves by one, and with a fill that answers as
 // nf_tables answers the filter's. short makes the next fill send one range
-// less of each set it changes, as a fault of the delta would, and during is a
-// step of another writer's that the next read takes after it has read the host.
+// less of each set it changes, as a fault of the delta would, lost makes the
+// next fill or apply commit and its answer get lost, and during is a step of
+// another writer's that the next read takes after it has read the host.
 type countedBorder struct {
 	*fakeBorder
 	counted uint32
 	short   bool
+	lost    bool
 	during  func()
 }
 
@@ -51,8 +55,8 @@ func (c *countedBorder) Rules(rules []BorderRule, sets borderSets) (chainReadbac
 
 // Fill answers as nf_tables answers the filter's transaction, whose adds carry
 // no NLM_F_EXCL: it refuses the whole transaction where it deletes a range the
-// host lacks, takes an add of a range the host holds, and moves the generation
-// where it commits
+// host lacks or failFill is set, takes an add of a range the host holds, and
+// moves the generation where it commits
 func (c *countedBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	if c.short {
 		c.short = false
@@ -62,7 +66,7 @@ func (c *countedBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	defer c.mu.Unlock()
 	c.log = append(c.log, "fill "+strings.Join(slices.Sorted(maps.Keys(sets)), " "))
 	if c.failFill {
-		return errors.New("no")
+		return refused{errors.New("no")}
 	}
 	next := borderSets{}
 	maps.Copy(next, c.sets)
@@ -74,7 +78,7 @@ func (c *countedBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 			}
 			at := slices.Index(held, gone)
 			if at < 0 {
-				return fmt.Errorf("fill deletes %v from set %s, which lacks it", gone, name)
+				return refused{fmt.Errorf("fill deletes %v from set %s, which lacks it", gone, name)}
 			}
 			held = slices.Delete(held, at, at+1)
 		}
@@ -88,6 +92,10 @@ func (c *countedBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	}
 	c.sets = next
 	c.counted++
+	if c.lost {
+		c.lost = false
+		return errors.New("the answer did not come")
+	}
 	return nil
 }
 
@@ -97,6 +105,10 @@ func (c *countedBorder) Apply(rules []BorderRule, sets borderSets) error {
 		c.mu.Lock()
 		c.counted++
 		c.mu.Unlock()
+		if c.lost {
+			c.lost = false
+			return errors.New("the answer did not come")
+		}
 	}
 	return err
 }
@@ -280,6 +292,37 @@ func TestBorderPassAfterARefusedFillReadsAndFillsFromWhatTheLastReadFound(t *tes
 	}
 }
 
+// The pass after a fill that committed and whose answer was lost reads the
+// sets against what the pass derives and finds them as written
+func TestBorderPassAfterAFillWhoseAnswerWasLostReadsAgainstTheSets(t *testing.T) {
+	f, be, step := countedFilter(t)
+	be.lost = true
+	step()
+	if got, err := be.woken(t, f, "routes"); err == nil || !slices.Equal(got, []string{"fill " + noneSet + "6"}) || f.ready {
+		t.Fatalf("a fill whose answer was lost went %q with %v, ready %v, want it to fail", got, err, f.ready)
+	}
+	if got, err := be.woken(t, f, "retry"); err != nil || !slices.Equal(got, []string{"rules"}) || !f.ready {
+		t.Errorf("the retry went %q with %v, ready %v, want one read", got, err, f.ready)
+	}
+}
+
+// The pass after a rewrite that committed and whose answer was lost reads the
+// sets against what the pass derives and finds them as written
+func TestBorderPassAfterARewriteWhoseAnswerWasLostReadsAgainstTheSets(t *testing.T) {
+	f, be, step := countedFilter(t)
+	be.mu.Lock()
+	be.fault = "its table carries flags 0x1"
+	be.mu.Unlock()
+	be.lost = true
+	step()
+	if got, err := be.woken(t, f, "sweep"); err == nil || !slices.Equal(got, []string{"rules", "apply"}) || f.ready {
+		t.Fatalf("a rewrite whose answer was lost went %q with %v, ready %v, want it to fail", got, err, f.ready)
+	}
+	if got, err := be.woken(t, f, "retry"); err != nil || !slices.Equal(got, []string{"rules"}) || !f.ready {
+		t.Errorf("the retry went %q with %v, ready %v, want one read", got, err, f.ready)
+	}
+}
+
 // A pass that fills with no read before it reports the count of rules its
 // read after found
 func TestBorderSkippedPassReportsTheCountItsReadAfterFound(t *testing.T) {
@@ -433,23 +476,24 @@ func TestBorderFillThatDeletesWhatAnotherWriterTookIsRefused(t *testing.T) {
 // whose read after finds the filter as written arms no retry, so no read
 // follows over a stretch longer than the retry's delay
 func TestBorderRunReadsNothingAfterACleanSkippedPass(t *testing.T) {
-	be := &countedBorder{fakeBorder: &fakeBorder{every: lateSweep}, counted: 1}
-	f, step := movingFilter(t, be)
-	runBorder(t, f)
-	mark := len(be.entries())
-	step()
-	f.kernel <- struct{}{}
-	started := time.Now()
-	for !slices.Equal(be.entries()[mark:], fillRead) {
-		if time.Since(started) > retryWait {
-			t.Fatalf("%v after the wake the host saw %q, want %q", retryWait, be.entries()[mark:], fillRead)
+	bubble.Run(func(t *testing.T) {
+		be := &countedBorder{fakeBorder: &fakeBorder{every: lateSweep}, counted: 1}
+		f, step := movingFilter(t, be)
+		runBorder(t, f)
+		mark := len(be.entries())
+		step()
+		f.kernel <- struct{}{}
+		// every goroutine of the bubble is blocked, Run on its wakes alone
+		synctest.Wait()
+		if got := be.entries()[mark:]; !slices.Equal(got, fillRead) {
+			t.Fatalf("the wake went %q, want %q", got, fillRead)
 		}
-		time.Sleep(passPoll)
-	}
-	time.Sleep(retryWait)
-	if got := be.entries()[mark:]; !slices.Equal(got, fillRead) {
-		t.Errorf("%v after the pass the host saw %q, want %q alone", retryWait, got, fillRead)
-	}
+		time.Sleep(retryWait)
+		synctest.Wait()
+		if got := be.entries()[mark:]; !slices.Equal(got, fillRead) {
+			t.Errorf("%v after the pass the host saw %q, want %q alone", retryWait, got, fillRead)
+		}
+	})(t)
 }
 
 // Under Run, with no wake of another writer's change and no sweep due, a fault

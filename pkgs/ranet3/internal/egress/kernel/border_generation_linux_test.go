@@ -6,6 +6,8 @@
 package kernel
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"slices"
@@ -223,6 +225,17 @@ func TestBorderRunRetriesAFaultTheReadAfterAFillFoundOnNftables(t *testing.T) {
 	}
 	if reads := be.reads.Load(); reads != 3 {
 		t.Errorf("the repair took %d reads since the change, want the read after the fill, the retry's read and the read after its rewrite", reads)
+	}
+}
+
+// A fill the kernel acknowledged with an errno reads as refused, and one
+// whose acknowledgment did not come does not
+func TestBorderTableFillTakesOnlyAnAcknowledgedErrnoAsRefused(t *testing.T) {
+	if !errors.As(refusal(fmt.Errorf("write: %w", &nftables.Refused{Err: unix.ENOENT})), new(refused)) {
+		t.Error("an errno the kernel acknowledged read as a commit left unknown")
+	}
+	if errors.As(refusal(errors.New("netlink: the kernel did not answer in time")), new(refused)) {
+		t.Error("an answer that did not come read as refused")
 	}
 }
 

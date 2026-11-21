@@ -93,12 +93,10 @@ var borderTriggers = []string{"sweep", "retry", "reload", "routes", "kernel", "n
 // a read runs, changes of the sets and the rules, fills short or refused,
 // failed reads and passes of every trigger, on a host whose generation each
 // committed transaction moves, a pass that skips its read fills only over the
-// sets and chains the last read found as written for the rules the pass
-// writes, but where a transaction the generation does not show came since the
-// last read, and a pass that touched the host and ended ready leaves the host
-// as written, but where its last read missed a transaction that committed
-// while it ran, so a filter not as written is found by the pass that fills it
-// or the next pass that reads
+// sets and chains the last read found as written for the rules it writes,
+// unless a transaction the generation does not show came since that read. A
+// pass that touched the host and ended ready leaves the host as written,
+// unless its last read missed a transaction that committed while it ran.
 func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 	cfg := overlay(t)
 	pbt.Check(t, func(ht *hegel.T) {
