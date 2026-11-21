@@ -11,11 +11,13 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -227,8 +229,12 @@ func TestDialedConnectionWatchesNoErrors(t *testing.T) {
 // bind and leaves the table as it was, and the port is the new endpoint's once
 // that mapping is released. One on another address is no other endpoint's. The
 // host is made to give the port by IP_LOCAL_PORT_RANGE, Linux 6.3's range of
-// one socket's own.
+// one socket's own. It runs in a network namespace of its own where one can be
+// made (inOwnNetwork).
 func TestHostsPortAMappingHoldsIsRefused(t *testing.T) {
+	if !inOwnNetwork(t) {
+		return
+	}
 	loopback, second := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")
 	for _, c := range []struct {
 		name    string
@@ -289,8 +295,12 @@ func TestHostsPortAMappingHoldsIsRefused(t *testing.T) {
 // auto on its own address, a new mapping's and a one-off socket's both, and
 // that ends nothing: the live mapping stays the table's, its next socket binds
 // its endpoint, and no other inside endpoint leaves from that endpoint. The
-// host is made to give that port by IP_LOCAL_PORT_RANGE.
+// host is made to give that port by IP_LOCAL_PORT_RANGE. It runs in a network
+// namespace of its own where one can be made (inOwnNetwork).
 func TestAnotherClassLeavesALiveAutoMappingAlone(t *testing.T) {
+	if !inOwnNetwork(t) {
+		return
+	}
 	loopback, second, third := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("127.0.0.3")
 	servers := acceptingServers(t, 2)
 	port := freeTCPPort(t, loopback)
@@ -926,13 +936,246 @@ func TestLeafsTimeoutAfterItsFINReachesTheServer(t *testing.T) {
 	h.waitConnections(t, 0)
 }
 
+const (
+	// ownNetwork marks the run of a test in a process of its own, in a user
+	// and network namespace of its own
+	ownNetwork = "RANET3_OWN_NETWORK"
+	// ownNetworkRefused, set by a test of inOwnNetwork alone, has it take the
+	// new namespace for one not made, as a host that allows no user namespace
+	// refuses it
+	ownNetworkRefused = "RANET3_OWN_NETWORK_REFUSED"
+	// ownNetworkClaimRefused, set by a test of inOwnNetwork alone, has the
+	// claim of a process's namespace refused as a builder like CI's refuses
+	// it, the loopback's bringing up refused with EPERM (claimProcess)
+	ownNetworkClaimRefused = "RANET3_OWN_NETWORK_CLAIM_REFUSED"
+	// ownNetworkBody, set by TestInOwnNetworkRunsInPlaceOnlyWhereItHasNone
+	// alone, makes that test the body it runs, which passes, fails or skips
+	// as it reads
+	ownNetworkBody = "RANET3_OWN_NETWORK_BODY"
+	// ownNetworkProbe, set by TestInOwnNetworkRunsInPlaceOnlyWhereItHasNone
+	// alone, makes that test the probe of what this host gives
+	ownNetworkProbe = "RANET3_OWN_NETWORK_PROBE"
+	// unusableExit is the exit status by which a child tells its parent that
+	// its namespace was made and refused a step the test needs, a status no
+	// test binary ends with otherwise
+	unusableExit = 77
+	// childMargin is the part of a test's time left to it past its child's
+	// timeout, to read the child's end and report it
+	childMargin = 5 * time.Second
+)
+
+// claimProcess is netnstest.ClaimProcess, or where ownNetworkClaimRefused is
+// set the refusal a builder like CI's gives a process in a user namespace of
+// its own, wrapped as BringUp wraps the kernel's
+func claimProcess() (skip string, err error) {
+	if os.Getenv(ownNetworkClaimRefused) != "" {
+		return "", fmt.Errorf("bring lo up: %w", unix.EPERM)
+	}
+	return netnstest.ClaimProcess()
+}
+
+// childOf is a run of t alone in a process of its own, which t's end kills,
+// and which times out childMargin short of t's deadline where t has one
+func childOf(t *testing.T) *exec.Cmd {
+	t.Helper()
+	args := []string{"-test.run", "^" + t.Name() + "$", "-test.count=1", "-test.v"}
+	if deadline, ok := t.Deadline(); ok {
+		args = append(args, "-test.timeout", max(time.Until(deadline)-childMargin, time.Second).String())
+	}
+	return exec.CommandContext(t.Context(), os.Args[0], args...)
+}
+
+// inOwnNetwork reports whether t runs in a network namespace of its own, with
+// its loopback up and no socket in it but the test's, or in place. Outside one
+// it runs t again in a process of its own in a new user and network namespace,
+// takes that run's end for t's, and reports false. Where it cannot have one,
+// since the namespace is not made, or is made and its claim is refused for
+// want of a permission, as a host's security module refuses the capabilities
+// of a user namespace an unprivileged process made, it logs which and reports
+// true, so t runs in place, in the namespace it shares, as it ran before it
+// had one. The child tells the second case by unusableExit alone. Any other
+// end of the child is t's, a failure or a skip of the test's own. A test needs
+// it that binds on 127.0.0.2 or 127.0.0.3 a port freeTCPPort found free on
+// 127.0.0.1 alone, since in a namespace it shares a socket of another process,
+// or a connection of an earlier test of the binary in TIME_WAIT, may hold that
+// port there.
+func inOwnNetwork(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv(ownNetwork) != "" {
+		claimOnce.Do(func() { claimSkip, claimErr = claimProcess() })
+		refused := claimErr
+		if errors.Is(refused, unix.EPERM) || errors.Is(refused, unix.EACCES) {
+			_, _ = os.Stderr.WriteString(unusableMark + refused.Error() + "\n")
+			os.Exit(unusableExit)
+		}
+		claim(t)
+		return true
+	}
+	cmd := childOf(t)
+	cmd.Env = append(os.Environ(), ownNetwork+"=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}
+	var out []byte
+	err := errors.New(ownNetworkRefused + " is set")
+	if os.Getenv(ownNetworkRefused) == "" {
+		out, err = cmd.CombinedOutput()
+	}
+	var exit *exec.ExitError
+	switch {
+	case err != nil && !errors.As(err, &exit):
+		t.Logf("no network namespace of its own was made (%v), so the test runs in place", err)
+		return true
+	case exit != nil && exit.ExitCode() == unusableExit:
+		_, why, _ := bytes.Cut(out, []byte(unusableMark))
+		t.Logf("a network namespace of its own was made and is not usable (%s), so the test runs in place", bytes.TrimSpace(why))
+		return true
+	case err != nil:
+		t.Fatalf("the run in a network namespace of its own ended with %v:\n%s", err, out)
+	case bytes.Contains(out, []byte("--- SKIP: "+t.Name()+" ")):
+		t.Skipf("the run in a network namespace of its own skipped:\n%s", out)
+	case !bytes.Contains(out, []byte("--- PASS: "+t.Name()+" ")):
+		t.Fatalf("the run in a network namespace of its own passed no %s:\n%s", t.Name(), out)
+	}
+	return false
+}
+
+// unusableMark heads the line by which a child says what refused its claim
+const unusableMark = "claim of the namespace refused: "
+
+// inOwnNetwork runs a test in place where the namespace is not made, or is
+// made and not usable, and says which, and nowhere else: a failure or a skip
+// of the test is its own wherever it runs. What this host gives is read by a
+// probe of the test's own, a child in the same namespaces that reports its
+// claim, and not from inOwnNetwork. The test runs itself again whole with the
+// claim of every child refused, as a builder like CI's refuses it.
+func TestInOwnNetworkRunsInPlaceOnlyWhereItHasNone(t *testing.T) {
+	const notMade, notUsable = "no network namespace of its own was made", "a network namespace of its own was made and is not usable"
+	const claimHeld, claimRefused = "the probe's claim held", "the probe's claim was refused"
+	if os.Getenv(ownNetworkProbe) != "" {
+		claimOnce.Do(func() { claimSkip, claimErr = claimProcess() })
+		switch {
+		case claimErr == nil && claimSkip == "":
+			t.Log(claimHeld)
+		case errors.Is(claimErr, unix.EPERM) || errors.Is(claimErr, unix.EACCES):
+			t.Log(claimRefused)
+		default:
+			t.Fatalf("the probe's claim ended with %q and %v", claimSkip, claimErr)
+		}
+		return
+	}
+	if body := os.Getenv(ownNetworkBody); body != "" {
+		if !inOwnNetwork(t) {
+			return
+		}
+		ns, err := os.Readlink("/proc/thread-self/ns/net")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("the body ran in %s", ns)
+		switch body {
+		case "fail":
+			t.Error("the body fails, as asked")
+		case "skip":
+			t.Skip("the body skips, as asked")
+		}
+		return
+	}
+	here, err := os.Readlink("/proc/thread-self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// gives is the case this host names for a test that wants a usable
+	// namespace, empty where it gives one, as the probe finds it
+	probe := childOf(t)
+	probe.Env = append(os.Environ(), ownNetworkProbe+"=1")
+	probe.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}
+	found, err := probe.CombinedOutput()
+	var gives string
+	switch _, exited := err.(*exec.ExitError); {
+	case err != nil && !exited:
+		gives = notMade
+	case err == nil && bytes.Contains(found, []byte(claimHeld)):
+	case err == nil && bytes.Contains(found, []byte(claimRefused)):
+		gives = notUsable
+	default:
+		t.Fatalf("the probe ended with %v:\n%s", err, found)
+	}
+	t.Logf("the probe, a child in the same namespaces, finds the case %q", gives)
+	// refusedSaid is the whole line inOwnNetwork logs where the claim is
+	// refused as ownNetworkClaimRefused refuses it, naming the refusal alone
+	refusedSaid := notUsable + " (bring lo up: " + unix.EPERM.Error() + "), so the test runs in place\n"
+	for _, c := range []struct {
+		name, body, env string
+		// said is the case inOwnNetwork names where it runs the test in place,
+		// empty where it runs it in a child, on a host that gives a usable
+		// namespace
+		said, end string
+	}{
+		{"made and usable", "pass", "", "", "PASS"},
+		{"made and usable, failing", "fail", "", "", "FAIL"},
+		{"made and usable, skipping", "skip", "", "", "SKIP"},
+		{"not made", "pass", ownNetworkRefused, notMade, "PASS"},
+		{"not made, failing", "fail", ownNetworkRefused, notMade, "FAIL"},
+		{"made and not usable", "pass", ownNetworkClaimRefused, notUsable, "PASS"},
+		{"made and not usable, failing", "fail", ownNetworkClaimRefused, notUsable, "FAIL"},
+		{"made and not usable, skipping", "skip", ownNetworkClaimRefused, notUsable, "SKIP"},
+	} {
+		cmd := childOf(t)
+		cmd.Env = append(os.Environ(), ownNetworkBody+"="+c.body)
+		if c.env != "" {
+			cmd.Env = append(cmd.Env, c.env+"=1")
+		}
+		out, err := cmd.CombinedOutput()
+		if _, exited := err.(*exec.ExitError); err != nil && !exited {
+			t.Fatal(err)
+		}
+		// where this host gives no usable namespace, or makes none, the run in
+		// place stands for a row that wants one
+		want := c.said
+		if want == "" || gives == notMade && want == notUsable {
+			want = gives
+		}
+		said := ""
+		for _, s := range []string{notMade, notUsable} {
+			if bytes.Contains(out, []byte(s)) {
+				said = s
+			}
+		}
+		// the run's own end, at the start of a line, and not a child's it quotes
+		end := bytes.Contains(append([]byte("\n"), out...), []byte("\n--- "+c.end+": "+t.Name()+" ")) && (err == nil) == (c.end != "FAIL")
+		inPlace := bytes.Contains(out, []byte("the body ran in "+here+"\n"))
+		if c.env == ownNetworkClaimRefused && !bytes.Contains(out, []byte(": "+refusedSaid)) {
+			t.Errorf("%s: logged no line %q:\n%s", c.name, refusedSaid, out)
+		}
+		if said != want || !end || inPlace != (want != "") {
+			t.Errorf("%s: said %q, ended %s %t, ran in place %t, want %q, true and %t, the probe's case %q:\n%s", c.name, said, c.end, end, inPlace, want, want != "", gives, out)
+		}
+	}
+	if os.Getenv(ownNetworkClaimRefused) != "" {
+		return
+	}
+	cmd := childOf(t)
+	cmd.Env = append(os.Environ(), ownNetworkClaimRefused+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !bytes.Contains(append([]byte("\n"), out...), []byte("\n--- PASS: "+t.Name()+" ")) {
+		t.Errorf("with the claim of every child refused, as a builder like CI's refuses it, the test ended with %v:\n%s", err, out)
+	}
+}
+
 // TestMain readies the loopback the package's servers listen on before any
 // test runs, so that no test depends on another having brought it up: where the
 // process is root and the loopback is down, as unshare -rn leaves it, it claims
 // the namespace as claim does, and it leaves an up loopback as it is
 func TestMain(m *testing.M) {
 	if lo, err := net.InterfaceByName("lo"); os.Getuid() == 0 && err == nil && lo.Flags&net.FlagUp == 0 {
-		claimOnce.Do(func() { claimSkip, claimErr = netnstest.ClaimProcess() })
+		claimOnce.Do(func() { claimSkip, claimErr = claimProcess() })
 	}
 	m.Run()
 }
