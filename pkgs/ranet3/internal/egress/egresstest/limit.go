@@ -148,11 +148,11 @@ func (r *rows) fill(t *testing.T, server *net.UDPConn, to netip.AddrPort, count 
 	began := time.Now()
 	var longest time.Duration
 	buf := make([]byte, readSize)
-	for first := 0; first < count; first += fillBatch {
+	for first, size := 0, r.fillSize(); first < count; first += size {
 		batchBegan := time.Now()
 		var batch []string
 		unread := map[string][]byte{}
-		for i := first; i < min(first+fillBatch, count); i++ {
+		for i := first; i < min(first+size, count); i++ {
 			data := fmt.Sprintf("flow %d of the spare address over %s", i, r.family.Name)
 			batch = append(batch, data)
 			unread[data] = datagram(netip.AddrPortFrom(r.family.Spare, uint16(spareFillPort+i)), to, leafTTL, []byte(data))
@@ -182,7 +182,15 @@ func (r *rows) fill(t *testing.T, server *net.UDPConn, to netip.AddrPort, count 
 		}
 		longest = max(longest, time.Since(batchBegan))
 	}
-	t.Logf("the spare address opened its %d flows in %s, its longest batch in %s of the %s a batch may take", count, time.Since(began), longest, stepBudget)
+	t.Logf("the spare address opened its %d flows %d at a time in %s, its longest batch in %s of the %s a batch may take", count, r.fillSize(), time.Since(began), longest, stepBudget)
+}
+
+// fillSize is how many of the spare address's flows fill hands at once
+func (r *rows) fillSize() int {
+	if r.exit.misses != nil {
+		return missedFillBatch
+	}
+	return fillBatch
 }
 
 // later sends a datagram of the spare address's first flow right after its

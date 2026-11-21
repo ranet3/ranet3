@@ -25,7 +25,10 @@ var declared = Missed{Reason: "the fake carries flows past the share uncounted",
 
 // an arm whose count misses flows meets the limit's row where its exit carries
 // carriedBound flows past the share and refuses the next, which the row holds
-// to every check, the carried flows' packets left out of the refusals counted
+// to every check, the carried flows' packets left out of the refusals counted,
+// and no call of Egress during the row admits more than one new flow within the
+// share. The fake counts the new flows each call admits and does not see the
+// server's reads.
 func TestSourceLimitTakesFlowsCarriedPastTheShareFromAnArmThatDeclaresIt(t *testing.T) {
 	t.Parallel()
 	var built *limitedExit
@@ -33,6 +36,9 @@ func TestSourceLimitTakesFlowsCarriedPastTheShareFromAnArmThatDeclaresIt(t *test
 		t.Run("the limit on a source's flows", r.judged(r.sourceLimit))
 		if got := built.carried(r.family.Spare); got != carriedBound {
 			t.Errorf("the fake carried %d flows past the share, want the %d it carries", got, carriedBound)
+		}
+		if got := built.mostOpenedAtOnce(); got != 1 {
+			t.Errorf("one call of Egress admitted %d new flows within the share, want 1 from an arm whose count misses flows", got)
 		}
 	})
 }
@@ -109,6 +115,9 @@ type limitedExit struct {
 	// those it dropped and carried beyond
 	held, dropped, past map[netip.Addr]int
 	refused4, refused6  uint64
+	// opening is the new flows within a share the call of Egress under way
+	// admitted, and mostOpened the most any call admitted
+	opening, mostOpened int
 }
 
 type flowKey struct {
@@ -154,6 +163,9 @@ func (l *limitedExit) Egress(frames [][]byte, hold netstack.Hold) {
 			l.refuse(packet)
 		}
 	}
+	l.mu.Lock()
+	l.mostOpened, l.opening = max(l.mostOpened, l.opening), 0
+	l.mu.Unlock()
 	if len(admitted) > 0 {
 		l.fakeExit.Egress(admitted, hold)
 	}
@@ -190,6 +202,7 @@ func (l *limitedExit) judge(packet []byte) judgment {
 	switch {
 	case l.held[p.src] < l.cfg.SourceLimit():
 		l.held[p.src]++
+		l.opening++
 	case l.dropped[p.src] < l.drop:
 		l.dropped[p.src]++
 		judged = drop
@@ -204,6 +217,14 @@ func (l *limitedExit) judge(packet []byte) judgment {
 	}
 	l.flows[flow] = judged
 	return judged
+}
+
+// mostOpenedAtOnce is the most new flows within a share one call of Egress
+// admitted
+func (l *limitedExit) mostOpenedAtOnce() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.mostOpened
 }
 
 // carried is how many flows of source the fake carried past its share

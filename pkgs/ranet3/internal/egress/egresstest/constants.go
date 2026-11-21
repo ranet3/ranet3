@@ -60,9 +60,13 @@ const (
 	// batch read at the server before the next, which its socket's default
 	// buffer holds
 	fillBatch = 128
+	// missedFillBatch is fillBatch for an arm whose count misses flows: one
+	// flow in flight, so no other flow's add walks the source's list while a
+	// flow is counted and not yet confirmed
+	missedFillBatch = 1
 	// namedLimit is the share of flows the suite's last exit runs at, below
 	// egress.DefaultFlowsPerSource so a backend that kept the default admits
-	// the flow past it, and no whole number of fill batches
+	// the flow past it, and no whole number of fillBatch
 	namedLimit = 200
 	// carriedBound is the most flows past a source's share the limit's row
 	// takes from an arm that declares its count misses flows: one for a count
