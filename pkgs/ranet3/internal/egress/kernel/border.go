@@ -297,6 +297,10 @@ type borderBackend interface {
 	// a reader off the run goroutine. rules names each line the backend cannot
 	// name by its comment alone.
 	Read(rules []BorderRule) (chainReadback, error)
+	// generation is the namespace's nf_tables generation, which every committed
+	// transaction moves, as nftables.Conn.Generation gives, and 0 where the
+	// backend counts none or the read fails, on which no pass leaves a read out
+	generation() uint32
 	// Close closes the backend of a filter that ends, a start refused before
 	// it ran among them, and gives back what opening it took for the filter
 	// beyond what it writes where no earlier run left it so
@@ -381,7 +385,7 @@ type BorderFilter struct {
 	// the rest belong to the run goroutine, and to NewBorderFilter before it
 	// starts. written is the sets the last write or clean read found, nil where
 	// the kernel's sets are not known. last is the rules of the last pass that
-	// read the filter back as written, made is whether the first pass's read
+	// read or wrote, made is whether the first pass's read
 	// found nothing the filter writes, so whatever is there is this start's,
 	// and found whether that read found any of it.
 	made      bool
@@ -394,14 +398,17 @@ type BorderFilter struct {
 	carveOuts []egress.CarveOut
 	conflicts []egress.ExemptConflict
 	last      []BorderRule
-	// cleanGeneration is the backend's generation read before the last read
-	// that found the filter as written, 0 where the last read did not or the
-	// backend counts none, since nf_tables counts from 1 and skips 0 at a wrap
+	// cleanGeneration is the backend's generation read before the last read,
+	// where that read found the filter as written, and 0 where it did not or
+	// the backend counts none, since nf_tables counts from 1 and skips 0 at a
+	// wrap
 	cleanGeneration uint32
-	// heldOnFault is whether the last pass ended on a readback fault with the
-	// source holding a route back. Run then retries the pass on its own timer,
-	// since no change of the table or the configuration may come to wake it.
-	heldOnFault bool
+	// retryOnFault is whether the last pass ended on a readback fault that no
+	// wake may come to repair: with the source holding a route back, or after
+	// a fill with no read before it. Run then retries the pass on its own
+	// timer, since no change of the table or the configuration may come to
+	// wake it.
+	retryOnFault bool
 	// heldRoutes reports each route the source holds back as a pass ends
 	heldRoutes routeReport
 	// keptRoutes reports each route whose addresses a pass kept out of the
@@ -867,8 +874,9 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		switch err := f.reconcile(); {
 		case err != nil:
 			slog.Warn("antispoof filter pass failed, retrying", "err", err, "retry_in", retry.Failed(f.sweep))
-		case f.heldOnFault:
-			// the route source holds routes back until a pass reads the sets back
+		case f.retryOnFault:
+			// the route source holds routes back until a pass reads the sets back, and a
+			// fault the read after a fill found came from no change a wake reports
 			retry.Failed(f.sweep)
 		default:
 			retry.Passed()
@@ -991,9 +999,9 @@ func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
 // and by what it does, sending the sets' changed ranges alone where only they
 // moved, and reports ready only when the readback equals it. A pass woken
 // by the mesh's table or the host's links that asks for what the last good
-// pass read back reads nothing, and one that fills where no transaction moved
-// the backend's generation since the last clean read reads only after the fill
-// (unmoved).
+// pass read back reads nothing. One that fills reads only after the fill where
+// no transaction has committed since the last read that found the filter as
+// written.
 func (f *BorderFilter) reconcile() error {
 	started := time.Now()
 	before := f.config.Load()
@@ -1017,11 +1025,16 @@ func (f *BorderFilter) reconcile() error {
 	if want == nil {
 		want = sets
 	}
+	changed := sets.changed(want)
 	wrote := ""
-	generation := f.readGeneration()
+	generation := f.be.generation()
+	// the read after the fill stays, so a base older than another writer's
+	// transaction costs a pass and its retry, as nftables.Conn.Generation gives.
+	// The sweep, and a pass another writer's change woke, read before.
+	skipped := generation != 0 && generation == f.cleanGeneration && f.trigger != "sweep" && f.trigger != "changed" &&
+		slices.Equal(rules, f.last) && changed != nil
 	var read chainReadback
 	var err error
-	skipped := f.unmoved(generation, rules, sets)
 	if !skipped {
 		read, err = f.be.Rules(rules, want)
 	}
@@ -1029,11 +1042,9 @@ func (f *BorderFilter) reconcile() error {
 		// a failed read tells nothing of the filter, which is then left
 		f.made, f.found = err == nil && !read.held, err == nil && read.held
 	}
-	f.cleanGeneration = 0
 	if err == nil && read.fault == "" {
-		f.written, f.cleanGeneration = want, generation
+		f.written = want
 	}
-	changed := sets.changed(want)
 	switch {
 	case err != nil:
 		err = fmt.Errorf("list rules: %w", err)
@@ -1057,12 +1068,9 @@ func (f *BorderFilter) reconcile() error {
 		}
 	}
 	if err == nil && wrote != "" {
-		generation = f.readGeneration()
+		generation = f.be.generation()
 		if read, err = f.be.Rules(rules, sets); err != nil {
 			err = fmt.Errorf("list rules: %w", err)
-		}
-		if err == nil && read.fault == "" {
-			f.cleanGeneration = generation
 		}
 	}
 	installed := read.rules
@@ -1076,19 +1084,20 @@ func (f *BorderFilter) reconcile() error {
 	default:
 		f.setReady(true, "")
 	}
+	f.cleanGeneration = 0
 	if err == nil && read.fault == "" {
 		f.setNone(none)
+		f.cleanGeneration = generation
 	}
 	holding := f.report(kept)
-	f.heldOnFault = err == nil && read.fault != "" && holding
-	f.last = nil
-	if f.ready {
-		f.last = rules
-	}
+	f.retryOnFault = err == nil && read.fault != "" && (holding || skipped)
+	f.last = rules
 	count := len(installed)
-	if last := f.stats.Load(); skipped && wrote == "" && last != nil {
-		// a fill that failed with no read before it leaves the count the last read found
-		count = last.Installed
+	if skipped && wrote == "" {
+		// a fill that failed with no read before it reports the count the last read
+		// found, wrong where another writer has changed the chains since, until the
+		// retry reads a second later
+		count = f.stats.Load().Installed
 	}
 	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: count, Dropped: f.dropped, Kinds: dropKinds(rules), CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
 	if err != nil {
@@ -1108,40 +1117,6 @@ func (f *BorderFilter) reconcile() error {
 		f.rt.Events.Emit("antispoof.pass", "", attrs...)
 	}
 	return err
-}
-
-// unmoved reports whether the pass fills from written with no read before the
-// fill: it would fill, the last pass read the filter back as written with
-// these rules at generation, which no transaction has moved since, and it is
-// no sweep and no start, which read in full. The kernel moves its generation
-// before it applies a transaction's set elements, so a read can pair a
-// generation with the elements before it, and the read after the fill, which
-// stays, then finds what the fill wrote on a wrong base: a fill that fails or
-// faults and the pass's retry, never a fault left unread.
-func (f *BorderFilter) unmoved(generation uint32, rules []BorderRule, sets borderSets) bool {
-	return generation != 0 && generation == f.cleanGeneration && f.trigger != "sweep" && f.trigger != "start" &&
-		f.ready && slices.Equal(rules, f.last) && f.written != nil && sets.changed(f.written) != nil
-}
-
-// generationCounter is the optional half of a backend whose kernel counts the
-// transactions that change it, as nf_tables does. pf counts none, so its
-// filter reads before every fill.
-type generationCounter interface {
-	generation() (uint32, error)
-}
-
-// readGeneration is the backend's generation now, 0 where the backend counts
-// none or the read fails, which no pass fills on unread
-func (f *BorderFilter) readGeneration() uint32 {
-	counter, ok := f.be.(generationCounter)
-	if !ok {
-		return 0
-	}
-	generation, err := counter.generation()
-	if err != nil {
-		return 0
-	}
-	return generation
 }
 
 // reportCarveOuts reports each carve-out that came since the last pass at

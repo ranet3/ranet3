@@ -4,80 +4,138 @@
 package kernel
 
 import (
+	"cmp"
+	"errors"
+	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
-// countedBorder is the fake host with a generation, which each write the host
-// takes moves by one, as nf_tables' does, and short, which makes the next fill
-// send one range less of each set it moves, as a fault of the delta would
+// retryWait bounds the wait for the pass the retry owes, past its first delay
+// of 1 second
+const retryWait = 3 * time.Second
+
+// countedBorder is the fake host with nf_tables' generation, which each
+// transaction the host commits moves by one, and with a fill that answers as
+// nf_tables answers the filter's. short makes the next fill send one range
+// less of each set it changes, as a fault of the delta would, and during is a
+// step of another writer's that the next read takes after it has read the host.
 type countedBorder struct {
 	*fakeBorder
 	counted uint32
 	short   bool
+	during  func()
 }
 
-func (c *countedBorder) generation() (uint32, error) {
+func (c *countedBorder) generation() uint32 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.counted, nil
+	return c.counted
 }
 
-func (c *countedBorder) Fill(rules []BorderRule, was, sets borderSets) error {
+// Rules reads the host and then takes during, as a dump misses a transaction
+// that commits after it read
+func (c *countedBorder) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
+	read, err := c.fakeBorder.Rules(rules, sets)
+	if during := c.during; during != nil {
+		c.during = nil
+		during()
+	}
+	return read, err
+}
+
+// Fill answers as nf_tables answers the filter's transaction, whose adds carry
+// no NLM_F_EXCL: it refuses the whole transaction where it deletes a range the
+// host lacks, takes an add of a range the host holds, and moves the generation
+// where it commits
+func (c *countedBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	if c.short {
 		c.short = false
-		sets = maps.Clone(sets)
-		for name, ranges := range sets {
-			if len(ranges) > 0 {
-				sets[name] = slices.Clone(ranges[:len(ranges)-1])
+		sets = shortened(sets)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.log = append(c.log, "fill "+strings.Join(slices.Sorted(maps.Keys(sets)), " "))
+	if c.failFill {
+		return errors.New("no")
+	}
+	next := borderSets{}
+	maps.Copy(next, c.sets)
+	for name, ranges := range sets {
+		held := slices.Clone(c.sets[name])
+		for _, gone := range was[name] {
+			if slices.Contains(ranges, gone) {
+				continue
+			}
+			at := slices.Index(held, gone)
+			if at < 0 {
+				return fmt.Errorf("fill deletes %v from set %s, which lacks it", gone, name)
+			}
+			held = slices.Delete(held, at, at+1)
+		}
+		for _, added := range ranges {
+			if !slices.Contains(was[name], added) && !slices.Contains(held, added) {
+				held = append(held, added)
 			}
 		}
+		slices.SortFunc(held, func(a, b egress.Range) int { return cmp.Or(a.First.Compare(b.First), a.Last.Compare(b.Last)) })
+		next[name] = held
 	}
-	err := c.fakeBorder.Fill(rules, was, sets)
-	if err == nil {
-		c.move()
-	}
-	return err
+	c.sets = next
+	c.counted++
+	return nil
 }
 
 func (c *countedBorder) Apply(rules []BorderRule, sets borderSets) error {
 	err := c.fakeBorder.Apply(rules, sets)
 	if err == nil {
-		c.move()
+		c.mu.Lock()
+		c.counted++
+		c.mu.Unlock()
 	}
 	return err
 }
 
-// move counts one transaction
-func (c *countedBorder) move() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.counted++
-}
-
-// another is another writer's transaction that empties set, moving the
-// generation where it commits as nf_tables counts it, and leaving it where
-// moved is false, as a generation read ahead of the transaction's elements is
-func (c *countedBorder) another(set string, moved bool) {
+// another is another writer's committed transaction that empties set
+func (c *countedBorder) another(set string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sets[set] = nil
-	if moved {
-		c.counted++
-	}
+	c.counted++
 }
 
-// countedFilter is a filter on a counted host at generation 1 whose none set
-// moves by one range at each call of step, and the host
-func countedFilter(t *testing.T) (*BorderFilter, *countedBorder, func()) {
+// anotherUnseen is another writer's transaction that empties set where the
+// generation does not show it, as a read of the generation ahead of the
+// transaction's elements leaves it, which nftables.Conn.Generation tells
+func (c *countedBorder) anotherUnseen(set string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sets[set] = nil
+}
+
+// shortened is sets with the last range of each set of more than one cut
+func shortened(sets borderSets) borderSets {
+	out := maps.Clone(sets)
+	for name, ranges := range out {
+		if len(ranges) > 1 {
+			out[name] = slices.Clone(ranges[:len(ranges)-1])
+		}
+	}
+	return out
+}
+
+// movingFilter is a filter started on be whose none6 set changes by one range
+// at each call of step
+func movingFilter(t *testing.T, be borderBackend) (*BorderFilter, func()) {
 	t.Helper()
 	derived := egress.BorderSets{Owned: ranges("192.0.2.1/32"), None: ranges("203.0.113.0/24", "2001:db8:5::/48")}
 	rt := borderRuntime(nil)
 	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
-	be := &countedBorder{fakeBorder: &fakeBorder{}, counted: 1}
 	f, err := startBorderFilter(nil, rt, be)
 	if err != nil {
 		t.Fatal(err)
@@ -90,11 +148,20 @@ func countedFilter(t *testing.T) (*BorderFilter, *countedBorder, func()) {
 			derived.None = ranges("203.0.113.0/24", "2001:db8:5::/48")
 		}
 	}
+	return f, step
+}
+
+// countedFilter is a filter on a counted host at generation 1, the host, and
+// the step that changes none6
+func countedFilter(t *testing.T) (*BorderFilter, *countedBorder, func()) {
+	t.Helper()
+	be := &countedBorder{fakeBorder: &fakeBorder{}, counted: 1}
+	f, step := movingFilter(t, be)
 	return f, be, step
 }
 
-// pass runs a pass woken by trigger and answers what the host saw of it
-func (c *countedBorder) pass(t *testing.T, f *BorderFilter, trigger string) ([]string, error) {
+// woken runs a pass woken by trigger and answers what the host saw of it
+func (c *countedBorder) woken(t *testing.T, f *BorderFilter, trigger string) ([]string, error) {
 	t.Helper()
 	mark := len(c.entries())
 	f.trigger = trigger
@@ -102,74 +169,231 @@ func (c *countedBorder) pass(t *testing.T, f *BorderFilter, trigger string) ([]s
 	return c.entries()[mark:], err
 }
 
-// A pass woken by the mesh's table or the host's links or the reconciler that
-// moves a set, where no transaction moved the generation since the last read
-// that found the filter as written, fills from what that read found with no
-// read before the fill and reads after it, pass after pass
-func TestBorderFillsWithNoReadBeforeWhereTheGenerationHasNotMoved(t *testing.T) {
+var (
+	readFillRead = []string{"rules", "fill " + noneSet + "6", "rules"}
+	fillRead     = []string{"fill " + noneSet + "6", "rules"}
+	rewrite      = []string{"rules", "apply", "rules"}
+)
+
+// A pass woken by the mesh's table, the host's links, the reconciler or a
+// reload that changes a set, where no transaction has committed since the last
+// read that found the filter as written, fills from what that read found with
+// no read before the fill and reads after it, pass after pass
+func TestBorderFillsWithNoReadBeforeWhereNoTransactionCommitted(t *testing.T) {
 	for _, trigger := range []string{"routes", "network", "kernel", "reload", "missed"} {
 		f, be, step := countedFilter(t)
 		for i := range 3 {
 			step()
-			got, err := be.pass(t, f, trigger)
-			if want := []string{"fill none6", "rules"}; err != nil || !slices.Equal(got, want) || !f.ready {
-				t.Errorf("%s pass %d went %q with %v, ready %v, want %q", trigger, i, got, err, f.ready, want)
+			got, err := be.woken(t, f, trigger)
+			if err != nil || !slices.Equal(got, fillRead) || !f.ready {
+				t.Errorf("%s pass %d went %q with %v, ready %v, want %q", trigger, i, got, err, f.ready, fillRead)
 			}
 		}
 	}
 }
 
-// A pass reads before it fills where another writer's transaction moved the
-// generation, which it finds and rewrites, where it is a sweep or a start, and
-// where it would fill on a filter the last pass did not read back as written
-func TestBorderReadsBeforeTheFillWhereTheGenerationMovedOrThePassReadsInFull(t *testing.T) {
+// A pass reads before its fill where another writer's transaction committed
+// since the last read, and finds and rewrites what it changed
+func TestBorderReadsBeforeTheFillWhereAnotherWritersTransactionCommitted(t *testing.T) {
 	f, be, step := countedFilter(t)
-	be.another(noneSet+"4", true)
+	be.another(noneSet + "4")
 	step()
-	if got, err := be.pass(t, f, "routes"); err != nil || !slices.Equal(got, []string{"rules", "apply", "rules"}) || !f.ready {
-		t.Errorf("a move after another writer's transaction went %q with %v, ready %v, want the read, a rewrite and the read after", got, err, f.ready)
-	}
-	step()
-	if got, err := be.pass(t, f, "sweep"); err != nil || !slices.Equal(got, []string{"rules", "fill none6", "rules"}) {
-		t.Errorf("a sweep at an unmoved generation went %q with %v, want the read before the fill", got, err)
-	}
-	step()
-	mark := len(be.entries())
-	if _, err := startBorderFilter(nil, f.rt, be); err != nil {
-		t.Fatal(err)
-	}
-	// a start reads against the sets it derives, so it finds the moved set and rewrites
-	if got := be.entries()[mark:]; !slices.Equal(got, []string{"rules", "apply", "rules"}) {
-		t.Errorf("a start at an unmoved generation went %q, want the read, a rewrite and the read after", got)
-	}
-	f, be, step = countedFilter(t)
-	be.short = true
-	step()
-	if got, err := be.pass(t, f, "routes"); err != nil || !slices.Equal(got, []string{"fill none6", "rules"}) || f.ready {
-		t.Fatalf("a fill one range short went %q with %v, ready %v, want the read after it to find it", got, err, f.ready)
-	}
-	step()
-	if got, err := be.pass(t, f, "routes"); err != nil || !slices.Equal(got, []string{"rules", "apply", "rules"}) || !f.ready {
-		t.Errorf("the move after a fill the read after found short went %q with %v, ready %v, want the read before it", got, err, f.ready)
+	if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+		t.Errorf("a change after another writer's transaction went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
 	}
 }
 
-// Another writer's transaction the generation does not show, as a read of the
-// generation ahead of its elements leaves it, fails the fill computed from the
-// last read, and the retry reads and rewrites the filter: the cost is a pass,
-// and nothing is left unread
-func TestBorderFillOnAGenerationThatMissedAChangeFailsAndTheRetryRewrites(t *testing.T) {
+// The sweep reads before its fill where no transaction has committed
+func TestBorderSweepReadsBeforeItsFill(t *testing.T) {
 	f, be, step := countedFilter(t)
-	be.another(noneSet+"6", false)
 	step()
-	got, err := be.pass(t, f, "routes")
-	if err == nil || !slices.Equal(got, []string{"fill none6"}) || f.ready {
-		t.Fatalf("a fill from a base another writer emptied went %q with %v, ready %v, want the fill refused", got, err, f.ready)
+	if got, err := be.woken(t, f, "sweep"); err != nil || !slices.Equal(got, readFillRead) || !f.ready {
+		t.Errorf("the sweep went %q with %v, ready %v, want %q", got, err, f.ready, readFillRead)
 	}
-	if stats := f.Stats(); stats.Installed == 0 {
-		t.Errorf("the failed pass reported %d rules installed, want the count of the last read", stats.Installed)
+}
+
+// A pass another writer's change woke reads before its fill, also where the
+// generation does not show that change
+func TestBorderPassAnotherWritersChangeWokeReadsBeforeItsFill(t *testing.T) {
+	f, be, step := countedFilter(t)
+	be.anotherUnseen(noneSet + "4")
+	step()
+	if got, err := be.woken(t, f, "changed"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+		t.Errorf("the pass the change woke went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
 	}
-	if got, err := be.pass(t, f, "retry"); err != nil || !slices.Equal(got, []string{"rules", "apply", "rules"}) || !f.ready {
-		t.Errorf("the retry went %q with %v, ready %v, want the read, a rewrite and the read after", got, err, f.ready)
+}
+
+// A reload that changes the rules reads before it writes, where no
+// transaction has committed
+func TestBorderReloadOfTheRulesReadsBeforeItsWrite(t *testing.T) {
+	f, be, step := countedFilter(t)
+	f.config.Store(overlay(t))
+	step()
+	if got, err := be.woken(t, f, "reload"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+		t.Errorf("the reload went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+	}
+}
+
+// A pass that would fill nothing reads the filter, where no transaction has
+// committed
+func TestBorderPassThatWouldFillNothingReads(t *testing.T) {
+	for _, trigger := range []string{"reload", "missed", "retry", "changed", "sweep"} {
+		f, be, _ := countedFilter(t)
+		if got, err := be.woken(t, f, trigger); err != nil || !slices.Equal(got, []string{"rules"}) || !f.ready {
+			t.Errorf("a %s pass with nothing to fill went %q with %v, ready %v, want one read", trigger, got, err, f.ready)
+		}
+	}
+}
+
+// A pass reads before its fill where the last read found a fault after a
+// fill, before and after a rewrite, or failed
+func TestBorderReadsBeforeTheFillAfterAReadThatFoundAFault(t *testing.T) {
+	t.Run("after a fill", func(t *testing.T) {
+		f, be, step := countedFilter(t)
+		be.short = true
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, fillRead) || f.ready {
+			t.Fatalf("a fill one range short went %q with %v, ready %v, want the read after it to find it", got, err, f.ready)
+		}
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+			t.Errorf("the change after went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+		}
+	})
+	t.Run("before and after a rewrite", func(t *testing.T) {
+		f, be, step := countedFilter(t)
+		be.mu.Lock()
+		be.fault, be.stuck = "its table carries flags 0x1", true
+		be.mu.Unlock()
+		if got, err := be.woken(t, f, "sweep"); err != nil || !slices.Equal(got, rewrite) || f.ready {
+			t.Fatalf("a sweep over a fault a rewrite leaves went %q with %v, ready %v, want the rewrite read faulted", got, err, f.ready)
+		}
+		be.mu.Lock()
+		be.fault, be.stuck = "", false
+		be.mu.Unlock()
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, readFillRead) || !f.ready {
+			t.Errorf("the change after went %q with %v, ready %v, want %q", got, err, f.ready, readFillRead)
+		}
+	})
+	t.Run("a failed read", func(t *testing.T) {
+		f, be, step := countedFilter(t)
+		be.mu.Lock()
+		be.failRules = true
+		be.mu.Unlock()
+		if _, err := be.woken(t, f, "sweep"); err == nil {
+			t.Fatal("a sweep whose read failed reported no error")
+		}
+		be.mu.Lock()
+		be.failRules = false
+		be.mu.Unlock()
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, readFillRead) || !f.ready {
+			t.Errorf("the change after went %q with %v, ready %v, want %q", got, err, f.ready, readFillRead)
+		}
+	})
+}
+
+// The generation a read records is the one read before it, so a transaction
+// that commits while the read runs, missed by it, makes the next change read
+// before its fill, for the read before a fill and for the read after one
+func TestBorderRecordsTheGenerationReadBeforeEachRead(t *testing.T) {
+	t.Run("before a fill", func(t *testing.T) {
+		f, be, step := countedFilter(t)
+		be.during = func() { be.another(noneSet + "4") }
+		if got, err := be.woken(t, f, "sweep"); err != nil || !slices.Equal(got, []string{"rules"}) || !f.ready {
+			t.Fatalf("a sweep whose read missed a transaction went %q with %v, ready %v, want one clean read", got, err, f.ready)
+		}
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+			t.Errorf("the change after went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+		}
+	})
+	t.Run("after a fill", func(t *testing.T) {
+		f, be, step := countedFilter(t)
+		be.during = func() { be.another(noneSet + "4") }
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, fillRead) || !f.ready {
+			t.Fatalf("a fill whose read after missed a transaction went %q with %v, ready %v, want %q", got, err, f.ready, fillRead)
+		}
+		step()
+		if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+			t.Errorf("the change after went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+		}
+	})
+}
+
+// A filter on a backend that counts no generation reads before every fill
+func TestBorderReadsBeforeEveryFillWhereTheBackendCountsNoGeneration(t *testing.T) {
+	be := &fakeBorder{}
+	f, step := movingFilter(t, be)
+	for i := range 3 {
+		step()
+		mark := len(be.entries())
+		f.trigger = "routes"
+		err := f.reconcile()
+		if got := be.entries()[mark:]; err != nil || !slices.Equal(got, readFillRead) || !f.ready {
+			t.Errorf("pass %d went %q with %v, ready %v, want %q", i, got, err, f.ready, readFillRead)
+		}
+	}
+}
+
+// Another writer's transaction the generation does not show, which emptied
+// the set a fill adds to, lets the fill commit, and the read after finds the
+// set short, arms the retry, and the retry reads and rewrites
+func TestBorderFillOnASetAnotherWriterEmptiedCommitsAndTheReadAfterFindsIt(t *testing.T) {
+	f, be, step := countedFilter(t)
+	be.anotherUnseen(noneSet + "6")
+	step()
+	if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, fillRead) || f.ready || !f.retryOnFault {
+		t.Fatalf("a fill that adds to a set another writer emptied went %q with %v, ready %v, retry armed %v, want %q, not ready and the retry armed", got, err, f.ready, f.retryOnFault, fillRead)
+	}
+	if got, err := be.woken(t, f, "retry"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+		t.Errorf("the retry went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+	}
+}
+
+// A fill that deletes a range another writer took, where the generation does
+// not show it, is refused whole, reports the count of the last read beside
+// its error, and the retry reads and rewrites
+func TestBorderFillThatDeletesWhatAnotherWriterTookIsRefused(t *testing.T) {
+	f, be, step := countedFilter(t)
+	step()
+	if got, err := be.woken(t, f, "routes"); err != nil || !slices.Equal(got, fillRead) {
+		t.Fatalf("the first change went %q with %v, want %q", got, err, fillRead)
+	}
+	installed := f.Stats().Installed
+	be.anotherUnseen(noneSet + "6")
+	step()
+	got, err := be.woken(t, f, "routes")
+	if err == nil || !slices.Equal(got, []string{"fill " + noneSet + "6"}) || f.ready {
+		t.Fatalf("a fill that deletes what another writer took went %q with %v, ready %v, want it refused", got, err, f.ready)
+	}
+	if stats := f.Stats(); installed == 0 || stats.Installed != installed {
+		t.Errorf("the refused pass reported %d rules installed, want the %d of the last read", stats.Installed, installed)
+	}
+	if got, err := be.woken(t, f, "retry"); err != nil || !slices.Equal(got, rewrite) || !f.ready {
+		t.Errorf("the retry went %q with %v, ready %v, want %q", got, err, f.ready, rewrite)
+	}
+}
+
+// Under Run, with no wake of another writer's change and no sweep due, a fault
+// the read after a fill with no read before it found is repaired by the retry
+// within its delay
+func TestBorderRunRetriesAFaultTheReadAfterAFillFound(t *testing.T) {
+	be := &countedBorder{fakeBorder: &fakeBorder{every: lateSweep}, counted: 1}
+	f, step := movingFilter(t, be)
+	runBorder(t, f)
+	mark := len(be.entries())
+	be.anotherUnseen(noneSet + "4")
+	step()
+	f.kernel <- struct{}{}
+	want := append(slices.Clone(fillRead), rewrite...)
+	started := time.Now()
+	for !slices.Equal(be.entries()[mark:], want) || !f.Stats().Ready {
+		if time.Since(started) > retryWait {
+			t.Fatalf("%v after the wake the host saw %q, ready %v, want %q and ready, the retry repairing the fault", retryWait, be.entries()[mark:], f.Stats().Ready, want)
+		}
+		time.Sleep(passPoll)
 	}
 }

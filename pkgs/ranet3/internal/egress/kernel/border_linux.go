@@ -96,9 +96,15 @@ func (b *borderTable) chain(name string) egress.BorderChainReading {
 
 func (b *borderTable) readings(sets borderSets) []egress.BorderSetReading { return sets.readings() }
 
-// generation is nf_tables' generation of the filter's namespace, which every
-// transaction that changes any table moves
-func (b *borderTable) generation() (uint32, error) { return b.conn.Generation() }
+// generation is 0 where the read fails, and the pass then reads, where a
+// broken socket fails it
+func (b *borderTable) generation() uint32 {
+	generation, err := b.conn.Generation()
+	if err != nil {
+		return 0
+	}
+	return generation
+}
 
 // Rules counts the filter among the table's holders where it finds any of
 // the filter's chains or sets, as a start that takes them over keeps them
