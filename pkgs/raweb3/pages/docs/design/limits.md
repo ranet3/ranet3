@@ -938,7 +938,8 @@ ciphertext buffers only after the ordered sender finishes its UDP call,
 retaining separate storage for work in flight. Replaced inbound SAs remain
 usable for 5 seconds after their Delete acknowledgment, or until their lifetime
 ends if that comes first, so queued and reordered packets can drain during a
-rekey.
+rekey. The end that answered a peer's rekey can go on sending on the replaced SA
+after the rekey, as [Rekeying](protocol-deviations.md#rekeying) describes.
 
 ## Paths under 1280 bytes
 
