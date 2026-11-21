@@ -26,6 +26,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -49,11 +50,15 @@ const (
 )
 
 // orderBackend is the real nftables backend with the failures and the hold a
-// phase arms before a learn
+// phase arms before a learn, whether a read and whether a fill came since the
+// phase armed, and whether an armed failure or hold met a pass that skipped
+// its read before its fill: a read after a fill, or a fill with no read
+// before it
 type orderBackend struct {
 	borderBackend
-	failRules, failFill atomic.Int32
-	holdRules           atomic.Int64
+	failRules, failFill       atomic.Int32
+	holdRules                 atomic.Int64
+	read, filled, skippedRead atomic.Bool
 }
 
 // orderTake takes one of n, reporting whether there was one
@@ -70,17 +75,28 @@ func orderTake(n *atomic.Int32) bool {
 }
 
 func (b *orderBackend) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
+	defer b.read.Store(true)
 	if d := b.holdRules.Swap(0); d > 0 {
+		if b.filled.Load() {
+			b.skippedRead.Store(true)
+		}
 		time.Sleep(time.Duration(d))
 	}
 	if orderTake(&b.failRules) {
+		if b.filled.Load() {
+			b.skippedRead.Store(true)
+		}
 		return chainReadback{}, fmt.Errorf("dump rules: %w", netlink.ErrDumpInterrupted)
 	}
 	return b.borderBackend.Rules(rules, sets)
 }
 
 func (b *orderBackend) Fill(rules []BorderRule, was, sets borderSets) error {
+	defer b.filled.Store(true)
 	if orderTake(&b.failFill) {
+		if !b.read.Load() {
+			b.skippedRead.Store(true)
+		}
 		return unix.ENOBUFS
 	}
 	return b.borderBackend.Fill(rules, was, sets)
@@ -362,6 +378,27 @@ func (l *orderLab) passNow(what string) bool {
 	return l.filter.Stats().Ready
 }
 
+// moveGeneration commits another writer's transaction that makes a table
+// elsewhere and another that removes it again, which move the namespace's
+// generation and wake no pass, so the next pass of the filter reads before it
+// fills
+func (l *orderLab) moveGeneration() {
+	l.t.Helper()
+	if err := l.ns.Do(func() error {
+		other, err := nftables.Dial()
+		if err != nil {
+			return err
+		}
+		defer other.Close()
+		if err := other.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, "elsewhere")}); err != nil {
+			return err
+		}
+		return other.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, "elsewhere")})
+	}); err != nil {
+		l.t.Fatalf("another writer's transaction in another table: %v", err)
+	}
+}
+
 // learnRead learns lan while a pass of the reconciler, which a reload wakes
 // at once, waits at its read of the source, arming the backend before the
 // learn, and lets the pass read on as the learn lands: the reconciler reads
@@ -448,12 +485,21 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		host := phase.lan.Addr().Next()
 		start := time.Now()
 		if phase.arm != nil {
+			// the generation moved, so the learn's pass reads before its fill, and the
+			// armed failure or hold meets that read or the fill after it
+			arm := func(b *orderBackend) {
+				lab.moveGeneration()
+				b.read.Store(false)
+				b.filled.Store(false)
+				b.skippedRead.Store(false)
+				phase.arm(b)
+			}
 			if phase.read {
-				lab.learnRead(phase.lan, phase.arm)
+				lab.learnRead(phase.lan, arm)
 				// the wait for the reconciler's pass is no part of the phase
 				start = time.Now()
 			} else {
-				phase.arm(lab.be)
+				arm(lab.be)
 				lab.routes.Set(netip.Prefix{}, phase.lan, lab.peer)
 			}
 			lab.awaitHold(phase.name, phase.lan)
@@ -473,6 +519,9 @@ func TestTUNEntryRoutesALearnedLANOnlyOnceItsNoneSetIsWritten(t *testing.T) {
 		}
 		want++
 		lab.awaitInstalled(phase.name, want)
+		if lab.be.skippedRead.Load() {
+			t.Errorf("%s: the armed failure or hold met a pass that skipped its read before its fill, want a pass that reads first", phase.name)
+		}
 		entered, dropped := lab.send(host)
 		t.Logf("%s: the route landed by %v, then the datagram entered the tun %v, the chain entry dropped %d", phase.name, time.Since(start), entered, dropped)
 		if entered || dropped != 1 {

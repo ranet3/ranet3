@@ -194,6 +194,9 @@ func (f *fakeBorder) holds(string) bool { return true }
 
 func (f *fakeBorder) sweep() time.Duration { return f.every }
 
+// generation is 0, a host that counts no transactions, as pf
+func (f *fakeBorder) generation() uint32 { return 0 }
+
 func (f *fakeBorder) wildcards() bool { return !f.exact }
 
 func (f *fakeBorder) chain(name string) egress.BorderChainReading {

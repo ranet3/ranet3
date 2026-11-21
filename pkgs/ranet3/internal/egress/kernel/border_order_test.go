@@ -730,28 +730,28 @@ func TestRoutesHeldOverAReadbackFaultAreRetried(t *testing.T) {
 	}
 }
 
-// A pass arms the retry only where it ends on a readback fault with the
-// route source holding a route back: neither a clean pass nor a faulted pass
-// that holds nothing back arms it
+// A pass that reads before its fill arms the retry only where it ends on a
+// readback fault with the route source holding a route back: neither a clean
+// pass nor a faulted pass that holds nothing back arms it
 func TestRetryIsArmedOnlyForARouteHeldOverAReadbackFault(t *testing.T) {
 	table := netstack.NewRouteTable()
 	be := &fakeBorder{}
 	f := orderFilter(t, table, be, nil)
 	f.Routes(table)
 	orderPass(t, f, "sweep")
-	if f.heldOnFault {
+	if f.retryOnFault {
 		t.Fatal("a clean pass armed the retry")
 	}
 	be.mu.Lock()
 	be.fault, be.stuck = "its table reads back otherwise", true
 	be.mu.Unlock()
 	_ = f.reconcile()
-	if f.ready || f.heldOnFault {
-		t.Fatalf("a faulted pass holding nothing back left the filter ready %v and armed the retry %v, want neither", f.ready, f.heldOnFault)
+	if f.ready || f.retryOnFault {
+		t.Fatalf("a faulted pass holding nothing back left the filter ready %v and armed the retry %v, want neither", f.ready, f.retryOnFault)
 	}
 	orderLearn(table, netip.MustParsePrefix("198.51.100.32/27"))
 	_ = f.reconcile()
-	if !f.heldOnFault {
+	if !f.retryOnFault {
 		t.Fatal("a faulted pass holding a LAN back armed no retry")
 	}
 }

@@ -96,6 +96,16 @@ func (b *borderTable) chain(name string) egress.BorderChainReading {
 
 func (b *borderTable) readings(sets borderSets) []egress.BorderSetReading { return sets.readings() }
 
+// generation is 0 where the read fails, and the pass then reads, where a
+// broken socket fails it
+func (b *borderTable) generation() uint32 {
+	generation, err := b.conn.Generation()
+	if err != nil {
+		return 0
+	}
+	return generation
+}
+
 // Rules counts the filter among the table's holders where it finds any of
 // the filter's chains or sets, as a start that takes them over keeps them
 func (b *borderTable) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
@@ -308,7 +318,16 @@ func (b *borderTable) Fill(_ []BorderRule, was, sets borderSets) error {
 	if err != nil {
 		return err
 	}
-	return b.holder.Write(b.conn, requests)
+	return asRefused(b.holder.Write(b.conn, requests))
+}
+
+// asRefused is err a refused where the kernel acknowledged the transaction
+// with an errno, as nftables.Refused holds, and err as it is otherwise
+func asRefused(err error) error {
+	if errors.As(err, new(*nftables.Refused)) {
+		return refused{err}
+	}
+	return err
 }
 
 // fillBatch is the transaction Fill sends: each set sets names moved from what

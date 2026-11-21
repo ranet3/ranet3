@@ -277,7 +277,9 @@ type borderBackend interface {
 	// Fill moves each set sets names from the ranges was gives it, which the
 	// host holds under rules, to those sets gives it, in one transaction that
 	// leaves the chains as they are. nftables sends the ranges that differ
-	// alone, and pf sends each table rules read whole.
+	// alone, and pf sends each table rules read whole. It may return a refused
+	// only where the host answered the transaction with an error, which commits
+	// nothing of it, and any other error may leave the transaction committed.
 	Fill(rules []BorderRule, was, sets borderSets) error
 	// Withdraw removes what the filter writes and reports whether it removed
 	// any, what is already gone being success. nftables removes the filter's
@@ -297,6 +299,10 @@ type borderBackend interface {
 	// a reader off the run goroutine. rules names each line the backend cannot
 	// name by its comment alone.
 	Read(rules []BorderRule) (chainReadback, error)
+	// generation is the namespace's nf_tables generation, which every committed
+	// transaction moves, as nftables.Conn.Generation gives, and 0 where the
+	// backend counts none or the read fails, so a pass reads before every fill
+	generation() uint32
 	// Close closes the backend of a filter that ends, a start refused before
 	// it ran among them, and gives back what opening it took for the filter
 	// beyond what it writes where no earlier run left it so
@@ -327,6 +333,15 @@ type borderBackend interface {
 	// readings is sets as the backend names and holds them
 	readings(sets borderSets) []egress.BorderSetReading
 }
+
+// refused is the error of a transaction the host answered with an error,
+// which commits nothing of it, where another error of a write leaves the
+// commit unknown. This file builds on every platform and nftables.Refused is
+// Linux's alone, so the Linux backend's Fill wraps that error in this one
+// through asRefused.
+type refused struct{ error }
+
+func (r refused) Unwrap() error { return r.error }
 
 // BorderFilter owns the antispoof filter on one node, as its backend writes it:
 // its antispoof chain where overlay is written, its entry chain, their sets,
@@ -379,11 +394,12 @@ type BorderFilter struct {
 	end   func()
 
 	// the rest belong to the run goroutine, and to NewBorderFilter before it
-	// starts. written is the sets the last write or clean read found, nil where
-	// the kernel's sets are not known. last is the rules of the last pass that
-	// read the filter back as written, made is whether the first pass's read
-	// found nothing the filter writes, so whatever is there is this start's,
-	// and found whether that read found any of it.
+	// starts. written is the sets the host held at the last confirmed read or
+	// write, kept over a fill the host refused, since a refusal commits nothing,
+	// and nil where a failed write may have committed. last is the rules of the
+	// last pass that read or wrote, made is whether the first pass's read found
+	// nothing the filter writes, so whatever is there is this start's, and found
+	// whether that read found any of it.
 	made      bool
 	found     bool
 	trigger   string
@@ -394,10 +410,17 @@ type BorderFilter struct {
 	carveOuts []egress.CarveOut
 	conflicts []egress.ExemptConflict
 	last      []BorderRule
-	// heldOnFault is whether the last pass ended on a readback fault with the
-	// source holding a route back. Run then retries the pass on its own timer,
-	// since no change of the table or the configuration may come to wake it.
-	heldOnFault bool
+	// cleanGeneration is the backend's generation read before the last read,
+	// where that read found the filter as written and ready, and 0 where it did
+	// not or the backend counts none, since nf_tables counts from 1 and skips 0
+	// at a wrap
+	cleanGeneration uint32
+	// retryOnFault is whether the last pass ended on a readback fault that no
+	// wake may come to repair: with the source holding a route back, or after
+	// a fill with no read before it. Run then retries the pass on its own
+	// timer, since no change of the table or the configuration may come to
+	// wake it.
+	retryOnFault bool
 	// heldRoutes reports each route the source holds back as a pass ends
 	heldRoutes routeReport
 	// keptRoutes reports each route whose addresses a pass kept out of the
@@ -863,8 +886,9 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		switch err := f.reconcile(); {
 		case err != nil:
 			slog.Warn("antispoof filter pass failed, retrying", "err", err, "retry_in", retry.Failed(f.sweep))
-		case f.heldOnFault:
-			// the route source holds routes back until a pass reads the sets back
+		case f.retryOnFault:
+			// the route source holds routes back until a pass reads the sets back, and a
+			// fault the read after a fill found came from no change a wake reports
 			retry.Failed(f.sweep)
 		default:
 			retry.Passed()
@@ -987,7 +1011,9 @@ func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
 // and by what it does, sending the sets' changed ranges alone where only they
 // moved, and reports ready only when the readback equals it. A pass woken
 // by the mesh's table or the host's links that asks for what the last good
-// pass read back reads nothing.
+// pass read back reads nothing. One that fills reads only after the fill where
+// no transaction has committed since the last read that found the filter as
+// written.
 func (f *BorderFilter) reconcile() error {
 	started := time.Now()
 	before := f.config.Load()
@@ -1011,8 +1037,20 @@ func (f *BorderFilter) reconcile() error {
 	if want == nil {
 		want = sets
 	}
+	fill := sets.changed(want)
 	wrote := ""
-	read, err := f.be.Rules(rules, want)
+	generation := f.be.generation()
+	// the read after the fill stays, so a base older than another writer's
+	// transaction costs a pass and its retry, as nftables.Conn.Generation gives.
+	// The sweep attempts a read whatever the generation shows, and a pass another
+	// writer's change woke reads because the generation can miss that change.
+	skipped := generation != 0 && generation == f.cleanGeneration && f.trigger != "sweep" && f.trigger != "changed" &&
+		slices.Equal(rules, f.last) && fill != nil
+	var read chainReadback
+	var err error
+	if !skipped {
+		read, err = f.be.Rules(rules, want)
+	}
 	if f.trigger == "start" {
 		// a failed read tells nothing of the filter, which is then left
 		f.made, f.found = err == nil && !read.held, err == nil && read.held
@@ -1020,7 +1058,6 @@ func (f *BorderFilter) reconcile() error {
 	if err == nil && read.fault == "" {
 		f.written = want
 	}
-	changed := sets.changed(want)
 	switch {
 	case err != nil:
 		err = fmt.Errorf("list rules: %w", err)
@@ -1028,27 +1065,36 @@ func (f *BorderFilter) reconcile() error {
 		// a rewrite makes what the filter writes again whole, and touches nothing beside it
 		// but what nf_tables ties to a rule of another writer's in the filter's chains
 		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
+			// the next pass reads the host against the rules and sets it derives
+			// again, not against what the host held, so a host that holds them,
+			// whether this rewrite committed with its answer lost or the host held
+			// them before, is adopted with no second rewrite
 			f.written = nil
 			err = fmt.Errorf("%s, and the write failed: %w", read.fault, applyErr)
 		} else {
 			wrote, f.written = "table", sets
 			slog.Info("antispoof filter installed", "rules", len(rules), "replaced", len(read.rules), "where", f.Where())
 		}
-	case changed != nil:
+	case fill != nil:
 		// the readback found the filter holding want, so the fill sends what differs from it
-		if fillErr := f.be.Fill(rules, want, changed); fillErr != nil {
-			f.written = nil
+		if fillErr := f.be.Fill(rules, want, fill); fillErr != nil {
+			if !errors.As(fillErr, new(refused)) {
+				// the fill may have committed, so the next read compares the host with the sets
+				f.written = nil
+			}
 			err = fmt.Errorf("fill sets: %w", fillErr)
 		} else {
 			wrote, f.written = "sets", sets
 		}
 	}
 	if err == nil && wrote != "" {
+		generation = f.be.generation()
 		if read, err = f.be.Rules(rules, sets); err != nil {
 			err = fmt.Errorf("list rules: %w", err)
 		}
 	}
 	installed := read.rules
+	f.cleanGeneration = 0
 	switch {
 	case err != nil:
 		f.setReady(false, "a pass failed: "+err.Error())
@@ -1058,17 +1104,22 @@ func (f *BorderFilter) reconcile() error {
 		f.setReady(false, read.unready)
 	default:
 		f.setReady(true, "")
+		f.cleanGeneration = generation
 	}
 	if err == nil && read.fault == "" {
 		f.setNone(none)
 	}
 	holding := f.report(kept)
-	f.heldOnFault = err == nil && read.fault != "" && holding
-	f.last = nil
-	if f.ready {
-		f.last = rules
+	f.retryOnFault = read.fault != "" && (holding || skipped)
+	f.last = rules
+	count := len(installed)
+	if skipped && wrote == "" {
+		// a fill that failed with no read before it reports the count the last read
+		// found, wrong where another writer has changed the chains since, until the
+		// retry reads a second later
+		count = f.stats.Load().Installed
 	}
-	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, Kinds: dropKinds(rules), CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
+	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: count, Dropped: f.dropped, Kinds: dropKinds(rules), CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
 	if err != nil {
 		stats.Err = err.Error()
 	} else {
