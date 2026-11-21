@@ -41,12 +41,22 @@ func (v hostView) same(o hostView) bool {
 }
 
 // watchedBorder is a counted host that keeps what the last read found where
-// it found the filter as written, nil where it did not, and whether a step of
-// another writer's committed during a read
+// it found the filter as written, nil where it did not, whether a step of
+// another writer's committed during a read, and a step that the read after
+// the next fill takes after it has read the host
 type watchedBorder struct {
 	*countedBorder
-	clean *hostView
-	fired bool
+	clean     *hostView
+	fired     bool
+	afterFill func()
+}
+
+func (w *watchedBorder) Fill(rules []BorderRule, was, sets borderSets) error {
+	err := w.countedBorder.Fill(rules, was, sets)
+	if w.afterFill != nil {
+		w.during, w.afterFill = w.afterFill, nil
+	}
+	return err
 }
 
 func (w *watchedBorder) view() hostView {
@@ -106,16 +116,22 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 			ht.Fatalf("start: %v", err)
 		}
 		var steps []string
-		for range hegel.Draw(ht, pbt.Spanning(1, 40)) {
+		lans := []string{"2001:db8::/48", "198.51.100.0/24"}
+		for range hegel.Draw(ht, pbt.Spanning(1, 60)) {
 			kind := hegel.Draw(ht, hegel.Integers(0, 99))
 			switch {
-			case kind < 35:
-			case kind < 50:
-				lan := hegel.Draw(ht, hegel.SampledFrom([]string{"2001:db8::/48", "198.51.100.0/24"}))
+			case kind < 45:
+				if hegel.Draw(ht, hegel.WeightedBooleans(0.6)) {
+					lan := hegel.Draw(ht, hegel.SampledFrom(lans))
+					moving[lan] = !moving[lan]
+					steps = append(steps, "change "+lan)
+				}
+			case kind < 55:
+				lan := hegel.Draw(ht, hegel.SampledFrom(lans))
 				moving[lan] = !moving[lan]
 				steps = append(steps, "change "+lan)
 				continue
-			case kind < 55:
+			case kind < 59:
 				if f.config.Load() == nil {
 					f.config.Store(cfg)
 				} else {
@@ -123,7 +139,7 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 				}
 				steps = append(steps, "new rules")
 				continue
-			case kind < 65:
+			case kind < 67:
 				what := hegel.Draw(ht, hegel.SampledFrom([]string{"empties none4", "empties none6", "adds to none6", "adds a rule"}))
 				host.mu.Lock()
 				switch what {
@@ -140,23 +156,29 @@ func TestBorderSkipFillsOnlyOverWhatTheLastReadFoundAsWritten(t *testing.T) {
 				host.mu.Unlock()
 				steps = append(steps, "another writer's transaction "+what)
 				continue
-			case kind < 70:
+			case kind < 71:
 				host.mu.Lock()
 				host.counted++
 				host.mu.Unlock()
 				steps = append(steps, "a transaction in another table")
 				continue
-			case kind < 75:
+			case kind < 74:
 				steps = append(steps, "an empty or a refused transaction")
 				continue
 			case kind < 82:
-				host.during = func() {
+				during := func() {
 					be.fired = true
 					host.another(noneSet + "4")
 				}
-				steps = append(steps, "a transaction during the next read")
+				if hegel.Draw(ht, hegel.Booleans()) {
+					host.during = during
+					steps = append(steps, "a transaction during the next read")
+				} else {
+					be.afterFill = during
+					steps = append(steps, "a transaction during the read after the next fill")
+				}
 				continue
-			case kind < 90:
+			case kind < 91:
 				host.short = true
 				steps = append(steps, "the next fill short")
 				continue
