@@ -575,10 +575,10 @@ type KernelTaken struct {
 // and it is the line to read when a customer's exit node has stopped being
 // selected.
 //
-// Ready, Unready, Skipped, Announced, PassAt and Err, and on an exit that
-// installs rules Refused, Dropped, Installed, Flows, Bytes, Untranslated,
-// ConntrackCount, ConntrackMax and Conflicts too, are the record the exit's
-// last pass or last stop stored (exit-nodes.md, "Watching it").
+// Ready, Unready, Announced and PassAt are the record the exit's last pass or
+// last stop stored (exit-nodes.md, "Watching it"). On an exit that installs
+// rules so are Skipped, Err, Refused, Dropped, Installed, Flows, Bytes,
+// Untranslated, ConntrackCount, ConntrackMax and Conflicts.
 type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the table and the translator's chains, as the backend spells them.
