@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-11-11
+updated: 2026-11-22
 order: 70
 ---
 
@@ -12,9 +12,9 @@ order: 70
 of restarting. A reload applies the trust document, the peers dialed,
 `auth.aliases`, the prefixes originated, `cap.babel`, `cap.segment`, the
 transform lists of `cap.crypto`, `link.listen`, `link.mtu` and most of
-`cap.table`. A node joining or leaving the mesh then costs 1 dialer, and every
-other session this node carries stays up. This matters because the trust
-document is rewritten every time any node joins.
+`cap.table`. A node joining or leaving the mesh then starts or stops only the
+dialers toward that node, and every other session this node carries stays up.
+This matters because the trust document is rewritten every time any node joins.
 
 ## Asking for a reload
 
@@ -432,12 +432,17 @@ A reload is refused when the new trust document:
 
 ### Peers the trust document cannot support
 
-A reload logs a peer the new trust document cannot support and does not dial it.
-The warning reads `reload: <reason>, so nothing will dial it`. At startup, some
-of the same peers refuse the start: a `dial.to` node the document does not name,
-a pinned endpoint it does not list, and a pinned endpoint in a family this node
-has no endpoint in. The [trust document](trust.md) page describes the document
-itself.
+A reload logs a peer the new trust document cannot support. The warning reads
+`reload: <reason>, each dialer toward it gives up at the next pass that finds it unsupported`.
+An attempt a dialer began before the reload may still be sent and may still be
+answered. A session such an answer makes over a removed endpoint stands, as any
+session over a removed endpoint does. A session such an answer makes with a node
+the document no longer names is refused.
+[Sessions the trust document no longer admits](#sessions-the-trust-document-no-longer-admits)
+describes both. At startup, some of the same peers refuse the start: a `dial.to`
+node the document does not name, a pinned endpoint it does not list, and a
+pinned endpoint in a family this node has no endpoint in. The
+[trust document](trust.md) page describes the document itself.
 
 An `auth.aliases` entry naming a node the new document does not name, or an
 endpoint it does not list, is logged the same way and the reload applies. The
