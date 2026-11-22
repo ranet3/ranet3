@@ -812,9 +812,9 @@ func (d BorderDrops) Reason(reason string) (uint64, bool) {
 // Counts is the mesh in six numbers, which is the first thing to read when
 // something is wrong.
 type Counts struct {
-	// Dialers is the peer loops running, which is smaller than the peers
-	// command lists: a peer the registry names without a dialable address
-	// never gets one.
+	// Dialers is the dialer loops registered, a loop waiting for its first or
+	// its next pass among them. A loop gives up at a pass that finds its pair
+	// unsupported.
 	Dialers        int `json:"dialers"`
 	Sessions       int `json:"sessions"`
 	Neighbors      int `json:"neighbors"`

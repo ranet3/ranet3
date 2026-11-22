@@ -2477,7 +2477,7 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 // dialed. The first pass covers a node that was already gone.
 // This one covers the reload that removes it afterward, and without it the
 // dialer logs the same lookup failure every reconnect delay for the life of
-// the process while Reload's "so nothing will dial it" is not true.
+// the process, where the reload's warning says it ends at its next pass.
 func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	// a name the dialer takes, so each pass is one attempt and then the reconnect delay, and the dial never reaches the transport

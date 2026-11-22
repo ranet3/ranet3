@@ -150,7 +150,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	refuse, skip := validatePeers(peers, x, families)
 	for _, problems := range [][]error{refuse, skip} {
 		for _, problem := range problems {
-			slog.Warn(fmt.Sprintf("reload: %v, so nothing will dial it", problem))
+			slog.Warn(fmt.Sprintf("reload: %v, each dialer toward it gives up at the next pass that finds it unsupported", problem))
 		}
 	}
 	for _, problem := range validateAliases(cfg.Auth.Aliases, x) {
