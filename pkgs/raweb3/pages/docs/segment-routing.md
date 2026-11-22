@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-15
+updated: 2026-11-21
 order: 60
 ---
 
@@ -335,27 +335,41 @@ past the checks [local segments](#local-segments) describe. When the steered
 packet is larger than that session carries, the waypoint answers or cuts the
 inner packet, or drops the segment as below. The headend (the node that steered
 the packet) does the same with a packet read off its tun. An IPv6 packet gets
-Packet Too Big, and an IPv4 packet with DF set gets fragmentation needed. The
-answer names what the session carries less the headers in front of the packet. A
-waypoint's answer goes back through the mesh to the packet's source, and the
-headend writes its answer into its tun, each from the address
+Packet Too Big, and an IPv4 packet with DF set gets fragmentation needed, at a
+waypoint only where a router forwards the packet's source. The answer names what
+the session carries less the headers in front of the packet. A waypoint's answer
+goes back through the mesh to the packet's source, and the headend writes its
+answer into its tun, each from the address
 [path MTU](path-mtu.md#where-answers-come-from) names. An IPv4 packet without DF
 is cut into fragments that fit, each sent on behind its own copy of the outer
 header and the routing header. One whose options cannot be read is answered with
-Parameter Problem instead, naming the octet at fault, from the same address.
-Where a route of the waypoint's own that counts as no default covers the
-packet's source, the waypoint writes its answer into its own tun instead, from
-the packet's destination, in either family and whatever router-id it holds, as
-the [forwarding decision](routing.md#transit) answers this host. A segment whose
-routing header does not name a whole IP packet behind it, or that carries an
-IPv4 packet without DF that cannot be cut, because its data runs past 65535
-bytes or the session leaves no room for 8 bytes of data behind its header, gets
+Parameter Problem instead, naming the octet at fault, from the same address, at
+a waypoint again only where a router forwards its source. Where a route of the
+waypoint's own that counts as no default covers the packet's source, the
+waypoint writes its answer into its own tun instead, from the packet's
+destination, in either family and whatever router-id it holds, as the
+[forwarding decision](routing.md#transit) answers this host. A segment gets
 Packet Too Big about itself, to its outer source, naming what the session
-carries, from the IPv6 router-id else the SID it reached, or, where such a route
-covers that source, into the tun from its next segment. A waypoint drops a
-segment, or the fragments it was cut into, and counts them, where the session's
-budget has no room for them, as [the dataplane](design/limits.md#dataplane)
-drops a tun read's packets, or where the session has closed.
+carries, where its routing header does not name a whole IP packet behind it,
+where it carries an IPv4 packet without DF that cannot be cut, because its data
+runs past 65535 bytes or the session leaves no room for 8 bytes of data behind
+its header, and where it carries, from a source no router forwards, an IPv6
+packet, an IPv4 packet with DF or one without DF whose options cannot be read,
+as [protocol deviations](design/protocol-deviations.md#icmp-answers) gives. That
+answer comes from the SID the segment was addressed to when it arrived at this
+node, as
+[RFC 4443 section 2.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.2)
+(a) has an answer to a packet sent to a unicast address of the node's come from
+that address, or, where such a route covers the outer source, goes into the tun
+from its next segment. Where the segment list names two SIDs of this node in a
+row, the answer comes from the second, the one the node acted on last, which is
+an address of the node too. Through the mesh it is routed as a packet from the
+SID it comes from, as `End`'s other answers about a segment are, so a return
+route with a source prefix carries it only where that prefix covers the SID, and
+with no other route back it is not sent. A waypoint drops a segment, or the
+fragments it was cut into, and counts them, where the session's budget has no
+room for them, as [the dataplane](design/limits.md#dataplane) drops a tun read's
+packets, or where the session has closed.
 
 A waypoint other than a ranet3 node may answer the steered packet itself
 instead, to the headend, as a tunnel's node answers under RFC 2473. A Linux
@@ -364,7 +378,11 @@ does not turn it into one for the sender of the packet it carries, so path MTU
 discovery through such a waypoint fails, as
 [protocol deviations](design/protocol-deviations.md#icmp-answers) describes.
 
-These are dropped without an answer:
+These are dropped without an answer, but a segment carrying, from a source no
+router forwards, an IPv6 packet no ICMP error may answer or to a multicast
+group, or an IPv4 packet whose header fails its checks or that no ICMP error may
+answer, gets Packet Too Big about itself as above, unless it is an IPv4 packet
+without DF whose header checksum fails:
 
 - an IPv6 packet no ICMP error may answer: an ICMPv6 error or Redirect behind up
   to 8 hop-by-hop, routing, destination options, authentication and first

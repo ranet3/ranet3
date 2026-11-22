@@ -318,11 +318,11 @@ draws none but the first check's:
    router forwards, an IPv4-mapped destination in `::ffff:0:0/96` among them,
    which
    [RFC 6890 section 2.2.3](https://www.rfc-editor.org/rfc/rfc6890.html#section-2.2.3)
-   marks not forwardable. Each is dropped with no answer but one: an IPv6
-   link-local source with a wider destination a router forwards is answered with
-   code 2, as the link-scope rule below says. Only a peer that forwards such a
-   packet draws that answer, since a node answers its host's own at the read, as
-   below.
+   marks not forwardable. Each is dropped with no answer but one: a session's
+   own packet from an IPv6 link-local source with a wider destination a router
+   forwards is answered with code 2, as the link-scope rule below says. Only a
+   peer that forwards such a packet draws that answer, since a node answers its
+   host's own at the read, as below.
 4. The table answers the packet as [route selection](#route-selection) leaves
    it. An IPv4 header failing RFC 1812 section 5.2.2's checks is then dropped
    with no answer, unless an entry of this node's own holds the destination, in
@@ -351,16 +351,16 @@ draws none but the first check's:
    or TTL taken down and a TCP SYN's MSS lowered to the next session's, and goes
    on.
 
-| Packet                         | IPv6 answer                     | IPv4 answer                                                                                                                                                                                  |
-| ------------------------------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hop limit or TTL of 1 or less  | Time Exceeded, code 0           | Time Exceeded, code 0                                                                                                                                                                        |
-| No entry holds the destination | Destination Unreachable, code 0 | Host Unreachable, code 1, inside `overlay`, Network Unreachable, code 0, elsewhere                                                                                                           |
-| Inside a held prefix           | Destination Unreachable, code 0 | Host Unreachable, code 1, under a hold that does not [count as a default](#routes-that-count-as-a-default) or inside `overlay`, Network Unreachable, code 0, elsewhere under one that counts |
-| `cap.transit` off              | Destination Unreachable, code 1 | Destination Unreachable, code 13                                                                                                                                                             |
-| Larger than the next session   | Packet Too Big                  | Fragmentation Needed with DF, cut without                                                                                                                                                    |
-| Options that cannot be read    |                                 | Parameter Problem                                                                                                                                                                            |
-| A Payload Length not its own   | Parameter Problem, code 0       |                                                                                                                                                                                              |
-| Link-local source              | Destination Unreachable, code 2 | none                                                                                                                                                                                         |
+| Packet                                      | IPv6 answer                     | IPv4 answer                                                                                                                                                                                  |
+| ------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hop limit or TTL of 1 or less               | Time Exceeded, code 0           | Time Exceeded, code 0                                                                                                                                                                        |
+| No entry holds the destination              | Destination Unreachable, code 0 | Host Unreachable, code 1, inside `overlay`, Network Unreachable, code 0, elsewhere                                                                                                           |
+| Inside a held prefix                        | Destination Unreachable, code 0 | Host Unreachable, code 1, under a hold that does not [count as a default](#routes-that-count-as-a-default) or inside `overlay`, Network Unreachable, code 0, elsewhere under one that counts |
+| `cap.transit` off                           | Destination Unreachable, code 1 | Destination Unreachable, code 13                                                                                                                                                             |
+| Larger than the next session                | Packet Too Big                  | Fragmentation Needed with DF, cut without                                                                                                                                                    |
+| Options that cannot be read                 |                                 | Parameter Problem                                                                                                                                                                            |
+| A Payload Length not its own                | Parameter Problem, code 0       |                                                                                                                                                                                              |
+| Link-local source of a session's own packet | Destination Unreachable, code 2 | none                                                                                                                                                                                         |
 
 An answer comes from the node's router-id of the family. With no IPv4 router-id
 it comes from `192.0.0.8`, and with no IPv6 one from the answer SID, the first
@@ -424,10 +424,13 @@ draws no answer of any kind into the tun, since such an answer would come from
 [RFC 4443 section 3.1](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.1)
 sets code 2 where "the packet cannot be delivered to the destination without
 leaving the scope of the source address". For a host's packet that happens at
-this node. No packet read from the tun or arriving on a session whose own source
-or destination is an IPv6 link-local address is forwarded onto a session as it
-was read: a read to an address the tun holds that a steer claims leaves inside
-the steer's outer packet, whatever its own addresses.
+this node. An inner packet an `End.DT46` of this node unwrapped draws none, for
+the reason the row on RFC 4443 section 3.1 code 2 of
+[the protocol deviations](design/protocol-deviations.md) gives. No packet read
+from the tun or arriving on a session whose own source or destination is an IPv6
+link-local address is forwarded onto a session as it was read: a read to an
+address the tun holds that a steer claims leaves inside the steer's outer
+packet, whatever its own addresses.
 [`cap.segment`](configuration-reference.md#capsegment) and
 [`cap.exit`'s `via`](configuration-reference.md#capexit) refuse a link-local
 address as a configured segment, a tunnel source or a local SID. The read stops

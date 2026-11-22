@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-12
+updated: 2026-11-21
 order: 65
 ---
 
@@ -115,10 +115,8 @@ A node that moves a steered packet on to its next segment answers or drops it
 the same way when the session to that segment carries less, and counts what it
 drops and answers among its segments' drops and answers, not the
 [transit counters](metrics.md#transit-counters). Unlike the bullets, it answers
-a segment whose routing header does not name a whole IP packet behind it, or
-that carries an IPv4 packet the cut refuses for its size, with a Packet Too Big
-about the segment itself, as
-[segment routing](segment-routing.md#waypoints-and-packet-size) describes.
+the segments [segment routing](segment-routing.md#waypoints-and-packet-size)
+lists with a Packet Too Big about the segment itself.
 
 ICMP answers are held to 2 limits. Their intervals, burst and cap are the Linux
 kernel's defaults, since ranet3 sends what the kernel sent before. The number of
@@ -177,8 +175,12 @@ limit of 64.
 A packet the node read off its tun is answered into the tun from the address the
 packet was going to, in both families, whatever router-id the node holds. `End`
 answers a segment too large for its next session about the packet the segment
-carries, through the mesh to that packet's source. The answer comes from the
-node's router-id of the carried packet's family, the address
+carries, through the mesh to that packet's source, and where no router forwards
+that source it answers the segment itself instead, as
+[protocol deviations](design/protocol-deviations.md#icmp-answers) gives, from
+where [segment routing](segment-routing.md#waypoints-and-packet-size) says. The
+answer about the carried packet comes from the node's router-id of the carried
+packet's family, the address
 [RFC 1812 section 2.2.7](https://www.rfc-editor.org/rfc/rfc1812.html#section-2.2.7)
 names a router by. Where the node holds none, an IPv6 answer comes from the SID
 the segment reached and an IPv4 answer from the address the carried packet was
