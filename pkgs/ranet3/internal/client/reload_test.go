@@ -35,6 +35,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -1247,6 +1248,276 @@ func heldAtBothEnds(t *testing.T, node, peer *listenNode) {
 		}
 		return held(node, peer) != nil && held(peer, node) != nil
 	})
+}
+
+// reloadMesh is a dual-stack node under dial.all with its config, key and trust document on disk
+// its document names a, b and other/f beside it, each with an ip4 endpoint at serial 1 and an ip6 one at serial 2, and a start refuses none of its dialers
+type reloadMesh struct {
+	cfg        *config.Config
+	key        ed25519.PrivateKey
+	public     ed25519.PublicKey
+	configPath string
+}
+
+func newReloadMesh(t *testing.T, to ...string) reloadMesh {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Node: identity.MustParse("example/local"),
+		Link: config.Link{Port: 13000, Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}, {Serial: "1", Family: "ip6"}}},
+		Dial: config.Dial{All: true},
+	}
+	for _, peer := range to {
+		cfg.Dial.To = append(cfg.Dial.To, identity.MustParse(peer))
+	}
+	cfg.Auth.Trust, cfg.Auth.Key = filepath.Join(dir, "registry.json"), filepath.Join(dir, "key.pem")
+	m := reloadMesh{cfg: cfg, key: private, public: public, configPath: filepath.Join(dir, "config.yaml")}
+	writeKey(t, cfg.Auth.Key, private)
+	writeConfig(t, m.configPath, cfg)
+	writeRegistry(t, cfg.Auth.Trust, m.document(t))
+	return m
+}
+
+// document is the trust document without each node or endpoint drop names, and a name it does not hold fails the test
+func (m reloadMesh) document(t *testing.T, drop ...string) registry.Registry {
+	t.Helper()
+	dual := func(ip4, ip6 string) []registry.Endpoint {
+		return []registry.Endpoint{
+			{SerialNumber: "1", AddressFamily: "ip4", Address: &ip4, Port: 13000},
+			{SerialNumber: "2", AddressFamily: "ip6", Address: &ip6, Port: 13000},
+		}
+	}
+	reg := registry.Registry{
+		{Organization: "example", PublicKey: keyPEM(m.public), Nodes: []registry.Node{
+			{CommonName: "local", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Port: 13000}, {SerialNumber: "1", AddressFamily: "ip6", Port: 13000}}},
+			{CommonName: "a", Endpoints: dual("192.0.2.1", "2001:db8::1")},
+			{CommonName: "b", Endpoints: dual("192.0.2.2", "2001:db8::2")},
+		}},
+		{Organization: "other", PublicKey: keyPEM(seeded(5)), Nodes: []registry.Node{
+			{CommonName: "f", Endpoints: dual("198.51.100.6", "2001:db8:1::6")},
+		}},
+	}
+	held := make(map[string]bool)
+	for _, org := range reg {
+		for _, node := range org.Nodes {
+			name := org.Organization + "/" + node.CommonName
+			held[name] = true
+			for _, endpoint := range node.Endpoints {
+				held[name+":"+endpoint.SerialNumber] = true
+			}
+		}
+	}
+	for _, name := range drop {
+		if !held[name] {
+			t.Fatalf("the document holds no %s to leave out", name)
+		}
+	}
+	for i := range reg {
+		org := reg[i].Organization
+		reg[i].Nodes = slices.DeleteFunc(reg[i].Nodes, func(node registry.Node) bool { return slices.Contains(drop, org+"/"+node.CommonName) })
+		for j := range reg[i].Nodes {
+			name := org + "/" + reg[i].Nodes[j].CommonName
+			reg[i].Nodes[j].Endpoints = slices.DeleteFunc(reg[i].Nodes[j].Endpoints, func(endpoint registry.Endpoint) bool {
+				return slices.Contains(drop, name+":"+endpoint.SerialNumber)
+			})
+		}
+	}
+	return reg
+}
+
+// client is a node on reg resolving through prepare, where nil refuses every resolution, whose dials go into a memory network that answers nothing, and whose dialers wait out longDialRetry, with only a wake starting another pass
+func (m reloadMesh) client(t *testing.T, reg registry.Registry, prepare underlay.Prepare) *Client {
+	t.Helper()
+	c := testClientOf(t, m.cfg, m.key, reg)
+	c.hub = testHub(t)
+	c.prepare = prepare
+	c.dialRetry = longDialRetry
+	return c
+}
+
+// reload writes the document without drop and reloads c from the files
+func (m reloadMesh) reload(t *testing.T, c *Client, drop ...string) {
+	t.Helper()
+	writeRegistry(t, m.cfg.Auth.Trust, m.document(t, drop...))
+	if err := c.ReloadFrom(m.configPath); err != nil {
+		t.Fatalf("the reload without %q was refused: %v", drop, err)
+	}
+}
+
+// fresh is the dialers a start on the document without drop runs once each one its first pass refuses has ended
+func (m reloadMesh) fresh(t *testing.T, drop ...string) []string {
+	t.Helper()
+	reg := m.document(t, drop...)
+	if err := validateRuntimeConfig(m.cfg, m.key, trust(t, reg)); err != nil {
+		t.Fatalf("a start on the document without %q is refused (%v), so there is no fresh start to compare with", drop, err)
+	}
+	c := m.client(t, reg, nil)
+	c.syncPeers()
+	for _, d := range dials(m.cfg, c.index()) {
+		if refuseDial(c.index(), d) != nil {
+			waitFor(t, convergeBudget, "the fresh start to end its dialer at "+d.path, func() bool { return !hasDialer(c, d.path) })
+		}
+	}
+	return dialerPaths(c)
+}
+
+// failedAt is how many dial.failed c recorded at path
+func failedAt(c *Client, path string) int {
+	n := 0
+	for _, failed := range recorded(c.events, "dial.failed") {
+		if failed.Peer == path {
+			n++
+		}
+	}
+	return n
+}
+
+// A reload that takes two nodes and the last ip6 endpoint of a third stops the
+// two nodes' dialers inside the reload, since dial.all names only the nodes the
+// document holds. Once the dialer at a from the ip6 endpoint has made its next
+// pass, the dialers are those a fresh start on the document runs, and a:2's
+// address has left the underlay addresses. That dialer stands behind a session
+// at a:2, which keeps any IKE_SA_INIT of its own out of flight, and its next
+// pass is the one the wake sends.
+func TestReloadLeavesTheDialersAFreshStartRuns(t *testing.T) {
+	m := newReloadMesh(t)
+	removed := netip.MustParseAddr("2001:db8::1")
+	// the dialer resolves a literal here and records the address it dials
+	c := m.client(t, m.document(t), testPrepare())
+	c.sessions.close = func(*ike.Session) {}
+	c.sessions.endpoint = func(*ike.Session) string { return "192.0.2.250:13000" }
+	c.sessions.active = func(*ike.Session) bool { return true }
+	if _, ok := c.sessions.adoptAt(t, "example/a:2@1", &ike.Session{}, identity.MustParse("example/local:1"), identity.MustParse("example/a:2"), m.public, true); !ok {
+		t.Fatal("the session the dialer stands behind was not adopted")
+	}
+	c.syncPeers()
+	waitFor(t, convergeBudget, "the dialer at a from the ip6 endpoint to record a:2's address", func() bool { return slices.Contains(c.dialed.list(), removed) })
+	path := "example/a@1"
+	kept := dialerAt(c, path)
+	if kept == nil {
+		t.Fatalf("no dialer at %s, so this proves nothing", path)
+	}
+
+	dropped := []string{"example/b", "other/f", "example/a:2"}
+	m.reload(t, c, dropped...)
+	for _, gone := range []string{"example/b@0", "example/b@1", "other/f@0", "other/f@1"} {
+		if hasDialer(c, gone) {
+			t.Errorf("the reload kept the dialer at %s, whose node the document no longer names", gone)
+		}
+	}
+	if !slices.Contains(c.Underlay(), removed) {
+		t.Fatal("the underlay dropped a:2's address before the dialer's next pass, so this proves nothing")
+	}
+	kept.wake <- struct{}{}
+	waitFor(t, convergeBudget, "the dialer's pass after the reload", func() bool { return isClosed(kept.done) || failedAt(c, path) > 0 })
+	if got, want := dialerPaths(c), m.fresh(t, dropped...); !slices.Equal(got, want) {
+		t.Errorf("the reload left the dialers %q, want %q as a fresh start runs", got, want)
+	}
+	if slices.Contains(c.Underlay(), removed) {
+		t.Errorf("the underlay still holds %s, which the reload took from the trust document", removed)
+	}
+}
+
+// A reload that restores what a dialer was giving up on leaves a dialer at the
+// path, as a fresh start on the restored document runs one. The test holds the
+// lock of the underlay records, which the dialer takes after its refusal and
+// before it leaves the map, while the restoring reload runs whole. That reload
+// therefore finds the old entry and starts none, and the dialer's second ask
+// has to read the document the reload stored.
+func TestReloadRestoringWhatADialerGivesUpOnKeepsADialer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		path, drop string
+		to         []string
+	}{
+		"endpoint restored under dial.all": {path: "example/a@1", drop: "example/a:2"},
+		"dial.to node restored":            {path: "other/f@0", drop: "other/f", to: []string{"other/f"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newReloadMesh(t, tc.to...)
+			c := m.client(t, m.document(t), nil)
+			c.syncPeers()
+			// every dialer has failed its first pass and waits, and only the one the test wakes can reach the lock it holds below
+			for _, d := range dials(m.cfg, c.index()) {
+				waitFor(t, convergeBudget, "the first pass of the dialer at "+d.path, func() bool { return failedAt(c, d.path) == 1 })
+			}
+			m.reload(t, c, tc.drop)
+			kept := dialerAt(c, tc.path)
+			if kept == nil {
+				t.Fatalf("the reload without %s left no dialer at %s, so this proves nothing", tc.drop, tc.path)
+			}
+
+			c.dialed.mu.Lock()
+			var release sync.Once
+			unlock := func() { release.Do(c.dialed.mu.Unlock) }
+			defer unlock()
+			kept.wake <- struct{}{}
+			waitFor(t, convergeBudget, "the dialer to wait for the underlay records after its refusal", waitingForUnderlayRecords)
+			m.reload(t, c)
+			if dialerAt(c, tc.path) != kept {
+				t.Fatal("the restoring reload did not find the old dialer, so this proves nothing")
+			}
+			unlock()
+			waitFor(t, convergeBudget, "the dialer to end or dial again", func() bool { return isClosed(kept.done) || failedAt(c, tc.path) > 1 })
+			if got, want := dialerPaths(c), m.fresh(t); !slices.Equal(got, want) {
+				t.Errorf("after the restoring reload the dialers are %q, want %q as a fresh start runs", got, want)
+			}
+		})
+	}
+}
+
+// waitingForUnderlayRecords reports whether a dialer waits for the lock of the underlay records inside its own loop
+func waitingForUnderlayRecords() bool {
+	stacks := make([]byte, stackDumpSize)
+	n := runtime.Stack(stacks, true)
+	for goroutine := range strings.SplitSeq(string(stacks[:n]), "\n\n") {
+		if strings.Contains(goroutine, "sync.(*Mutex).Lock") && strings.Contains(goroutine, "(*dialedAddresses).drop") && strings.Contains(goroutine, "(*Client).runPeer") {
+			return true
+		}
+	}
+	return false
+}
+
+// A reload that takes the endpoint a dialed session runs over keeps the
+// session and the dialer serving it, since a removed endpoint is no
+// revocation. The map check fails on a reload that stops the dialer, the
+// context check on one that cancels it and leaves its entry to go later, and
+// the revocation check on a revocation sweep that closes the session.
+func TestReloadKeepsADialedSessionOverAnEndpointItTakes(t *testing.T) {
+	a, h := &listenNode{name: "a"}, &listenNode{name: "h", listen: true, dualStack: true}
+	a.dials = []*listenNode{h}
+	listenMesh(t, a, h)
+	runListen(t, a, h)
+	heldAtBothEnds(t, a, h)
+	// the one underlay record a holds is its dialer's, keyed by the dialer's context
+	before := dialerContexts(a.client)
+	if len(before) != 1 {
+		t.Fatalf("a holds %d underlay records, want its dialer's alone, so this proves nothing", len(before))
+	}
+	document := readRegistry(t, a.trustPath)
+	for i := range document {
+		for j := range document[i].Nodes {
+			if document[i].Nodes[j].CommonName == h.name {
+				document[i].Nodes[j].Endpoints = slices.DeleteFunc(document[i].Nodes[j].Endpoints, func(endpoint registry.Endpoint) bool { return endpoint.SerialNumber == "0" })
+			}
+		}
+	}
+	writeRegistry(t, a.trustPath, document)
+	if err := a.client.ReloadFrom(a.configPath); err != nil {
+		t.Fatalf("the reload was refused: %v", err)
+	}
+	if !hasDialer(a.client, pathTo(h)) {
+		t.Error("the reload stopped the dialer serving a session over the endpoint it took")
+	}
+	if after := dialerContexts(a.client); len(after) != 1 || after[0] != before[0] || after[0].Err() != nil {
+		t.Error("the reload canceled the dialer serving a session over the endpoint it took")
+	}
+	if got := recorded(a.events, "ike.session.revoked"); len(got) != 0 {
+		t.Errorf("the reload revoked %v", got)
+	}
 }
 
 // h answers a and dials d, nodes of another organization under another key, and each session holds the key that verified its peer

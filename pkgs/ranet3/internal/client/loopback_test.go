@@ -950,7 +950,7 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 	}
 }
 
-// stackDumpSize is the bytes waitingInAdopt and dialerStandingDown read every goroutine's stack into, room for the running nodes of one test many times over
+// stackDumpSize is the bytes waitingInAdopt, dialerStandingDown and waitingForUnderlayRecords read every goroutine's stack into, room for the running nodes of one test many times over
 const stackDumpSize = 4 << 20
 
 // lockAfterDecision has set's lock taken on the goroutine of the first handshake to decide INITIAL_CONTACT, once it has decided, which leaves that handshake to wait in adopt

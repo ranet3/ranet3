@@ -55,7 +55,7 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 			defer cancel()
 			// a dialer that gives up on its own leaves the map, or every later reload would skip it
 			defer c.forgetDialer(d.path, running)
-			c.runPeer(ctx, d, running.wake)
+			c.runPeer(ctx, d, running)
 		})
 	}
 	for path, running := range c.dialers {

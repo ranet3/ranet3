@@ -38,7 +38,7 @@ func TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken(t *testing.T) {
 	attempts := func() int { return len(recorded(bus, "dial.attempt")) - 1 }
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
-	go func() { c.runPeer(ctx, d, wake); close(done) }()
+	go func() { c.runPeer(ctx, d, &dialer{wake: wake}); close(done) }()
 	waitFor(t, convergeBudget, "the dialer's sixth dial to fail", func() bool { return len(recorded(bus, "dial.failed")) == 7 })
 	dialed := recorded(bus, "dial.attempt")[1:]
 	if gap := dialed[4].At.Sub(dialed[3].At); gap < unroutedFourthWait {

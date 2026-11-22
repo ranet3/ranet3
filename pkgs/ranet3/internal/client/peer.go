@@ -75,17 +75,10 @@ func refuseDial(x *registry.Index, d dial) error {
 	return nil
 }
 
-// runPeer dials d again whenever its session ends, at once when wake fires and otherwise after the reconnect delay, or after unroutedDelay where the host had no route for the dial
+// runPeer dials d until refuseDial refuses it, waiting between dials as a wake, the reconnect delay or unroutedDelay decides
+// it asks at every pass, since a reload may have replaced the trust document since the last
 // a dial after one that failed is said at debug, since only a change of outcome tells an operator anything
-func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
-	switch err := refuseDial(c.index(), d); {
-	case errors.Is(err, errNoEndpointInFamily):
-		slog.Debug("peer has no endpoint carrying an address in this address family", "peer", d.path, "family", d.local.Family)
-		return
-	case err != nil:
-		slog.Warn(fmt.Sprintf("peer %s: %v", d.path, err))
-		return
-	}
+func (c *Client) runPeer(ctx context.Context, d dial, running *dialer) {
 	defer c.forgetDialed(ctx)
 	var failure repeatedFailure
 	var unrouted time.Duration
@@ -93,12 +86,18 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		if ctx.Err() != nil {
 			return
 		}
-		// a reload may remove the node while this dialer runs
-		if _, err := c.index().Key(d.peer.Node()); err != nil {
-			slog.Info(fmt.Sprintf("peer %s: no longer in the registry, giving up", d.path))
-			return
+		if refused := refuseDial(c.index(), d); refused != nil {
+			// the refused target's address leaves the underlay addresses at once, and where stillRefused below finds the pair supported again the pass resolves its own
+			c.forgetDialed(ctx)
+			switch err := c.stillRefused(d, running); {
+			case errors.Is(err, errNoEndpointInFamily):
+				slog.Debug("peer has no endpoint carrying an address in this address family", "peer", d.path, "family", d.local.Family)
+				return
+			case err != nil:
+				slog.Warn(fmt.Sprintf("peer %s: %v, giving up", d.path, err))
+				return
+			}
 		}
-		// a dial is said at info until a failure is said, and again once a session has held the path
 		level := slog.LevelDebug
 		if failure.said.IsZero() {
 			level = slog.LevelInfo
@@ -131,11 +130,23 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-wake:
+		case <-running.wake:
 			c.events.Emit("dial.woken", d.path)
 		case <-time.After(wait):
 		}
 	}
+}
+
+// stillRefused asks refuseDial again under the lock syncPeers holds, removes running from the map where it still refuses, and returns that refusal
+// a reload stores its trust document before its syncPeers takes the lock, and that syncPeers therefore either finds the path free or ran before this ask and stored what it reads
+func (c *Client) stillRefused(d dial, running *dialer) error {
+	c.dialersMu.Lock()
+	defer c.dialersMu.Unlock()
+	err := refuseDial(c.index(), d)
+	if err != nil && c.dialers[d.path] == running {
+		delete(c.dialers, d.path)
+	}
+	return err
 }
 
 // repeatedFailure spaces one dialer's repeats. A peer it cannot reach fails on

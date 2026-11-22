@@ -548,10 +548,36 @@ func dialerCount(c *Client) int {
 	return len(c.dialers)
 }
 
-func hasDialer(c *Client, path string) bool {
+func hasDialer(c *Client, path string) bool { return dialerAt(c, path) != nil }
+
+func dialerAt(c *Client, path string) *dialer {
 	c.dialersMu.Lock()
 	defer c.dialersMu.Unlock()
-	return c.dialers[path] != nil
+	return c.dialers[path]
+}
+
+// dialerPaths is the path of every dialer c runs, sorted
+func dialerPaths(c *Client) []string {
+	c.dialersMu.Lock()
+	defer c.dialersMu.Unlock()
+	return slices.Sorted(maps.Keys(c.dialers))
+}
+
+// dialerContexts is the context of every dialer holding an underlay record, which noteDialed keys by it
+func dialerContexts(c *Client) []context.Context {
+	c.dialed.mu.Lock()
+	defer c.dialed.mu.Unlock()
+	return slices.Collect(maps.Keys(c.dialed.by))
+}
+
+// isClosed reports whether ch is closed, without waiting
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // durationOf is an optional duration as a config holds it
@@ -1093,8 +1119,8 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 	c := testClient(t)
 	// a memory hub, so the dialer's handshakes to a port nothing answers on never reach the host's sockets
 	c.hub = testHub(t)
-	// A serial number sends runPeer through the pre-checks, which fail against
-	// an empty registry and return rather than looping.
+	// A pinned serial the empty registry lacks is refused at the dialer's first
+	// pass, which returns rather than looping.
 	c.cfg.Store(&config.Config{
 		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
@@ -1110,7 +1136,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 
 	// The registry now names the node, carrying an address, and a reload has
 	// to pick it up. The address holds the count below still: a dialer with
-	// nowhere to dial returns on its first statement and drops its own entry,
+	// nowhere to dial gives up at its first pass and drops its own entry,
 	// so a run that read the map after that goroutine was scheduled read one.
 	// It is also the difference the entry had to be dropped for, since an
 	// entry still reading "running" makes this reload skip the peer outright.
@@ -1730,7 +1756,7 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			done := make(chan struct{})
 			d := dialTo(t, cfg, peer)
-			go func() { defer close(done); c.runPeer(ctx, d, nil) }()
+			go func() { defer close(done); c.runPeer(ctx, d, &dialer{}) }()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
@@ -1948,7 +1974,7 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
-	go func() { c.runPeer(c.ctx, d, nil); close(done) }()
+	go func() { c.runPeer(c.ctx, d, &dialer{}); close(done) }()
 	deadline := time.Now().Add(2 * time.Second)
 	for written.count("reconnecting in") == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -2127,28 +2153,27 @@ func revocations(t *testing.T, bus *events.Bus, want map[string]string, paths ..
 // An endpoint with no address says where a node listens, not where to reach
 // it, and most of a community registry is that shape, so a retry for each
 // would fill the log. resolveEndpoint refuses such an endpoint on every pass
-// and nothing about it changes while the process runs, so the dialer has to
-// recognize it before the loop.
+// until a reload gives it an address, so the dialer has to recognize it before
+// it dials.
 func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
-	cfg, privateKey, reg := runtimeFixture(t)
-	c := testClientOf(t, cfg, privateKey, reg)
-	c.dialRetry = time.Millisecond
-	ctx := c.ctx
-
 	// The registry names the node and the address family matches this local
 	// endpoint. Only the address is absent.
-	for name, peer := range map[string]identity.Identity{
-		"pinned to a serial": cfg.Dial.To[0],
-		"unpinned":           identity.MustParse("example/gateway"),
+	for name, peer := range map[string]string{
+		"pinned to a serial": "example/gateway:1",
+		"unpinned":           "example/gateway",
 	} {
 		t.Run(name, func(t *testing.T) {
+			cfg, privateKey, reg := runtimeFixture(t)
+			c := testClientOf(t, cfg, privateKey, reg)
+			// a dialer that dialed once would wait this out, and only one that never dials ends inside the test
+			c.dialRetry = longDialRetry
+			dialed := func() int { return len(recorded(c.events, "dial.attempt")) + len(recorded(c.events, "dial.failed")) }
 			done := make(chan struct{})
-			d := dialTo(t, cfg, peer)
-			go func() { c.runPeer(ctx, d, nil); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Error("the dialer retries a peer it can never reach for the life of the process")
+			d := dialTo(t, cfg, identity.MustParse(peer))
+			go func() { c.runPeer(c.ctx, d, &dialer{}); close(done) }()
+			waitFor(t, convergeBudget, "the dialer to end or dial", func() bool { return isClosed(done) || dialed() > 0 })
+			if got := dialed(); got != 0 {
+				t.Errorf("the dialer dialed a peer with no address before it gave up, %d events", got)
 			}
 		})
 	}
@@ -2303,7 +2328,7 @@ func TestDialerThatEndsTakesItsAddressOutOfTheUnderlay(t *testing.T) {
 	c, cfg, wakes := dialedClient(t, "localhost")
 	resolved := netip.MustParseAddr("127.0.0.1")
 	done := make(chan struct{})
-	go func() { c.runPeer(c.ctx, dialTo(t, cfg, cfg.Dial.To[0]), nil); close(done) }()
+	go func() { c.runPeer(c.ctx, dialTo(t, cfg, cfg.Dial.To[0]), &dialer{}); close(done) }()
 	for deadline := time.Now().Add(dialedWait); !slices.Contains(c.Underlay(), resolved) || wakes.Load() == 0; time.Sleep(dialedPoll) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the dialer put no %s in the underlay set with a wake within %s: %v, woken %d times", resolved, dialedWait, c.Underlay(), wakes.Load())
@@ -2449,14 +2474,14 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 }
 
 // A node taken out of the registry while its dialer is running stops being
-// dialed. The check before the loop covers a node that was already gone.
+// dialed. The first pass covers a node that was already gone.
 // This one covers the reload that removes it afterward, and without it the
 // dialer logs the same lookup failure every reconnect delay for the life of
 // the process while Reload's "so nothing will dial it" is not true.
 func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	// a name the dialer takes, so each pass is one attempt and then the reconnect delay, and the dial never reaches the transport
-	// an endpoint the registry itself disqualifies is given up on before the loop, which is the case above this one
+	// an endpoint the registry itself disqualifies is given up on at the first pass, which is the case above this one
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
 	c := testClientOf(t, cfg, privateKey, reg)
@@ -2469,7 +2494,7 @@ func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 		t.Fatal("the fixture's own peer is not in its registry, so this proves nothing")
 	}
 	done := make(chan struct{})
-	go func() { c.runPeer(c.ctx, d, nil); close(done) }()
+	go func() { c.runPeer(c.ctx, d, &dialer{}); close(done) }()
 
 	// Still dialing while the registry names it.
 	select {
@@ -2484,5 +2509,56 @@ func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Error("the dialer kept retrying a node the registry no longer names")
+	}
+}
+
+// A reload that keeps the node but leaves this dialer nothing to dial ends the
+// dialer at its next pass, as a start on that document would never run it.
+// Each dialer waits out its first failed pass, which only the wake ends, so the
+// pass after the reload is the one the test sends.
+func TestDialerGivesUpOnAPeerAReloadLeftUndialable(t *testing.T) {
+	for name, tc := range map[string]struct {
+		peer identity.Identity
+		edit func(*registry.Node)
+	}{
+		"no endpoint left in its family": {identity.MustParse("example/gateway"), func(node *registry.Node) { node.Endpoints = node.Endpoints[1:] }},
+		"endpoint loses its address":     {identity.MustParse("example/gateway"), func(node *registry.Node) { node.Endpoints[0].Address = nil }},
+		"pinned endpoint removed":        {identity.MustParse("example/gateway:1"), func(node *registry.Node) { node.Endpoints = node.Endpoints[1:] }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, privateKey, reg := runtimeFixture(t)
+			// with no prepare the ip4 endpoint's name is refused before any lookup, and the ip6 endpoint keeps the node in the registry once the ip4 one goes
+			unresolvable, other := "gateway.invalid", "2001:db8::1"
+			reg[0].Nodes[1].Endpoints = []registry.Endpoint{
+				{SerialNumber: "1", AddressFamily: "ip4", Address: &unresolvable, Port: 13000},
+				{SerialNumber: "2", AddressFamily: "ip6", Address: &other, Port: 13000},
+			}
+			c := testClientOf(t, cfg, privateKey, reg)
+			c.dialRetry = longDialRetry
+			c.prepare = nil
+
+			d := dialTo(t, cfg, tc.peer)
+			if err := refuseDial(c.index(), d); err != nil {
+				t.Fatalf("the fixture's own peer is refused (%v), so this proves nothing", err)
+			}
+			wake, done := make(chan struct{}, 1), make(chan struct{})
+			go func() { c.runPeer(c.ctx, d, &dialer{wake: wake}); close(done) }()
+			failed := func() int { return len(recorded(c.events, "dial.failed")) }
+			waitFor(t, convergeBudget, "the dialer's first pass", func() bool { return failed() == 1 })
+
+			edited := slices.Clone(reg)
+			edited[0].Nodes = slices.Clone(reg[0].Nodes)
+			edited[0].Nodes[1].Endpoints = slices.Clone(reg[0].Nodes[1].Endpoints)
+			tc.edit(&edited[0].Nodes[1])
+			c.storeIndex(trust(t, edited))
+			if err := refuseDial(c.index(), d); err == nil {
+				t.Fatal("the edited document still leaves the dialer a target, so this proves nothing")
+			}
+			wake <- struct{}{}
+			waitFor(t, convergeBudget, "the dialer's pass after the reload", func() bool { return isClosed(done) || failed() > 1 })
+			if got := failed(); got != 1 {
+				t.Errorf("the dialer dialed %s %d times, again after the reload left it nothing to dial", d.path, got)
+			}
+		})
 	}
 }

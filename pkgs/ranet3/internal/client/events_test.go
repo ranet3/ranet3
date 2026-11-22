@@ -288,7 +288,7 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
-	go func() { c.runPeer(c.ctx, d, wake); close(done) }()
+	go func() { c.runPeer(c.ctx, d, &dialer{wake: wake}); close(done) }()
 	waitFor(t, convergeBudget, "the first dial to fail", func() bool { return len(recorded(bus, "dial.failed")) == 1 })
 	wake <- struct{}{}
 	waitFor(t, convergeBudget, "the woken dialer to fail again", func() bool { return len(recorded(bus, "dial.failed")) == 2 })

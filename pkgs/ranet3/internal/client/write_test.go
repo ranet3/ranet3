@@ -380,7 +380,7 @@ func TestDialerWakesBeforeItsReconnectDelay(t *testing.T) {
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
 	go func() {
-		c.runPeer(c.ctx, d, wake)
+		c.runPeer(c.ctx, d, &dialer{wake: wake})
 		close(done)
 	}()
 
