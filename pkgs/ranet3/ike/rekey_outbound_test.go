@@ -796,6 +796,194 @@ func TestRekeyOfACanceledReplacementEndsBeforeItsRequest(t *testing.T) {
 	})(t)
 }
 
+// the order of the test before, with the proactive rekey held again once it has published its outcome and before it lets the slot go, and the session woken in that span by a check of the lists
+// the session settles that outcome and arms the schedule at the restored SA's due time, already past, and the rekey that falls due finds the slot still taken
+// once the slot is let go the schedule starts that rekey again, and it replaces the restored SA, with the retries of both ends an hour off
+func TestScheduledRekeyThatFindsTheSlotTakenStartsAgainAtItsRelease(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		lines := recordLines(t)
+		scheduled := func() int {
+			return len(slices.DeleteFunc(lines.said(slog.LevelInfo, "ike scheduled rekey starting", "sa"), func(sa slog.Value) bool { return sa.String() != "Child SA" }))
+		}
+		var dialed time.Time
+		var sent atomic.Int32
+		// a rekey of the answering end that reads the lists while armed is held there, after it read its SA and before it checks that SA, until the test lets it go
+		// one that ends while ending is armed is held after its outcome is published and before it lets the slot go
+		var armed, ending atomic.Bool
+		held, resume := make(chan struct{}), make(chan struct{})
+		ended, release := make(chan struct{}), make(chan struct{})
+		completed := make(chan struct{})
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay, lostDeletes: 1, refusals: 1,
+			watch: func(fromAsker bool, h *Header) {
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					sent.Add(1)
+				}
+			},
+			seed: func(asker, answerer *Session) {
+				answerer.timing.ChildRekeyInterval, answerer.timing.RekeyMargin, answerer.timing.RekeyJitter = restoredLifetime, restoredMargin, 0
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = distantRetry, distantRetry
+				asker.timing.RekeyRetryInitial, asker.timing.RekeyRetryMax = distantRetry, distantRetry
+				lists := answerer.suites
+				answerer.suites = func() Suites {
+					if answerer.childRekeying.Load() && armed.CompareAndSwap(true, false) {
+						held <- struct{}{}
+						<-resume
+					}
+					return current(lists)
+				}
+				answerer.events = func(_, _ identity.Identity, kind string, attrs ...slog.Attr) {
+					switch {
+					case kind == "ike.rekey.failed" && ending.CompareAndSwap(true, false):
+						close(ended)
+						<-release
+					case kind == "ike.rekey.completed" && slices.ContainsFunc(attrs, func(attr slog.Attr) bool { return attr.Equal(slog.String("sa", "child")) }):
+						close(completed)
+					}
+				}
+				dialed = answerer.childEstablished
+			}})
+		old := p.answerer.Child()
+		p.carry(true, true)
+		time.Sleep(time.Until(dialed.Add(restoredAsk)))
+		refused := make(chan error, 1)
+		go func() { refused <- p.asker.RekeyChild() }()
+		for deadline := time.Now().Add(rekeyAnswered); !p.answererPlane.holding(); time.Sleep(outboundDelay) {
+			if time.Now().After(deadline) {
+				t.Fatal("the answering end holds no replacement")
+			}
+		}
+		synctest.Wait()
+		replacement := p.answerer.Child()
+		armed.Store(true)
+		asked := make(chan error, 1)
+		go func() { asked <- p.answerer.RekeyChildProactively() }()
+		<-held
+		for deadline := time.Now().Add(rekeyAnswered); p.answerer.Child().LocalSPI != old.LocalSPI; time.Sleep(outboundDelay) {
+			if time.Now().After(deadline) {
+				t.Fatal("the asking end's Delete did not make the replaced SA current again")
+			}
+		}
+		if err := <-refused; !errors.Is(err, errRefusedInstall) {
+			t.Fatalf("the refused Child SA rekey ended with %v, want the dataplane's refusal", err)
+		}
+		synctest.Wait()
+		if got, rekeys := scheduled(), sent.Load(); got != 1 || rekeys != 0 {
+			t.Fatalf("at the restore the answering end's schedule started %d rekeys and the answering end sent %d requests, want 1 that found the proactive rekey running and none", got, rekeys)
+		}
+		ending.Store(true)
+		resume <- struct{}{}
+		<-ended
+		p.answerer.SuitesChanged()
+		synctest.Wait()
+		if got := scheduled(); got != 2 {
+			t.Fatalf("while the proactive rekey held the slot past its outcome the answering end's schedule had started %d rekeys, want 2, the second started while the slot was taken", got)
+		}
+		armed.Store(true)
+		close(release)
+		if err := <-asked; !errors.Is(err, errChildReplaced) {
+			t.Errorf("the rekey that read the replacement %08x ended with %v, want errChildReplaced", replacement.LocalSPI, err)
+		}
+		synctest.Wait()
+		select {
+		case <-held:
+		default:
+			t.Fatalf("once the proactive rekey let the slot go the answering end started no rekey of the restored SA, with %d scheduled starts, want a third", scheduled())
+		}
+		if got := scheduled(); got != 3 {
+			t.Errorf("the answering end's schedule had started %d rekeys when the rekey of the restored SA was held, want 3", got)
+		}
+		resume <- struct{}{}
+		<-completed
+		synctest.Wait()
+		if made, peer := p.answerer.Child(), p.asker.Child(); made.LocalSPI == old.LocalSPI || made.RemoteSPI != peer.LocalSPI || made.LocalSPI != peer.RemoteSPI {
+			t.Errorf("once its rekey completed the answering end holds %08x/%08x and the asking end %08x/%08x, want a new SA both hold", made.LocalSPI, made.RemoteSPI, peer.LocalSPI, peer.RemoteSPI)
+		}
+		if p.answerer.closing.Load() {
+			t.Error("the answering end is closing the IKE SA")
+		}
+	})(t)
+}
+
+// the answering end's proactive rekey holds the slot when the schedule falls due, so the scheduled rekey finds the slot taken, and the proactive one is held once it has published its success and before it lets the slot go, with the session woken in that span by a check of the lists
+// the session settles that success and arms the schedule from the new SA, which leaves no rekey waiting for the slot, so none starts once the slot is let go
+func TestSettledRekeyLeavesNoScheduledRekeyWaitingForTheSlot(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		lines := recordLines(t)
+		scheduled := func() int {
+			return len(slices.DeleteFunc(lines.said(slog.LevelInfo, "ike scheduled rekey starting", "sa"), func(sa slog.Value) bool { return sa.String() != "Child SA" }))
+		}
+		var dialed time.Time
+		var sent atomic.Int32
+		// a rekey of the answering end that reads the lists while armed is held there until the test lets it go, and one that completes while ending is armed is held after its outcome is published and before it lets the slot go
+		var armed, ending atomic.Bool
+		held, resume := make(chan struct{}), make(chan struct{})
+		ended, release := make(chan struct{}), make(chan struct{})
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay,
+			watch: func(fromAsker bool, h *Header) {
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					sent.Add(1)
+				}
+			},
+			seed: func(asker, answerer *Session) {
+				answerer.timing.ChildRekeyInterval, answerer.timing.RekeyMargin, answerer.timing.RekeyJitter = restoredLifetime, restoredMargin, 0
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = distantRetry, distantRetry
+				asker.timing.RekeyRetryInitial, asker.timing.RekeyRetryMax = distantRetry, distantRetry
+				lists := answerer.suites
+				answerer.suites = func() Suites {
+					if answerer.childRekeying.Load() && armed.CompareAndSwap(true, false) {
+						held <- struct{}{}
+						<-resume
+					}
+					return current(lists)
+				}
+				answerer.events = func(_, _ identity.Identity, kind string, _ ...slog.Attr) {
+					if kind == "ike.rekey.completed" && ending.CompareAndSwap(true, false) {
+						close(ended)
+						<-release
+					}
+				}
+				dialed = answerer.childEstablished
+			}})
+		old := p.answerer.Child()
+		time.Sleep(time.Until(dialed.Add(restoredAsk)))
+		armed.Store(true)
+		asked := make(chan error, 1)
+		go func() { asked <- p.answerer.RekeyChildProactively() }()
+		<-held
+		time.Sleep(time.Until(dialed.Add(restoredLifetime - restoredMargin)))
+		synctest.Wait()
+		if got, rekeys := scheduled(), sent.Load(); got != 1 || rekeys != 0 {
+			t.Fatalf("at its due time the answering end's schedule started %d rekeys and the answering end sent %d requests, want 1 that found the proactive rekey running and none", got, rekeys)
+		}
+		ending.Store(true)
+		resume <- struct{}{}
+		<-ended
+		p.answerer.SuitesChanged()
+		synctest.Wait()
+		armed.Store(true)
+		close(release)
+		if err := <-asked; err != nil {
+			t.Fatalf("the proactive rekey ended with %v", err)
+		}
+		synctest.Wait()
+		select {
+		case <-held:
+			t.Errorf("once the proactive rekey let the slot go the answering end started a rekey of the SA it had just made, with %d scheduled starts", scheduled())
+			// the session ends before that rekey goes on, so a schedule that starts one rekey after another stops with it
+			_ = p.answerer.Mux().Close()
+			close(resume)
+		default:
+		}
+		armed.Store(false)
+		if got := scheduled(); got != 1 {
+			t.Errorf("the answering end's schedule started %d rekeys, want only the one that found the slot taken", got)
+		}
+		if made := p.answerer.Child(); made.LocalSPI == old.LocalSPI {
+			t.Errorf("the answering end still holds %08x, want the proactive rekey's SA", old.LocalSPI)
+		}
+	})(t)
+}
+
 // a reload whose check is asked for in the pass that makes the replaced SA current again, as one stored from the cancel itself is, is checked once against the lists with the restore's own check: the restore's pass reads the lists once for both, and the SA is reported unlisted once and rekeyed once
 func TestRestoreWithAReloadQueuedChecksTheListsOnce(t *testing.T) {
 	bubble.Run(func(t *testing.T) {

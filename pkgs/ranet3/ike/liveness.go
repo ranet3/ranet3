@@ -78,6 +78,8 @@ type rekeySchedule struct {
 	lastErr  error
 	// forced marks a rekey the lists asked for, which runs only while they still leave out its SA
 	forced bool
+	// waiting marks the Child SA schedule from the start of its rekey until the schedule is armed again, as settling any exchange that rekey runs arms it, so a rekey that found another holding the slot falls due again once the slot is let go
+	waiting bool
 }
 
 // RFC 7296 section 2.8: "When the lifetime of a Security Association expires, the Security Association MUST NOT be used."
@@ -264,7 +266,7 @@ func (r *rekeySchedule) poll() {
 func (r *rekeySchedule) reset(delay time.Duration) {
 	r.timer.Reset(delay)
 	r.deadline = time.Now().Add(delay)
-	r.due = false
+	r.due, r.waiting = false, false
 }
 
 // rearm puts schedule back on the rekey its interval gives, so a forced delay a rekey on another path overtook, a packet count's among them, runs out on nothing
@@ -274,7 +276,7 @@ func (s *Session) rearm(schedule *rekeySchedule) error {
 	if schedule.interval == 0 {
 		schedule.timer.Stop()
 		schedule.deadline = time.Time{}
-		schedule.due = false
+		schedule.due, schedule.waiting = false, false
 		return nil
 	}
 	counted := schedule.current()
@@ -365,6 +367,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	var running *rekeySchedule
 	startRekey := func(schedule *rekeySchedule) {
 		running = schedule
+		schedule.waiting = schedule == childSchedule
 		slog.Info("ike scheduled rekey starting", "sa", schedule.name)
 		rekeys.Go(func() { rekeyResult <- rekeyScheduleResult{schedule, schedule.run()} })
 	}
@@ -562,6 +565,10 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		s.expireRetainedContexts(now)
 		s.expireChain(now)
 		fragmentsExpire, fragmentsHeld := s.expireFragments(now)
+		// the rekey holding the slot published its outcome before letting the slot go, so a settle here arms the schedule over the due bit given back
+		if childSchedule.waiting && running == nil && !s.childRekeying.Load() {
+			childSchedule.waiting, childSchedule.due = false, true
+		}
 		if err := settleChildRekeys(); err != nil {
 			fail(childSchedule, err)
 		}
@@ -601,7 +608,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				}
 				continue
 			}
-			// a Child SA rekey that ran an exchange left its outcome for settleChildRekeys, so its result here only ends the run, and a run that started none counts as nothing
+			// a Child SA rekey that ran an exchange left its outcome for settleChildRekeys, so its result here only ends the run, and one that found the slot taken waits for the slot
 			if result.schedule != childSchedule {
 				if _, err := settle(result.schedule, result.err); err != nil {
 					end(result.schedule, "local failure", err)
@@ -748,7 +755,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		case req := <-requests:
 			s.requests <- req
 			continue
-		// a Child SA rekey that ended is settled at the top of the loop, where the close rule also reads whether one still runs
+		// a Child SA rekey that ended is settled at the top of the loop, where the close rule also reads whether one still runs and a scheduled rekey waiting for the slot falls due
 		case <-s.childRekeyEnded:
 			continue
 		case <-s.childSpent:
