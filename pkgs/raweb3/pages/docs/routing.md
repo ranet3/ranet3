@@ -302,22 +302,22 @@ draws none but the first check's:
    [`segments dropped`](metrics.md), not `segments refused`. For other sources,
    whatever the table holds, a multicast or limited broadcast destination is
    dropped without an answer and counted
-   [`session_multicast`](metrics.md#transit-counters), and an IPv6 link-local
-   destination is dropped without an answer, from a link-local source too, and
-   counted `martian`, since
+   [`session_multicast`](metrics.md#transit-counters). An IPv6 link-local
+   destination does not go to the tun, from any source, since
    [RFC 4291 section 2.5.6](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.5.6)
    says "Routers must not forward any packets with Link-Local source or
    destination addresses to other links", and each session is a link of its own,
-   the tun another. An IPv4 link-local destination does not go to the tun
-   either, since
+   the tun another. Nor does an IPv4 link-local destination, since
    [RFC 3927 section 7](https://www.rfc-editor.org/rfc/rfc3927.html#section-7)
    says "A router MUST NOT forward a packet with an IPv4 Link-Local source or
-   destination address", and the next check drops it.
+   destination address". The next check drops both.
 3. A source or destination no router forwards is dropped, an IPv4-mapped
    destination in `::ffff:0:0/96` among them, which
    [RFC 6890 section 2.2.3](https://www.rfc-editor.org/rfc/rfc6890.html#section-2.2.3)
-   marks not forwardable. An IPv6 link-local source with a wider destination a
-   router forwards is answered on the session it came from.
+   marks not forwardable, each with no answer but one: an IPv6 link-local source
+   with a wider destination a router forwards is answered with code 2, as the
+   link-scope rule below says. Only a peer that forwards such a packet draws
+   that answer, since a node answers its host's own at the read, as below.
 4. The table answers the packet as [route selection](#route-selection) leaves
    it. An IPv4 header failing RFC 1812 section 5.2.2's checks is then dropped
    with no answer, unless an entry of this node's own holds the destination, in
@@ -381,6 +381,50 @@ multicast, and
 [RFC 1812 section 5.3.5.1](https://www.rfc-editor.org/rfc/rfc1812.html#section-5.3.5.1)
 says "Limited broadcasts MUST NOT be forwarded", where a covering route such as
 a default would carry either to the one peer it names.
+
+The link-scope rule takes a read to or from an IPv6 link-local address and a
+read to a loopback address, `::1` or one in `127.0.0.0/8`. Such a read meets the
+checks at the mesh's edge below first, in their order: a routing header or one
+of this node's SIDs, a forged source, the unowned-source check, then the packet
+an IPv6 read carries. A read one of them drops keeps that check's counter and
+gets no answer. The unowned-source check skips a read the rule drops or answers,
+and the packet such a read carries meets it all the same. A read to an address
+the tun holds that those checks pass goes back into the tun unless a steer
+claims it, as any read to one does, and the rule neither drops nor answers it.
+Any other read to an IPv6 link-local or a loopback destination is dropped with
+no answer and counted as [`martian`](metrics.md#transit-counters), whatever its
+source. Any other read from an IPv6 link-local source, whose destination is then
+wider, is counted as `martian` and answered with Destination Unreachable,
+code 2. RFC 4291 section 2.5.6 has a router forward neither read to another
+link, and a session is one. Section 2.5.3 has a packet to `::1` never leave its
+node, and
+[RFC 1122 section 3.2.1.3](https://www.rfc-editor.org/rfc/rfc1122.html#section-3.2.1.3)
+says an address in `127.0.0.0/8` "MUST NOT appear outside a host".
+
+The code 2 answer to a read goes into the tun from the read's destination, the
+source [the protocol deviations](design/protocol-deviations.md#icmp-answers)
+give every answer to a read. The answer to a session's packet comes from the
+IPv6 router-id, else a SID, and goes back as
+[transit answers](design/protocol-deviations.md#transit-answers) say. Either
+draws on the source's bucket and the node's cap. Either is withheld, the packet
+still counted, where the source is `fe80::`, the Subnet-Router anycast address
+RFC 4443 section 2.4 (e.6) has no error answer, where the packet is an ICMPv6
+error or a Redirect, (e.1) and (e.2), where the search for one stops unfinished,
+whatever header follows, as
+[the protocol deviations](design/protocol-deviations.md#icmp-answers) say, where
+the bucket or the cap is empty, (f), and for a session's packet where the node
+has neither an IPv6 router-id nor a SID. A read to the unspecified address `::`
+draws no answer of any kind into the tun, since such an answer would come from
+`::`.
+[RFC 4443 section 3.1](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.1)
+sets code 2 where "the packet cannot be delivered to the destination without
+leaving the scope of the source address". For a host's packet that happens at
+this node. No packet read from the tun or arriving on a session whose own source
+or destination is of link scope is forwarded onto a session. The read stops a
+host's, the decision drops a session's, and `End` drops a next segment of link
+scope, each counted `martian`. A packet of link scope carried inside another is
+judged by the outer packet's addresses at the read, and goes on inside it where
+the unowned-source check passes its own source, as below.
 
 A read off the tun is also checked at the mesh's edge before it enters, since a
 node that forwards for others can put a packet into the tun with a source or a

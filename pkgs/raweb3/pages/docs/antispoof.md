@@ -889,10 +889,10 @@ the platform, and no pass logs anything. A node there, or on a Mac with no
 
 The entry chain's place on every other platform, macOS among them, is the tun
 read's own: it drops a read from a source this node does not own toward every
-destination but an IPv6 link-local one, as `entry` passes `fe80::/10`, and
-counts it `unowned_source` on the `Transit` line and in
+destination and counts it `unowned_source` on the `Transit` line and in
 `ranet3_transit_packets_total`, as [metrics](metrics.md#transit-counters) lists.
-A multicast destination never reaches the check, since the read drops it first.
+A multicast destination never reaches the check, since the read drops it first,
+and a read the [link-scope rule](routing.md#transit) drops or answers skips it.
 No reply passes it, since the read cannot tell one from a new flow, as
 [the limits](design/limits.md#transit) say of the errors it drops. The drop
 applies to the packet an IPv6 read carries as well.
