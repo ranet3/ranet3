@@ -264,8 +264,11 @@ func TestEncapsulationRefusesWhatItWillNotCarry(t *testing.T) {
 		"not an ip packet":  {source: source, path: []netip.Addr{exit}, inner: []byte{0x10, 0, 0, 0}},
 		// A zone never reaches the wire, and neither the unspecified address
 		// nor a multicast group is somewhere a packet can be forwarded to.
-		"a zoned source":       {source: addr("fe80::1%eth0"), path: []netip.Addr{exit}, inner: innerV6("x")},
-		"a zoned segment":      {source: source, path: []netip.Addr{addr("fe80::1%eth0")}, inner: innerV6("x")},
+		"a zoned source":  {source: addr("3fff::1%eth0"), path: []netip.Addr{exit}, inner: innerV6("x")},
+		"a zoned segment": {source: source, path: []netip.Addr{addr("3fff::1%eth0")}, inner: innerV6("x")},
+		// RFC 4291 section 2.5.6 has no router forward a link-local address
+		"a link-local source":  {source: addr("fe80::1"), path: []netip.Addr{exit}, inner: innerV6("x")},
+		"a link-local segment": {source: source, path: []netip.Addr{addr("fe80::1")}, inner: innerV6("x")},
 		"the unspecified exit": {source: source, path: []netip.Addr{addr("::")}, inner: innerV6("x")},
 		"a multicast exit":     {source: source, path: []netip.Addr{addr("ff02::1")}, inner: innerV6("x")},
 		// writeOuter reads the inner header's traffic class and hop limit, so

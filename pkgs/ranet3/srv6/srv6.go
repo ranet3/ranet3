@@ -227,11 +227,22 @@ func CheckPath(source netip.Addr, path []netip.Addr) error {
 	return nil
 }
 
-// Usable reports whether an address can be a segment or a tunnel source. A
-// zone is local to one host and never reaches the wire, a v4-mapped address
-// cannot appear in an IPv6 destination, and neither the unspecified address
-// nor a multicast group is somewhere a packet can be forwarded to.
+// Usable reports whether an address can be a configured segment, a tunnel
+// source or a local SID, each an address a packet crossing the mesh carries
+// in its outer header. A zone is local to one host and never reaches the
+// wire, a v4-mapped address cannot appear in an IPv6 destination, neither the
+// unspecified address nor a multicast group is somewhere a packet can be
+// forwarded to, and RFC 4291 section 2.5.6 has no router forward a packet from
+// or to a link-local address.
 func Usable(address netip.Addr) bool {
+	return answersFrom(address) && !address.IsLinkLocalUnicast()
+}
+
+// answersFrom reports whether an ICMPv6 error this package builds can come
+// from address: an IPv6 address of no zone that is no v4-mapped address, not
+// the unspecified address and no group. A link-local address is one, since an
+// error from it goes into the tun, the link the host sent to it on.
+func answersFrom(address netip.Addr) bool {
 	return address.Is6() && !address.Is4In6() && address.Zone() == "" &&
 		!address.IsUnspecified() && !address.IsMulticast()
 }

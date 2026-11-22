@@ -151,10 +151,11 @@ func TestExitViaRefusalsReachTheLoader(t *testing.T) {
 		node viaNode
 		says string
 	}{
-		"an IPv4 SID":     {viaFixture("192.0.2.9"), "cap.exit via: srv6: segment 192.0.2.9 cannot address a segment routed packet"},
-		"a multicast SID": {viaFixture("ff02::1"), "cap.exit via: srv6: segment ff02::1 cannot address a segment routed packet"},
-		"17 SIDs":         {viaFixture(sixteen...), "cap.exit via: srv6: 17 segments is more than the 16 this node will build"},
-		"a SID twice":     {viaFixture("3fff:b:0:306::3", "3fff:b:0:206::1", "3fff:b:0:306::3"), "kernel: cap.exit via names 3fff:b:0:306::3 twice, which sends the packet around a loop"},
+		"an IPv4 SID":      {viaFixture("192.0.2.9"), "cap.exit via: srv6: segment 192.0.2.9 cannot address a segment routed packet"},
+		"a multicast SID":  {viaFixture("ff02::1"), "cap.exit via: srv6: segment ff02::1 cannot address a segment routed packet"},
+		"a link-local SID": {viaFixture("fe80::1"), "cap.exit via: srv6: segment fe80::1 cannot address a segment routed packet"},
+		"17 SIDs":          {viaFixture(sixteen...), "cap.exit via: srv6: 17 segments is more than the 16 this node will build"},
+		"a SID twice":      {viaFixture("3fff:b:0:306::3", "3fff:b:0:206::1", "3fff:b:0:306::3"), "kernel: cap.exit via names 3fff:b:0:306::3 twice, which sends the packet around a loop"},
 		"its own first SID": {
 			func() viaNode {
 				n := viaFixture("3fff:b:0:106::1", "3fff:b:0:306::3")

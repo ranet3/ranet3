@@ -235,6 +235,10 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asYAML: "cap:\n  segment:\n    source: ff02::1\n",
 			asTOML: "[cap.segment]\nsource = \"ff02::1\"\n",
 		},
+		"a link-local segment source": {
+			asYAML: "cap:\n  segment:\n    source: fe80::1\n",
+			asTOML: "[cap.segment]\nsource = \"fe80::1\"\n",
+		},
 		"an address no interface can carry": {
 			asYAML: "cap:\n  table:\n    addresses: [\"::/0\"]\n",
 			asTOML: "[cap.table]\naddresses = [\"::/0\"]\n",
@@ -666,6 +670,10 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 		"a steering selector with host bits": {
 			body:  "cap:\n  segment:\n    source: \"3fff:b:0:100::1\"\n    steer: [{ from: \"3fff:a::1/128\", to: \"2001:db8::1/32\", via: [\"3fff:b::1\"] }]\n",
 			names: []string{"cap.segment steer to", "2001:db8::1/32"},
+		},
+		"a link-local local segment": {
+			body:  "cap:\n  segment:\n    local:\n      - { sid: \"fe80::1\", behavior: End }\n",
+			names: []string{"cap.segment local", "fe80::1", "cannot address a segment routed packet"},
 		},
 		"a local segment written twice": {
 			body:  "cap:\n  segment:\n    local:\n      - { sid: \"3fff:b:0:106::1\", behavior: End }\n      - { sid: \"3fff:b:0:106::1\", behavior: \"End.DT46\" }\n",

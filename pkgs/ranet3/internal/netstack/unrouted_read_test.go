@@ -579,3 +579,23 @@ func TestLaneDropsAnErrorRelayedFromALinkLocalOffender(t *testing.T) {
 		t.Errorf("the relayed error counted %+v, want martian and no answer", got)
 	}
 }
+
+// a read to an IPv6 link-local address cap.table assigns the tun, steered to a segment with no route, is answered no route from that address into the tun
+// the answer stays on the link the host sent the read on, as RFC 4291 section 2.5.6 lets a link-local address be used
+func TestTunReadToAHeldLinkLocalAddressSteeredToNoRouteIsAnsweredFromIt(t *testing.T) {
+	m, dev := unroutedMesh(t, nil)
+	m.Routes.Set(netip.Prefix{}, hostPrefix(transitOwn[6]), Local)
+	steerOwn(t, m)
+	held := segAddr("fe80::5")
+	m.Routes.Set(netip.Prefix{}, hostPrefix(held), Local)
+	m.SetTunAddresses([]netip.Addr{held})
+	raw := udpPacket(transitOwn[6], held, 100, false)
+	_, written := classifyOne(m, dev, raw)
+	if len(written) != 1 {
+		t.Fatalf("the read put %d packets into the tun, want the one answer", len(written))
+	}
+	checkICMPv6(t, written[0], raw, held, 1, 0, 0)
+	if got := m.TransitCounters(); got.NoRoute != 1 || got.Answered != 1 {
+		t.Errorf("the read counted %+v, want no route and one answer", got)
+	}
+}

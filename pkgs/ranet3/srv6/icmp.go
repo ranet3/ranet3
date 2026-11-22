@@ -130,7 +130,7 @@ func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer ui
 // originate is icmpError, unfinished being whether it answers a packet the
 // search for an ICMPv6 error stops unfinished in, as answerable has it
 func originate(offending []byte, source netip.Addr, kind, code uint8, pointer uint32, unfinished bool, allow func() bool) []byte {
-	if !Usable(source) || !answerable(offending, unfinished) || !allow() {
+	if !answersFrom(source) || !answerable(offending, unfinished) || !allow() {
 		return nil
 	}
 	destination := netip.AddrFrom16([16]byte(offending[8:24]))
