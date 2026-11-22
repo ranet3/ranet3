@@ -562,7 +562,7 @@ func TestTunReadToIPv4LoopbackWithARouteReachesNoPeer(t *testing.T) {
 	loopbackDropped(t, m, udpPacket(ownSource[4], segAddr("127.0.0.1"), 100, false))
 }
 
-// an ICMPv6 error an exit relays from its offender's link-local address, as a router on the exit's uplink may send one, meets the link-scope rule in the exit's lane
+// an ICMPv6 error an exit relays from its offender's link-local address, as a router on the exit's uplink may send one, meets the rule on addresses no router forwards in the exit's lane
 // so it leaves on no session and draws no code 2, being an error, RFC 4443 section 2.4 (e.1)
 func TestLaneDropsAnErrorRelayedFromALinkLocalOffender(t *testing.T) {
 	m, dev := unroutedMesh(t, nil)

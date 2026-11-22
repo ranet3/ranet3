@@ -298,7 +298,7 @@ func hopLimit(raw []byte, version byte) byte {
 const payloadLengthInIPv6 = 4
 
 // lengthAnswered reports raw, a frame packet.Payload found no packet in, as an IPv6 header whose Payload Length does not describe the octets behind it
-// from a source and to a destination the decision answers a packet of, neither a martian nor a link-scoped destination
+// from a source and to a destination the decision answers a packet of, neither a group nor a martian
 func lengthAnswered(raw []byte) bool {
 	if len(raw) < 40 || raw[0]>>4 != 6 {
 		return false
@@ -315,7 +315,8 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 // granted marks the inner packets, which go on whatever cap.transit says, nil where there are none
 // from is the peer of the session they came through, nil for frames of no session, and hold covers their storage as DeliverInboundBatch's does
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
-// the frame, mapped-source, link-scoped and other martian checks run first, then the table, RFC 1812 section 5.2.2's header check and the checks past it, for IPv6 as for IPv4
+// the frame, mapped-source, group and martian checks run first, then the table, RFC 1812 section 5.2.2's header check and the checks past it, for IPv6 as for IPv4
+// a link-scoped destination is one of the martians
 // each check comes before any answer, so a malformed packet draws none but the Payload Length answer of the first
 func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) [][]byte {
 	trace := m.tracer.Load()

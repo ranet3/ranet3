@@ -375,7 +375,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 }
 
 // martian is a packet no router forwards by its source, or by a destination other than the limited broadcast and multicast
-// the decision tests mapped sources before its link-scoped destinations and the other martians after them
+// the decision tests mapped sources first, then groups, and last the other martians, a link-scoped destination among them
 func martian(source, destination netip.Addr) bool {
 	return mappedAddress(source) || packet.InvalidSource(source) || martianDestination(destination)
 }

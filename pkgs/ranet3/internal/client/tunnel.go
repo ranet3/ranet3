@@ -286,7 +286,7 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 	}
 	r, err := current.outbound.ReserveSequenceRange(count)
 	if err != nil {
-		// a second try ends, since it runs only on another outbound SA, which a replacement or a retirement put in the spent one's place
+		// a second try ends, since another outbound SA took the spent SA's place, or a retirement left none
 		if errors.Is(err, esp.ErrSequenceExhausted) && t.moveOffSpent(current) {
 			return t.reserve(count)
 		}
@@ -298,8 +298,10 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 	return r.SealBatchInto, nil
 }
 
-// moveOffSpent moves outbound traffic off current's spent outbound SA to the replacement held for it, asks for a rekey where none took its place, tells the session the spent SA, and reports whether another outbound SA now carries outbound traffic
-// a cancel can take the replacement first, and the spent SA left in place is still installed, so nothing else asks for its rekey
+// moveOffSpent reports whether the spent SA is no longer the outbound one, which holds where another SA took its place, the replacement held for it or one this end's own rekey installed, and where a retirement left no outbound SA
+// where a retirement left no outbound SA, the second try in reserve asks for a rekey and returns errNoChildSA
+// moveOffSpent asks for a rekey where the spent SA is still the outbound one, a cancel that took the replacement first being one such case
+// nothing else asks for a rekey then, since the spent SA left in place is still installed
 func (t *tunnel) moveOffSpent(current *tunnelSAs) bool {
 	if current.replacement != nil {
 		t.promote(current.replacement)
