@@ -1018,7 +1018,7 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 // dispatch reports whether raw is a fresh authenticated message on an IKE SA other than one keepReplaced kept, which Run takes as the peer alive
 // an authenticated repeat may draw the kept response but neither refreshes dead peer detection nor moves the endpoint, and neither does any message on a kept IKE SA, which the session no longer runs on
 // a request on a kept IKE SA that dispatch fails ends that SA alone and never the session, while a Child SA a Delete on it names that the dataplane refuses to close fails the session as one named on the current IKE SA does
-// a request on an IKE SA a peer's rekey replaced, past retainedContextDeadline from its retention, is taken by requestPastRetention, and neither it nor a repeat on that SA moves the endpoint or counts as the peer alive
+// a request on a replaced IKE SA that a record held, past retainedContextDeadline from that SA's retention, is taken by requestPastRetention, and neither it nor a repeat on that SA moves the endpoint or counts as the peer alive
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
 	// a peer's rekey placed here displaces a retained IKE SA under stateMu, whose end is told once the lock is released
 	defer s.tellRetired()
