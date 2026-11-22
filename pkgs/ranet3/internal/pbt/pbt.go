@@ -41,6 +41,8 @@ func Check(t *testing.T, fn func(*hegel.T)) {
 		hegel.WithDatabase(""),
 		hegel.WithDerandomize(true),
 		hegel.WithTestCases(propertyCases),
+		// the speed check reads the machine's clock and not the property, and hegel.Test fails it with no message
+		hegel.SuppressHealthCheck(hegel.TooSlow),
 	)
 }
 
