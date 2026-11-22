@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-21
+updated: 2026-11-22
 order: 45
 ---
 
@@ -311,13 +311,18 @@ draws none but the first check's:
    [RFC 3927 section 7](https://www.rfc-editor.org/rfc/rfc3927.html#section-7)
    says "A router MUST NOT forward a packet with an IPv4 Link-Local source or
    destination address". The next check drops both.
-3. A source or destination no router forwards is dropped, an IPv4-mapped
-   destination in `::ffff:0:0/96` among them, which
+3. A source no router forwards is dropped, the sources the mesh refuses: in IPv4
+   one in `0.0.0.0/8`, `127.0.0.0/8` or `169.254.0.0/16`, a multicast address
+   and one in `240.0.0.0/4`, the limited broadcast among them, and in IPv6 `::`,
+   `::1`, a multicast address and one in `fe80::/10`. So is a destination no
+   router forwards, an IPv4-mapped destination in `::ffff:0:0/96` among them,
+   which
    [RFC 6890 section 2.2.3](https://www.rfc-editor.org/rfc/rfc6890.html#section-2.2.3)
-   marks not forwardable, each with no answer but one: an IPv6 link-local source
-   with a wider destination a router forwards is answered with code 2, as the
-   link-scope rule below says. Only a peer that forwards such a packet draws
-   that answer, since a node answers its host's own at the read, as below.
+   marks not forwardable. Each is dropped with no answer but one: an IPv6
+   link-local source with a wider destination a router forwards is answered with
+   code 2, as the link-scope rule below says. Only a peer that forwards such a
+   packet draws that answer, since a node answers its host's own at the read, as
+   below.
 4. The table answers the packet as [route selection](#route-selection) leaves
    it. An IPv4 header failing RFC 1812 section 5.2.2's checks is then dropped
    with no answer, unless an entry of this node's own holds the destination, in
