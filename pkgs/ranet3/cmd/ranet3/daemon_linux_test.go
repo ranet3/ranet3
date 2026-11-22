@@ -62,6 +62,11 @@ const (
 	daemonQuiet = 500 * time.Millisecond
 	// daemonPrompt bounds what the daemon does at once on a signal, well inside the first pass's wait it must not sit out
 	daemonPrompt = firstPassWait / 5
+	// daemonPort, daemonPprofPort and daemonMetricsPort are outside the namespace's automatic range, never handed to a bind of port 0
+	// the tests run only in a network namespace the process owns, and no other test of the package binds these three
+	daemonPort        = 20001
+	daemonPprofPort   = 20002
+	daemonMetricsPort = 20003
 )
 
 var (
@@ -98,7 +103,6 @@ func claimNamespace(t *testing.T) {
 // counts each datagram the node sends it
 type daemonFiles struct {
 	opts  options
-	port  int
 	peer  net.PacketConn
 	dials atomic.Int64
 }
@@ -131,7 +135,7 @@ func writeDaemon(t *testing.T, caps string) *daemonFiles {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &daemonFiles{port: freePort(t, "udp")}
+	f := &daemonFiles{}
 	if f.peer, err = net.ListenPacket("udp4", "127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +151,7 @@ func writeDaemon(t *testing.T, caps string) *daemonFiles {
 	}()
 	loopback := "127.0.0.1"
 	org := registry.Organization{PublicKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), Organization: "example"}
-	for name, port := range map[string]int{"start": f.port, "peer": f.peer.LocalAddr().(*net.UDPAddr).Port} {
+	for name, port := range map[string]int{"start": daemonPort, "peer": f.peer.LocalAddr().(*net.UDPAddr).Port} {
 		org.Nodes = append(org.Nodes, registry.Node{CommonName: name,
 			Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &loopback, Port: uint16(port)}}})
 	}
@@ -179,15 +183,17 @@ overlay: [203.0.113.0/24, 3fff:a::/36]
 cap:
   table:
     addresses: [203.0.113.10/32, 3fff:a::10/128]
-%s`, key, trust, f.port, daemonTUN, caps)
+%s`, key, trust, daemonPort, daemonTUN, caps)
 	f.opts = options{
 		configPath:  filepath.Join(dir, "config.yaml"),
-		pprofAddr:   fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
-		metricsAddr: fmt.Sprintf("127.0.0.1:%d", freePort(t, "tcp")),
+		pprofAddr:   fmt.Sprintf("127.0.0.1:%d", daemonPprofPort),
+		metricsAddr: fmt.Sprintf("127.0.0.1:%d", daemonMetricsPort),
 		controlPath: filepath.Join(shortDir(t), "control.sock"),
 		stateDir:    filepath.Join(dir, "state"),
 		level:       slog.LevelInfo,
 	}
+	pprofAddr, metricsAddr := netip.MustParseAddrPort(f.opts.pprofAddr), netip.MustParseAddrPort(f.opts.metricsAddr)
+	netnstest.OutsideAutomaticRange(t, daemonPort, pprofAddr.Port(), metricsAddr.Port())
 	if err := os.WriteFile(f.opts.configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -195,25 +201,6 @@ cap:
 		t.Fatalf("the test's node file is refused: %v", err)
 	}
 	return f
-}
-
-// freePort is a port of network on the loopback that nothing holds now
-func freePort(t *testing.T, network string) int {
-	t.Helper()
-	if network == "udp" {
-		conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer conn.Close()
-		return conn.LocalAddr().(*net.UDPAddr).Port
-	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
 }
 
 // unforced is s with a second signal's forced exit taken out, so a daemon whose stop hangs is reported by the test that
@@ -303,9 +290,9 @@ func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 	if now := openFiles(t); now > was.files {
 		t.Errorf("%d files are open, %d before the start", now, was.files)
 	}
-	conn, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", f.port))
+	conn, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", daemonPort))
 	if err != nil {
-		t.Errorf("the node's port %d is still bound: %v", f.port, err)
+		t.Errorf("the node's port %d is still bound: %v", daemonPort, err)
 	} else {
 		_ = conn.Close()
 	}

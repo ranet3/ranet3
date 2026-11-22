@@ -27,8 +27,12 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
-// VethPeer is VETH_INFO_PEER of linux/veth.h, which describes the other end of a new pair
-const VethPeer = 1
+const (
+	// VethPeer is VETH_INFO_PEER of linux/veth.h, which describes the other end of a new pair
+	VethPeer = 1
+	// portRangePath holds the namespace's automatic range, its first and last port
+	portRangePath = "/proc/sys/net/ipv4/ip_local_port_range"
+)
 
 // EnterEmpty moves the test's thread into a network namespace of its own and brings its loopback up
 // and refuses to go on unless that namespace is new and held no route before its loopback came up
@@ -112,6 +116,24 @@ func ClaimProcess() (skip string, err error) {
 		return "", err
 	}
 	return "", BringUp("lo")
+}
+
+// OutsideAutomaticRange fails the test where the automatic range of the calling thread's network namespace holds any of ports
+func OutsideAutomaticRange(t testing.TB, ports ...uint16) {
+	t.Helper()
+	raw, err := os.ReadFile(portRangePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first, last uint16
+	if _, err := fmt.Sscan(string(raw), &first, &last); err != nil {
+		t.Fatalf("%s reads %q: %v", portRangePath, raw, err)
+	}
+	for _, port := range ports {
+		if port >= first && port <= last {
+			t.Fatalf("the namespace hands ports %d to %d to a bind of port 0, and port %d is one of them", first, last, port)
+		}
+	}
 }
 
 // holdsNoRoute refuses a network namespace that holds a route
