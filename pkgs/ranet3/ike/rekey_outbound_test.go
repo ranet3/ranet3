@@ -796,15 +796,22 @@ func TestRekeyOfACanceledReplacementEndsBeforeItsRequest(t *testing.T) {
 	})(t)
 }
 
-// a reload whose check is asked for in the pass that makes the replaced SA current again, as one stored from the cancel itself is, is checked once against the lists with the restore's own check, so the SA is reported unlisted once and rekeyed once
+// a reload whose check is asked for in the pass that makes the replaced SA current again, as one stored from the cancel itself is, is checked once against the lists with the restore's own check: the restore's pass reads the lists once for both, and the SA is reported unlisted once and rekeyed once
 func TestRestoreWithAReloadQueuedChecksTheListsOnce(t *testing.T) {
 	bubble.Run(func(t *testing.T) {
 		lists := new(atomic.Pointer[Suites])
 		lists.Store(&Suites{})
 		aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
 		var unlisted, started atomic.Int32
+		// reads counts the answering end's reads of the lists from the cancel on, and readBeforeRekey is that count as the rekey the reload forces starts, before the rekey reads them itself
+		// the restore's pass reads them once for its check and the queued one, and the schedule once more as that rekey falls due
+		var reads, readBeforeRekey atomic.Int32
+		readBeforeRekey.Store(-1)
 		p := dialOutbound(t, outboundCase{askerIsInitiator: false, delay: outboundDelay, refusals: 1, configure: func(cfg *PeerConfig) {
-			cfg.Suites = func() Suites { return *lists.Load() }
+			cfg.Suites = func() Suites {
+				reads.Add(1)
+				return *lists.Load()
+			}
 		}, seed: func(asker, answerer *Session) {
 			answerer.timing.ChildRekeyInterval, answerer.timing.RekeyJitter = 0, reloadJitter
 			answerer.rekeyJitterSource = func(bound time.Duration) (time.Duration, error) { return bound, nil }
@@ -816,6 +823,7 @@ func TestRestoreWithAReloadQueuedChecksTheListsOnce(t *testing.T) {
 					unlisted.Add(1)
 				case kind == "ike.rekey.started" && child:
 					started.Add(1)
+					readBeforeRekey.CompareAndSwap(-1, reads.Load())
 				}
 			}
 		}})
@@ -824,6 +832,7 @@ func TestRestoreWithAReloadQueuedChecksTheListsOnce(t *testing.T) {
 		p.answererPlane.beforeCancel = func() {
 			lists.Store(&aes128)
 			p.answerer.SuitesChanged()
+			reads.Store(0)
 		}
 		p.answererPlane.mu.Unlock()
 		if err := p.rekeyChild(t); !errors.Is(err, errRefusedInstall) {
@@ -838,6 +847,9 @@ func TestRestoreWithAReloadQueuedChecksTheListsOnce(t *testing.T) {
 		made, asked := p.answerer.Child(), p.asker.Child()
 		if got := p.answerer.Suite().ESP(); got != "aes128gcm" || made.LocalSPI == old.LocalSPI || made.RemoteSPI != asked.LocalSPI {
 			t.Errorf("the answering end holds %08x of %s and the asking end %08x/%08x, want a new SA of aes128gcm both hold", made.LocalSPI, got, asked.LocalSPI, asked.RemoteSPI)
+		}
+		if got := readBeforeRekey.Load(); got != 2 {
+			t.Errorf("from the cancel to the rekey the reload forces the answering end read the lists %d times, want twice, once in the restore's check and once as that rekey falls due", got)
 		}
 		if unlisted.Load() != 1 || started.Load() != 1 {
 			t.Errorf("the restore with a reload queued reported the Child SA unlisted %d times and started %d rekeys, want once each", unlisted.Load(), started.Load())
