@@ -44,7 +44,7 @@ type RuntimeInfo struct {
 	Sys          uint64   `json:"sys"`
 	GCCycles     int64    `json:"gc_cycles"`
 	GCPauseTotal Duration `json:"gc_pause_total"`
-	// LastGC is how long before the answer the last cycle ended, zero before the first
+	// LastGC is how long before the answer the last cycle ended, zero before the first and where the wall clock is behind the last cycle
 	LastGC Duration `json:"last_gc"`
 	Uptime Duration `json:"uptime"`
 	// Resolver is go where the endpoint resolver runs only the go resolver

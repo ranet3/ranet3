@@ -20,18 +20,30 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/version"
 )
 
-// DebugRuntime reads this process from the go runtime and the kernel
-// the heap comes from runtime/metrics and the collector from its own statistics, and neither stops the world
-func (c *Client) DebugRuntime() control.RuntimeInfo {
-	heap := []metrics.Sample{
-		{Name: "/memory/classes/heap/objects:bytes"},
-		{Name: "/gc/heap/objects:objects"},
-		{Name: "/gc/heap/goal:bytes"},
-		{Name: "/memory/classes/total:bytes"},
+// the runtime's two reads and the clock the view takes, each of which a test replaces to hand the view values it knows
+// a metric's value is read in readMetrics, as only the runtime makes a metrics.Value
+var (
+	readMetrics   = metricValues
+	readCollector = debug.ReadGCStats
+	readClock     = time.Now
+)
+
+// metricValues reads the samples' metrics from runtime/metrics, which stops no goroutine, and is each one's value in their order
+func metricValues(samples *[4]metrics.Sample) (values [4]uint64) {
+	metrics.Read(samples[:])
+	for i := range samples {
+		values[i] = samples[i].Value.Uint64()
 	}
-	metrics.Read(heap)
+	return values
+}
+
+// DebugRuntime reads this process from the go runtime and the kernel
+func (c *Client) DebugRuntime() control.RuntimeInfo {
+	heap := readMetrics(&[4]metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}, {Name: "/gc/heap/objects:objects"}, {Name: "/gc/heap/goal:bytes"}, {Name: "/memory/classes/total:bytes"}})
+	// the collector's statistics, which it reads without stopping the world
 	var collector debug.GCStats
-	debug.ReadGCStats(&collector)
+	readCollector(&collector)
+	now := readClock()
 	info := control.RuntimeInfo{
 		Version:      version.String(),
 		GoVersion:    runtime.Version(),
@@ -40,16 +52,17 @@ func (c *Client) DebugRuntime() control.RuntimeInfo {
 		Goroutines:   runtime.NumGoroutine(),
 		Threads:      pprof.Lookup("threadcreate").Count(),
 		Descriptors:  openDescriptors(),
-		HeapAlloc:    heap[0].Value.Uint64(),
-		HeapObjects:  heap[1].Value.Uint64(),
-		NextGC:       heap[2].Value.Uint64(),
-		Sys:          heap[3].Value.Uint64(),
+		HeapAlloc:    heap[0],
+		HeapObjects:  heap[1],
+		NextGC:       heap[2],
+		Sys:          heap[3],
 		GCCycles:     collector.NumGC,
 		GCPauseTotal: control.Duration(collector.PauseTotal),
-		Uptime:       control.Duration(time.Since(c.started)),
+		Uptime:       control.Duration(now.Sub(c.started)),
 	}
+	// a wall clock stepped back past the last collection reads zero, never a negative age
 	if collector.NumGC > 0 {
-		info.LastGC = control.Duration(time.Since(collector.LastGC))
+		info.LastGC = control.Duration(max(now.Sub(collector.LastGC), 0))
 	}
 	info.Revision, info.Modified = version.VCS()
 	var limit unix.Rlimit

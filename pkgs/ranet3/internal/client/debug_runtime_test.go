@@ -50,7 +50,7 @@ func TestResolverFollowsTheNetPackage(t *testing.T) {
 }
 
 // the view counts what the runtime and the kernel hold for this very process
-// a collection runs first, so the collector has a cycle and a last one to report
+// a collection runs first, so the collector has a cycle to report, and only what holds whatever ran since is asserted of the runtime's answer
 func TestDebugRuntimeCountsThisProcess(t *testing.T) {
 	c := testClient(t)
 	c.started = time.Now().Add(-time.Minute)
@@ -60,8 +60,8 @@ func TestDebugRuntimeCountsThisProcess(t *testing.T) {
 		info.GOMAXPROCS != runtime.GOMAXPROCS(0) || info.CPUs != runtime.NumCPU() {
 		t.Errorf("the runtime reads %+v", info)
 	}
-	if info.GCCycles < 1 || info.LastGC <= 0 || info.LastGC > control.Duration(time.Minute) || info.GCPauseTotal <= 0 ||
-		info.HeapAlloc == 0 || info.HeapObjects == 0 || info.NextGC < info.HeapAlloc || info.Sys < info.HeapAlloc {
+	if info.GCCycles < 1 || info.LastGC < 0 || info.GCPauseTotal <= 0 || info.NextGC == 0 ||
+		info.HeapAlloc == 0 || info.HeapObjects == 0 || info.Sys < info.HeapAlloc {
 		t.Errorf("the heap and the collector read %+v", info)
 	}
 	// a build sandbox may hide the descriptor listing, where the view says so with -1
@@ -75,6 +75,60 @@ func TestDebugRuntimeCountsThisProcess(t *testing.T) {
 	}
 	if info.Uptime < control.Duration(time.Minute) {
 		t.Errorf("a client started a minute ago reports %s up", info.Uptime)
+	}
+}
+
+// the view gives each metric it names, the collector's statistics and the ages the clock sets, as the runtime's reads hand them over
+// a collection after the sample's time, as a wall clock stepped back gives, is no negative age
+func TestDebugRuntimeReadsItsSample(t *testing.T) {
+	last := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	// each metric the view might name holds a value of its own, so a name it reads in place of another gives a wrong field
+	values := map[string]uint64{
+		"/memory/classes/heap/objects:bytes": 1001,
+		"/gc/heap/objects:objects":           1002,
+		"/gc/heap/goal:bytes":                1003,
+		"/memory/classes/total:bytes":        1004,
+		"/gc/heap/live:bytes":                1005,
+	}
+	for _, sample := range []struct {
+		name   string
+		cycles int64
+		now    time.Time
+		age    control.Duration
+	}{
+		{"after the last collection", 7, last.Add(1500 * time.Millisecond), control.Duration(1500 * time.Millisecond)},
+		{"before any collection", 0, last.Add(time.Second), 0},
+		{"before the last collection", 7, last.Add(-time.Second), 0},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			defer func(read func(*[4]metrics.Sample) [4]uint64, collector func(*debug.GCStats), clock func() time.Time) {
+				readMetrics, readCollector, readClock = read, collector, clock
+			}(readMetrics, readCollector, readClock)
+			readMetrics = func(samples *[4]metrics.Sample) (held [4]uint64) {
+				for i, named := range samples {
+					value, ok := values[named.Name]
+					if !ok {
+						t.Errorf("the view names %s, which the sample does not hold", named.Name)
+					}
+					held[i] = value
+				}
+				return held
+			}
+			readCollector = func(stats *debug.GCStats) {
+				*stats = debug.GCStats{NumGC: sample.cycles, PauseTotal: 9 * time.Millisecond, LastGC: last}
+			}
+			readClock = func() time.Time { return sample.now }
+			c := testClient(t)
+			c.started = sample.now.Add(-time.Hour)
+			info := c.DebugRuntime()
+			want := control.RuntimeInfo{HeapAlloc: 1001, HeapObjects: 1002, NextGC: 1003, Sys: 1004, GCCycles: sample.cycles,
+				GCPauseTotal: control.Duration(9 * time.Millisecond), LastGC: sample.age, Uptime: control.Duration(time.Hour)}
+			got := control.RuntimeInfo{HeapAlloc: info.HeapAlloc, HeapObjects: info.HeapObjects, NextGC: info.NextGC, Sys: info.Sys, GCCycles: info.GCCycles,
+				GCPauseTotal: info.GCPauseTotal, LastGC: info.LastGC, Uptime: info.Uptime}
+			if got != want {
+				t.Errorf("the view reads %+v from its sample, want %+v", got, want)
+			}
+		})
 	}
 }
 
