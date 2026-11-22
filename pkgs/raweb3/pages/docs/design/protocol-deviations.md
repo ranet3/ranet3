@@ -265,17 +265,18 @@ keepalive that arrives is counted and ignored.
 ## Endpoint updates
 
 A session in `Run` moves the stored peer endpoint to the address and port of an
-IKE message whose integrity protection validates, that is new, and that comes on
-any IKE SA but a replaced one kept past this end's Delete, as
-[Rekeying](#rekeying) gives. A new message is a request at the Message ID the
-session expects next, or the answer to the one request this node has
-outstanding, which the answer then settles. A fragmented message moves it once
-whole, to where the fragment that completed it came from. A replayed request, an
-answer that matches no outstanding request and a message that does not validate
-move nothing. In the handshake, the responder moves to where the `IKE_AUTH`
-request came from once it validates. The answers the initiator reads move
-nothing, since the IKE SA they set up does not exist yet, and a dial sends each
-of its requests to the endpoint it dials.
+IKE message whose integrity protection validates and that is new, unless it came
+on a replaced IKE SA kept past this end's Delete or is a request on a replaced
+IKE SA that kept an answer for the peer's resends and arrived 2 minutes or more
+after this end replaced that SA, as [Rekeying](#rekeying) gives. A new message
+is a request at the Message ID the session expects next, or the answer to the
+one request this node has outstanding, which the answer then settles. A
+fragmented message moves it once whole, to where the fragment that completed it
+came from. A replayed request, an answer that matches no outstanding request and
+a message that does not validate move nothing. In the handshake, the responder
+moves to where the `IKE_AUTH` request came from once it validates. The answers
+the initiator reads move nothing, since the IKE SA they set up does not exist
+yet, and a dial sends each of its requests to the endpoint it dials.
 [RFC 7296 section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23)
 asks a host that is not behind a NAT to follow "a packet whose integrity
 protection validates", which takes in ESP packets as well, and asks a host
@@ -289,14 +290,14 @@ receives with its own address.
 Whether or not a NAT is in between, someone who captures a request or an answer
 and resends it from another address before the original arrives can move a
 session's sends to that address, and the original then moves nothing. The peer's
-next fresh request on any IKE SA but a replaced one kept past this end's Delete
-moves them back if it arrives before a copy of it resent the same way. When that
-request goes is the peer's own choice, with [the IKE limits](limits.md#ike)
-giving a ranet3 peer's times. Where such a copy arrives first, the sends go to
-the copy's address instead, so they stay off the peer's address for as long as a
-copy of each fresh request and answer the peer sends arrives before it. In
-`Run`, either end can follow a moved peer when it takes a fresh authenticated
-request or the authenticated answer to its outstanding request.
+next fresh request among the IKE messages the first paragraph names moves them
+back if it arrives before a copy of it resent the same way. When that request
+goes is the peer's own choice, with [the IKE limits](limits.md#ike) giving a
+ranet3 peer's times. Where such a copy arrives first, the sends go to the copy's
+address instead, so they stay off the peer's address for as long as a copy of
+each fresh request and answer the peer sends arrives before it. In `Run`, either
+end can follow a moved peer when it takes one of the IKE messages the first
+paragraph names.
 
 ## Answer addresses
 
@@ -312,12 +313,12 @@ source. Without that resend the answer would not leave at all.
 
 Each answer still tries the address first, so answers leave from it again as
 soon as the kernel takes a send from it. The session's own sends stay on the
-kernel's choice until a fresh request or answer moves them back, as
-[moving hosts](../platforms.md#moving-hosts) gives, which a peer sends once that
-traffic is lost. Where the session's ESP from the other address still reaches
-the peer, the peer has no cause to probe, and the session stays there until a
-fresh request or answer on any IKE SA but a replaced one kept past this end's
-Delete reaches the address.
+kernel's choice until a fresh request or answer the session follows moves them
+back, as [moving hosts](../platforms.md#moving-hosts) gives, which a peer sends
+once that traffic is lost. Where the session's ESP from the other address still
+reaches the peer, the peer has no cause to probe, and the session stays there
+until a fresh request or answer the session follows, as
+[endpoint updates](#endpoint-updates) gives, reaches the address.
 
 ## Rekeying
 
@@ -544,25 +545,26 @@ that resend this end closes the IKE SA for that rule. A probe measured that
 bound at 283 seconds at the most jitter the retries draw. A resend of the rekey
 draws the kept answer under the rule every repeat follows, and makes no SA. For
 its first 2 minutes the replaced IKE SA takes requests as any replaced IKE SA
-does, and a fresh request it answers in them ends the keeping, but for a fresh
-rekey of that SA, whose refusal it keeps in place of the earlier answer, again
-no later than 662 seconds after the rekey, and for an `IKE_FOLLOWUP_KE` at the
-Message ID right after the kept answer. From then on it takes only that resend,
-while the answer is kept, an `INFORMATIONAL` request that carries its IKE Delete
-and no critical payload this end does not support, and that `IKE_FOLLOWUP_KE`.
-It answers that exchange `STATE_NOT_FOUND` in or past the 2 minutes, since it
-holds no chain. That answer takes the kept answer's place, and a repeat of the
-`IKE_FOLLOWUP_KE` draws it again until the keeping would have ended, at the
-peer's switch to the SA that replaced it, or at the peer's Delete, whichever
-comes first, no later than 662 seconds after the rekey. A peer that took a kept
-answer opening its rekey's chain sends that exchange next, and one that holds
-the SA this end's rekey made as a crossing's candidate takes that SA on it. It
-drops every other request unanswered and logs it at debug alone. A request in
-fragments falls on the side of the 2 minutes its last fragment arrives on.
-Nothing it takes then moves the endpoint the session sends to or counts as
-hearing the peer, so past those 2 minutes a holder of its keys draws from it
-nothing but the kept answer, the `STATE_NOT_FOUND` after it, again to its
-repeats, and the answer to its Delete.
+does, and a fresh request it answers in them ends the keeping, as the refusal of
+a fresh rekey of an IKE SA the peer's rekey replaced does. Two requests do not:
+a fresh rekey of an IKE SA this end's own rekey replaced, whose refusal it keeps
+in place of the earlier answer, again no later than 662 seconds after the rekey,
+and an `IKE_FOLLOWUP_KE` at the Message ID right after the kept answer. From
+then on it takes only that resend, while the answer is kept, an `INFORMATIONAL`
+request that carries its IKE Delete and no critical payload this end does not
+support, and that `IKE_FOLLOWUP_KE`. It answers that exchange `STATE_NOT_FOUND`
+in or past the 2 minutes, since it holds no chain. That answer takes the kept
+answer's place, and a repeat of the `IKE_FOLLOWUP_KE` draws it again until the
+keeping would have ended, at the peer's switch to the SA that replaced it, or at
+the peer's Delete, whichever comes first, no later than 662 seconds after the
+rekey. A peer that took a kept answer opening its rekey's chain sends that
+exchange next, and one that holds the SA this end's rekey made as a crossing's
+candidate takes that SA on it. It drops every other request unanswered and logs
+it at debug alone. A request in fragments falls on the side of the 2 minutes its
+last fragment arrives on. Nothing it takes then moves the endpoint the session
+sends to or counts as hearing the peer, so past those 2 minutes a holder of its
+keys draws from it nothing but the kept answer, the `STATE_NOT_FOUND` after it,
+again to its repeats, and the answer to its Delete.
 
 The SA a peer's rekey made counts as confirmed at the peer's first fresh
 authenticated request on it while it is current. This end handles that request
@@ -1483,8 +1485,10 @@ a tunnel. A read off the tun to a group is dropped before its route is looked up
 or the packet steered, and the forwarding decision drops one a session delivers,
 as [routing](../routing.md#transit) says. So the one packet to a group that can
 meet a session too small for it is one a segment carries, which a ranet3 headend
-never steers. `End` drops such a segment with no Packet Too Big, since no ICMPv6
-error ranet3 builds answers a packet to a group.
+never steers. `End` drops such a segment with no Packet Too Big about the
+carried packet, since no ICMPv6 error ranet3 builds answers a packet to a group.
+Where no router forwards the carried packet's source, it answers the segment
+itself instead, as given earlier in this section.
 
 An ICMPv6 error behind 9 extension headers or more is answered, but for the code
 8 refusal above and the code 2 answer to a link-local source, this paragraph
@@ -2153,15 +2157,16 @@ Linux a source this node does not own, outside the overlay and covered by no
 route but one that counts as a default, passes toward a mesh destination. Owning
 every source would drop the replies to an exit's egress and to a subnet router's
 LAN, since a tun read does not say whether it answers a flow. On every other
-platform the decision drops such a source toward any destination but an IPv6
-link-local one, which is BCP 38's filter for the host's own side of the edge,
-since no exit's replies cross the tun there: the userspace exit on macOS hands
-its replies to the mesh through lanes of its own, and every other build carries
-no exit. On Linux the chain `entry` reads that from conntrack before the tun,
-and passes into it only this node's own sources, a reply, a destination a `none`
-class takes and an IPv6 link-local or multicast destination, as
-[the antispoof filter](../antispoof.md#the-entry-chain) gives, which is BCP 38's
-filter in part for the host's own side of the edge.
+platform the decision drops such a source toward every destination, which is BCP
+38's filter for the host's own side of the edge, since no exit's replies cross
+the tun there: the userspace exit on macOS hands its replies to the mesh through
+lanes of its own, and every other build carries no exit. A read the
+[link-scope rule](../routing.md#transit) drops or answers skips the
+unowned-source check. On Linux the chain `entry` reads that from conntrack
+before the tun, and passes into it only this node's own sources, a reply, a
+destination a `none` class takes and an IPv6 link-local or multicast
+destination, as [the antispoof filter](../antispoof.md#the-entry-chain) gives,
+which is BCP 38's filter in part for the host's own side of the edge.
 
 ## Exit translation
 
@@ -3305,11 +3310,11 @@ drops:
 - For code 5, the forwarding decision drops a tun read from a source this node
   does not own toward a route that counts as a default, or, under
   `cap.exit.via`, toward a destination outside the overlay that no entry covers,
-  and on every platform but Linux, where no entry chain runs, toward any
-  destination, but for a read the [link-scope rule](../routing.md#transit) drops
-  or answers. Only this node's own traffic leaves the mesh through an exit, or
-  enters it where no entry chain runs, and an unowned source may be forged, so
-  an answer could reach a bystander.
+  and on every platform but Linux, where no entry chain runs, toward every
+  destination, though a read the [link-scope rule](../routing.md#transit) drops
+  or answers skips the unowned-source check. Only this node's own traffic leaves
+  the mesh through an exit, or enters it where no entry chain runs, and an
+  unowned source may be forged, so an answer could reach a bystander.
 - For code 1, the forwarding decision drops a tun read whose walk finds a
   routing header of type 0, 1 or 4, or a type the mesh does not recognize. An
   answer would tell the host that this node is the edge of the mesh's segment
@@ -3385,7 +3390,7 @@ IPv6 link-local source. [The antispoof filter](../antispoof.md#watching-it)
 counts each drop, [segment routing](../segment-routing.md#watching-it) counts
 each refusal, and `ranet3 status` counts an exit's 2 as `unrouted source` and
 `not ready`, and a tun read's as `invalid`, `forged`, `routing header`, `SID`,
-`unowned source` and `nested`, on its `Transit` line.
+`unowned source`, `nested` and `martian`, on its `Transit` line.
 
 [RFC 1812 section 5.3.9](https://www.rfc-editor.org/rfc/rfc1812.html#section-5.3.9)
 also says "The router SHOULD count and SHOULD allow selective logging of packets

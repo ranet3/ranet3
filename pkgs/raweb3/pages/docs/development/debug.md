@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-20
+updated: 2026-11-22
 order: 30
 ---
 
@@ -1177,10 +1177,12 @@ A `netstack.transit.dropped` is recorded at most once every 30 seconds, as is
 its warning in the log, for the packet that dropped first in that time. `reason`
 is the `reason` label of `ranet3_transit_packets_total`, which counts every
 drop, as [metrics](../metrics.md#transit-counters) describes. A read off the tun
-dropped as `multicast`, `no_route` or `held`, and a read a steering policy could
-not encapsulate, dropped as `too_big`, record neither, and the counter alone
-counts them. `src` and `dst` read `invalid IP` for a frame that holds no whole
-IP packet, and for a read off the tun that is not exactly one IP packet.
+records neither when it is dropped as `multicast`, `no_route` or `held`, when
+the [link-scope rule](../routing.md#transit) drops or answers it and it is
+counted as `martian`, or when a steering policy could not encapsulate it and it
+is dropped as `too_big`. The counter alone counts them. `src` and `dst` read
+`invalid IP` for a frame that holds no whole IP packet, and for a read off the
+tun that is not exactly one IP packet.
 
 A `netstack.icmp.withheld` is recorded when one of the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit) withholds an answer

@@ -895,17 +895,19 @@ reads the chains. A pass started only by one of those two keeps what the last
 read of the chains found, their drop counts with it, where all of these hold:
 
 - the reconciler's monitor still reads
-- it reported no change and no lost notification since that read began
+- it reported no change and no lost notification since the pass that made that
+  read took its report, at the start of that read
 - the sets the pass derives are those that read found
 - that read found the chains as written
 
-A change the monitor reports while a pass runs has the next pass read. After the
-monitor loses notifications, each notification it reads until its queue is empty
-has the next pass read, and so does the read that finds it empty. The monitor
-stops reading at a read error that is not a loss of notifications, and no pass
-opens it again while the switch is asked for, so every pass then reads. The drop
-counts status and a scrape show are as old as the last read of the chains, which
-the periodic pass every `cap.table.reconcile` makes at the latest.
+A change the monitor reports while a pass runs has that pass or the next one
+read the chains. After the monitor loses notifications, each notification it
+reads until its queue is empty has the next pass read, and so does the read that
+finds it empty. The monitor stops reading at a read error that is not a loss of
+notifications, and no pass opens it again while the switch is asked for, so
+every pass then reads. The drop counts status and a scrape show are as old as
+the last read of the chains, which the periodic pass every `cap.table.reconcile`
+makes at the latest.
 
 A rule in a chain of another writer's own in the table `inet ranet3` that adds
 elements to or deletes them from the set `forwarded` leaves the switch reading
@@ -1205,8 +1207,9 @@ the tun holds an overlay address of, a route holding its family's zero address
 goes in as the members of the zero-free cover it contains, as
 [the zero-free cover](#the-zero-free-cover-on-macos) describes.
 
-A session is live for 20 seconds after the last fresh authenticated IKE message
-from its peer on any IKE SA but a replaced one kept past this end's Delete, and
+A session is live for 20 seconds after the last message from its peer that the
+session follows, as
+[endpoint updates](design/protocol-deviations.md#endpoint-updates) gives, and
 for 20 to 30 seconds after the last authenticated ESP packet, as
 [the design's limits](design/limits.md#ike) list. A pass that installs such a
 route where the last held none logs
@@ -1485,11 +1488,12 @@ and the kernel's lookup scoped to that interface gives where it ends
 A socket connected to 1 peer for a session whose sends leave the source to the
 kernel is bound to the selection's interface with `IP_BOUND_IF` or
 `IPV6_BOUND_IF`, and a change of interface opens a new one. One for a session
-the peer opened binds the address the peer's latest fresh request or answer on
-any IKE SA but a replaced one kept past this end's Delete reached, and an IPv6
-link-local one its arrival interface. Where the selection holds no route for a
-peer, the datagram is refused with `ENETUNREACH` and nothing is written, as a
-marked lookup ending in an empty `main` refuses on Linux.
+the peer opened binds the address the peer's latest fresh request or answer that
+[endpoint updates](design/protocol-deviations.md#endpoint-updates) has the
+session follow reached, and an IPv6 link-local one its arrival interface. Where
+the selection holds no route for a peer, the datagram is refused with
+`ENETUNREACH` and nothing is written, as a marked lookup ending in an empty
+`main` refuses on Linux.
 
 The kernel keeps the route the shared socket cached for a destination whatever
 interface a later send to it names

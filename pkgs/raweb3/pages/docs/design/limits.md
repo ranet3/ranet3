@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-21
+updated: 2026-11-22
 order: 10
 ---
 
@@ -666,15 +666,16 @@ each pass reads the routing table, so a shorter grace would only make passes
 more frequent. While a capturing route is in play and a session is live, the
 reconciler runs a pass at least once a grace.
 
-A session counts as live for 20 seconds after it last received a fresh
-authenticated IKE message from its peer on any IKE SA but a replaced one kept
-past this end's Delete, and for 20 to 30 seconds after its last authenticated
-ESP, which the session notices up to 10 seconds late. Without the hold a laptop
-whose mesh has gone loses every network it has rather than only the mesh. With
-literal endpoints its sessions still redial over the uplink, since the underlay
-keeps off the mesh's routes. An endpoint name resolves only where its query
-keeps off them too, as [the underlay socket](#the-underlay-socket) gives for
-Linux and the next paragraph for macOS.
+A session counts as live for 20 seconds after the last message from its peer
+that the session follows, as
+[endpoint updates](protocol-deviations.md#endpoint-updates) gives, and for 20 to
+30 seconds after its last authenticated ESP, which the session notices up to 10
+seconds late. Without the hold a laptop whose mesh has gone loses every network
+it has rather than only the mesh. With literal endpoints its sessions still
+redial over the uplink, since the underlay keeps off the mesh's routes. An
+endpoint name resolves only where its query keeps off them too, as
+[the underlay socket](#the-underlay-socket) gives for Linux and the next
+paragraph for macOS.
 
 On macOS ranet3 resolves an endpoint name with Go's own resolver, as on Linux,
 and its query to a nameserver outside `overlay` names the interface
@@ -1297,22 +1298,20 @@ fell starts its waits over, up to 20 sends, which bound the sends of every
 request this end counts however it is cut. After the fifth send of a cut, an
 unanswered request can continue toward the 20-send limit only if authenticated
 traffic keeps the peer alive at the retransmission deadline. A fresh
-authenticated IKE message counts at receipt, unless it came on a replaced IKE SA
-kept past this end's Delete, or is a request on a replaced IKE SA that kept an
-answer for the peer's resends 2 minutes or more after this end replaced it, as
-[Rekeying](protocol-deviations.md#rekeying) gives, and ESP counts when the
-session takes it in on its next pass, at most one liveness interval later while
-a request is outstanding and sooner if another event wakes the loop. At the
-deadline, the latest such receipt or intake must be less than the liveness
-interval of 10 seconds old. For ESP alone, a packet less than 10 seconds old
-therefore always qualifies, one at least 20 seconds old never does, and between
-those ages it qualifies only if its intake is less than 10 seconds old at the
-deadline. A steady flow with gaps shorter than one interval cannot end a request
-that can take the longer schedule on the silent peer's budget, but the 20-send
-limit and the IKE SA's lifetime still end it. The exchange holds the only
-outstanding request this end allows. Rekeys, Deletes and liveness checks wait
-until it ends. A liveness check, an `INVALID_SPI` notify and a Delete of an IKE
-SA never take the longer schedule, and neither does an exchange still
+authenticated IKE message counts at receipt where the session follows it, as
+[endpoint updates](protocol-deviations.md#endpoint-updates) gives, and ESP
+counts when the session takes it in on its next pass, at most one liveness
+interval later while a request is outstanding and sooner if another event wakes
+the loop. At the deadline, the latest such receipt or intake must be less than
+the liveness interval of 10 seconds old. For ESP alone, a packet less than 10
+seconds old therefore always qualifies, one at least 20 seconds old never does,
+and between those ages it qualifies only if its intake is less than 10 seconds
+old at the deadline. A steady flow with gaps shorter than one interval cannot
+end a request that can take the longer schedule on the silent peer's budget, but
+the 20-send limit and the IKE SA's lifetime still end it. The exchange holds the
+only outstanding request this end allows. Rekeys, Deletes and liveness checks
+wait until it ends. A liveness check, an `INVALID_SPI` notify and a Delete of an
+IKE SA never take the longer schedule, and neither does an exchange still
 outstanding when its IKE SA reaches its lifetime. A request on the session's
 current IKE SA waits behind the Delete of a replaced or redundant IKE SA for no
 more than the sends the table gives that Delete. Behind a liveness check left on

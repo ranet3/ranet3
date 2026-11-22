@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-20
+updated: 2026-11-22
 order: 100
 ---
 
@@ -34,7 +34,7 @@ setting or skips a route instead.
 | A `cap.route` entry that counts as a default           | loaded, with a warning unless it is a default, making this node an exit for its family                                                                                                                                                                                   | refused, as [gaps on macOS](#gaps-on-macos) gives                                                                                                                                                                                                   |
 | `overlay`                                              | loaded, and chain `antispoof` at prerouting in the nftables table `inet ranet3`, with an accept for each `cap.antispoof` exemption                                                                                                                                       | loaded, bounding the local segments' outer sources and the forwarding decision, and chain `antispoof` in the pf anchor `com.apple/ranet3`, which turns pf on, with a pass for each `cap.antispoof` exemption                                        |
 | Local segments                                         | `End` and `End.DT46`, the outer source checked against the overlay                                                                                                                                                                                                       | `End` and `End.DT46`, the outer source checked against the overlay                                                                                                                                                                                  |
-| Entry chain                                            | chain `entry` at postrouting in `inet ranet3` on every node, with no key, as [the antispoof filter](antispoof.md#the-entry-chain) describes                                                                                                                              | none, the tun read drops a source this node does not own toward all but an IPv6 link-local destination, and a Mac with no `overlay` that forwards is warned                                                                                         |
+| Entry chain                                            | chain `entry` at postrouting in `inet ranet3` on every node, with no key, as [the antispoof filter](antispoof.md#the-entry-chain) describes                                                                                                                              | none, the tun read's unowned-source check drops a source this node does not own toward every destination, a read the [link-scope rule](routing.md#transit) drops or answers skips it, and a Mac with no `overlay` that forwards is warned           |
 | `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                                                       | the routes of [the zero-free cover](routing.md#the-zero-free-cover-on-macos) in each family the tun holds an overlay address of, and `forward` and `inbound` refused, as [gaps on macOS](#gaps-on-macos) gives                                      |
 | `cap.exit.fallback = "none"`                           | the rules 5445 and 5450 and the chains `fallback` at postrouting and `output` at output in the nftables table `inet ranet3`, of [the kill switch](routing.md#the-kill-switch-on-linux), which gives what each stop leaves of them                                        | 18 reject routes on `lo0` at the zero-free cover's keys, of [the kill switch on macOS](routing.md#the-kill-switch-on-macos), which gives what each stop leaves of them                                                                              |
 | `cap.exit.via`                                         | two steered defaults out of the tun under exit mode's rules, and the dataplane's steer along the path, of [mode 3](routing.md#mode-3-on-linux)                                                                                                                           | the steered defaults as the zero-free cover, and the dataplane's steer along the path, with the kill switch unless `fallback = "uplink"` is written                                                                                                 |
@@ -300,31 +300,29 @@ A node keeps its sessions when its own addresses change, as a laptop's do when
 it moves from Wi-Fi to a dock or a DHCP lease renews, and when its peer's do.
 Every session follows its peer as
 [endpoint updates](design/protocol-deviations.md#endpoint-updates) gives, and
-answers a request from the address it arrived on. Beyond those answers, a
+answers a request from the address it arrived on. A request or answer the
+session follows under that rule is a followed one. Beyond answering requests, a
 session this node dialed leaves the source address to the kernel. Its sends
 leave from whatever address the host holds at the time. A session a peer opened
-sends from the address the peer's latest fresh request or answer on any IKE SA
-but a replaced one kept past this end's Delete arrived on, on Linux and macOS
-alike, and such a request or answer that reaches another of this host's
-addresses moves it there. Once that address has gone and the kernel refuses a
-send from it, the session sends from the kernel's choice until a later fresh
-request or answer moves it to the address that one arrived on.
+sends from the address the peer's latest followed request or answer arrived on,
+on Linux and macOS alike, and a followed request or answer that reaches another
+of this host's addresses moves it there. Once that address has gone and the
+kernel refuses a send from it, the session sends from the kernel's choice until
+a later followed request or answer moves it to the address that one arrived on.
 
 The session falls back to the kernel's choice whenever the kernel refuses a send
 from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV`,
 `EADDRNOTAVAIL` or `ENXIO`. Once a send from the kernel's choice has gone after
 `EHOSTUNREACH`, a fresh request or answer to the address within 1 minute changes
-nothing, and the session keeps sending from the kernel's choice. The first one
-after that minute on any IKE SA but a replaced one kept past this end's Delete
-moves the session back to the address, and a send refused with `EHOSTUNREACH`
-again falls back again, at most once every minute. After any of the other
-refusals, the next fresh request or answer on any IKE SA but a replaced one kept
-past this end's Delete that reaches the address moves the session back at once.
-Where the session's traffic from the other address still reaches the peer, the
-session works, and it stays there until a fresh request or answer on any IKE SA
-but a replaced one kept past this end's Delete reaches the address. Each answer
-to a request that reaches the address is sent from the address itself first, so
-answers leave from it as soon as it routes again.
+nothing, and the session keeps sending from the kernel's choice. The first
+followed request or answer after that minute moves the session back to the
+address, and a send refused with `EHOSTUNREACH` again falls back again, at most
+once every minute. After any of the other refusals, the next followed request or
+answer that reaches the address moves the session back at once. Where the
+session's traffic from the other address still reaches the peer, the session
+works, and it stays there until a followed request or answer reaches the
+address. Each answer to a request that reaches the address is sent from the
+address itself first, so answers leave from it as soon as it routes again.
 
 A session that cannot send at all, because the host has no route to the peer,
 holds while its liveness check retransmits on the usual schedule, and ends once
@@ -387,33 +385,31 @@ chooses it.
 The transport counts the bytes each address pair carries, sent and received
 together. A pair is this host's address and the peer's address and port. On
 Linux and macOS the address of a session a peer opened is the one the peer's
-latest fresh request or answer on any IKE SA but a replaced one kept past this
-end's Delete arrived on, and a session this node dialed, or one whose sends fell
-back from that address, leaves it to the route. A pair that carries 1 MiB within
-1 sweep of 30 seconds gets a socket on `link.port`, the listener's port, bound
-to its address or to the one the route picks then, and connected to the peer.
-The peer sees the same address and port as before. The pair's sends leave on
-that socket. The kernel hands the socket the peer's datagrams to that address
-ahead of the listener, and a reader of its own takes them to the same sessions.
-Before Linux 5.4, once 2 such sockets share 1 address, the kernel hands each
-datagram to that address from a peer with a socket of its own to 1 of them by a
-hash, so a peer's datagrams can arrive on another peer's socket. Every reader
-takes them to the same sessions, so none is lost. A node holds at most 256 such
-sockets. A pair past the cap stays on the shared socket.
+latest followed request or answer, as [moving hosts](#moving-hosts) gives,
+arrived on, and a session this node dialed, or one whose sends fell back from
+that address, leaves it to the route. A pair that carries 1 MiB within 1 sweep
+of 30 seconds gets a socket on `link.port`, the listener's port, bound to its
+address or to the one the route picks then, and connected to the peer. The peer
+sees the same address and port as before. The pair's sends leave on that socket.
+The kernel hands the socket the peer's datagrams to that address ahead of the
+listener, and a reader of its own takes them to the same sessions. Before Linux
+5.4, once 2 such sockets share 1 address, the kernel hands each datagram to that
+address from a peer with a socket of its own to 1 of them by a hash, so a peer's
+datagrams can arrive on another peer's socket. Every reader takes them to the
+same sessions, so none is lost. A node holds at most 256 such sockets. A pair
+past the cap stays on the shared socket.
 
 On Linux the socket of a session a peer opened also leaves by the interface the
-peer's latest fresh request or answer on any IKE SA but a replaced one kept past
-this end's Delete arrived on, as the shared socket's replies do. An IPv4 socket
-binds to that interface with `SO_BINDTOIFINDEX`, which Linux has from 5.1 and
-allows a process without `CAP_NET_RAW` from 5.7. Where the kernel refuses the
-bind, such a session stays on the shared socket. An IPv6 socket names the
-interface with `IPV6_UNICAST_IF`, which like the reply's own choice prefers that
-interface only among the routes of the lowest metric. A link-local address binds
-on that interface alone. On macOS the socket of a session the peer opened binds
-the address the peer's latest fresh request or answer on any IKE SA but a
-replaced one kept past this end's Delete reached, and an IPv6 link-local one
-also its arrival interface. Only a socket whose sends leave the source to the
-kernel binds on the interface
+peer's latest followed request or answer arrived on, as the shared socket's
+replies do. An IPv4 socket binds to that interface with `SO_BINDTOIFINDEX`,
+which Linux has from 5.1 and allows a process without `CAP_NET_RAW` from 5.7.
+Where the kernel refuses the bind, such a session stays on the shared socket. An
+IPv6 socket names the interface with `IPV6_UNICAST_IF`, which like the reply's
+own choice prefers that interface only among the routes of the lowest metric. A
+link-local address binds on that interface alone. On macOS the socket of a
+session the peer opened binds the address the peer's latest followed request or
+answer reached, and an IPv6 link-local one also its arrival interface. Only a
+socket whose sends leave the source to the kernel binds on the interface
 [the selection](routing.md#the-underlays-interface-on-macos) names for the peer,
 from the source the route scoped to that interface picks, and moves with it.
 
@@ -506,12 +502,11 @@ On macOS every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`, but for
 those the host fragments for a session under the floor, as below. A send refused
 for its size reads the MTU of the interface it sends through, and the session's
 search takes that as its route's MTU. A session the peer opened sends through
-the interface holding the address it sends from, the one the peer's latest fresh
-request or answer on any IKE SA but a replaced one kept past this end's Delete
-reached until a send from it falls back, as [moving hosts](#moving-hosts)
-describes, and an IPv6 link-local one through the interface that request or
-answer arrived on. Any other session, one whose send fell back included, sends
-through the interface
+the interface holding the address it sends from, the one the peer's latest
+followed request or answer reached until a send from it falls back, as
+[moving hosts](#moving-hosts) describes, and an IPv6 link-local one through the
+interface that request or answer arrived on. Any other session, one whose send
+fell back included, sends through the interface
 [the selection](routing.md#the-underlays-interface-on-macos) names for its peer.
 The search reads the same MTU when it starts, and the probes alone find a
 narrower hop beyond it.

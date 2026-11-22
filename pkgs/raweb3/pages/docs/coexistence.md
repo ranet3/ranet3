@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-21
+updated: 2026-11-22
 order: 110
 ---
 
@@ -816,22 +816,22 @@ On Linux every nftables chain, set and object ranet3 writes is in the one table
 Each writer reads back, rewrites and deletes only what its names give, beyond
 [what goes of another writer's](#what-goes-of-another-writers). Another writer's
 change to one of a writer's chains, a rule in one or one of its sets wakes that
-writer alone, and a chain made, renamed or deleted in the table wakes the kill
-switch as well, whatever its name, since one of its own renamed away carries the
-new name. No monitor reads the timeout objects, and the translator's next read
-finds a change to one. A table message wakes every writer but its sender, unless
-it is a `NEWTABLE` whose flags are 0, which makes the table or clears its flags.
-One that deletes the table wakes them whatever it carries. A flush of the whole
-ruleset deletes the table and another program setting it dormant sets a flag on
-it, so each wakes every writer once, and the first write of a writer's that the
-host takes after it, a pass or the translator's stop, makes the table again or
-clears the flag, which wakes no other but the kill switch for the chains it
-makes: the table it makes holds none of their chains, and with the flag cleared
-it bypasses none. A writer's monitor that loses notifications wakes that
-writer's pass at the loss, at each notification it reads until its queue is
-empty, and at the read that finds it empty. No writer's writes wake another but
-a rewrite of the antispoof filter's or the translator's chains, which wakes the
-kill switch. Each makes the table where it is missing.
+writer alone, and a chain made, rewritten, renamed or deleted in the table wakes
+the kill switch as well, whatever its name, since one of its own renamed away
+carries the new name. No monitor reads the timeout objects, and the translator's
+next read finds a change to one. A table message wakes every writer but its
+sender, unless it is a `NEWTABLE` whose flags are 0, which makes the table or
+clears its flags. One that deletes the table wakes them whatever it carries. A
+flush of the whole ruleset deletes the table and another program setting it
+dormant sets a flag on it, so each wakes every writer once, and the first write
+of a writer's that the host takes after it, a pass or the translator's stop,
+makes the table again or clears the flag, which wakes no other but the kill
+switch for the chains it makes: the table it makes holds none of their chains,
+and with the flag cleared it bypasses none. A writer's monitor that loses
+notifications wakes that writer's pass at the loss, at each notification it
+reads until its queue is empty, and at the read that finds it empty. No writer's
+write wakes another writer's pass, but for the chain writes above that wake the
+kill switch. Each writer makes the table where it is missing.
 
 A writer's rewrite is the transaction that writes its chains and sets whole:
 every write of the translator and of the kill switch, and every write of the
