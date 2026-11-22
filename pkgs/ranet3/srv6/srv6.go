@@ -67,6 +67,8 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 const (
@@ -229,13 +231,12 @@ func CheckPath(source netip.Addr, path []netip.Addr) error {
 
 // Usable reports whether an address can be a configured segment, a tunnel
 // source or a local SID, each an address a packet crossing the mesh carries
-// in its outer header. A zone is local to one host and never reaches the
-// wire, a v4-mapped address cannot appear in an IPv6 destination, neither the
-// unspecified address nor a multicast group is somewhere a packet can be
-// forwarded to, and RFC 4291 section 2.5.6 has no router forward a packet from
-// or to a link-local address.
+// in its outer header: one answersFrom takes and packet.InvalidSource does not
+// hold. RFC 4291 sections 2.5.2 and 2.7 keep the unspecified address and a
+// group out of a routing header, section 2.5.3 keeps the loopback address
+// inside one node, and section 2.5.6 keeps a link-local address on its link.
 func Usable(address netip.Addr) bool {
-	return answersFrom(address) && !address.IsLinkLocalUnicast()
+	return answersFrom(address) && !packet.InvalidSource(address)
 }
 
 // answersFrom reports whether an ICMPv6 error this package builds can come
