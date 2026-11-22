@@ -355,10 +355,10 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 
 // warnUnbordered says so when the host forwards where no antispoof filter
 // runs. The tun read drops a packet from a source this node does not own
-// there toward every destination but an IPv6 link-local one, so a host on any
-// of this node's links reaches the mesh only under a source this node owns, and
-// nothing keeps it from the host's own services under a mesh source. border
-// is the antispoof filter's configuration, nil where overlay is not written.
+// there, so a host on any of this node's links reaches the mesh only under a
+// source this node owns, and nothing keeps it from the host's own services
+// under a mesh source. border is the antispoof filter's configuration, nil
+// where overlay is not written.
 //
 // a warning rather than a refusal, since forwarding moves under a running node
 // and darwin, which with no overlay written forwards with no filter to offer, would otherwise not start at all
