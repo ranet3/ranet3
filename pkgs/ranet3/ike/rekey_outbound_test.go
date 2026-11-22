@@ -1097,6 +1097,113 @@ func TestDeleteOfBothChildSAsDrainsTheReplacedOne(t *testing.T) {
 	})(t)
 }
 
+// a peer's INFORMATIONAL whose Delete payloads name the new SA and the SA it replaced closes both as TestDeleteOfBothChildSAsDrainsTheReplacedOne does, however the payloads split and order the two
+// the replaced SA's inbound half drains, the new SA is closed and not canceled, and the answer is one Delete payload naming this end's SPI of each once
+func TestDeletePayloadsOfOneMessageCloseBothChildSAsAsOne(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		payloads func(old, made uint32) [][]uint32
+	}{
+		{"one payload", func(old, made uint32) [][]uint32 { return [][]uint32{{made, old}} }},
+		{"new SA's payload first", func(old, made uint32) [][]uint32 { return [][]uint32{{made}, {old}} }},
+		{"replaced SA's payload first", func(old, made uint32) [][]uint32 { return [][]uint32{{old}, {made}} }},
+		{"replaced SA named twice", func(old, made uint32) [][]uint32 { return [][]uint32{{made, old}, {old}} }},
+	} {
+		t.Run(row.name, bubble.Run(func(t *testing.T) {
+			s, plane, other, old, made, _ := heldSession(t)
+			s.childRetireDelay = childRetireDelay
+			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+			s.current = &ikeContext{suite: suite, spiI: 0x0102030405060708, spiR: 0x1112131415161718, skei: make([]byte, 20), sker: make([]byte, 20)}
+			var request []RawPayload
+			for _, spis := range row.payloads(old.RemoteSPI, made.RemoteSPI) {
+				deleted := Delete{Protocol: ProtoESP}
+				for _, spi := range spis {
+					deleted.SPIs = append(deleted.SPIs, binary.BigEndian.AppendUint32(nil, spi))
+				}
+				request = append(request, RawPayload{Type: PayloadD, Body: EncodeDelete(deleted)})
+			}
+			generation := s.currentChildGeneration()
+			response, err := s.handleRequest(s.current, &Header{ExchangeType: INFORMATIONAL, MessageID: 4}, nil, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, err := DecodeMessage(response.whole)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inner, err := DecryptMessage(suite, s.current.skei, response.whole, message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var answered []uint32
+			for _, p := range inner {
+				if deleted, err := DecodeDelete(p.Body); p.Type == PayloadD && err == nil && deleted.Protocol == ProtoESP {
+					for _, spi := range deleted.SPIs {
+						answered = append(answered, binary.BigEndian.Uint32(spi))
+					}
+				}
+			}
+			if slices.Sort(answered); len(inner) != 1 || !slices.Equal(answered, []uint32{old.LocalSPI, made.LocalSPI}) {
+				t.Errorf("the answer holds %d payloads naming %08x, want one Delete payload naming %08x and %08x once each", len(inner), answered, old.LocalSPI, made.LocalSPI)
+			}
+			if child, retiring := s.Child(), s.retiringChild(); child.LocalSPI != 0 || retiring.LocalSPI != 0 {
+				t.Errorf("the session holds %08x and awaits the retirement of %08x, want neither", child.LocalSPI, retiring.LocalSPI)
+			}
+			if !plane.open(old.LocalSPI) || other.RegisterESP(old.LocalSPI) == nil {
+				t.Error("the replaced SA's inbound half left at once, want it draining")
+			}
+			if err := other.RegisterESP(made.LocalSPI); err != nil {
+				t.Errorf("the new SA's SPI is still routed to the session: %v", err)
+			}
+			if out := plane.sending(); out != 0 {
+				t.Errorf("the dataplane sends on %08x once both SAs are deleted, want no outbound SA", out)
+			}
+			if got := s.currentChildGeneration(); s.childRestored || got != generation {
+				t.Errorf("the message restored the replaced SA %08x (generation %d, was %d), want nothing restored", old.LocalSPI, got, generation)
+			}
+		}))
+	}
+}
+
+// unlockedAnswer bounds the wait for the answer to a liveness check while the test holds the Child SA lock, an answer that takes no lock
+const unlockedAnswer = 5 * time.Second
+
+// a peer's INFORMATIONAL with no Delete payload, a liveness check, is answered while an install holds the Child SA lock across its dataplane callback, here held by the test
+func TestLivenessCheckIsAnsweredWhileTheChildSALockIsHeld(t *testing.T) {
+	s, _, _, _, _, _ := heldSession(t)
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	s.current = &ikeContext{suite: suite, spiI: 0x0102030405060708, spiR: 0x1112131415161718, skei: make([]byte, 20), sker: make([]byte, 20)}
+	type answer struct {
+		response *outbound
+		err      error
+	}
+	answered := make(chan answer, 1)
+	s.childMu.Lock()
+	go func() {
+		response, err := s.handleRequest(s.current, &Header{ExchangeType: INFORMATIONAL, MessageID: 4}, nil, nil)
+		answered <- answer{response, err}
+	}()
+	var got answer
+	select {
+	case got = <-answered:
+		s.childMu.Unlock()
+	case <-time.After(unlockedAnswer):
+		s.childMu.Unlock()
+		<-answered
+		t.Fatalf("the liveness check was not answered within %v while the Child SA lock was held", unlockedAnswer)
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	message, err := DecodeMessage(got.response.whole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inner, err := DecryptMessage(suite, s.current.skei, got.response.whole, message); err != nil || len(inner) != 0 {
+		t.Errorf("the answer holds %d payloads (%v), want an empty INFORMATIONAL", len(inner), err)
+	}
+}
+
 // the end that answers a Child SA rekey moves its outbound SA to the new one at the two ends of its wait the peer does not decide, its own Delete of the replaced SA at retirementDeadline and that SA's lifetime, and every packet it seals is opened
 // at the deadline its Delete crosses the asking end's, which the relay lost until then, and each end skips the other's
 func TestAnsweringEndMovesItsOutboundSAAtTheEndsOfItsWait(t *testing.T) {

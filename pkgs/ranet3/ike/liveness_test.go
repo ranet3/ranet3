@@ -1961,10 +1961,11 @@ func testInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted.Protocol != ProtoESP || len(deleted.SPIs) != 2 || binary.BigEndian.Uint32(deleted.SPIs[0]) != current.LocalSPI || binary.BigEndian.Uint32(deleted.SPIs[1]) != retiring.LocalSPI {
+	// the payloads are one set, in which the replaced SA closes first
+	if deleted.Protocol != ProtoESP || len(deleted.SPIs) != 2 || binary.BigEndian.Uint32(deleted.SPIs[0]) != retiring.LocalSPI || binary.BigEndian.Uint32(deleted.SPIs[1]) != current.LocalSPI {
 		t.Fatalf("Delete response = %#v", deleted)
 	}
-	if len(retired) != 2 || retired[0] != current.LocalSPI || retired[1] != retiring.LocalSPI {
+	if len(retired) != 2 || retired[0] != retiring.LocalSPI || retired[1] != current.LocalSPI {
 		t.Fatalf("retired SPIs = %08x", retired)
 	}
 	if got := s.Child(); got.LocalSPI != 0 || got.RemoteSPI != 0 {

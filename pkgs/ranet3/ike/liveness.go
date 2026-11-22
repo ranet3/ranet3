@@ -1299,7 +1299,9 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 			}
 		}
 		logInvalidSPIs(inner)
-		var deletes []Delete
+		// RFC 7296 section 1.4.1: "To delete an SA, an INFORMATIONAL exchange with one or more Delete payloads is sent listing the SPIs (as they would be expected in the headers of inbound packets) of the SAs to be deleted."
+		// the ESP SPIs of every Delete payload of the message are one set: a replaced SA and its replacement close together wherever each is named
+		var remoteSPIs []uint32
 		for _, p := range inner {
 			if p.Type != PayloadD {
 				continue
@@ -1308,7 +1310,6 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 			if err != nil {
 				return s.refuseRequest(ctx, hdr.MessageID, INFORMATIONAL, err)
 			}
-			deletes = append(deletes, d)
 			if d.Protocol == ProtoIKE {
 				response, err := s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
 				if err != nil {
@@ -1319,27 +1320,28 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 				}
 				return response, errPeerDeletedIKE
 			}
-		}
-		var responseSPIs [][]byte
-		for _, d := range deletes {
 			if d.Protocol != ProtoESP {
 				continue
 			}
-			remoteSPIs := make([]uint32, len(d.SPIs))
-			for i, spi := range d.SPIs {
-				remoteSPIs[i] = binary.BigEndian.Uint32(spi)
+			for _, spi := range d.SPIs {
+				remoteSPIs = append(remoteSPIs, binary.BigEndian.Uint32(spi))
 			}
-			// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
-			// a Child SA the dataplane refuses to close is left out of the answer, and the IKE SA's Delete that follows it closes every Child SA
-			localSPIs, err := s.deleteChildren(remoteSPIs)
-			if err != nil {
-				s.ChildFailed(fmt.Errorf("ike: close a Child SA the peer deleted: %w", err))
-			}
-			for _, localSPI := range localSPIs {
-				spi := make([]byte, 4)
-				binary.BigEndian.PutUint32(spi, localSPI)
-				responseSPIs = append(responseSPIs, spi)
-			}
+		}
+		// a message that deletes no Child SA, a liveness check among them, is answered without the Child SA lock an install holds across its dataplane callback
+		if len(remoteSPIs) == 0 {
+			return s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
+		}
+		// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
+		// a Child SA the dataplane refuses to close is left out of the answer, and the IKE SA's Delete that follows it closes every Child SA
+		localSPIs, err := s.deleteChildren(remoteSPIs)
+		if err != nil {
+			s.ChildFailed(fmt.Errorf("ike: close a Child SA the peer deleted: %w", err))
+		}
+		var responseSPIs [][]byte
+		for _, localSPI := range localSPIs {
+			spi := make([]byte, 4)
+			binary.BigEndian.PutUint32(spi, localSPI)
+			responseSPIs = append(responseSPIs, spi)
 		}
 		var responsePayloads []RawPayload
 		if len(responseSPIs) > 0 {
