@@ -104,7 +104,10 @@ func TestServersErrorFromLoopbackIsNotRelayedAndEndsNoMapping(t *testing.T) {
 // socket's errors: one queued already, else the one a write of payload draws.
 // A write fails with the errno of an error the socket holds still, taking
 // the errno the reader would have woken to, so a write after the lock draws
-// one more error to wake it.
+// one more error to wake it. Where the write inside the lock fails with the
+// errno of the first error, the write after the lock draws a second error and
+// the reader wakes to that one. The test then shows that a woken reader takes
+// the socket's errors, not that it wakes to the first error.
 func errorHeld(t *testing.T, dst *destination, payload []byte) bool {
 	t.Helper()
 	held, took := func() (bool, bool) {

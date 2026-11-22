@@ -28,9 +28,12 @@ import (
 // watches for. The same error about another program's socket on the host,
 // drawn after it, reaches no leaf and is counted: XNU carries both through
 // the loopback in turn and the socket's reader takes them in turn, so that
-// count shows the exit's error reached the reader before the window. The
-// same error from a router the mesh carries, handed to the reader, reaches
-// the leaf from the router. The IPv4 quote is read below.
+// count shows the exit's error reached the reader before the window. A
+// message of another program's that the reader counts after the test first
+// reads the count raises the count as well, which is why the same error is
+// handed to the reader directly below. The same error from a router the mesh
+// carries, handed to the reader, reaches the leaf from the router. The IPv4
+// quote is read below.
 func TestServersErrorFromLoopbackIsNotRelayedThroughTheICMPSocket(t *testing.T) {
 	server := netip.IPv6Loopback()
 	live := loopbackServer(t, server)
