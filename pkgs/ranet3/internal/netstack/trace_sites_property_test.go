@@ -62,6 +62,8 @@ var classifyKinds = []siteKind{
 	{"multicast", both, func(f int) []byte {
 		return udpPacket(transitOwn[f], map[int]netip.Addr{4: segAddr("224.0.0.1"), 6: segAddr("ff02::1")}[f], 100, false)
 	}, TraceDrop, "multicast", false, false},
+	{"link scope", v6, func(f int) []byte { return udpPacket(transitOwn[f], segAddr("fe80::1"), 100, false) }, TraceDrop, "martian", false, false},
+	{"link-local source", v6, func(f int) []byte { return udpPacket(segAddr("fe80::1"), transitFar[f], 100, false) }, TraceAnswer, "martian", false, false},
 	{"forged", both, func(f int) []byte { return udpPacket(transitSender[f], transitFar[f], 100, false) }, TraceDrop, "forged", false, false},
 	{"routing header", v6, func(f int) []byte { return withRouting(udpPacket(transitOwn[f], transitFar[f], 100, false), 4) }, TraceDrop, "routing_header", false, false},
 	{"sid", v6, func(f int) []byte { return udpPacket(transitOwn[f], edgeOwnSID, 100, false) }, TraceDrop, "sid", false, false},

@@ -131,6 +131,10 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	}
 	peer, verdict, match := m.Routes.Resolve(src, dst)
 	e.Match = match
+	held := verdict == RouteLocal && m.holdsAddress(dst)
+	toLink := !held && (linkLocalUnicast(dst) || loopbackAddress(dst))
+	fromLink := !held && linkLocalUnicast(src)
+	skipUnowned := toLink || fromLink
 	steering := m.steerTable.Load()
 	// as classify tests it
 	alongPath, leaves := false, match.Counted
@@ -138,8 +142,14 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 		alongPath, leaves = m.takesPath(steering, verdict, match, dst)
 	}
 	var kept keptAnswers
-	if reason, dropped := m.edgeCheck(&kept, m.segmentTable.Load(), raw, nextHeader, src, dst, leaves); dropped {
+	if reason, dropped := m.edgeCheck(&kept, m.segmentTable.Load(), raw, nextHeader, src, dst, leaves, skipUnowned); dropped {
 		return e.decided(readSite(TraceDrop, reason))
+	}
+	if toLink {
+		return e.decided(readSite(TraceDrop, transitMartian))
+	}
+	if fromLink {
+		return e.decided(readSite(TraceAnswer, transitMartian).answered(answerBeyondScope, TraceNoAnswer))
 	}
 	site, header := readSite(TraceForward, transitForwarded), []byte(nil)
 	if policy, path := m.steerPolicy(steering, src, dst, alongPath); policy != nil {
@@ -159,7 +169,8 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	switch verdict {
 	case RouteLocal, RouteNone, RouteHeld:
 		switch {
-		case verdict == RouteLocal && m.holdsAddress(dst):
+		// as in classify, verdict is the steered one here
+		case verdict == RouteLocal && held:
 			return e.decided(readSite(TraceDeliver, transitDelivered))
 		case verdict == RouteLocal && namesNoHost(dst, match.Bits):
 			return e.decided(readSite(TraceDrop, transitLooped))

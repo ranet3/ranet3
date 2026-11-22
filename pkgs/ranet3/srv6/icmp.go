@@ -111,8 +111,9 @@ func withHopLimit(out []byte, hops uint8) []byte {
 
 // BeyondScope answers a packet whose destination lies past the scope of its source, RFC 4443 section 3.1 code 2, from source, and allow is icmpError's
 // a link-local source with a wider destination, which no router forwards off its link
+// unlike every other error it answers no packet whose search stops unfinished, as answerable says
 func BeyondScope(offending []byte, source netip.Addr, allow func() bool) []byte {
-	return icmpError(offending, source, icmpUnreachable, icmpBeyondScope, 0, allow)
+	return originate(offending, source, icmpUnreachable, icmpBeyondScope, 0, false, allow)
 }
 
 // icmpError builds one message carrying as much of the offending packet as
@@ -123,7 +124,13 @@ func BeyondScope(offending []byte, source netip.Addr, allow func() bool) []byte 
 // from becoming many, and for one allow refuses. allow is called once the
 // packet is one an error may answer and before anything is built.
 func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer uint32, allow func() bool) []byte {
-	if !Usable(source) || !answerable(offending) || !allow() {
+	return originate(offending, source, kind, code, pointer, true, allow)
+}
+
+// originate is icmpError, unfinished being whether it answers a packet the
+// search for an ICMPv6 error stops unfinished in, as answerable has it
+func originate(offending []byte, source netip.Addr, kind, code uint8, pointer uint32, unfinished bool, allow func() bool) []byte {
+	if !Usable(source) || !answerable(offending, unfinished) || !allow() {
 		return nil
 	}
 	destination := netip.AddrFrom16([16]byte(offending[8:24]))
@@ -148,7 +155,9 @@ func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer ui
 // answerable is RFC 4443 section 2.4 (e): the rules that stop one refused
 // packet turning into many. An ICMPv6 error may not answer another or a
 // redirect, and it may not answer anything addressed to or sent from more than
-// one interface, since every receiver would answer the same packet.
+// one interface, since every receiver would answer the same packet. Of the
+// sources (e.6) names it knows the unspecified address, a group and
+// subnetRouterLinkLocal.
 //
 // Packet Too Big refuses a multicast destination as well, departing from the
 // first exception of (e.3), since the dataplane answers from the packet's
@@ -158,25 +167,29 @@ func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer ui
 // The link-layer cases (e.4) and (e.5) cannot arise, because every packet
 // reaching here was read off the tun or decrypted out of a unicast ESP session
 // with one peer, and neither has a link layer.
-func answerable(offending []byte) bool {
+//
+// The search for an ICMPv6 error or a redirect steps past as many extension
+// headers as walk does, so it reads every header a SID acts on. Where it stops
+// unfinished past them, whatever header follows, the packet is answered where
+// unfinished is true, departing from (e.1), since refusing at the bound would
+// withhold the answers sections 3.2 and 3.3 require from a packet not shown to
+// be an error. Code 2 passes false: section 3.1 asks it as a SHOULD, so it
+// keeps no such departure.
+func answerable(offending []byte, unfinished bool) bool {
 	if len(offending) < ipv6HeaderLen || offending[0]>>4 != 6 {
 		return false
 	}
 	from := netip.AddrFrom16([16]byte(offending[8:24]))
 	to := netip.AddrFrom16([16]byte(offending[24:40]))
-	if from.IsUnspecified() || from.IsMulticast() || to.IsMulticast() {
+	if from.IsUnspecified() || from.IsMulticast() || from == subnetRouterLinkLocal || to.IsMulticast() {
 		return false
 	}
-	return !carriesUnanswerable(offending)
+	unanswerable, reached := searchError(offending, maxExtensionHeaders)
+	return !unanswerable && (reached || unfinished)
 }
 
-// carriesUnanswerable reports whether offending is an ICMPv6 error or a redirect, which RFC 4443 section 2.4 (e.1) and (e.2) let no error answer
-// its search steps past as many extension headers as walk does, so it reads every header a SID acts on
-// and an error behind more is answered, departing from (e.1), since refusing at the bound would withhold the answers RFC 4443 sections 3.2 and 3.3 require from a packet not shown to be an error
-func carriesUnanswerable(offending []byte) bool {
-	unanswerable, _ := searchError(offending, maxExtensionHeaders)
-	return unanswerable
-}
+// subnetRouterLinkLocal is the Subnet-Router anycast address of fe80::/64, RFC 4291 section 2.6.1, the one anycast address every node knows
+var subnetRouterLinkLocal = netip.MustParseAddr("fe80::")
 
 // searchError steps through the extension headers of offending, past at most steps of them, to its upper-layer header
 // it reports whether that header is an ICMPv6 error or a redirect, and whether the search reached it

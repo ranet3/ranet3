@@ -600,6 +600,15 @@ func (t *tracer) unroutedRead(m *Mesh, raw []byte, verdict Verdict, match Match,
 	t.record(site, raw)
 }
 
+// beyondScopeRead answers raw, a packet read off the tun from src, an IPv6 link-local address, to dst, as m.answerBeyondScopeRead does, and records it with the answer's fate
+//
+//go:noinline
+func (t *tracer) beyondScopeRead(m *Mesh, raw []byte, src, dst netip.Addr) {
+	var draw answerDraw
+	fate := draw.met(m.answerBeyondScopeRead(raw, src, dst, draw.take))
+	t.record(readSite(TraceAnswer, transitMartian).answered(answerBeyondScope, fate), raw)
+}
+
 // tooBig takes sent, a read off the tun larger than mtu, the largest next's session carries, as m.tooBig does, and records raw, the read, as readSent says
 // sent is raw behind the header a policy steered it with, or raw itself, and it reports the fragments queued for next, their bytes and the kind of the answer m.tooBig reports
 //

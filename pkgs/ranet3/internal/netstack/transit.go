@@ -39,6 +39,7 @@ const (
 	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
 	// transitMartian counts mapped sources before nativeGroup and other sources or destinations no router forwards after it, IPv6 link-local ones among them
+	// reads off the tun to an IPv6 link-local or a loopback destination or from an IPv6 link-local source past its scope, and IPv6 link-local segments End would send on
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute
@@ -59,7 +60,7 @@ const (
 	// transitOwnSID counts reads off the tun to a SID of this node's, which acts only on what a session delivers
 	transitOwnSID
 	// transitUnownedSource counts reads off the tun from a source this node does not own through an entry counting as a default, or along cap.exit via's path toward no entry, which would leave the mesh through an exit
-	// and under the mesh's ownedOnly toward every destination but an IPv6 link-local one
+	// and under the mesh's ownedOnly toward every destination, but for a read classify drops or answers for its link scope, whose carried packet still meets the check
 	transitUnownedSource
 	// transitNested counts IPv6 reads off the tun whose carried packet carries another, past the one level the checks open
 	transitNested
@@ -261,6 +262,11 @@ func nativeGroup(destination netip.Addr) bool {
 // RFC 4291 section 2.5.6 has a router forward no packet from or to one to another link, and each session is a link of its own, the tun another
 func linkLocalUnicast(address netip.Addr) bool {
 	return address.Is6() && !address.Is4In6() && address.IsLinkLocalUnicast()
+}
+
+// loopbackAddress is ::1 or an IPv4 address inside 127.0.0.0/8, which never leaves its host, RFC 4291 section 2.5.3 and RFC 1122 section 3.2.1.3, and which an IPv4-mapped address never is
+func loopbackAddress(address netip.Addr) bool {
+	return !address.Is4In6() && address.IsLoopback()
 }
 
 // mappedAddress is the IPv4-mapped IPv6 form of RFC 4291 section 2.5.5.2, which RFC 6890 section 2.2.3 admits as neither source nor destination

@@ -446,6 +446,38 @@ func TestDecisionDropsGroups(t *testing.T) {
 	}
 }
 
+// End sends no IPv6 link-local segment on, whatever route covers it, RFC 4291 section 2.5.6: dropped and counted martian, with no answer
+// traced or not, under a route of fe80::/64 to the next peer, which counts as no default
+func TestEndDropsASegmentOfLinkScope(t *testing.T) {
+	for _, traced := range []bool{false, true} {
+		var n *transitNode
+		if traced {
+			n, _ = explainSegments(t, explainAllow, transitOverlay)
+		} else {
+			n = newTransitNode(t, DefaultMTU)
+			table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(explainEnd), Behavior: srv6.BehaviorEnd}}, transitOverlay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.m.SetSegments(table)
+		}
+		n.m.Routes.Set(netip.Prefix{}, segPrefix("fe80::/64"), n.outPeer)
+		// srv6 builds no segment list holding a link-local segment, so another node's packet holding one is written over a stand-in
+		stand := segAddr("3fff:ffff::1")
+		raw := bytes.ReplaceAll(steered(t, udpPacket(transitSender[6], transitFar[6], 200, false), transitSender[6], explainEnd, stand), stand.AsSlice(), segAddr("fe80::1").AsSlice())
+		tun, out, back := n.deliver(t, raw)
+		if len(tun)+len(out)+len(back) != 0 {
+			t.Errorf("traced %t: End's segment fe80::1 reached the tun %d times, the next peer %d and the sender %d", traced, len(tun), len(out), len(back))
+		}
+		if got := n.m.TransitCounters(); got != (TransitCounters{Martian: 1}) {
+			t.Errorf("traced %t: End's segment fe80::1 counted %+v, want martian", traced, got)
+		}
+		if got := n.m.SegmentCounters().Dropped; got != 1 {
+			t.Errorf("traced %t: End's segment fe80::1 counted %d segments dropped, want 1", traced, got)
+		}
+	}
+}
+
 // linkLocalNode is a transit node with a default of each family and a route for fe80::/10 to its next hop
 // and an End.DT46 delivering to the mesh at explainDT46 and an egress segment at explainEgress admitting explainAllow, both families ready to egress
 func linkLocalNode(t *testing.T) *transitNode {

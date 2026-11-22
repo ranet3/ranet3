@@ -181,6 +181,8 @@ var outcomeCases = func() []outcomeCase {
 		{"a budget refused", traceBudget, throughDecide(nil, udp(4, transitSender, transitClosed, 100, false)), with(session(TraceDrop, "budget"), func(r *TraceRecord) { r.Next = "closed" })},
 		{"an unparseable read", transitInvalid, classified(unparseable), read(TraceDrop, "invalid")},
 		{"a read to a group", transitMulticast, classified(udpPacket(transitOwn[4], segAddr("224.0.0.1"), 100, false)), read(TraceDrop, "multicast")},
+		{"a read to a link-local address", transitMartian, classified(udpPacket(transitOwn[6], segAddr("fe80::1"), 100, false)), read(TraceDrop, "martian")},
+		{"a read from a link-local source", transitMartian, classified(udpPacket(segAddr("fe80::1"), transitFar[6], 100, false)), with(read(TraceAnswer, "martian"), func(r *TraceRecord) { r.Answer, r.Outcome = "beyond_scope", TraceSent })},
 		{"a forged read", transitForged, classified(udp(6, transitSender, transitFar, 100, false)), read(TraceDrop, "forged")},
 		{"a read with an SRH", transitRoutingHeader, classified(withRouting(udp(6, transitOwn, transitFar, 100, false), 4)), read(TraceDrop, "routing_header")},
 		{"a read to this node's SID", transitOwnSID, classified(udpPacket(transitOwn[6], edgeOwnSID, 100, false)), read(TraceDrop, "sid")},
@@ -332,6 +334,28 @@ func TestTraceRecordsAnAnswerTheLimitWithholds(t *testing.T) {
 		}
 		if r.Decision != TraceAnswer || r.Outcome != want {
 			t.Errorf("record %d is %v %v, want an answer %v", i, r.Decision, r.Outcome, want)
+		}
+	}
+}
+
+// a read from an IPv6 link-local source whose bucket is spent draws no code 2, traced or not: the answer is withheld and counted so, and its record names it withheld
+// RFC 4443 section 2.4 (f) has a node limit the rate of the errors it originates
+func TestReadBeyondScopeAnswerIsWithheldWithItsSourcesBucketSpent(t *testing.T) {
+	linkLocal := segAddr("fe80::9")
+	raw := udpPacket(linkLocal, transitFar[6], 100, false)
+	traced, feed := tracedLeaf(t)
+	spend(t, traced, linkLocal)
+	if records := readTraced(traced, feed, raw); len(records) != 1 || records[0].Decision != TraceAnswer || records[0].Answer != "beyond_scope" || records[0].Outcome != TraceWithheld {
+		t.Errorf("the traced read drew %+v, want a beyond scope answer withheld", records)
+	}
+	untraced, dev := unroutedMesh(t, nil)
+	spend(t, untraced, linkLocal)
+	if _, written := classifyOne(untraced, dev, raw); len(written) != 0 {
+		t.Errorf("the untraced read put %d packets into the tun, want none", len(written))
+	}
+	for name, m := range map[string]*Mesh{"traced": traced, "untraced": untraced} {
+		if source, _ := m.ICMPWithheld(); source != 1 || m.TransitCounters().Answered != 0 || m.TransitCounters().Martian != 1 {
+			t.Errorf("the %s read was withheld %d times by its source and counted %+v, want withheld once, martian and never answered", name, source, m.TransitCounters())
 		}
 	}
 }

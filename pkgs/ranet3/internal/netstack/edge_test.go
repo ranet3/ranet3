@@ -219,6 +219,38 @@ func TestTUNReadCarryingAPacketInACarriedOneIsDropped(t *testing.T) {
 	}
 }
 
+// a read whose form the edge refuses is dropped as the edge drops it, with the edge's counter and no answer, whatever the scope of its source or destination
+// behind an SRH, to this node's SID, with a chain ending inside a header, carrying a packet that carries another and carrying one cut short
+// so a link-local source draws no code 2 the same read from any other source would not draw
+func TestTUNReadOfLinkScopeTheEdgeRefusesMeetsTheEdge(t *testing.T) {
+	linkLocal := segAddr("fe80::9")
+	cut := func(raw []byte) []byte {
+		// a hop-by-hop options header whose length runs past the packet
+		raw[6], raw[40], raw[41] = 0, 17, 200
+		return raw
+	}
+	for _, c := range []struct {
+		name string
+		raw  []byte
+		want TransitCounters
+	}{
+		{"from a link-local source behind an SRH", withRouting(udpPacket(linkLocal, transitFar[6], 100, false), 4), TransitCounters{RoutingHeader: 1}},
+		{"to a link-local destination behind an SRH", withRouting(udpPacket(transitOwn[6], segAddr("fe80::1"), 100, false), 4), TransitCounters{RoutingHeader: 1}},
+		{"from a link-local source to this node's SID", udpPacket(linkLocal, edgeOwnSID, 100, false), TransitCounters{SID: 1}},
+		{"from a link-local source with a chain ending inside a header", cut(udpPacket(linkLocal, transitFar[6], 100, false)), TransitCounters{Invalid: 1}},
+		{"from a link-local source carrying a packet that carries another", encapsulated(linkLocal, edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false))), TransitCounters{Nested: 1}},
+		{"from a link-local source carrying a packet cut short", encapsulated(linkLocal, edgeOtherSID, udpPacket(transitOwn[6], transitFar[6], 100, false)[:30]), TransitCounters{Invalid: 1}},
+	} {
+		m, _ := carriedLeaf(t)
+		if went := classifiedTo(m, c.raw); went[0] != nil {
+			t.Errorf("a read %s went to %s", c.name, went[0].ID)
+		}
+		if got := m.TransitCounters(); got != c.want {
+			t.Errorf("a read %s counted %+v, want %+v and no answer", c.name, got, c.want)
+		}
+	}
+}
+
 // an IPv4 read off the tun is not opened, since no SID takes an IPv4 packet, so what it carries reaches no decapsulation
 func TestTUNReadOfIPv4IsNotOpened(t *testing.T) {
 	m, peer := carriedLeaf(t)
@@ -668,9 +700,10 @@ func fateOf(m *Mesh, raw []byte) readFate {
 
 // each kind of read off the tun by its source and destination, on a mesh ownedOnly and on one that is not
 // ownedOnly drops a read from a source this node does not own toward another node, a LAN another node announces, no route and a hold, as toward an exit
-// and toward an IPv4 link-local destination and an IPv4-mapped one, but leaves an IPv6 link-local destination its fate, and every other read its own
+// and toward an IPv4 link-local destination and an IPv4-mapped one, and leaves every other read its own
+// a read to an IPv6 link-local destination is dropped martian before the check, whatever its source and the table
 // a packet an IPv6 read carries to another node's SID meets the same rule, and the drop records the event as toward an exit
-func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestinationButIPv6LinkLocal(t *testing.T) {
+func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestination(t *testing.T) {
 	leaf := func(t *testing.T, _ int) *Mesh {
 		m, _, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
 		return m
@@ -688,6 +721,17 @@ func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestinationButIPv6LinkLo
 	}
 	carried := func(t *testing.T, _ int) *Mesh {
 		m, _ := carriedLeaf(t)
+		return m
+	}
+	// carriedBare is carried with no default, so a carried packet to an address no route covers leaves the mesh through no exit
+	carriedBare := func(t *testing.T, _ int) *Mesh {
+		m, peer := edgeMesh(t)
+		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:7::/64"), peer)
+		segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(edgeOwnSID), Behavior: srv6.BehaviorEndDT46}}, transitOverlay)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.SetSegments(segments)
 		return m
 	}
 	forwarded := func(to string) [2]readFate { return [2]readFate{{to: to}, {to: to}} }
@@ -725,10 +769,11 @@ func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestinationButIPv6LinkLo
 		} else {
 			linkLocal := segAddr("fe80::1")
 			rows = append(rows,
-				row{"from a neighbor to a link-local address under the exit's default", leaf, udp(edgeNeighbor[6], linkLocal), [2]readFate{unowned, unowned}},
-				row{"from a neighbor to a link-local address with no default", bare, udp(edgeNeighbor[6], linkLocal), same(TransitCounters{NoRoute: 1})},
-				row{"from this node's own address to a link-local address under the exit's default", leaf, udp(transitOwn[6], linkLocal), forwarded("exit")},
+				row{"from a neighbor to a link-local address under the exit's default", leaf, udp(edgeNeighbor[6], linkLocal), same(TransitCounters{Martian: 1})},
+				row{"from a neighbor to a link-local address with no default", bare, udp(edgeNeighbor[6], linkLocal), same(TransitCounters{Martian: 1})},
+				row{"from this node's own address to a link-local address under the exit's default", leaf, udp(transitOwn[6], linkLocal), same(TransitCounters{Martian: 1})},
 				row{"from a neighbor to an IPv4-mapped link-local address", bare, udp(edgeNeighbor[6], segAddr("::ffff:169.254.0.1")), opened(TransitCounters{NoRoute: 1})},
+				row{"carrying a packet from a neighbor to a link-local address", carriedBare, encapsulated(transitOwn[6], edgeOtherSID, udp(edgeNeighbor[6], linkLocal)), [2]readFate{{to: "peer"}, unowned}},
 			)
 		}
 		for _, r := range rows {

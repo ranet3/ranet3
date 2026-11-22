@@ -462,6 +462,16 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 			}
 			continue
 		}
+		// RFC 4291 section 2.5.6, an IPv6 link-local segment goes on no session, whatever route covers it
+		if linkLocalUnicast(dst) {
+			m.segmentsDropped.Add(1)
+			m.transitCounts[transitMartian].Add(1)
+			m.reportTransitDrop(transitMartian, src, dst)
+			if trace != nil && arrived[i] != nil {
+				trace.segmentAt(from, TraceDrop, transitMartian, dst, arrived[i])
+			}
+			continue
+		}
 		// a next segment only an entry counting as a default reaches is unrouted, since the exit behind that entry would carry one outside the overlay out of the mesh
 		peer, verdict, match := m.Routes.Resolve(src, dst)
 		if verdict != RoutePeer || peer == nil || match.Counted {

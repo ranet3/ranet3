@@ -82,10 +82,11 @@ func (m *Mesh) answerFor(kept *keptAnswers, source, destination netip.Addr) sour
 // and reports true with the reason for a packet it drops
 // everything entering the mesh through this node is read off the tun, the host's own packets and what its kernel forwards from its other links alike
 // segments is this node's own SIDs, and leaves is the packet leaving the mesh through an exit, as classify decides it
+// skipUnowned leaves the packet itself out of the unowned-source drop, never what it carries, for a read classify drops or answers for its link scope
 // an IPv4 or IPv6 packet an IPv6 one carries meets the same checks, one level deep, since another node's End.DT46 SID would deliver it into the mesh
 // and this node keeps no list of other nodes' SIDs to tell a packet to one apart
-func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves bool) (transitReason, bool) {
-	reason, dropped, carried, offset := m.checkPacket(kept, segments, raw, family, source, destination, leaves)
+func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves, skipUnowned bool) (transitReason, bool) {
+	reason, dropped, carried, offset := m.checkPacket(kept, segments, raw, family, source, destination, leaves, skipUnowned)
 	// no SID takes an IPv4 packet, so what one carries reaches no decapsulation
 	if dropped || carried == 0 || family != esp.NextHeaderIPv6 {
 		return reason, dropped
@@ -96,21 +97,17 @@ func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byt
 		return transitInvalid, true
 	}
 	_, _, match := m.Routes.Resolve(innerSource, innerDestination)
-	reason, dropped, carried, _ = m.checkPacket(kept, segments, inner, carried, innerSource, innerDestination, match.Counted)
+	// the carried packet meets the unowned-source drop whatever the read's own link scope
+	reason, dropped, carried, _ = m.checkPacket(kept, segments, inner, carried, innerSource, innerDestination, match.Counted, false)
 	if !dropped && carried != 0 {
 		return transitNested, true
 	}
 	return reason, dropped
 }
 
-// linkLocal6 is an IPv6 destination inside fe80::/10, which an IPv4-mapped address never is
-func linkLocal6(destination netip.Addr) bool {
-	return destination.Is6() && !destination.Is4In6() && destination.IsLinkLocalUnicast()
-}
-
 // checkPacket is edgeCheck's checks of one packet, leaving what it carries unread
 // and reports the family of an IPv4 or IPv6 packet it carries, 0 for none, and for an IPv6 packet where in raw the walk found it
-func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves bool) (reason transitReason, dropped bool, carried byte, offset int) {
+func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves, skipUnowned bool) (reason transitReason, dropped bool, carried byte, offset int) {
 	next := raw[9]
 	if family == esp.NextHeaderIPv6 {
 		var verdict srv6.EdgeVerdict
@@ -131,9 +128,8 @@ func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []b
 		return transitForged, true, 0, 0
 	}
 	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
-	// and under ownedOnly so does every packet entering the mesh but one to an IPv6 link-local destination, which the chain entry passes too
-	// and one an exit's lane lays, which the exit built from a destination its leaf sent to
-	if !answer.owned() && (leaves || m.ownedOnly && !linkLocal6(destination) && !kept.exit) {
+	// and under ownedOnly so does every packet entering the mesh but one an exit's lane lays, which the exit built from a destination its leaf sent to
+	if !answer.owned() && !skipUnowned && (leaves || m.ownedOnly && !kept.exit) {
 		return transitUnownedSource, true, 0, 0
 	}
 	if next == esp.NextHeaderIPv4 || next == esp.NextHeaderIPv6 {

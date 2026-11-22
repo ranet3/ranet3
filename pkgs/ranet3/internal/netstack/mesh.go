@@ -67,7 +67,7 @@ type Mesh struct {
 	readsTruncated, framesRefused, writesFailed reportedCount
 	// events records the mesh's changes of state, nil recording nothing
 	events func(kind, peer string, attrs ...slog.Attr)
-	// ownedOnly is the read dropping a packet from a source this node does not own toward every destination but an IPv6 link-local one, rather than only toward an exit
+	// ownedOnly is the read dropping a packet from a source this node does not own toward every destination, rather than only toward an exit
 	// where the kernel runs an entry rule that rule judges the rest, and passes an exit's egress replies, which the read cannot tell apart
 	// written before the readers start and never after, so they read it without a lock
 	ownedOnly bool
@@ -482,15 +482,39 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// the checks judge a steered packet by the destination it was read with
 		peer, verdict, match := last.peer, last.verdict, last.match
+		// a read to an address the tun holds goes back into the tun unless a steer claims it, whatever its addresses' scope, so the link-scope rule leaves it to the edge and the steer
+		held := verdict == RouteLocal && m.holdsAddress(dst)
+		// toLink takes a loopback destination too, which never leaves its host, so fromLink answers code 2 only to a destination wider than the source, RFC 4443 section 3.1
+		toLink := !held && (linkLocalUnicast(dst) || loopbackAddress(dst))
+		fromLink := !held && linkLocalUnicast(src)
+		skipUnowned := toLink || fromLink
 		// mode off pays the nil test alone, since takesPath is past the inliner's budget
 		alongPath, leaves := false, match.Counted
 		if steering.Default() != nil {
 			alongPath, leaves = m.takesPath(steering, verdict, match, dst)
 		}
-		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, leaves); dropped {
+		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, leaves, skipUnowned); dropped {
 			m.dropTransit(&tally, reason, src, dst)
 			if trace != nil {
 				trace.read(TraceDrop, reason, netip.Addr{}, raw)
+			}
+			continue
+		}
+		// RFC 4291 section 2.5.6 has a router forward no packet of link scope to another link, and a session is one, and section 2.5.3 and RFC 1122 section 3.2.1.3 keep a loopback destination inside its host
+		if toLink {
+			tally.add(transitMartian)
+			if trace != nil {
+				trace.read(TraceDrop, transitMartian, netip.Addr{}, raw)
+			}
+			continue
+		}
+		// a link-local source's scope ends at the tun, so this node is the one RFC 4443 section 3.1 has answer code 2
+		if fromLink {
+			tally.add(transitMartian)
+			if trace != nil {
+				trace.beyondScopeRead(m, raw, src, dst)
+			} else {
+				m.answerBeyondScopeRead(raw, src, dst, (*Mesh).takeICMPToken)
 			}
 			continue
 		}
@@ -524,8 +548,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		if verdict != RoutePeer {
 			switch {
-			case verdict == RouteLocal && m.holdsAddress(dst):
-				// raw is the read itself, since a steered read whose first segment is this node's own is RouteNone
+			// verdict is the steered one, and a steered read whose first segment is this node's own or unrouted is RouteNone, so only an unsteered read is written back, raw itself
+			case verdict == RouteLocal && held:
 				m.writeBack(raw)
 				tally.add(transitDelivered)
 				if trace != nil {
@@ -600,6 +624,18 @@ func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src,
 	m.writeHostPacket(out)
 	m.noteAnswered(kind)
 	return kind, TraceSent
+}
+
+// answerBeyondScopeRead is answerBeyondScope for raw, a read off the tun from src, an IPv6 link-local address, to dst
+// its answer goes into the tun as every answer to a read does
+func (m *Mesh) answerBeyondScopeRead(raw []byte, src, dst netip.Addr, take takeAnswer) TraceOutcome {
+	out := srv6.BeyondScope(raw, dst, m.allowAnswer(take, src))
+	if out == nil {
+		return TraceNotAnswerable
+	}
+	m.writeHostPacket(out)
+	m.noteAnswered(answerBeyondScope)
+	return TraceSent
 }
 
 // tooBigReason is the reason a packet too big for its session and cut into no fragment is dropped for, invalid where its answer is about its options

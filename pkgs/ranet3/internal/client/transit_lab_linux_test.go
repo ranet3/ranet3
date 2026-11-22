@@ -89,7 +89,7 @@ var (
 // and b answers as a router from its router-id, time exceeded at a hop limit of 1 where 2 reaches c
 // packet too big and fragmentation needed with its session to c's size, which a caches and then fits
 // and destination unreachable inside a prefix b holds, host unreachable over IPv4
-// an IPv6 link-local source draws beyond the scope of the source back on a's session, which a writes into its tun
+// but an IPv6 link-local source draws beyond the scope of the source from a itself, into a's tun, and b counts nothing of it
 // with no address of either family b answers IPv4 from the dummy address, a packet too big from its destination and IPv6's time exceeded not at all
 // b's kernel forwards nothing and reads nothing from its tun throughout
 func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing.T) {
@@ -150,7 +150,8 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 	}
 
 	t.Run("an IPv6 link-local source", func(t *testing.T) {
-		// RFC 4443 section 3.1 code 2, beyond the scope of the source, sent back on the session the packet came through
+		// RFC 4443 section 3.1 code 2, beyond the scope of the source, from a, whose next link leaves that scope
+		// into a's tun from the packet's destination, and nothing of it reaches b, RFC 4291 section 2.5.6
 		var capture int
 		if err := a.ns.Do(func() (err error) {
 			capture, err = openCapture(a.client.Mesh.Name, labRetry)
@@ -174,12 +175,24 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 		defer unix.Close(fd)
 		beyondScope := func(packet []byte) bool {
 			return len(packet) >= 48 && packet[0]>>4 == 6 && packet[6] == unix.IPPROTO_ICMPV6 && packet[40] == 1 && packet[41] == 2 &&
-				netip.AddrFrom16([16]byte(packet[8:24])) == lineB[6] && netip.AddrFrom16([16]byte(packet[24:40])) == linkLocal
+				netip.AddrFrom16([16]byte(packet[8:24])) == lineC[6] && netip.AddrFrom16([16]byte(packet[24:40])) == linkLocal
 		}
-		waitFor(t, convergeBudget, "b's answer to a link-local source to reach a's tun", func() bool {
+		before := b.client.Mesh.TransitCounters()
+		waitFor(t, convergeBudget, "a's answer to a link-local source to reach a's tun", func() bool {
 			_ = unix.Sendto(fd, raw, 0, &unix.SockaddrInet6{Addr: lineC[6].As16()})
 			return labCaptured(capture, beyondScope)
 		})
+		// a datagram a sends c after the answer, read by c before b's counts are, gives a forwarded copy time to reach b, since a would send that copy in the classify pass that answers
+		// the two flows can take different tun queues and workers, so this is a margin and not an order
+		for _, family := range labFamilies {
+			if family.version == 6 {
+				after := []byte("after the link-local source")
+				labReceive(t, listener, after, labWrite(labDatagrams(t, a, family, lineC[6], 0), after))
+			}
+		}
+		if after := b.client.Mesh.TransitCounters(); after.Martian != before.Martian || after.Answered != before.Answered {
+			t.Errorf("b counted %d martians and %d answers of a's packet, want none", after.Martian-before.Martian, after.Answered-before.Answered)
+		}
 	})
 
 	t.Run("a middle node with no address of either family", func(t *testing.T) {
@@ -258,7 +271,7 @@ func TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink(t *testing.T) {
 // l's datagrams of each family to i leave e's uplink translated to e's address there, mode 2
 // a datagram l carries from a source the mesh routes no reply to is refused at e and counted, with nothing at i
 // and so is the answer e owes such a source, a datagram from it expiring at e on its way to t drawing nothing at i
-// a datagram l carries to an IPv4 link-local address, from l's source or a stranger's, or to an IPv6 link-local address is a martian at e, with nothing at i
+// a datagram l carries to an IPv4 link-local address, from l's source or a stranger's, is a martian at e, and one to an IPv6 link-local address a martian at l's read, with nothing at i
 // though i holds the IPv6 address there and reads a datagram e's host sends it
 func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 	for _, shape := range []struct {
@@ -398,17 +411,19 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 					name     string
 					from, to netip.Addr
 					zone     uint32
+					// at is the node that counts the datagram a martian
+					at *labNode
 				}{
-					{"IPv4 from l's source", lineA[4], metadata, 0},
-					{"IPv4 from a stranger's source", stranger[4], metadata, 0},
-					{"IPv6 from l's source", lineA[6], linkLocal, zone},
+					{"IPv4 from l's source", lineA[4], metadata, 0, e},
+					{"IPv4 from a stranger's source", stranger[4], metadata, 0, e},
+					{"IPv6 from l's source", lineA[6], linkLocal, zone, l},
 				} {
 					payload := []byte("to a link-local address " + c.name)
 					raw := udpPacket(c.from, c.to, labLeafPort, lineListen, payload)
-					before := e.client.Mesh.TransitCounters().Martian
-					waitFor(t, convergeBudget, "e to count l's datagram to a link-local address "+c.name+" a martian", func() bool {
+					before := c.at.client.Mesh.TransitCounters().Martian
+					waitFor(t, convergeBudget, "l's datagram to a link-local address "+c.name+" to be counted a martian", func() bool {
 						labSendRaw(t, l, raw, c.to, c.zone)
-						return e.client.Mesh.TransitCounters().Martian > before
+						return c.at.client.Mesh.TransitCounters().Martian > before
 					})
 					if labCaptured(capture, func(packet []byte) bool {
 						_, _, carried, ok := labUDPOf(packet)

@@ -6,11 +6,13 @@ package netstack
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // the ends of the reads below: an address of this node's own inside the
@@ -403,5 +405,177 @@ func TestTunReadTheEdgeRefusesTowardAHeldAddressIsNotWrittenBack(t *testing.T) {
 		if got := m.TransitCounters(); got != (TransitCounters{Forged: 1, UnownedSource: 1}) {
 			t.Errorf("ipv%d: the reads counted %+v, want 1 forged and 1 unowned_source", family, got)
 		}
+	}
+}
+
+// a host's read from an IPv6 link-local source to a wider destination is answered by this node, RFC 4443 section 3.1 code 2
+// into the tun from the read's destination, and counted martian and answered, on a mesh ownedOnly or not
+// but for one from fe80::, the subnet-router anycast address of fe80::/64, which RFC 4443 section 2.4 (e.6) gives no error
+// and a read to an IPv6 link-local destination is dropped unanswered and counted martian
+// neither goes to the peer the overlay's route or a default carries it to, RFC 4291 section 2.5.6
+func TestTunReadOfLinkScopeReachesNoPeer(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		src, dst netip.Addr
+		answered bool
+	}{
+		{"from fe80::9 to an overlay destination", segAddr("fe80::9"), segAddr("3fff::9"), true},
+		{"from fe80::, the subnet-router anycast address, to an overlay destination", segAddr("fe80::"), segAddr("3fff::9"), false},
+		{"from fe80::9 to a destination a default reaches", segAddr("fe80::9"), segAddr("2001:db8:c::9"), true},
+		{"to fe80::1 from this node's own source", ownSource[6], segAddr("fe80::1"), false},
+		{"to fe80::1 from fe80::9", segAddr("fe80::9"), segAddr("fe80::1"), false},
+	} {
+		for _, ownedOnly := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, ownedOnly %t", c.name, ownedOnly), func(t *testing.T) {
+				peer := (&recordingPeer{}).peer(t, "peer")
+				m, dev := unroutedMesh(t, func(r *RouteTable) {
+					r.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+					r.Set(netip.Prefix{}, segPrefix("3fff::/20"), peer)
+				})
+				m.ownedOnly = ownedOnly
+				raw := udpPacket(c.src, c.dst, 200, false)
+				b, written := classifyOne(m, dev, raw)
+				if b.peers[0] != nil {
+					t.Errorf("the read went to %s", b.peers[0].ID)
+				}
+				var answered uint64
+				if c.answered {
+					answered = 1
+					if len(written) != 1 {
+						t.Fatalf("the read put %d packets into the tun, want its answer", len(written))
+					}
+					checkICMPv6(t, written[0], raw, c.dst, 1, 2, 0)
+				} else if len(written) != 0 {
+					t.Errorf("the read put %x into the tun, want nothing", written)
+				}
+				if martian, got := m.transitCounts[transitMartian].Load(), m.transitCounts[transitAnswered].Load(); martian != 1 || got != answered {
+					t.Errorf("the read was counted %d times martian and %d answered, want once and %d", martian, got, answered)
+				}
+			})
+		}
+	}
+}
+
+// a read to a group from an IPv6 link-local source, a router solicitation's shape, is dropped as every read to a group is, counted multicast, before any link-local check
+func TestTunReadToAGroupFromALinkLocalSourceIsMulticast(t *testing.T) {
+	m, dev := unroutedMesh(t, nil)
+	if _, written := classifyOne(m, dev, udpPacket(segAddr("fe80::9"), segAddr("ff02::2"), 200, false)); len(written) != 0 {
+		t.Errorf("the read put %d packets into the tun, want none", len(written))
+	}
+	if got := m.TransitCounters(); got != (TransitCounters{Multicast: 1}) {
+		t.Errorf("the read counted %+v, want multicast", got)
+	}
+}
+
+// a read from an IPv6 link-local source to an address the tun holds never leaves the tun, its source's link
+// so RFC 4443 section 3.1 gives it no code 2, and it is written back and counted delivered as a read from any source is
+func TestTunReadFromALinkLocalSourceToAHeldAddressIsWrittenBack(t *testing.T) {
+	m, dev := heldMesh(t, 1, nil)
+	raw := withTransportSum(udpPacket(segAddr("fe80::9"), ownSource[6], 200, false), false)
+	written := classifyWritten(m, dev, raw)
+	if len(written) != 1 || !bytes.Equal(written[0], raw) {
+		t.Errorf("the read put %x into the tun, want it written back", written)
+	}
+	if got := m.TransitCounters(); got != (TransitCounters{Delivered: 1}) {
+		t.Errorf("the read counted %+v, want delivered", got)
+	}
+}
+
+// a read from an IPv6 link-local source draws no code 2 where the search for an ICMPv6 error or a Redirect behind its headers stops before its upper-layer header, RFC 4443 section 2.4 (e.1) and (e.2)
+// nine destination options headers, one past the search's bound and within the edge's, in front of a Destination Unreachable
+func TestTunReadFromALinkLocalSourceIsLeftUnansweredWhereItsErrorSearchStops(t *testing.T) {
+	raw := withProtocol(udpPacket(segAddr("fe80::9"), transitFar[6], 100, false), 58)
+	raw[40] = 1
+	for range 9 {
+		raw = withDestinationOptions(raw)
+	}
+	m, dev := unroutedMesh(t, nil)
+	if _, written := classifyOne(m, dev, raw); len(written) != 0 {
+		t.Errorf("the read put %d packets into the tun, want none", len(written))
+	}
+	if got := m.TransitCounters(); got.Martian != 1 || got.Answered != 0 {
+		t.Errorf("the read counted %+v, want martian and no answer", got)
+	}
+}
+
+// a read from an IPv6 link-local source to ::1 is dropped as martian with no answer, code 2 among none, since loopback's scope is no wider than the source's, RFC 4443 section 3.1 and RFC 4291 section 2.5.3
+func TestTunReadFromALinkLocalSourceToLoopbackIsDroppedUnanswered(t *testing.T) {
+	raw := udpPacket(segAddr("fe80::9"), netip.IPv6Loopback(), 100, false)
+	m, dev := unroutedMesh(t, nil)
+	if _, written := classifyOne(m, dev, raw); len(written) != 0 {
+		t.Errorf("the read put %d packets into the tun, want none", len(written))
+	}
+	if got := m.TransitCounters(); got.Martian != 1 || got.Answered != 0 {
+		t.Errorf("the read counted %+v, want martian and no answer", got)
+	}
+	if got := m.ExplainRead(raw); got.Decision != TraceDrop || got.Reason != "martian" {
+		t.Errorf("ExplainRead names %+v, want a martian drop", got)
+	}
+}
+
+// loopbackDropped has m read raw and wants it to reach no peer and nothing of the tun, counted martian, ExplainRead agreeing
+func loopbackDropped(t *testing.T, m *Mesh, raw []byte) {
+	t.Helper()
+	explained := m.ExplainRead(raw)
+	if got := fateOf(m, raw); got != (readFate{counted: TransitCounters{Martian: 1}}) {
+		t.Errorf("the read went to %q and counted %+v, want no peer and martian", got.to, got.counted)
+	}
+	if explained.Decision != TraceDrop || explained.Reason != "martian" {
+		t.Errorf("ExplainRead names %+v, want a martian drop", explained)
+	}
+}
+
+// a read to ::1 that a steer to ::/0 claims is dropped as martian before the steer, so its loopback destination crosses no session inside the outer packet, RFC 4291 section 2.5.3
+func TestTunReadToLoopbackUnderASteerReachesNoPeer(t *testing.T) {
+	m, _ := unroutedMesh(t, nil)
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), (&recordingPeer{}).peer(t, "segment"))
+	steering, err := srv6.NewSteerTable([]srv6.Steer{{To: schema.PrefixFrom(segPrefix("::/0")), Via: []schema.Addr{schema.AddrFrom(segAddr("3fff:1::1"))}}}, schema.MustAddr("3fff:b:0:100::1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSteering(steering)
+	loopbackDropped(t, m, udpPacket(segAddr("fe80::9"), netip.IPv6Loopback(), 100, false))
+}
+
+// a read to ::1 with a route to a peer is dropped as martian whatever its source, a link-local one or one of this node's own
+func TestTunReadToLoopbackWithARouteReachesNoPeer(t *testing.T) {
+	for _, source := range []netip.Addr{segAddr("fe80::9"), transitOwn[6]} {
+		t.Run(source.String(), func(t *testing.T) {
+			m, _ := unroutedMesh(t, nil)
+			m.Routes.Set(netip.Prefix{}, hostPrefix(transitOwn[6]), Local)
+			m.Routes.Set(netip.Prefix{}, segPrefix("::1/128"), (&recordingPeer{}).peer(t, "loopback"))
+			loopbackDropped(t, m, udpPacket(source, netip.IPv6Loopback(), 100, false))
+		})
+	}
+}
+
+// a read to 127.0.0.1 with a route to a peer is dropped as martian, since such an address must not appear outside a host, RFC 1122 section 3.2.1.3
+func TestTunReadToIPv4LoopbackWithARouteReachesNoPeer(t *testing.T) {
+	m, _ := unroutedMesh(t, nil)
+	m.Routes.Set(netip.Prefix{}, segPrefix("127.0.0.0/8"), (&recordingPeer{}).peer(t, "loopback"))
+	loopbackDropped(t, m, udpPacket(ownSource[4], segAddr("127.0.0.1"), 100, false))
+}
+
+// an ICMPv6 error an exit relays from its offender's link-local address, as a router on the exit's uplink may send one, meets the link-scope rule in the exit's lane
+// so it leaves on no session and draws no code 2, being an error, RFC 4443 section 2.4 (e.1)
+func TestLaneDropsAnErrorRelayedFromALinkLocalOffender(t *testing.T) {
+	m, dev := unroutedMesh(t, nil)
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), (&recordingPeer{}).peer(t, "leaf"))
+	raw := withProtocol(udpPacket(segAddr("fe80::1"), segAddr("3fff:1::5"), 100, false), 58)
+	raw[40] = 1
+	b := newOutboundBatch(1)
+	b.answers = &keptAnswers{exit: true}
+	fill(b, raw)
+	m.classify(b)
+	if len(b.peerOrder) != 0 {
+		t.Errorf("the relayed error went to %d peers, want none", len(b.peerOrder))
+	}
+	select {
+	case write := <-dev.writes:
+		t.Errorf("the lane put %d packets into the tun, want none", len(write.packets))
+	default:
+	}
+	if got := m.TransitCounters(); got.Martian != 1 || got.Answered != 0 {
+		t.Errorf("the relayed error counted %+v, want martian and no answer", got)
 	}
 }

@@ -4,7 +4,7 @@
 package srv6
 
 const (
-	// maxExtensionHeaders bounds the extension headers walk and carriesUnanswerable step past in one packet, so a sender sets no cost per packet past it
+	// maxExtensionHeaders bounds the extension headers walk and answerable's search step past in one packet, so a sender sets no cost per packet past it
 	maxExtensionHeaders = 8
 	// maxEdgeHeaders bounds the extension headers a code 8 answer's search and WalkEdge step past, and is at least maxExtensionHeaders so the edge steps past every header a SID's walk does
 	maxEdgeHeaders = 16

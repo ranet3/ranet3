@@ -103,11 +103,10 @@ var edgeStrangers = map[bool]netip.Addr{true: segAddr("203.0.113.250"), false: s
 
 // over drawn tables, a read off the tun carrying packets between the entries' edges and addresses drawn inside them and anywhere is forged exactly where a model passing over every counted entry says
 // and dropped for its source otherwise exactly where no uncounted entry of this node's own covers the source and its destination resolves through an entry counting as a default
-// or, on a mesh drawn ownedOnly, lies anywhere outside fe80::/10, but for a read an exit's lane lays, drawn too, which passes that drop alone
+// or, on a mesh drawn ownedOnly, lies anywhere, but for a read an exit's lane lays, drawn too, which passes that drop alone
 // a source an entry of this node's own covers always passes, one the table routes to a peer or holds never does, whatever the read's other packets
 // each table's reads end in a sweep of linkLocalEdges from a stranger's source of their family
 func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testing.T) {
-	linkLocal := netip.MustParsePrefix("fe80::/10")
 	pbt.Check(t, func(ht *hegel.T) {
 		m, model, sources, destinations := drawEdgeTable(ht)
 		m.ownedOnly = hegel.Draw(ht, hegel.Booleans())
@@ -130,14 +129,14 @@ func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testi
 				family = esp.NextHeaderIPv4
 			}
 			_, _, match := m.Routes.Resolve(source, destination)
-			reason, dropped := m.edgeCheck(&kept, nil, udpPacket(source, destination, 100, false), family, source, destination, match.Counted)
+			reason, dropped := m.edgeCheck(&kept, nil, udpPacket(source, destination, 100, false), family, source, destination, match.Counted, false)
 			forged, owned, others := model.forged(source, destination)
 			_, _, toward := model.answer(source, destination)
 			want, drop := transitReason(0), false
 			switch {
 			case forged:
 				want, drop = transitForged, true
-			case (toward.Counted || m.ownedOnly && !linkLocal.Contains(destination) && !lane) && !owned:
+			case (toward.Counted || m.ownedOnly && !lane) && !owned:
 				want, drop = transitUnownedSource, true
 			}
 			switch {
@@ -172,7 +171,7 @@ func TestTUNReadCarriedPacketMeetsExactlyTheChecksItMeetsReadItself(t *testing.T
 			var kept keptAnswers
 			source, destination, family, _ := addrsOf(raw)
 			_, _, match := m.Routes.Resolve(source, destination)
-			return m.edgeCheck(&kept, segments, raw, family, source, destination, match.Counted)
+			return m.edgeCheck(&kept, segments, raw, family, source, destination, match.Counted, false)
 		}
 		ends := func() (netip.Addr, netip.Addr, bool) {
 			source := hegel.Draw(ht, hegel.SampledFrom(sources))

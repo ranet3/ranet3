@@ -192,14 +192,19 @@ var readCases = func() []explainCase {
 		{"not one IP packet", explainLeaf, []byte{0x45, 0, 0, 10, 0, 0, 0, 0, 64, 17}, explainedDrop("invalid", Match{})},
 		{"a group", explainLeaf, udpPacket(transitOwn[6], segAddr("ff02::1"), 100, false), explainedDrop("multicast", Match{})},
 		{"the limited broadcast", explainLeaf, udpPacket(transitOwn[4], segAddr("255.255.255.255"), 100, false), explainedDrop("multicast", Match{})},
+		{"a group from a link-local source", explainLeaf, udpPacket(segAddr("fe80::9"), segAddr("ff02::2"), 100, false), explainedDrop("multicast", Match{})},
 		{"a forged source", explainLeaf, udpPacket(transitSender[6], transitFar[6], 100, false), explainedDrop("forged", far6)},
 		{"a routing header", explainLeaf, withRouting(udpPacket(transitOwn[6], transitFar[6], 100, false), 4), explainedDrop("routing_header", far6)},
 		{"this node's SID", explainLeaf, udpPacket(transitOwn[6], edgeOwnSID, 100, false), explainedDrop("sid", exit)},
 		{"an unowned source toward a default", explainLeaf, udpPacket(edgeLAN[4], edgeInternet[4], 100, false), explainedDrop("unowned_source", exit)},
 		{"an unowned source toward another node", explainLeaf, udpPacket(edgeLAN[4], transitFar[4], 100, false), heldTo(Explanation{Decision: TraceForward, Match: far4}, "peer", tracedMTU)},
 		{"an unowned source toward another node, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[4], transitFar[4], 100, false), explainedDrop("unowned_source", far4)},
-		{"an unowned source toward a link-local address, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[6], segAddr("fe80::9"), 100, false), explainedDrop("unowned_source", exit)},
 		{"a carried packet carrying another", explainLeaf, encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false))), explainedDrop("nested", Match{Bits: 64})},
+		{"a routing header from a link-local source", explainLeaf, withRouting(udpPacket(segAddr("fe80::9"), transitFar[6], 100, false), 4), explainedDrop("routing_header", far6)},
+		{"a link-local destination", explainLeaf, udpPacket(transitOwn[6], segAddr("fe80::9"), 100, false), explainedDrop("martian", exit)},
+		{"a link-local destination from an unowned source, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[6], segAddr("fe80::9"), 100, false), explainedDrop("martian", exit)},
+		{"a link-local source", explainLeaf, udpPacket(segAddr("fe80::9"), transitFar[6], 100, false), explainedAnswer("martian", "beyond_scope", far6)},
+		{"an address the tun holds from a link-local source", explainLeaf, udpPacket(segAddr("fe80::9"), edgeHeld[6], 100, false), Explanation{Decision: TraceDeliver, Match: Match{Bits: 128}}},
 		{"this node's own", explainLeaf, udpPacket(transitOwn[4], edgeAssigned[4], 100, false), explainedAnswer("looped", "address_unreachable", Match{Bits: 32})},
 		{"the base of a prefix of this node's own", explainOwnPrefix, udpPacket(transitOwn[6], ownPrefix[6].Addr(), 100, false), explainedDrop("looped", Match{Bits: 64})},
 		{"the all-ones host of a prefix of this node's own", explainOwnPrefix, udpPacket(transitOwn[4], segAddr("192.0.2.255"), 100, false), explainedDrop("looped", Match{Bits: 25})},
@@ -216,6 +221,7 @@ var readCases = func() []explainCase {
 		{"a steer past the session's MTU", explainSteered, udpPacket(transitOwn[6], transitFar[6], tracedMTU-srv6.Overhead(1)+1, false), steeredTooBig},
 		{"a steer the encapsulation refuses", explainSteered, udpPacket(transitOwn[6], transitFar[6], 65535, false), Explanation{Decision: TraceDrop, Reason: "too_big", Policy: steeredBy, Match: far6}},
 		{"a steer with no route to its segment", explainStranded, udpPacket(transitOwn[6], transitFar[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: steeredBy, Match: far6}},
+		{"a steer with no route to its segment, to an address the tun holds", func(t *testing.T) *Mesh { m := explainStranded(t); holdOwn(m); return m }, udpPacket(transitOwn[6], edgeHeld[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: steeredBy, Match: Match{Bits: 128}}},
 		{"along the exit path", explainPath, udpPacket(transitOwn[6], edgeInternet[6], 100, false), heldTo(Explanation{Decision: TraceForward, Policy: pathBy, Path: true, Match: exit}, "segment", tracedMTU)},
 		{"along the exit path with no route to its segment", explainPathStranded, udpPacket(transitOwn[6], edgeInternet[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: pathBy, Path: true}},
 		{"along the exit path with only an exit's default to its segment", explainPathOverDefault, udpPacket(transitOwn[6], edgeInternet[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: pathBy, Path: true, Match: exit}},
@@ -394,5 +400,30 @@ func spentNothing(t *testing.T, m *Mesh, feed *TraceFeed) {
 		if writes := tunWrites(&dev.recordingDevice); len(writes) != 0 {
 			t.Errorf("the walk wrote %d batches to the tun", len(writes))
 		}
+	}
+}
+
+// a read from an IPv6 link-local source to an address the tun holds that a steer claims leaves by the steer to its segment's peer, inside an outer packet of no link scope, rather than back into the tun
+func TestTunReadFromALinkLocalSourceToAHeldAddressGoesWhereASteerSendsIt(t *testing.T) {
+	m := explainLeaf(t)
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), (&recordingPeer{}).peer(t, "segment"))
+	linkLocal := segAddr("fe80::9")
+	steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(hostPrefix(linkLocal)), Via: []schema.Addr{schema.AddrFrom(explainSegment)}}}, schema.MustAddr("3fff:b:0:100::1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSteering(steering)
+	holdOwn(m)
+	if got := fateOf(m, udpPacket(linkLocal, edgeHeld[6], 100, false)); got.to != "segment" || got.counted != (TransitCounters{}) {
+		t.Errorf("the steered read went to %q and counted %+v, want the segment's peer and nothing counted at the read", got.to, got.counted)
+	}
+}
+
+// a read to an address the tun holds steered to a segment with no route is answered no_route by classify, not written back, since verdict there is the steered one
+func TestTunReadToAHeldAddressSteeredToNoRouteIsNotWrittenBack(t *testing.T) {
+	m := explainStranded(t)
+	holdOwn(m)
+	if got := fateOf(m, udpPacket(transitOwn[6], edgeHeld[6], 100, false)); got != (readFate{counted: TransitCounters{NoRoute: 1}}) {
+		t.Errorf("the read went to %q and counted %+v, want no peer and no route", got.to, got.counted)
 	}
 }

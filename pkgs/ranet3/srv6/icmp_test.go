@@ -159,7 +159,8 @@ func TestLargeOffendingPacketIsQuotedUpToTheMinimumMTU(t *testing.T) {
 // each asking the rate limit once: an informational message, a later
 // fragment, no next header, ESP or another protocol, a header the packet ends
 // inside the octets the search reads of, and a chain past the headers the
-// search steps past.
+// search steps past, which every error but code 2 answers, no RFC requiring
+// that one.
 func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 	sid := addr("3fff:b:0:106::2")
 	damaged := func(damage func(raw []byte)) []byte {
@@ -174,6 +175,7 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 		return raw
 	}
 	const anError = icmpTimeExceeded
+	const pastTheSearch = "an icmp error behind 9 extension headers, past what the search steps past"
 	for _, c := range []struct {
 		name      string
 		offending []byte
@@ -210,13 +212,14 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 		{"an extension header the packet ends inside the octets the walk reads of", behindRouting(t, 1, anError)[:end+1], true},
 		{"a fragment header the packet ends before the offset of", afterRouting(t, nextHeaderFragment, fragment(icmpv6Next, 0), message(anError))[:end+3], true},
 		{"an extension header behind one running past the end of the packet", runningPast(behindRouting(t, 2, anError)), true},
-		{"an icmp error behind 9 extension headers, past what the search steps past", behindRouting(t, maxExtensionHeaders, anError), true},
+		{pastTheSearch, behindRouting(t, maxExtensionHeaders, anError), true},
 	} {
 		for _, builder := range errorBuilders {
 			asked := 0
 			answer := builder.build(c.offending, sid, func() bool { asked++; return true })
-			if (answer != nil) != c.answered || (asked == 1) != c.answered || asked > 1 {
-				t.Errorf("%s for %s was built %t asking the rate limit %d times, want built %t", builder.name, c.name, answer != nil, asked, c.answered)
+			want := c.answered && !(c.name == pastTheSearch && builder.name == "beyond scope of source address")
+			if (answer != nil) != want || (asked == 1) != want || asked > 1 {
+				t.Errorf("%s for %s was built %t asking the rate limit %d times, want built %t", builder.name, c.name, answer != nil, asked, want)
 			}
 		}
 	}
