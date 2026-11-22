@@ -1173,9 +1173,8 @@ func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 	}
 	// Both endpoints carry an address, so each dialer stays in its retry loop
 	// against a port nothing answers on. An endpoint with no address is one no
-	// dial can use, which runPeer reports and returns from on its first
-	// statement, and the dialer then drops its own entry out from under the
-	// read below.
+	// dial can use, which runPeer reports, and its dialer gives up at its first
+	// pass and drops its own entry out from under the read below.
 	loopback := "127.0.0.1"
 	reg := registry.Registry{{
 		Organization: "example",
@@ -1214,8 +1213,8 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	// Every endpoint carries an address, so the dialers this starts stay in
 	// their retry loops. The fixture's endpoints carry none, and a dialer with
-	// nowhere to dial returns on its first statement and drops its own entry,
-	// which is a count that shrinks under the read at the end of this test.
+	// nowhere to dial gives up at its first pass and drops its own entry,
+	// so the count of dialers shrinks under the read at the end of this test.
 	loopback := "127.0.0.1"
 	for i := range reg[0].Nodes {
 		for j := range reg[0].Nodes[i].Endpoints {
