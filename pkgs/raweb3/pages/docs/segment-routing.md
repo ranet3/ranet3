@@ -362,9 +362,9 @@ packet, an IPv4 packet with DF or one without DF whose options cannot be read,
 and where the Fragmentation Needed or the Parameter Problem it would send
 through the mesh would come from an address no router forwards, as
 [protocol deviations](design/protocol-deviations.md#icmp-answers) gives. A
-segment carrying a packet to a group or the limited broadcast gets none. That
-answer comes from the SID the segment was addressed to when it arrived at this
-node, as
+segment carrying a packet to a group or the limited broadcast gets none. The
+Packet Too Big about a segment comes from the SID the segment was addressed to
+when it arrived at this node, as
 [RFC 4443 section 2.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.2)
 (a) has an answer to a packet sent to a unicast address of the node's come from
 that address, or, where such a route covers the outer source, goes into the tun

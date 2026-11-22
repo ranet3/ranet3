@@ -501,13 +501,13 @@ and what became of it: `sent`, `withheld` by the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
 the node holds no address of the family it may send it from, `not_answerable`
 for a packet no ICMP error may answer, `declined` for an answer the RFCs ask for
-that this node does not send by its own policy, `End`'s Packet Too Big about a
-segment carrying a packet to a group or the limited broadcast, or `unsent` for
-one due and not sent, to a source the mesh routes it no way back to or through a
-session with no room for it. Each record carries the time on the daemon's clock
-at which the node read the packet for it, or for a `budget` drop at which the
-peer's budget refused the packet, which `--json` and `--pcap` show and its line
-leaves out.
+that this node does not send by its own policy, or `unsent` for one due and not
+sent, to a source the mesh routes it no way back to or through a session with no
+room for it. The one answer declined is `End`'s Packet Too Big about a segment
+carrying a packet to a group or the limited broadcast. Each record carries the
+time on the daemon's clock at which the node read the packet for it, or for a
+`budget` drop at which the peer's budget refused the packet, which `--json` and
+`--pcap` show and its line leaves out.
 
 A packet a segment of this node refused, or one End rewrote that went no
 further, is an `answer` record where its refusal is due an ICMP error, and a
