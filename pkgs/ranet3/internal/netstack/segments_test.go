@@ -734,13 +734,15 @@ func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
 			m := &Mesh{Routes: NewRouteTable()}
 			m.startSegmentReports()
 			m.SetAnswerTTL(64)
+			_, offended := addressesOf(c.offending, c.offending[0]>>4)
+			_, answered := addressesOf(c.answerable, c.answerable[0]>>4)
 			for range stream {
-				if answer, cut, _ := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer != nil || cut {
+				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, offended, m.AnswerTTL(), (*Mesh).takeICMPToken); answer != nil || cut {
 					t.Fatalf("a packet no error may answer was answered %t or cut %t", answer != nil, cut)
 				}
 			}
 			untouched(t, m)
-			if answer, _, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer == nil {
+			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, answered, m.AnswerTTL(), (*Mesh).takeICMPToken); answer == nil {
 				t.Error("an answerable packet after the stream was not answered")
 			}
 		})

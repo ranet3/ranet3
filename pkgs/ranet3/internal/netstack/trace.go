@@ -80,12 +80,15 @@ const (
 	TraceSent
 	// TraceWithheld is an answer the ICMP limits held back
 	TraceWithheld
-	// TraceUnanswered is an answer with no address of its family to come from, which TransitCounters.Unanswered counts
+	// TraceUnanswered is an answer this node does not send for want of an address it may send it from, which TransitCounters.Unanswered counts
 	TraceUnanswered
 	// TraceNotAnswerable is a packet no ICMP error may answer, RFC 1812 section 4.3.2.7 and RFC 4443 section 2.4 (e)
 	TraceNotAnswerable
 	// TraceUnsent is an answer built for, or due to, a source the mesh routes it no way back to, or whose session had no room for it
 	TraceUnsent
+	// TraceDeclined is an answer the RFCs ask for that this node does not send by its own policy
+	// End's packet too big about a segment carrying a packet to a group or the limited broadcast
+	TraceDeclined
 )
 
 func (o TraceOutcome) String() string {
@@ -100,6 +103,8 @@ func (o TraceOutcome) String() string {
 		return "not_answerable"
 	case TraceUnsent:
 		return "unsent"
+	case TraceDeclined:
+		return "declined"
 	}
 	return ""
 }

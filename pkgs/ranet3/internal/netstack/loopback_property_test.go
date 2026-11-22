@@ -297,3 +297,57 @@ func TestTunReadMeetsTheModelOfAddressesNoRouterForwards(t *testing.T) {
 		check(ht, src, dst, route, held, steer, ownedOnly, traced)
 	})
 }
+
+// End meets an independent model of its next segment: one that is a group or that no router forwards is dropped before its route is looked up
+// counted dropped and martian, recorded as a drop for martian naming it, and answered nothing, whatever route covers it
+// any other goes on where a route counting as no default reaches it, and no packet End sends on any session carries in its fixed header a source or a destination no router forwards
+// the next segment is drawn over the edges of the special-purpose blocks with the address on either side, the IPv4-mapped groups and any IPv6 address
+// under a host route on the next session, a default on it or none, traced or not
+func TestEndMeetsTheModelOfNextSegmentsNoRouterForwards(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		next := drawAddress(ht, true)
+		route := hegel.Draw(ht, pbt.Spanning(0, 2))
+		traced := hegel.Draw(ht, hegel.Booleans())
+		n, headend := endNode(ht, DefaultMTU+200, AnswerSources{Router4: transitOwn[4], Router6: transitOwn[6]})
+		switch route {
+		case 1:
+			n.m.Routes.Set(netip.Prefix{}, hostPrefix(next), n.outPeer)
+		case 2:
+			n.m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("::/0"), n.outPeer)
+		}
+		segment := steered(ht, udpPacket(endSender6, endReceiver, 200, false), endHeadend, transitSID, segAddr("3fff:b:0:206::1"))
+		copy(segment[48:64], next.AsSlice())
+		var tun, out, back [][]byte
+		records := endRecords(ht, n, traced, func() { tun, out, back = n.deliver(ht, segment) })
+		answered := headend.packets(ht)
+		for _, packets := range [][][]byte{out, back, answered} {
+			for _, p := range packets {
+				src, dst, _, _ := addrsOf(p)
+				if inBlocks(noSessionReaches, src) || inBlocks(addrModelRefusedDestination, dst) || inBlocks(addrModelGroups, dst) {
+					ht.Fatalf("End sent a packet from %s to %s on a session, for a next segment %s", src, dst, next)
+				}
+			}
+		}
+		counters, martian := n.m.SegmentCounters(), n.m.TransitCounters().Martian
+		switch {
+		case inBlocks(addrModelGroups, next) || inBlocks(addrModelRefusedDestination, next):
+			if len(out)+len(back)+len(answered)+len(tun) != 0 || counters != (SegmentCounters{Dropped: 1}) || martian != 1 {
+				ht.Fatalf("a next segment %s sent %d packets on, %d back, %d to the headend and %d into the tun, counted %+v and %d martian, want nothing sent, dropped and martian", next, len(out), len(back), len(answered), len(tun), counters, martian)
+			}
+			if traced && (len(records) != 1 || records[0].Decision != TraceDrop || records[0].Reason != "martian" || records[0].Segment != next) {
+				ht.Fatalf("a next segment %s: the trace took %+v, want one drop for martian naming it", next, records)
+			}
+		case route == 1:
+			if len(out) != 1 || counters != (SegmentCounters{Forwarded: 1}) || martian != 0 {
+				ht.Fatalf("a routed next segment %s went on as %d packets, counted %+v and %d martian, want it on", next, len(out), counters, martian)
+			}
+			if _, dst, _, _ := addrsOf(out[0]); dst != next {
+				ht.Fatalf("a next segment %s went on to %s", next, dst)
+			}
+		default:
+			if len(out) != 0 || martian != 0 {
+				ht.Fatalf("a next segment %s no route counting as no default reaches went on as %d packets and counted %d martian", next, len(out), martian)
+			}
+		}
+	})
+}

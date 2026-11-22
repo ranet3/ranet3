@@ -472,8 +472,9 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 			}
 			continue
 		}
-		// RFC 4291 section 2.5.6, an IPv6 link-local segment goes on no session, whatever route covers it
-		if linkLocalUnicast(dst) {
+		// a next segment that is a group or that no router forwards goes on no session, whatever route covers it, and is answered nothing
+		// RFC 4291 sections 2.5.2, 2.5.3, 2.5.6 and 2.7 and RFC 6890
+		if group(dst) || martianDestination(dst) {
 			m.segmentsDropped.Add(1)
 			m.transitCounts[transitMartian].Add(1)
 			m.reportTransitDrop(transitMartian, src, dst)
@@ -666,47 +667,71 @@ func (m *Mesh) answerNextSegment(segment *forwardedSegment, src, dst netip.Addr,
 // segmentTooBig takes a forwarded segment larger than mtu, the largest the session to its next segment carries
 // the packet it carries is held to mtu less the headers in front of it, which each fragment keeps
 // an error about the packet it carries goes to that packet's source, and where no router forwards that source the segment is answered about its own size in its place, RFC 8200 section 4.4
-// since such a source is on no link a session leads to
+// and so where its error about the IPv4 packet it carries, about its size or its options, would come from an address no router forwards, as answersFromUnforwarded says
+// an error about the carried packet that no route leads back to a peer is not built, and one due is unsent
+// a packet to a group or the limited broadcast draws nothing, since no error this node builds answers one,
+// and the Packet Too Big about the segment, which RFC 4443 section 2.4 (e) would let it send, is declined by this node's policy whatever the packet's source
 // it reports how many fragments it queued in cut and their bytes, and an answer goes back as sendTooBig sends it
 // for a segment it queued none of it reports the answer's kind and fate as tooBig does, TraceNoAnswer for one carrying an IPv4 header that fails its checks
 func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
 	var answer []byte
-	var tun bool
-	kind := answerTooBig
+	var to endAnswer
+	kind, aboutSegment := answerTooBig, true
 	if offset, ok := carriedPacket(segment.raw, segment.srh); ok {
 		inner := segment.raw[offset:]
 		version := inner[0] >> 4
-		source, _ := addressesOf(inner, version)
-		var fragment bool
-		if unfragmentable(inner, version) && unforwardedSource(source) {
-			answer, tun = m.answerSegmentTooBig(segment, mtu, take)
-		} else if answer, fragment, tun = m.answerTooBig(inner, mtu-offset, true, segment.sid, take); fragment {
-			count, bytes, fault := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu)
+		source, destination := addressesOf(inner, version)
+		fault, aboutInner := 0, unfragmentable(inner, version)
+		if !aboutInner {
+			var count, bytes int
+			count, bytes, fault = cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu)
 			switch {
 			case count != 0:
 				return count, bytes, answerNone, TraceNoAnswer
 			case fault != 0 && !unforwardedSource(source):
 				// a packet that was to be cut is answered about its options, not its size
-				kind = answerParameter
-				answer, tun = m.answerOptions(inner, fault, true, take)
+				kind, aboutInner = answerParameter, true
 			case !packet.HeaderValid(inner):
 				// RFC 1812 section 5.2.2 discards a header failing its checks silently
 				// carriedPacket took a whole packet, so its checksum is the one check left to fail
 				m.dropTooBig(segment, mtu)
 				return 0, 0, answerNone, TraceNoAnswer
+			}
+			// every other refusal of the cut is about size, and so is the answer to one about the options of a packet whose source no router forwards
+		}
+		if group(destination) {
+			m.dropTooBig(segment, mtu)
+			// the answer declined is always the one about the segment
+			return 0, 0, answerTooBig, TraceDeclined
+		}
+		if aboutInner && !unforwardedSource(source) {
+			to = m.answerFrom(inner, segment.sid)
+			switch {
+			case !to.tun && to.via == nil:
+				var due dueAnswer
+				m.answerCarried(inner, kind, fault, mtu-offset, to, due.take)
+				m.dropTooBig(segment, mtu)
+				if due {
+					return 0, 0, kind, TraceUnsent
+				}
+				return 0, 0, kind, TraceNotAnswerable
+			case !answersFromUnforwarded(inner, to):
+				aboutSegment = false
+				answer = m.answerCarried(inner, kind, fault, mtu-offset, to, take)
 			default:
-				// every other refusal of the cut is about size, and so is the answer to one about the options of a packet whose source no router forwards
-				answer, tun = m.answerSegmentTooBig(segment, mtu, take)
+				// the segment's own Packet Too Big stands in for either error, as for a packet whose source no router forwards
+				kind = answerTooBig
 			}
 		}
-	} else {
-		answer, tun = m.answerSegmentTooBig(segment, mtu, take)
+	}
+	if aboutSegment {
+		answer, to = m.answerSegmentTooBig(segment, mtu, take)
 	}
 	m.dropTooBig(segment, mtu)
 	switch {
 	case answer == nil:
 		return 0, 0, kind, TraceNotAnswerable
-	case !m.sendTooBig(answer, tun):
+	case !m.sendTooBig(answer, to):
 		return 0, 0, kind, TraceUnsent
 	}
 	if kind == answerTooBig {
@@ -715,19 +740,37 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 	return 0, 0, kind, TraceSent
 }
 
+// answersFromUnforwarded reports an answer End would send about inner, a carried packet, onto a session from to's source, an address no router forwards
+// answerFrom puts an IPv4 one there with no router-id, at inner's destination, and an IPv6 one never, since a SID is an address a router forwards
+// segmentTooBig asks it only of an answer whose route leads to a peer, and it holds only where packet.MayAnswer, the builder's own test of all but the source, passes inner with to's TTL
+// so a packet that draws no answer for any reason but its source draws none
+func answersFromUnforwarded(inner []byte, to endAnswer) bool {
+	return !to.tun && unforwardedSource(to.source) && packet.MayAnswer(inner, to.ttl)
+}
+
+// answerCarried is End's answer of kind about inner, the packet a segment carries, from to's source with to's TTL, drawing through take
+// a parameter problem at fault, or a packet too big or fragmentation needed naming mtu
+func (m *Mesh) answerCarried(inner []byte, kind answerKind, fault, mtu int, to endAnswer, take takeAnswer) []byte {
+	if kind == answerParameter {
+		return m.answerOptions(inner, fault, to.source, to.ttl, take)
+	}
+	answer, _ := m.answerTooBig(inner, mtu, to.source, to.ttl, take)
+	return answer
+}
+
 // answerSegmentTooBig is the packet too big about segment itself, as End rewrote it, to its outer source, naming mtu, and reports one that goes into the tun
 // RFC 8200 section 4.4 has a node discard a packet its routing header sends onto a link too small for it and answer the packet's source
 // it comes from sid, whatever router-id the node holds, since RFC 4443 section 2.2 (a) has an answer come from the address its packet was sent to
 // sid is that address where the segment arrived, and where its list names two SIDs of this node in a row sid is the second, an address of this node too
 // an answer into the tun comes from the segment's destination as End rewrote it instead, as answersIntoTun says
 // the builder draws through take, on no limit, as every packet too big does
-func (m *Mesh) answerSegmentTooBig(segment *forwardedSegment, mtu int, take takeAnswer) ([]byte, bool) {
+func (m *Mesh) answerSegmentTooBig(segment *forwardedSegment, mtu int, take takeAnswer) ([]byte, endAnswer) {
 	allow := m.allowAnswer(take, netip.Addr{})
 	src, dst := addressesOf(segment.raw, 6)
 	if m.answersIntoTun(src, dst) {
-		return srv6.PacketTooBig(segment.raw, dst, mtu, allow), true
+		return srv6.PacketTooBig(segment.raw, dst, mtu, allow), endAnswer{source: dst, tun: true}
 	}
-	return srv6.PacketTooBig(segment.raw, segment.sid, mtu, allow), false
+	return srv6.PacketTooBig(segment.raw, segment.sid, mtu, allow), endAnswer{source: segment.sid}
 }
 
 func (m *Mesh) dropTooBig(segment *forwardedSegment, mtu int) {
@@ -744,11 +787,20 @@ func (m *Mesh) segmentTooBigDrawn(cut *fragmentList, segment *forwardedSegment, 
 	return count, bytes, kind, draw.met(fate)
 }
 
-func (m *Mesh) sendTooBig(answer []byte, tun bool) bool {
-	if !tun {
+// sendTooBig sends answer into the tun where to says so, through to's peer where answerFrom resolved the answer's route to one,
+// and with neither, an answer about the segment itself, as sendBack does
+func (m *Mesh) sendTooBig(answer []byte, to endAnswer) bool {
+	switch {
+	case to.tun:
+		m.writeHostPacket(answer)
+	case to.via == nil:
 		return m.sendBack(answer)
+	default:
+		_, _, nextHeader, _ := addrsOf(answer)
+		if !m.sendThrough(to.via, answer, nextHeader) {
+			return false
+		}
 	}
-	m.writeHostPacket(answer)
 	m.segmentsAnswered.Add(1)
 	return true
 }
@@ -771,51 +823,71 @@ func carriedPacket(raw []byte, srh int) (int, bool) {
 // answerTooBig answers inner, a packet larger than mtu, the largest its next link carries
 // IPv6 with packet too big and IPv4 with DF with fragmentation needed, which no limit holds back
 // cut reports IPv4 without DF, which a router cuts into fragments rather than answers
-// end is a packet a forwarded segment carries to End, which matched sid, and otherwise inner was read off the tun
-// the answer comes from where answerFrom says, and tun reports one that goes into the tun
+// the answer comes from source, a tun read's destination or what answerFrom says for a packet End answers, an IPv4 one with ttl
 // the builder draws through take
-func (m *Mesh) answerTooBig(inner []byte, mtu int, end bool, sid netip.Addr, take takeAnswer) (answer []byte, cut, tun bool) {
+func (m *Mesh) answerTooBig(inner []byte, mtu int, source netip.Addr, ttl uint8, take takeAnswer) (answer []byte, cut bool) {
 	version := inner[0] >> 4
 	if !unfragmentable(inner, version) {
-		return nil, true, false
+		return nil, true
 	}
-	source, tun := m.answerFrom(inner, end, sid)
 	allow := m.allowAnswer(take, netip.Addr{})
 	if version == 6 {
-		return srv6.PacketTooBig(inner, source, mtu, allow), false, tun
+		return srv6.PacketTooBig(inner, source, mtu, allow), false
 	}
-	return packet.FragmentationNeeded(inner, source, m.AnswerTTL(), mtu, allow), false, tun
+	return packet.FragmentationNeeded(inner, source, ttl, mtu, allow), false
 }
 
 // answerOptions answers inner, an IPv4 packet without DF the cut refused for its option list, with parameter problem at fault
 // the octet at fault RFC 1812 section 4.3.3.5 has the answer name, under the bucket of inner's source and the node's cap
-// and from the address answerTooBig's fragmentation needed would come from, tun reporting an answer that goes into the tun
+// and from source with ttl, as answerTooBig's fragmentation needed would come
 // a fault of 0 is a packet refused for anything else, which goes unanswered
 // the builder draws through take
-func (m *Mesh) answerOptions(inner []byte, fault int, end bool, take takeAnswer) (answer []byte, tun bool) {
+func (m *Mesh) answerOptions(inner []byte, fault int, source netip.Addr, ttl uint8, take takeAnswer) []byte {
 	if fault == 0 {
-		return nil, false
+		return nil
 	}
-	source, tun := m.answerFrom(inner, end, netip.Addr{})
 	sender := netip.AddrFrom4([4]byte(inner[12:16]))
-	return packet.ParameterProblem(inner, source, m.AnswerTTL(), fault, m.allowAnswer(take, sender)), tun
+	return packet.ParameterProblem(inner, source, ttl, fault, m.allowAnswer(take, sender))
 }
 
-// answerFrom is the address an answer to inner, a packet past its next link, comes from, and reports whether the answer goes into the tun
-// end is a packet End answers, a forwarded segment that matched sid or the packet one carries, and otherwise inner was read off the tun
-// a tun read is answered into the tun from its destination, and so is a packet End answers where answersIntoTun says
-// with no router-id an IPv6 answer comes from sid, as RFC 4443 section 2.2 (b) asks
-func (m *Mesh) answerFrom(inner []byte, end bool, sid netip.Addr) (netip.Addr, bool) {
+// endAnswer is where End's answer about the packet a segment carries comes from and goes, and the TTL an IPv4 one carries
+// tun reports one that goes into the tun, and via is the peer the answer's route leads to otherwise, nil where it leads to none
+type endAnswer struct {
+	source netip.Addr
+	tun    bool
+	via    *Peer
+	ttl    uint8
+}
+
+// answerFrom is the endAnswer of End's answer to inner, the packet a forwarded segment that matched sid carries, read once for the segment
+// it goes into the tun, from inner's destination, where answersIntoTun's test holds of the reply's route
+// otherwise it comes from the router-id of inner's family, with none from inner's destination for IPv4 and from sid for IPv6, as RFC 4443 section 2.2 (b) asks
+// and goes through the peer the route from that source to inner's source leads to, which is the reply's route where the source is inner's destination
+func (m *Mesh) answerFrom(inner []byte, sid netip.Addr) endAnswer {
 	version := inner[0] >> 4
 	src, dst := addressesOf(inner, version)
-	if !end || m.answersIntoTun(src, dst) {
-		return dst, true
+	ttl := m.AnswerTTL()
+	peer, verdict, match := m.replyRoute(src, dst)
+	if intoTun(verdict, match) {
+		return endAnswer{source: dst, tun: true, ttl: ttl}
 	}
 	sources := m.AnswerSources()
+	source := cmp.Or(sources.Router4, dst)
 	if version == 6 {
-		return cmp.Or(sources.Router6, sid), false
+		source = cmp.Or(sources.Router6, sid)
 	}
-	return cmp.Or(sources.Router4, dst), false
+	if source != dst {
+		peer, verdict, match = m.Routes.Resolve(source, src)
+	}
+	return endAnswer{source: source, via: peerOn(peer, verdict, match), ttl: ttl}
+}
+
+// peerOn is the peer a route resolved to verdict leads to, nil for every verdict but RoutePeer
+func peerOn(peer *Peer, verdict Verdict, _ Match) *Peer {
+	if verdict != RoutePeer {
+		return nil
+	}
+	return peer
 }
 
 // answersIntoTun reports an answer End sends about a packet from source to destination one that goes into the tun, from destination
@@ -826,6 +898,11 @@ func (m *Mesh) answerFrom(inner []byte, end bool, sid netip.Addr) (netip.Addr, b
 // answerTaking tests the same route but leaves a source only a counted entry reaches unanswered, which End answers through the mesh
 func (m *Mesh) answersIntoTun(source, destination netip.Addr) bool {
 	_, verdict, match := m.replyRoute(source, destination)
+	return intoTun(verdict, match)
+}
+
+// intoTun is answersIntoTun's test of the reply's route, which resolved to verdict through match
+func intoTun(verdict Verdict, match Match) bool {
 	return verdict == RouteLocal && !match.Counted
 }
 
@@ -848,8 +925,8 @@ func (m *Mesh) sendAnswer(answer []byte) bool {
 	if !ok {
 		return false
 	}
-	peer, verdict, _ := m.Routes.Resolve(source, destination)
-	if verdict != RoutePeer || peer == nil {
+	peer := peerOn(m.Routes.Resolve(source, destination))
+	if peer == nil {
 		return false
 	}
 	return m.sendThrough(peer, answer, nextHeader)

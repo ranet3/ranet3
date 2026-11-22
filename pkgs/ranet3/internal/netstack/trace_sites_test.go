@@ -274,6 +274,22 @@ var outcomeCases = func() []outcomeCase {
 			m.DeliverInboundBatch(framed(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], tracedMTU, false), egressWaypoint, egressNext)), DefaultMTU, (&recordingPeer{}).peer(t, "from"), nil)
 			return queued(feed)
 		}, with(session(TraceAnswer, "too_big"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressNext, "too_big", TraceSent })},
+		{"End past its next session carrying a packet to a group from a source no router forwards", transitTooBig, func(t *testing.T) []TraceRecord {
+			m, feed := tracedSegments(t)
+			next := (&recordingPeer{}).peer(t, "next")
+			next.SetMTU(tracedMTU)
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), next)
+			m.DeliverInboundBatch(framed(headendSteered(udpPacket(segAddr("fe80::7"), segAddr("ff02::1"), tracedMTU, false), egressWaypoint, egressNext)), DefaultMTU, (&recordingPeer{}).peer(t, "from"), nil)
+			return queued(feed)
+		}, with(session(TraceAnswer, "too_big"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressNext, "too_big", TraceDeclined })},
+		{"End past its next session carrying a packet to a group from a source a router forwards", transitTooBig, func(t *testing.T) []TraceRecord {
+			m, feed := tracedSegments(t)
+			next := (&recordingPeer{}).peer(t, "next")
+			next.SetMTU(tracedMTU)
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), next)
+			m.DeliverInboundBatch(framed(headendSteered(udpPacket(tooBigSource[6], segAddr("ff0e::1"), tracedMTU, false), egressWaypoint, egressNext)), DefaultMTU, (&recordingPeer{}).peer(t, "from"), nil)
+			return queued(feed)
+		}, with(session(TraceAnswer, "too_big"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressNext, "too_big", TraceDeclined })},
 		{"an egress segment dropping CE over Not-ECT", traceECN, acted(nil, outerCE(headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit))), with(session(TraceDrop, "ecn"), func(r *TraceRecord) { r.Segment = egressExit })},
 	}
 }()

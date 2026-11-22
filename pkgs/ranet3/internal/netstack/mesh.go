@@ -654,16 +654,17 @@ func tooBigReason(kind answerKind) transitReason {
 // and the kind of the answer it drew through take and that answer's fate as answerTaking reports it, TraceNoAnswer where the cut left no fault to answer
 // overhead is the header steering put in front of the packet
 // the packet behind it is held to mtu less that header
-// an answer goes into the tun, whichever side of it the source sits
+// an answer goes into the tun from the packet's destination, whichever side of it the source sits
 func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
 	inner := raw[overhead:]
-	answer, cut, _ := m.answerTooBig(inner, mtu-overhead, false, netip.Addr{}, take)
+	_, destination := addressesOf(inner, inner[0]>>4)
+	answer, cut := m.answerTooBig(inner, mtu-overhead, destination, m.AnswerTTL(), take)
 	if cut {
 		count, bytes, fault := b.cut.add(peer, nextHeader, raw[:overhead], inner, mtu)
 		if fault == 0 {
 			return count, bytes, answerNone, TraceNoAnswer
 		}
-		if answer, _ = m.answerOptions(inner, fault, false, take); answer == nil {
+		if answer = m.answerOptions(inner, fault, destination, m.AnswerTTL(), take); answer == nil {
 			return count, bytes, answerParameter, TraceNotAnswerable
 		}
 		m.writeHostPacket(answer)

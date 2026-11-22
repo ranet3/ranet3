@@ -318,3 +318,81 @@ func TestEndSendsNoSessionAnErrorToADestinationNoSessionReaches(t *testing.T) {
 		check(ht, class, bits, df, held, traced, mtu, hegel.Draw(ht, pbt.Spanning(1, 512)))
 	})
 }
+
+// the IPv4 destinations End's fallback answer source may be, by block: 169.254/16, 127/8, network 0 and class E, which no router forwards as a source while each names one host or none
+// and the groups, the limited broadcast and documentation addresses beside them
+var fallbackDestinations = []netip.Prefix{
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("240.0.0.0/5"), netip.MustParsePrefix("248.0.0.0/6"),
+	netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("255.255.255.255/32"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"),
+}
+
+// End sends no ICMP or ICMPv6 error onto any session from or to an address noSessionReaches holds, whatever the destination of the IPv4 packet a segment too large for its next session carries
+// and where its answer about that packet would come from that destination, with DF, no IPv4 router-id and a destination no router forwards, the headend gets packet too big about the segment from the SID and the packet's sender nothing
+// over the destination's block, DF, the IPv4 router-id and a trace, each block tried at a low address and at its last before anything is drawn
+func TestEndSendsNoSessionAnErrorFromAnAddressNoSessionReaches(t *testing.T) {
+	after := netip.MustParseAddr("3fff:b:0:206::1")
+	check := func(tb testing.TB, block int, bits [16]byte, df, held, traced bool, mtu, excess int) {
+		tb.Helper()
+		e := newEndAnswering(tb, after, mtu, true, true)
+		e.m.SetAnswerSources(holding(map[int]bool{4: held, 6: true}))
+		destination := addressIn(fallbackDestinations[block], bits)
+		inner := udpPacket(tooBigSource[4], destination, mtu+excess-srv6.Overhead(2), df)
+		outer := steeredThrough(tb, inner, after)
+		e.apply(tb, outer, traced)
+		sent := e.sent(tb)
+		for way, packets := range sent {
+			if way == "tun" {
+				continue
+			}
+			for _, raw := range packets {
+				to, isError := errorTo(raw)
+				if !isError {
+					continue
+				}
+				from := netip.AddrFrom16([16]byte(raw[8:24]))
+				if raw[0]>>4 == 4 {
+					from = netip.AddrFrom4([4]byte(raw[12:16]))
+				}
+				for _, reached := range noSessionReaches {
+					if reached.Contains(from) || reached.Contains(to) {
+						tb.Fatalf("a segment carrying a packet to %s sent %s an error from %s to %s", destination, way, from, to)
+					}
+				}
+			}
+		}
+		if !df || held || !inBlocks(noSessionReaches, destination) || inBlocks(addrModelGroups, destination) {
+			return
+		}
+		if len(sent["headend"]) != 1 || len(sent["sender"]) != 0 {
+			tb.Fatalf("a segment carrying a packet with DF to %s sent the headend %d packets and the sender %d, want one answer about the segment to the headend", destination, len(sent["headend"]), len(sent["sender"]))
+		}
+		rewritten := bytes.Clone(outer)
+		if _, err := srv6.End(rewritten); err != nil {
+			tb.Fatal(err)
+		}
+		checkICMPv6(tb, sent["headend"][0], rewritten, thisWaypoint, 2, 0, uint32(mtu))
+	}
+	mtu := srv6.MinimumIPv6MTU + srv6.Overhead(2)
+	var last [16]byte
+	for i := range last {
+		last[i] = 0xff
+	}
+	for block := range fallbackDestinations {
+		for _, bits := range [][16]byte{{15: 1}, last} {
+			for _, df := range []bool{false, true} {
+				for _, held := range []bool{false, true} {
+					for _, traced := range []bool{false, true} {
+						check(t, block, bits, df, held, traced, mtu, 1)
+					}
+				}
+			}
+		}
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		block := hegel.Draw(ht, hegel.Integers(0, len(fallbackDestinations)-1))
+		bits := [16]byte(hegel.Draw(ht, hegel.Binary(16, 16)))
+		df, held, traced := hegel.Draw(ht, hegel.Booleans()), hegel.Draw(ht, hegel.Booleans()), hegel.Draw(ht, hegel.Booleans())
+		mtu := hegel.Draw(ht, pbt.Spanning(srv6.MinimumIPv6MTU, 9000))
+		check(ht, block, bits, df, held, traced, mtu, hegel.Draw(ht, pbt.Spanning(1, 512)))
+	})
+}

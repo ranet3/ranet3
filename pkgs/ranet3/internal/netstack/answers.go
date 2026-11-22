@@ -13,7 +13,7 @@ import (
 var dummyIPv4 = netip.AddrFrom4([4]byte{192, 0, 0, 8})
 
 // AnswerSources are the addresses that End's answers to a packet past its session and transit's errors come from, each invalid where the node holds none
-// answerTooBig and answerOptions pick the source of End's and a tun read's answers to a packet past its session, and answer that of transit's, forwardOne's too-big among them
+// answerFrom picks the source of End's answers to a packet past its session, and answer that of transit's, forwardOne's too-big among them
 // answer sends none where the source's reply route is an entry of this node's own counting as a default, into the tun from the answered packet's destination where it is any other entry of this node's own,
 // and otherwise through the mesh from answerSource's pick, or none where that pick has none
 // answerBeyondScope answers from errorSource's, and forwardOptions records errorSource's IPv4 address in Record Route and Timestamp
@@ -29,7 +29,9 @@ type AnswerSources struct {
 // with the TTL every ICMPv4 error the mesh builds carries
 type answerState struct {
 	answers atomic.Pointer[AnswerSources]
-	// unanswered counts the errors not sent for want of an address of their family to come from
+	// sourcesRead, where set, runs after each read of answers, so that a test can change the sources or the routes between End's reads
+	sourcesRead func()
+	// unanswered counts the errors TransitCounters.Unanswered names
 	unanswered atomic.Uint64
 	answerTTL  atomic.Uint32
 }
@@ -62,7 +64,11 @@ func (m *Mesh) SetAnswerSources(next AnswerSources) {
 
 // AnswerSources returns the addresses SetAnswerSources last handed the mesh
 func (m *Mesh) AnswerSources() AnswerSources {
-	if sources := m.answers.Load(); sources != nil {
+	sources := m.answers.Load()
+	if m.sourcesRead != nil {
+		m.sourcesRead()
+	}
+	if sources != nil {
 		return *sources
 	}
 	return AnswerSources{}

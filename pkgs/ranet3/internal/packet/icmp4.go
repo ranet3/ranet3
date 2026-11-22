@@ -81,14 +81,20 @@ func ParameterProblem(offending []byte, source netip.Addr, ttl uint8, pointer in
 // ttl is the fixed TTL RFC 1812 section 4.2.2.9 has be configurable, which a node takes from its host's default
 // the answer quotes as much of the datagram as RFC 1812 section 4.3.2.3 lets it without passing 576 bytes
 // it goes with DF, an atomic datagram, whose zero identification RFC 6864 allows
-// it returns nil for anything but one whole IPv4 packet whose header HeaderValid passes, for a source that is not one host
-// for a TTL of 0, which section 4.2.2.9 has no router originate, for a packet section 4.3.2.7 lets no error answer, and for one allow refuses
+// it returns nil for a source that is not one host, where MayAnswer refuses, and for a packet allow refuses
 // allow is called once the packet is one an error may answer and before anything is built
 func icmpError(offending []byte, source netip.Addr, ttl, kind, code byte, rest uint32, allow func() bool) []byte {
-	if ttl == 0 || Version(offending) != 4 || !HeaderValid(offending) || !SingleHost(source) || !answerable(offending) || !allow() {
+	if !SingleHost(source) || !MayAnswer(offending, ttl) || !allow() {
 		return nil
 	}
 	return errorQuoting(offending, source, ttl, kind, code, rest)
+}
+
+// MayAnswer reports whether an ICMP error with ttl may answer offending, icmpError's test of all but its source before its rate limit
+// it refuses anything but one whole IPv4 packet whose header HeaderValid passes,
+// a TTL of 0, which RFC 1812 section 4.2.2.9 has no router originate, and a packet section 4.3.2.7 lets no error answer
+func MayAnswer(offending []byte, ttl uint8) bool {
+	return ttl != 0 && Version(offending) == 4 && HeaderValid(offending) && answerable(offending)
 }
 
 // Relayed is an ICMP error of kind and code from source with ttl, rest being the second word of its header, quoting quote

@@ -39,7 +39,7 @@ const (
 	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
 	// transitMartian counts mapped sources before nativeGroup and other sources or destinations no router forwards after it, IPv6 link-local ones among them
-	// reads off the tun from or to an address no router forwards that the tun does not hold, and IPv6 link-local segments End would send on
+	// reads off the tun from or to an address no router forwards that the tun does not hold, and next segments End would send on that are a group or that no router forwards
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute
@@ -168,8 +168,8 @@ type TransitCounters struct {
 	// and Looped those to a destination of this node's own that the tun does not hold
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
 	// Answered, Unanswered and Unsent count the ICMP errors about dropped packets and reads, about an egress segment's inner packets of a family not ready and about the packets the userspace exit answers itself
-	// Answered counts the errors sent, and Unanswered the packets whose error finds no address of its family to come from
-	// counted before the rules that keep an error from answering a packet and before the rate limits
+	// Answered counts the errors sent, and Unanswered the errors this node does not send for want of an address it may send them from
+	// one with no address of its family to come from, counted before the rules that keep an error from answering a packet and before the rate limits
 	// Unsent counts the answers due that no way back carries
 	Answered, Unanswered, Unsent uint64
 }
@@ -937,6 +937,9 @@ func (d *dueAnswer) refuse() bool {
 	*d = true
 	return false
 }
+
+// take is refuse as an answer's draw on the ICMP limits
+func (d *dueAnswer) take(*Mesh, netip.Addr) bool { return d.refuse() }
 
 // unsentIfDue is the fate of an answer that drew through due, unsent where its builder found one due
 func (m *Mesh) unsentIfDue(due dueAnswer) TraceOutcome {
