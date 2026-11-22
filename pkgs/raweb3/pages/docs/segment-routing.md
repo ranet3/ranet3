@@ -92,20 +92,22 @@ Segments Left field, and one that holds more than 16 segments with code 6,
 pointing at its first octet, as RFC 8883 section 2.3 answers a header past a
 processing limit. Otherwise it sends the packet on to its next segment, through
 the session the mesh routes that segment to, and acts on that segment in turn
-where it is a SID of this node, as below. It answers, cuts or drops one larger
-than that session carries, and drops one where that session has closed or has no
-room for it, both as [waypoints](#waypoints-and-packet-size) describe. It
-answers a next segment that the mesh routes to no other node, or only through a
-route that [counts as a default](routing.md#routes-that-count-as-a-default),
-with Destination Unreachable, code 0, but drops without an answer one inside a
-prefix this node originates that counts as no default. It answers a next segment
-at an address `cap.table` assigns to it, which is no SID, with Parameter
-Problem, code 0, pointing at the Routing Type, while segments are left, as RFC
-8754 section 4.3.2 has such an address answer, and drops one at segments left 0
-without an answer. An `End` that reaches the upper-layer header, at segments
-left 0 or with no segment routing header, answers it with Parameter Problem,
-code 4, pointing at that header, since a waypoint processes no upper-layer
-header, ESP and an ICMPv6 echo request included.
+where it is a SID of this node, as below. It drops with no answer a next segment
+that is a group or one [no router forwards](routing.md#transit), whatever route
+covers it, before anything below. It answers, cuts or drops one larger than that
+session carries, and drops one where that session has closed or has no room for
+it, both as [waypoints](#waypoints-and-packet-size) describe. It answers a next
+segment that the mesh routes to no other node, or only through a route that
+[counts as a default](routing.md#routes-that-count-as-a-default), with
+Destination Unreachable, code 0, but drops without an answer one inside a prefix
+this node originates that counts as no default. It answers a next segment at an
+address `cap.table` assigns to it, which is no SID, with Parameter Problem, code
+0, pointing at the Routing Type, while segments are left, as RFC 8754 section
+4.3.2 has such an address answer, and drops one at segments left 0 without an
+answer. An `End` that reaches the upper-layer header, at segments left 0 or with
+no segment routing header, answers it with Parameter Problem, code 4, pointing
+at that header, since a waypoint processes no upper-layer header, ESP and an
+ICMPv6 echo request included.
 
 An `End.DT46` delivers the IPv4 or IPv6 packet it reaches, with every header in
 front of it removed, and an egress segment only one that also passes the checks
@@ -344,10 +346,12 @@ answer into its tun, each from the address
 is cut into fragments that fit, each sent on behind its own copy of the outer
 header and the routing header. One whose options cannot be read is answered with
 Parameter Problem instead, naming the octet at fault, from the same address, at
-a waypoint again only where a router forwards its source. Where a route of the
-waypoint's own that counts as no default covers the packet's source, the
-waypoint writes its answer into its own tun instead, from the packet's
-destination, in either family and whatever router-id it holds, as the
+a waypoint again only where a router forwards its source, and with Packet Too
+Big about the segment, as below, where that address is one no router forwards
+and the answer would go through the mesh. Where a route of the waypoint's own
+that counts as no default covers the packet's source, the waypoint writes its
+answer into its own tun instead, from the packet's destination, in either family
+and whatever router-id it holds, as the
 [forwarding decision](routing.md#transit) answers this host. A segment gets
 Packet Too Big about itself, to its outer source, naming what the session
 carries, where its routing header does not name a whole IP packet behind it,
@@ -355,7 +359,10 @@ where it carries an IPv4 packet without DF that cannot be cut, because its data
 runs past 65535 bytes or the session leaves no room for 8 bytes of data behind
 its header, and where it carries, from a source no router forwards, an IPv6
 packet, an IPv4 packet with DF or one without DF whose options cannot be read,
-as [protocol deviations](design/protocol-deviations.md#icmp-answers) gives. That
+and where the Fragmentation Needed or the Parameter Problem it would send
+through the mesh would come from an address no router forwards, as
+[protocol deviations](design/protocol-deviations.md#icmp-answers) gives. A
+segment carrying a packet to a group or the limited broadcast gets none. That
 answer comes from the SID the segment was addressed to when it arrived at this
 node, as
 [RFC 4443 section 2.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.2)
@@ -379,10 +386,10 @@ discovery through such a waypoint fails, as
 [protocol deviations](design/protocol-deviations.md#icmp-answers) describes.
 
 These are dropped without an answer, but a segment carrying, from a source no
-router forwards, an IPv6 packet no ICMP error may answer or to a multicast
-group, or an IPv4 packet whose header fails its checks or that no ICMP error may
-answer, gets Packet Too Big about itself as above, unless it is an IPv4 packet
-without DF whose header checksum fails:
+router forwards, an IPv6 packet no ICMP error may answer, or an IPv4 packet
+whose header fails its checks or that no ICMP error may answer, gets Packet Too
+Big about itself as above, unless the packet goes to a multicast group or to
+`255.255.255.255` or is an IPv4 packet without DF whose header checksum fails:
 
 - an IPv6 packet no ICMP error may answer: an ICMPv6 error or Redirect behind up
   to 8 hop-by-hop, routing, destination options, authentication and first
@@ -390,15 +397,17 @@ without DF whose header checksum fails:
   the unspecified address or from a multicast address
 - an IPv6 packet to a multicast group, which RFC 4443 lets no error answer but
   Packet Too Big and the Parameter Problem for an unrecognized option, and which
-  ranet3 answers with no Packet Too Big either, as
+  ranet3 answers with no Packet Too Big either, about the packet or about its
+  segment, whatever its source, as
   [the deviations](design/protocol-deviations.md#icmp-answers) list
 - an IPv4 packet whose header fails the checks of RFC 1812 section 5.2.2, a bad
   checksum among them, but at a waypoint one whose version or lengths do not
   describe a whole packet, whose segment gets Packet Too Big as above
 - an IPv4 packet with DF, or without DF and with options that do not parse, that
   no ICMP error may answer: an ICMP error, a fragment other than the first, a
-  packet to a multicast group or to `255.255.255.255`, or a packet from
-  `0.0.0.0/8`, a loopback address, a multicast address or `240.0.0.0/4`
+  packet to a multicast group or to `255.255.255.255`, whose segment gets no
+  Packet Too Big either, or a packet from `0.0.0.0/8`, a loopback address, a
+  multicast address or `240.0.0.0/4`
 - at the headend, an IPv4 packet without DF read off the tun that cannot be cut,
   for the reasons above, as [path MTU](path-mtu.md#packets-that-do-not-fit)
   gives
@@ -415,10 +424,11 @@ next header or to a fragment past offset 0, one that ends before an extension
 header's next header and length octets or a fragment header's offset, one with
 an extension header running past the packet's end that names no ICMPv6 header
 next, and one with 9 extension headers or more in front of its upper-layer
-header. An ICMPv6 error behind 9 extension headers or more is answered too, but
-for the code 8 refusal [local segments](#local-segments) describe, a departure
-from RFC 4443 that [the deviations](design/protocol-deviations.md#icmp-answers)
-give the reason for.
+header. An ICMPv6 error or a Redirect behind 9 extension headers or more can
+draw an answer too, but for the code 8 refusal [local segments](#local-segments)
+describe, a departure from RFC 4443 that
+[the deviations](design/protocol-deviations.md#icmp-answers) give the reason
+for.
 
 [Path MTU](path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limits. The
 Time Exceeded, Parameter Problem and Destination Unreachable a refused segment

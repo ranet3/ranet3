@@ -892,10 +892,10 @@ read's own: it drops a read from a source this node does not own toward every
 destination and counts it `unowned_source` on the `Transit` line and in
 `ranet3_transit_packets_total`, as [metrics](metrics.md#transit-counters) lists.
 A multicast destination never reaches the check, since the read drops it first,
-and a read the [link-scope rule](routing.md#transit) drops or answers skips it.
-No reply passes it, since the read cannot tell one from a new flow, as
-[the limits](design/limits.md#transit) say of the errors it drops. The drop
-applies to the packet an IPv6 read carries as well.
+and a read [the rule on addresses no router forwards](routing.md#transit) drops
+or answers skips it. No reply passes it, since the read cannot tell one from a
+new flow, as [the limits](design/limits.md#transit) say of the errors it drops.
+The drop applies to the packet an IPv6 read carries as well.
 
 There the overlay still bounds what the process does itself. Every local segment
 loads and acts only on an outer source in the overlay's IPv6 prefixes, and the

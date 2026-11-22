@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-21
+updated: 2026-11-22
 order: 50
 ---
 
@@ -773,14 +773,15 @@ which reassembles or parses it first:
     counted as `leaf error elsewhere`, so a leaf cannot end the connection of a
     leaf behind another session. Each address is judged by the session the mesh
     sends to it by, which for an address a steer entry covers is its first
-    segment's. An error from a node the mesh reaches by another first hop than
-    the leaf is dropped too. Over IPv4, the errors a router raises about an open
-    connection, net or host unreachable and time exceeded, are soft errors on
-    which TCP does not abort it (RFC 1122 section 4.2.3.9). The hard ones,
-    protocol and port unreachable, pass from the leaf's own address or from a
-    router behind the leaf's session. A filtering router's own port unreachable
-    that the mesh reaches by another first hop is dropped like any error from
-    another session.
+    segment's, and none for an address the tun holds where either address of the
+    pair is one [no router forwards](routing.md#transit). An error from a node
+    the mesh reaches by another first hop than the leaf is dropped too. Over
+    IPv4, the errors a router raises about an open connection, net or host
+    unreachable and time exceeded, are soft errors on which TCP does not abort
+    it (RFC 1122 section 4.2.3.9). The hard ones, protocol and port unreachable,
+    pass from the leaf's own address or from a router behind the leaf's session.
+    A filtering router's own port unreachable that the mesh reaches by another
+    first hop is dropped like any error from another session.
   - Leaves behind one session are not told apart: they share that session's
     trust, as hosts on one link do, and the error's source is not held to the
     quoted destination, since a router on the leaf's side raises errors from its

@@ -184,8 +184,13 @@ packet's family, the address
 [RFC 1812 section 2.2.7](https://www.rfc-editor.org/rfc/rfc1812.html#section-2.2.7)
 names a router by. Where the node holds none, an IPv6 answer comes from the SID
 the segment reached and an IPv4 answer from the address the carried packet was
-going to. A Parameter Problem for options that cannot be read comes from the
-same address as a fragmentation needed would. Where a route of this node's own
+going to, but where that address is one no router forwards and the answer would
+go through the mesh to a sender a peer reaches. There the segment is answered
+about its own size in place of either error, a fragmentation needed or a
+Parameter Problem for options that cannot be read, as
+[protocol deviations](design/protocol-deviations.md#icmp-answers) gives. A
+Parameter Problem for options that cannot be read comes from the same address as
+a fragmentation needed would, where it is sent. Where a route of this node's own
 that counts as no default covers the carried packet's source, the answer goes
 into the tun instead, from the address that packet was going to, in both
 families and whatever router-id the node holds, as a tun read's does. The
@@ -207,10 +212,10 @@ prefix and does not
 shorter than /8 or /16 that the overlay does not cover, such as `fd00::/8`
 outside it, and a source-specific entry. An address no announced prefix covers
 is not a router-id, since the mesh does not route it back to the node and a
-sender's strict check of reverse paths would drop an answer from it. Nor is a
-loopback or link-local address, or one no answer may come from: over IPv4 one in
-`0.0.0.0/8` or `240.0.0.0/4`, and over IPv6 an IPv4 address mapped into it. A
-network's base address is not one either. Over IPv4 it names no host
+sender's strict check of reverse paths would drop an answer from it. Nor is an
+address [transit](routing.md#transit) lists as a source no router forwards,
+which no answer on a session may come from. A network's base address is not one
+either. Over IPv4 it names no host
 ([RFC 1812 section 4.2.2.11](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.2.2.11)),
 and over IPv6 it is the Subnet-Router anycast address
 ([RFC 4291 section 2.6.1](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.6.1)).

@@ -499,20 +499,23 @@ packet's first fragment carries them, the hop limit or TTL and the length, and
 how many fragments a forward cut the packet into. An answer names its ICMP error
 and what became of it: `sent`, `withheld` by the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
-the node holds no address of the family to send it from, `not_answerable` for a
-packet no ICMP error may answer, or `unsent` for one due and not sent, to a
-source the mesh routes it no way back to or through a session with no room for
-it. Each record carries the time on the daemon's clock at which the node read
-the packet for it, or for a `budget` drop at which the peer's budget refused the
-packet, which `--json` and `--pcap` show and its line leaves out.
+the node holds no address of the family it may send it from, `not_answerable`
+for a packet no ICMP error may answer, `declined` for an answer the RFCs ask for
+that this node does not send by its own policy, `End`'s Packet Too Big about a
+segment carrying a packet to a group or the limited broadcast, or `unsent` for
+one due and not sent, to a source the mesh routes it no way back to or through a
+session with no room for it. Each record carries the time on the daemon's clock
+at which the node read the packet for it, or for a `budget` drop at which the
+peer's budget refused the packet, which `--json` and `--pcap` show and its line
+leaves out.
 
 A packet a segment of this node refused, or one End rewrote that went no
 further, is an `answer` record where its refusal is due an ICMP error, and a
 `drop` record where it is due none. The answer carries the reason the drop would
 carry, `invalid` for one about the options of the packet a segment carries, and
-names its error and what became of it as above, `withheld` or `not_answerable`
-where none was built. [Metrics](../metrics.md#series) says what the counters
-count for such a packet and its answer.
+names its error and what became of it as above, `withheld`, `not_answerable`,
+`declined` or `unsent` where none was built. [Metrics](../metrics.md#series)
+says what the counters count for such a packet and its answer.
 
 Every field is read from the packet as it arrived, before the node took its hop
 limit down, clamped its MSS or handed it on, except in a `drop` record of reason
@@ -1178,11 +1181,11 @@ its warning in the log, for the packet that dropped first in that time. `reason`
 is the `reason` label of `ranet3_transit_packets_total`, which counts every
 drop, as [metrics](../metrics.md#transit-counters) describes. A read off the tun
 records neither when it is dropped as `multicast`, `no_route` or `held`, when
-the [link-scope rule](../routing.md#transit) drops or answers it and it is
-counted as `martian`, or when a steering policy could not encapsulate it and it
-is dropped as `too_big`. The counter alone counts them. `src` and `dst` read
-`invalid IP` for a frame that holds no whole IP packet, and for a read off the
-tun that is not exactly one IP packet.
+[the rule on addresses no router forwards](../routing.md#transit) answers it
+with code 2 and it is counted as `martian`, or when a steering policy could not
+encapsulate it and it is dropped as `too_big`. The counter alone counts them.
+`src` and `dst` read `invalid IP` for a frame that holds no whole IP packet, and
+for a read off the tun that is not exactly one IP packet.
 
 A `netstack.icmp.withheld` is recorded when one of the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit) withholds an answer

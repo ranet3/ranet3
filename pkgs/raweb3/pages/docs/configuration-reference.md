@@ -420,9 +420,10 @@ configure.
 
 Segment routing (RFC 8986), done in this process on every platform.
 [Segment routing](segment-routing.md) describes how it behaves. Every SID,
-segment and source is a unicast IPv6 address, never IPv4-mapped or link-local,
-since RFC 4291 section 2.5.6 has no router forward a link-local one. A steering
-selector may be IPv4.
+segment and source is a unicast IPv6 address, never an address
+[transit](routing.md#transit) lists as one no router forwards. A configuration
+naming such an address fails to start, also where nothing uses the field. A
+steering selector may be IPv4.
 
 | Key      | Value   | Default | Meaning                                                   |
 | -------- | ------- | ------- | --------------------------------------------------------- |
@@ -751,12 +752,11 @@ needs.
   written twice is refused at load, and so is a class that names no `to`, an
   address of the other family, one with a zone, one written as IPv4-mapped IPv6,
   or one no reply can be sent to, global unicast and private addresses being the
-  ones it can. A class that translates is also refused when its `from` lies
-  inside `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`, `224.0.0.0/3`,
-  `fe80::/10` or `ff00::/8`, or holds no address but `::` and `::1`, since no
-  router forwards a packet from those sources. Classes that leave every other
-  source of a family under `none` are refused, however they split it, since they
-  would relay every mesh source onto the upstream untranslated.
+  ones it can. A class that translates is also refused when its `from` holds
+  only sources [transit](routing.md#transit) lists as ones no router forwards, a
+  packet from which never reaches an exit. Classes that leave every other source
+  of a family under `none` are refused, however they split it, since they would
+  relay every mesh source onto the upstream untranslated.
 - For traffic entering the mesh, under `return`, the source is the address of
   the family's class from `0.0.0.0/0` or `::/0` where that class names one, and
   this node's mesh address where it is `auto`, `none` or absent. The daemon
@@ -926,10 +926,10 @@ programs' rules do beside them.
   source and every inner source the host sends, its overlay addresses and any
   LAN behind it, as [`cap.segment.local`](#capsegmentlocal) gives.
 - `via` is refused with more than 16 segments, a segment written twice, an
-  address that cannot be a SID, such as an IPv4, IPv4-mapped, link-local or
-  multicast one, a first or last segment of this node's own `cap.segment.local`,
-  an `overlay` holding no IPv6 prefix, and with no outer source or one outside
-  the overlay, as
+  address that cannot be a SID, an IPv4 one or one [transit](routing.md#transit)
+  lists as one no router forwards, a first or last segment of this node's own
+  `cap.segment.local`, an `overlay` holding no IPv6 prefix, and with no outer
+  source or one outside the overlay, as
   `config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside overlay gives the path an outer source: write cap.segment source`.
   The loader cannot check that the last segment is an `End.DT46` and the others
   `End`, since it knows no other node's SIDs, as
