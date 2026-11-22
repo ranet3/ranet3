@@ -135,7 +135,7 @@ func counted(records []TraceRecord) (counters TransitCounters, budget int) {
 // the records come in the order the packets did, one for each, the decision and reason each kind meets, and a budget drop after each forward its peer's budget refused
 // and each counter of TransitCounters and the refusing peer's Dropped moved exactly as the records say
 func TestTraceRecordsTheDecisionsCountersOnePerPacket(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		n, feed := tracedNode(ht)
 		transit := hegel.Draw(ht, hegel.Booleans())
 		n.m.SetTransit(transit)
@@ -182,7 +182,7 @@ func TestTraceRecordsTheDecisionsCountersOnePerPacket(t *testing.T) {
 // each counter of TransitCounters moved as the records say, a forward under none, since a read classify queues or cuts for its peer is no transit
 // the forwards cut into no fragment are the packets classify queued for their peer, and TooBigAnswered counts the answers about a size the records say were sent
 func TestTraceRecordsTheChecksCountersOnePerRead(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m, feed := tracedLeaf(ht)
 		kinds, packets := drawKinds(ht, classifyKinds)
 		went := classifiedTo(m, packets...)

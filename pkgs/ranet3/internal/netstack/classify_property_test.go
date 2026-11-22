@@ -96,7 +96,7 @@ func conservingLeaf(tb testing.TB) *Mesh {
 // and the reads classify queued or cut for their peer, which the peer's own counters take from there
 // a read cut into fragments counting once, by its first fragment
 func TestClassifyCountsEveryReadOnce(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m := conservingLeaf(ht)
 		var packets [][]byte
 		want := map[string]uint64{}

@@ -64,7 +64,7 @@ var explainSteers = []srv6.Steer{
 
 // explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table, settings, ownedOnly among them, the addresses its tun holds and steering hegel draws
 // from is the peer of the session its packets arrive through, which the table may route to as to any other
-func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
+func explainMesh(ht *propertyCase) (*Mesh, *Peer, *TraceFeed) {
 	m, _ := startTransitMesh(nil)
 	ht.Cleanup(m.Close)
 	m.SetExit(&recordingExit{})
@@ -165,13 +165,13 @@ func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 }
 
 // explainOwnRead draws a packet from this node's own address to the internet, a read the path takes where it is drawn and the internet's covers are gone
-func explainOwnRead(ht *hegel.T) []byte {
+func explainOwnRead(ht *propertyCase) []byte {
 	family := []int{4, 6}[hegel.Draw(ht, pbt.Spanning(0, 1))]
 	return udpPacket(transitOwn[family], transitNowhere[family], 100, false)
 }
 
 // explainAddress draws an address of family, either end of ends outright or any of explainAddresses admits takes
-func explainAddress(ht *hegel.T, family int, ends [2]map[int]netip.Addr, admits func(netip.Addr) bool) netip.Addr {
+func explainAddress(ht *propertyCase, family int, ends [2]map[int]netip.Addr, admits func(netip.Addr) bool) netip.Addr {
 	switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
 	case 0:
 		return ends[0][family]
@@ -191,7 +191,7 @@ func explainAddress(ht *hegel.T, family int, ends [2]map[int]netip.Addr, admits 
 // of a size at or beside one of limits, well under them or well past the first
 // and, where its family carries them, IPv4 options, a header failing its checksum, an IPv6 extension header or a packet it carries
 // it is cut short one time in sixteen
-func explainPacket(ht *hegel.T, limits []int, sources, destinations [2]map[int]netip.Addr, admits func(netip.Addr) bool) []byte {
+func explainPacket(ht *propertyCase, limits []int, sources, destinations [2]map[int]netip.Addr, admits func(netip.Addr) bool) []byte {
 	family := []int{4, 6}[hegel.Draw(ht, pbt.Spanning(0, 1))]
 	source := explainAddress(ht, family, sources, func(netip.Addr) bool { return true })
 	destination := explainAddress(ht, family, destinations, admits)
@@ -256,7 +256,7 @@ func walked(e Explanation) named {
 }
 
 // decisionRecord is the one record of a packet's decision among records, the budget's refusal of a forward left out
-func decisionRecord(ht *hegel.T, records []TraceRecord) TraceRecord {
+func decisionRecord(ht *propertyCase, records []TraceRecord) TraceRecord {
 	var decided []TraceRecord
 	for _, r := range records {
 		if r.Reason != "budget" {
@@ -272,7 +272,7 @@ func decisionRecord(ht *hegel.T, records []TraceRecord) TraceRecord {
 // over drawn tables, settings and steering, and drawn packets a session delivers that no segment of this node takes
 // Explain names the decision, reason, answer and next peer of the record the tracer takes when decide runs the same packet
 func TestExplainNamesWhatTheDecisionRecords(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m, from, feed := explainMesh(ht)
 		// a sender the mesh routes back and a stranger, the internet and an overlay address no node announces, drawn outright
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
@@ -321,7 +321,7 @@ func TestExplainSegmentNamesWhatTheSegmentRecords(t *testing.T) {
 // over the same, and drawn packets read off the tun
 // ExplainRead names the decision, reason, answer, segment and next peer of the record the tracer takes when classify reads the same packet
 func TestExplainReadNamesWhatTheChecksRecord(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m, from, feed := explainMesh(ht)
 		// a read from this node's own address to the internet first, then this node's own address and a LAN host, the internet and an overlay host, drawn outright,
 		// of sizes beside the session's MTU and beside it less the steering's overhead

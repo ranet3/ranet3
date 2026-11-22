@@ -79,7 +79,7 @@ func tagged(raw []byte, frames int) (int, bool) {
 // and an answer to the inner source only about an egress segment's packet of a family not ready, each answered at most once and, up to the source's bucket, at least once
 // and each counter counts exactly the frames of the kinds it names
 func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		// the table first, by family: the counted entry's shape and who advertises it and the subnet
 		shape := map[int]int{}
 		countedByEgress, subnetByEgress := map[int]bool{}, map[int]bool{}
@@ -343,7 +343,7 @@ var (
 // an inner packet reaches the tun exactly where its destination lies outside the overlay and its pair does not resolve, ignoring the entries counting as a default, to another node, a hold or this node, as egressRefused says
 // in batch order in one write, and every one refused is counted refused and dropped
 func TestEgressSegmentEgressesNothingTheMeshRoutes(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m, meshTUN := egressMesh(ht)
 		overlay := pbt.Subset(ht, refusalOverlay, 0, len(refusalOverlay))
 		m.SetOverlay(overlay)

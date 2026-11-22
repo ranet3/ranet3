@@ -26,7 +26,7 @@ const readMTU = 9000
 // the segment counts either side of where the header passes the spacing, one and two, are drawn outright
 func TestSteeringLeavesTheReadAsItWasRead(t *testing.T) {
 	unclaimed := map[int]netip.Addr{4: segAddr("10.1.0.2"), 6: segAddr("3fff:a::2")}
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		segments := hegel.Draw(ht, hegel.OneOf(hegel.SampledFrom([]int{1, 2}), pbt.Spanning(1, srv6.MaxSegments)))
 		steering := steerBothFrom(ht, segments)
 		m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}

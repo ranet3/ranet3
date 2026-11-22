@@ -46,7 +46,7 @@ func transportVerifies(raw []byte) bool {
 // every other packet the reads put into the tun is an answer, address unreachable from the destination of a read the tun does not hold, in the order read, and at least as many as the source's bucket holds
 // and delivered and looped together move by exactly the reads from this node's own address the table answers as this node's own
 func TestTunReadGoesBackIntoTheTunExactlyToAnAddressItHolds(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m, dev := unroutedMesh(ht, nil)
 		dev.writes = make(chan recordedWrite, 16)
 		m.ownedOnly = hegel.Draw(ht, hegel.Booleans())

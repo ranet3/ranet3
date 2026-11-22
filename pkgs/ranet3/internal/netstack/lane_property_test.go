@@ -54,14 +54,14 @@ var sessionProbes = map[int][]netip.Addr{
 }
 
 // sessionPath draws a path of one or two segments and the outer source it is sent from
-func sessionPath(ht *hegel.T) ([]netip.Addr, netip.Addr) {
+func sessionPath(ht *propertyCase) ([]netip.Addr, netip.Addr) {
 	return pbt.Subset(ht, sessionSegments, 1, 2), sessionOuter[hegel.Draw(ht, pbt.Spanning(0, len(sessionOuter)-1))]
 }
 
 // sessionMesh is a mesh with its outbound pipeline running and three recording peers, each holding its probes
 // with this node's own address of each family its own, and drawn routes, steer entries, cap.exit via's path and whether the entries are stopped
 // an entry toward a segment may carry a source prefix covering a policy's outer source or a lane packet's source, which then resolve the segment apart
-func sessionMesh(ht *hegel.T) (*Mesh, []*recordingPeer) {
+func sessionMesh(ht *propertyCase) (*Mesh, []*recordingPeer) {
 	m, _ := startTransitMesh(nil)
 	ht.Cleanup(m.Close)
 	m.ownedOnly = hegel.Draw(ht, hegel.Booleans())
@@ -123,7 +123,7 @@ func sessionMesh(ht *hegel.T) (*Mesh, []*recordingPeer) {
 }
 
 // sessionSent is how many packets each recorder's peer transmitted, once each gave back its budgets
-func sessionSent(ht *hegel.T, recorders []*recordingPeer) []int {
+func sessionSent(ht *propertyCase, recorders []*recordingPeer) []int {
 	sent := make([]int, len(recorders))
 	for i, recorder := range recorders {
 		sent[i] = len(recorder.packets(ht))
@@ -154,7 +154,7 @@ func transitTotal(m *Mesh) uint64 {
 // and one classify routes to no peer has SameSession name none: the session check and classify keep one steered resolution
 // a lane packet edgeCheck drops is left out, since sessionToward skips edgeCheck
 func TestLaneSendsByTheSessionSameSessionNames(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		m, recorders := sessionMesh(ht)
 		lane := m.OpenLane()
 		defer lane.Close()

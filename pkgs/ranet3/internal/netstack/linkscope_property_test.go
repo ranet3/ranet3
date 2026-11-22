@@ -101,7 +101,7 @@ var scopeClasses = []scopeClass{
 // a mapped source or destination, a link-local destination of either family, and the unspecified source to a destination the table decides, is a martian, and nothing is answered
 // every batch also holds both mapped endpoints, their native neighbors and a genuine source of each family, and Explain must name each modeled fate
 func TestDecisionWritesNoGroupToTheTun(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		n := newTransitNode(ht, DefaultMTU)
 		n.m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), n.outPeer)
 		n.m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), n.outPeer)

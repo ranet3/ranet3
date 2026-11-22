@@ -252,7 +252,7 @@ func (l *pairLeaf) readApart(packets [][]byte, changes []pairWrite) readState {
 // a write of pairWrites to a target of pairTargets, at any write to the host, under steering with cap.exit via's path or without it, with the exit's defaults or without them
 // and reads of one run of one pair as long as a read holds
 func TestClassifyReadEqualsEachPacketLookedUp(t *testing.T) {
-	pbt.Check(t, func(ht *hegel.T) {
+	checkCases(t, func(ht *propertyCase) {
 		path, exitless := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1, hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
 		whole, apart := newPairLeaf(ht, pairReadPackets, path, exitless), newPairLeaf(ht, 1, path, exitless)
 		for read := range hegel.Draw(ht, pbt.Spanning(1, 3)) {
