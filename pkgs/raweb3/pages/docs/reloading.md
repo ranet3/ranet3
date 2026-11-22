@@ -12,9 +12,9 @@ order: 70
 of restarting. A reload applies the trust document, the peers dialed,
 `auth.aliases`, the prefixes originated, `cap.babel`, `cap.segment`, the
 transform lists of `cap.crypto`, `link.listen`, `link.mtu` and most of
-`cap.table`. A node joining or leaving the mesh then starts or stops only the
-dialers toward that node, and every other session this node carries stays up.
-This matters because the trust document is rewritten every time any node joins.
+`cap.table`. A node joining or leaving the mesh then starts or stops the dialers
+toward that node, and every other session this node carries stays up. This
+matters because the trust document is rewritten every time any node joins.
 
 ## Asking for a reload
 
@@ -434,10 +434,15 @@ A reload is refused when the new trust document:
 
 A reload logs a peer the new trust document cannot support. The warning reads
 `reload: <reason>, each dialer toward it gives up at the next pass that finds it unsupported`.
-An attempt a dialer began before the reload may still be sent and may still be
-answered. A session such an answer makes over a removed endpoint stands, as any
-session over a removed endpoint does. A session such an answer makes with a node
-the document no longer names is refused.
+A dialer asks before each dial whether the document supports its pair, and gives
+up when it does not. Each later reload of a node that is not down starts again
+each dialer that gave up whose pair `dial.to` or `dial.all` still names, and
+that dialer dials where the new document supports its pair and gives up again at
+its first pass where it does not. An attempt a dialer began before the reload
+may still be sent and may still be answered. A session such an answer makes over
+a removed endpoint stands, as any session over a removed endpoint does. A
+session such an answer makes with a node the document no longer names is
+refused.
 [Sessions the trust document no longer admits](#sessions-the-trust-document-no-longer-admits)
 describes both. At startup, some of the same peers refuse the start: a `dial.to`
 node the document does not name, a pinned endpoint it does not list, and a
