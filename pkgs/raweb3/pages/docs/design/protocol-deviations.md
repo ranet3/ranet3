@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-20
+updated: 2026-11-21
 order: 20
 ---
 
@@ -3204,9 +3204,9 @@ itself have an invalid destination. This reason is specific to the mapped
 source, not every address no router forwards. An egress segment drops with no
 answer every inner packet whose source or destination no router forwards, and
 the decision treats some of them otherwise. [Transit](../routing.md#transit)
-gives the order of its source and destination checks, including link-local
-delivery and the drops counted `martian` and `session_multicast`. It also gives
-the native IPv6 link-local source's code 2 answer on the session it came from.
+gives the order of its source and destination checks, including the drops
+counted `martian` and `session_multicast`. It also gives the native IPv6
+link-local source's code 2 answer on the session it came from.
 [The antispoof filter](../antispoof.md#watching-it) counts each drop,
 [segment routing](../segment-routing.md#watching-it) counts each refusal, and
 `ranet3 status` counts an exit's 2 as `unrouted source` and `not ready`, and a
