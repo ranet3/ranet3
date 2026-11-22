@@ -420,7 +420,8 @@ configure.
 
 Segment routing (RFC 8986), done in this process on every platform.
 [Segment routing](segment-routing.md) describes how it behaves. Every SID,
-segment and source is a unicast IPv6 address, never IPv4-mapped. A steering
+segment and source is a unicast IPv6 address, never IPv4-mapped or link-local,
+since RFC 4291 section 2.5.6 has no router forward a link-local one. A steering
 selector may be IPv4.
 
 | Key      | Value   | Default | Meaning                                                   |
@@ -925,10 +926,10 @@ programs' rules do beside them.
   source and every inner source the host sends, its overlay addresses and any
   LAN behind it, as [`cap.segment.local`](#capsegmentlocal) gives.
 - `via` is refused with more than 16 segments, a segment written twice, an
-  address that cannot be a SID, such as an IPv4, IPv4-mapped or multicast one, a
-  first or last segment of this node's own `cap.segment.local`, an `overlay`
-  holding no IPv6 prefix, and with no outer source or one outside the overlay,
-  as
+  address that cannot be a SID, such as an IPv4, IPv4-mapped, link-local or
+  multicast one, a first or last segment of this node's own `cap.segment.local`,
+  an `overlay` holding no IPv6 prefix, and with no outer source or one outside
+  the overlay, as
   `config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside overlay gives the path an outer source: write cap.segment source`.
   The loader cannot check that the last segment is an `End.DT46` and the others
   `End`, since it knows no other node's SIDs, as

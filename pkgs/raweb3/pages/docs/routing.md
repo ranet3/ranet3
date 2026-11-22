@@ -420,11 +420,16 @@ draws no answer of any kind into the tun, since such an answer would come from
 sets code 2 where "the packet cannot be delivered to the destination without
 leaving the scope of the source address". For a host's packet that happens at
 this node. No packet read from the tun or arriving on a session whose own source
-or destination is of link scope is forwarded onto a session. The read stops a
-host's, the decision drops a session's, and `End` drops a next segment of link
-scope, each counted `martian`. A packet of link scope carried inside another is
-judged by the outer packet's addresses at the read, and goes on inside it where
-the unowned-source check passes its own source, as below.
+or destination is an IPv6 link-local address is forwarded onto a session as it
+was read: a read to an address the tun holds that a steer claims leaves inside
+the steer's outer packet, whatever its own addresses.
+[`cap.segment`](configuration-reference.md#capsegment) and
+[`cap.exit`'s `via`](configuration-reference.md#capexit) refuse a link-local
+address as a configured segment, a tunnel source or a local SID. The read stops
+a host's, the decision drops a session's, and `End` drops an IPv6 link-local
+next segment, each counted `martian`. A packet of link scope carried inside
+another is judged by the outer packet's addresses at the read, and goes on
+inside it where the unowned-source check passes its own source, as below.
 
 A read off the tun is also checked at the mesh's edge before it enters, since a
 node that forwards for others can put a packet into the tun with a source or a
