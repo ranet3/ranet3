@@ -396,9 +396,21 @@ establishment with a fresh jitter, so it can fall up to the jitter earlier or
 later than before and never later than the margin before its lifetime, and while
 a failed rekey's retry delay runs it waits for the end of that delay. The
 restored SA is checked against the lists and rekeyed to them where they leave
-out its transforms. A Delete the node does not take ends nothing: the wait ends
-at its usual bounds, and the node then sends on an SA the peer deleted, so what
-it sends is lost until the next rekey of that Child SA or the end of the IKE SA.
+out its transforms. A rekey of the new SA that the node began before the restore
+ends without sending its request and without a retry delay where the restore
+comes between its read of the SA it rekeys and its check before the request, as
+does a rekey whose SA was replaced in that span by a Child SA the peer made, by
+a creation or by a rekey the node had begun to answer before its own rekey
+began, and the node then times its next rekey from that SA. Where its check
+comes first it fails, since the old SA still awaits its retirement, and the node
+retries after the retry delay until the restore. A Delete of the current SA in
+that span does not end the rekey. A message whose Delete payloads name both the
+old SA and the new SA, in one payload or in two, closes both, lets the old SA's
+inbound half drain and restores nothing. A Delete of the IKE SA in the same
+message, wherever it stands, is handled alone and leaves both Child SA Deletes
+unhandled. A Delete the node does not take ends nothing: the wait ends at its
+usual bounds, and the node then sends on an SA the peer deleted, so what it
+sends is lost until the next rekey of that Child SA or the end of the IKE SA.
 
 A Delete of the new SA after outbound traffic moved closes it as a Delete of the
 current Child SA does and restores nothing. The node then has no outbound SA
