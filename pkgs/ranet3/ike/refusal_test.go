@@ -310,7 +310,7 @@ func TestRefusedChildSADeleteLeavesItsPairHalfClosed(t *testing.T) {
 			if retiring := s.retiringChild(); retiring.LocalSPI != 0 {
 				t.Errorf("Child SA %08x is still awaiting retirement, want its SAs down", retiring.LocalSPI)
 			}
-			if err := s.canReplaceChild(spi); err == nil {
+			if err := s.canReplaceChild(spi, s.currentChildGeneration()); err == nil {
 				t.Errorf("SPI %08x, which the refused Delete named, can be drawn for a later Child SA", spi)
 			}
 			told := lines.said(slog.LevelWarn, "ike the peer refused to delete a Child SA, whose pair stays half closed", "spi")

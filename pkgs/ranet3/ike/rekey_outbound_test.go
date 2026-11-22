@@ -235,6 +235,8 @@ type outboundCase struct {
 	// configure and seed reach dialRefusing's
 	configure func(*PeerConfig)
 	seed      func(asker, answerer *Session)
+	// watch sees the header of each IKE message the relay takes, and whether the asking end sent it
+	watch func(fromAsker bool, h *Header)
 }
 
 // outboundPair is two sessions with a stand-in dataplane each and the ESP flows between them
@@ -265,6 +267,9 @@ func dialOutbound(t *testing.T, c outboundCase) *outboundPair {
 			fromAsker := fromInitiator == c.askerIsInitiator
 			mu.Lock()
 			defer mu.Unlock()
+			if c.watch != nil {
+				c.watch(fromAsker, h)
+			}
 			switch {
 			case fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse():
 				rekeyID, rekeyed = h.MessageID, true
@@ -687,6 +692,106 @@ func TestRekeyBegunBeforeARestoreRetriesOnTheRestoredSA(t *testing.T) {
 		synctest.Wait()
 		if made, asked := p.answerer.Child(), p.asker.Child(); made.LocalSPI == old.LocalSPI || made.RemoteSPI != asked.LocalSPI || made.LocalSPI != asked.RemoteSPI {
 			t.Errorf("after the retry delay the answering end holds %08x/%08x and the asking end %08x/%08x, want a new SA both hold", made.LocalSPI, made.RemoteSPI, asked.LocalSPI, asked.RemoteSPI)
+		}
+	})(t)
+}
+
+// distantRetry is a retry delay past the end of the test of a rekey that read a canceled replacement: no retry of either end rekeys the restored SA in it
+const distantRetry = time.Hour
+
+// rekeyStartWait bounds that test's wait for the schedule's rekey of the restored SA, which starts in the instant the rekey that read the replacement ends
+const rekeyStartWait = 100 * time.Millisecond
+
+// the answering end's proactive rekey reads the SA the peer's rekey made, still held, as the SA it rekeys, and is held after that read while the peer's Delete of the held SA, lost once, makes the replaced SA current again past its due time
+// the schedule's rekey at that restore finds the proactive one running and starts nothing, and the proactive one then ends before it sends its request, which would name an SA the peer deleted
+// the schedule then starts a rekey of the restored SA at once, held at the same point before its request: with the retries of both ends an hour off, nothing else rekeys that SA before its lifetime closes the IKE SA
+func TestRekeyOfACanceledReplacementEndsBeforeItsRequest(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		lines := recordLines(t)
+		scheduled := func() int {
+			return len(slices.DeleteFunc(lines.said(slog.LevelInfo, "ike scheduled rekey starting", "sa"), func(sa slog.Value) bool { return sa.String() != "Child SA" }))
+		}
+		var dialed time.Time
+		var sent atomic.Int32
+		// a rekey of the answering end that reads the lists while armed is held there, after it read its SA and before it checks that SA, until the test lets it go
+		var armed atomic.Bool
+		held, resume := make(chan struct{}), make(chan struct{})
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay, lostDeletes: 1, refusals: 1,
+			watch: func(fromAsker bool, h *Header) {
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					sent.Add(1)
+				}
+			},
+			seed: func(asker, answerer *Session) {
+				answerer.timing.ChildRekeyInterval, answerer.timing.RekeyMargin, answerer.timing.RekeyJitter = restoredLifetime, restoredMargin, 0
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = distantRetry, distantRetry
+				asker.timing.RekeyRetryInitial, asker.timing.RekeyRetryMax = distantRetry, distantRetry
+				lists := answerer.suites
+				answerer.suites = func() Suites {
+					if answerer.childRekeying.Load() && armed.CompareAndSwap(true, false) {
+						held <- struct{}{}
+						<-resume
+					}
+					return current(lists)
+				}
+				dialed = answerer.childEstablished
+			}})
+		old := p.answerer.Child()
+		p.carry(true, true)
+		time.Sleep(time.Until(dialed.Add(restoredAsk)))
+		refused := make(chan error, 1)
+		go func() { refused <- p.asker.RekeyChild() }()
+		for deadline := time.Now().Add(rekeyAnswered); !p.answererPlane.holding(); time.Sleep(outboundDelay) {
+			if time.Now().After(deadline) {
+				t.Fatal("the answering end holds no replacement")
+			}
+		}
+		synctest.Wait()
+		replacement := p.answerer.Child()
+		armed.Store(true)
+		asked := make(chan error, 1)
+		go func() { asked <- p.answerer.RekeyChildProactively() }()
+		<-held
+		for deadline := time.Now().Add(rekeyAnswered); p.answerer.Child().LocalSPI != old.LocalSPI; time.Sleep(outboundDelay) {
+			if time.Now().After(deadline) {
+				t.Fatal("the asking end's Delete did not make the replaced SA current again")
+			}
+		}
+		if err := <-refused; !errors.Is(err, errRefusedInstall) {
+			t.Fatalf("the refused Child SA rekey ended with %v, want the dataplane's refusal", err)
+		}
+		synctest.Wait()
+		if got, rekeys := scheduled(), sent.Load(); got != 1 || rekeys != 0 {
+			t.Fatalf("at the restore the answering end's schedule started %d rekeys and the answering end sent %d requests, want 1 that found the proactive rekey running and none", got, rekeys)
+		}
+		armed.Store(true)
+		resume <- struct{}{}
+		if err := <-asked; !errors.Is(err, errChildReplaced) {
+			t.Errorf("the rekey that read the replacement %08x ended with %v, want errChildReplaced", replacement.LocalSPI, err)
+		}
+		// a rekey that starts after it is held before its request: the count is that rekey's own
+		if got := sent.Load(); got != 0 {
+			t.Errorf("the rekey that read the replacement %08x put %d requests on the wire, want none", replacement.LocalSPI, got)
+		}
+		select {
+		case <-held:
+			if got := scheduled(); got != 2 {
+				t.Errorf("the answering end's schedule had started %d rekeys when the next rekey was held, want 2", got)
+			}
+			resume <- struct{}{}
+		case <-time.After(rekeyStartWait):
+			t.Errorf("once the rekey that read the replacement %08x ended, the answering end started no rekey of the restored SA, with %d requests on the wire and %d scheduled starts, want one at once", replacement.LocalSPI, sent.Load(), scheduled())
+		}
+		time.Sleep(time.Until(dialed.Add(restoredLifetime + restoredRead)))
+		synctest.Wait()
+		if made, peer := p.answerer.Child(), p.asker.Child(); made.LocalSPI == old.LocalSPI || made.RemoteSPI != peer.LocalSPI || made.LocalSPI != peer.RemoteSPI {
+			t.Errorf("past the restored SA's lifetime the answering end holds %08x/%08x and the asking end %08x/%08x, want a new SA both hold", made.LocalSPI, made.RemoteSPI, peer.LocalSPI, peer.RemoteSPI)
+		}
+		if p.answerer.closing.Load() {
+			t.Error("the answering end is closing the IKE SA")
+		}
+		for _, lost := range p.losses() {
+			t.Error(lost)
 		}
 	})(t)
 }

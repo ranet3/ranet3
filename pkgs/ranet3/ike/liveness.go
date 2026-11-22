@@ -402,6 +402,10 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		if ending != nil {
 			return time.Time{}, nil
 		}
+		// an exchange whose SA was replaced before its request went out failed at nothing, and a scheduled rekey that found it running started none: the schedule goes back on the rekey of the SA now current
+		if errors.Is(err, errChildReplaced) {
+			return time.Time{}, s.rearm(schedule)
+		}
 		if err != nil {
 			schedule.failures, schedule.lastErr = schedule.failures+1, err
 			if s.temporary.outlasted(s.currentContext(), s.currentChildGeneration(), err, time.Now()) {

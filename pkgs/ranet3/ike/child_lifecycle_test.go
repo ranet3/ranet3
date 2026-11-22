@@ -30,7 +30,7 @@ func testChildNegotiationUsesRequestIKEKeys(t *testing.T) {
 	old := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}, skD: bytes.Repeat([]byte{1}, 32)}
 	s := &Session{mux: mux, current: old, requests: make(chan *localRequest)}
 	done := make(chan error, 1)
-	go func() { done <- s.negotiateChild(nil) }()
+	go func() { done <- s.negotiateChild(nil, s.currentChildGeneration()) }()
 	req := <-s.requests
 	// A peer IKE rekey can finish before the Child response is processed.
 	s.stateMu.Lock()
@@ -911,7 +911,7 @@ func testEachChildSANegotiationDrawsItsOwnNonce(t *testing.T) {
 	var nonces [][]byte
 	for range 2 {
 		done := make(chan error, 1)
-		go func() { done <- s.negotiateChild(nil) }()
+		go func() { done <- s.negotiateChild(nil, s.currentChildGeneration()) }()
 		request := <-s.requests
 		nonce := findType(request.inner, PayloadNonce)
 		if nonce == nil {

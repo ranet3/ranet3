@@ -50,9 +50,14 @@ func (s *Session) SetChildReplacementHandler(hold func(ChildSA) error, take func
 // canReplaceChild reports why a replacement could not be installed, so a
 // negotiation can refuse before it puts a proposal the peer will act on onto
 // the wire.
-func (s *Session) canReplaceChild(localSPI uint32) error {
+func (s *Session) canReplaceChild(localSPI uint32, generation uint64) error {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
+	// a restore, or a Child SA the peer installed by a creation or by a rekey this end began answering before its own rekey took the slot, moved the generation since the negotiation read its SA, and a rekey would name an SA the peer may have deleted
+	// a peer's rekey that reaches its check after the slot is taken is refused, and a Delete of the current SA moves no generation
+	if s.childGeneration != generation {
+		return errChildReplaced
+	}
 	return s.canReplaceChildLocked(localSPI)
 }
 

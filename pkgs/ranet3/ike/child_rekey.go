@@ -128,7 +128,7 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		return errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
 	}
 	s.emit("ike.rekey.started", slog.String("sa", "child"))
-	// the SA and its generation are read together, so the outcome counts against the SA this exchange rekeys, whatever a restore makes current meanwhile
+	// the SA and its generation are read together: the outcome counts against the SA this exchange rekeys, and the check before its request ends the exchange where a restore or a Child SA the peer created made another SA current since
 	old, rekeyed := s.childWithGeneration()
 	defer func() {
 		s.childRetry.end(childOutcome{rekeyed, err})
@@ -140,12 +140,12 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchange")
 	}
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
-		return s.negotiateChild(nil)
+		return s.negotiateChild(nil, rekeyed)
 	}
 	if old.LocalSPI == 0 || old.RemoteSPI == 0 {
 		return fmt.Errorf("ike: no Child SA to rekey")
 	}
-	err = s.negotiateChild(&old)
+	err = s.negotiateChild(&old, rekeyed)
 	var rejected *rejectedError
 	if !errors.As(err, &rejected) || rejected.notify.Type != N_CHILD_SA_NOT_FOUND {
 		return err
@@ -159,10 +159,12 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 	if err := s.forgetChild(old); err != nil {
 		return fmt.Errorf("ike: forget missing peer Child SA: %w", err)
 	}
-	return s.negotiateChild(nil)
+	return s.negotiateChild(nil, rekeyed)
 }
 
-func (s *Session) negotiateChild(old *ChildSA) error {
+var errChildReplaced = errors.New("ike: the Child SA this exchange set out from was replaced before its request went out")
+
+func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
 	context := s.currentContext()
@@ -199,7 +201,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	}
 	// RFC 7296 section 2.8: "the responder MAY begin sending on an SA as soon as it sends its response to the CREATE_CHILD_SA request"
 	// so an SPI this end could not then install is refused before the request goes out
-	if err := s.canReplaceChild(localSPI); err != nil {
+	if err := s.canReplaceChild(localSPI, generation); err != nil {
 		return err
 	}
 	// and the SPI routes to this session before the answer can, so ESP on it never reaches the hub as unknown, until an exchange that installs no SA with it lets it go
