@@ -6,6 +6,7 @@ package transport
 import (
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"testing"
 
@@ -43,6 +44,10 @@ const (
 // an IPv4 pin holds its interface, which IP_PKTINFO names for the send whatever the metrics, so its path MTU is the pinned link's route's
 func TestPinnedPathMTUIsTheRouteTheSendTakes(t *testing.T) {
 	netnstest.EnterEmpty(t)
+	// a link this namespace makes sends no router solicitation, which Linux sends from queued work once the link's link-local address is ready, so a link's sent count is this test's datagrams alone
+	if err := os.WriteFile("/proc/sys/net/ipv6/conf/default/router_solicitations", []byte("0"), 0); err != nil {
+		t.Fatal(err)
+	}
 	netlink, err := openRouteNetlink()
 	if err != nil {
 		t.Fatal(err)
