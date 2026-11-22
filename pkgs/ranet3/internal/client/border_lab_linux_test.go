@@ -384,12 +384,22 @@ func (lab *borderLab) written(t *testing.T) {
 func (lab *borderLab) itself(t *testing.T) {
 	t.Helper()
 	if err := lab.exit.Do(func() error {
+		// subscribed before the adds, so the insert of a local route an add leaves to the kernel's queued work is read
+		routes, err := subscribeRoutes()
+		if err != nil {
+			return err
+		}
+		defer unix.Close(routes)
 		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
 		defer netlink.Close()
-		return netlink.AddAddresses(lab.node.Mesh.Name, labOwn4, labOwn6)
+		if err := netlink.AddAddresses(lab.node.Mesh.Name, labOwn4, labOwn6); err != nil {
+			return err
+		}
+		// Linux acks an IPv6 address before its queued work inserts the local route, and until then a socket of the address meets the overlay's hold
+		return awaitLocal(routes, labOwn4, labOwn6)
 	}); err != nil {
 		t.Fatalf("give the exit its own mesh addresses: %v", err)
 	}
@@ -413,6 +423,53 @@ func (lab *borderLab) itself(t *testing.T) {
 			payload := []byte("from the exit to its own mesh address " + own.String())
 			labReceive(t, listener, payload, func() { _, _ = conn.Write(payload) })
 		})
+	}
+}
+
+// subscribeRoutes is a route socket of this namespace that reads each route change of either family
+func subscribeRoutes() (int, error) {
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		return -1, err
+	}
+	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE}); err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+	return fd, nil
+}
+
+// awaitLocal returns once table local holds the local route of each of addresses, looking again after each change routes reads
+// a notice lost to a full buffer is a change too, which the next dump reads
+// convergeBudget bounds the whole wait and only fails it, so a notice of another route renews nothing
+func awaitLocal(routes int, addresses ...netip.Prefix) error {
+	notice := make([]byte, 1<<16)
+	deadline := time.Now().Add(convergeBudget)
+	for {
+		held, err := dumpRoutes()
+		if err != nil {
+			return err
+		}
+		missing := slices.DeleteFunc(slices.Clone(addresses), func(address netip.Prefix) bool {
+			return slices.ContainsFunc(held, func(route kernelRoute) bool {
+				return route.destination == address && route.table == unix.RT_TABLE_LOCAL && route.kind == unix.RTN_LOCAL
+			})
+		})
+		if len(missing) == 0 {
+			return nil
+		}
+		// a receive timeout of zero is none, so a budget spent to under a microsecond fails here
+		left := time.Until(deadline)
+		if left < time.Microsecond {
+			return fmt.Errorf("table local holds no local route of %v after %s", missing, convergeBudget)
+		}
+		timeout := unix.NsecToTimeval(left.Nanoseconds())
+		if err := unix.SetsockoptTimeval(routes, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+			return err
+		}
+		if _, err := unix.Read(routes, notice); err != nil && err != unix.ENOBUFS && err != unix.EINTR {
+			return fmt.Errorf("table local holds no local route of %v: %w", missing, err)
+		}
 	}
 }
 

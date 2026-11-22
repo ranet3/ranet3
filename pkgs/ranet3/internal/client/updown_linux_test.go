@@ -95,14 +95,20 @@ func (r kernelRoute) String() string {
 }
 
 // dumpRoutes reads every route of every table and family in the namespace
+// a dump the kernel marks interrupted missed a change made while it ran, so it is taken again
 func dumpRoutes() ([]kernelRoute, error) {
-	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
-	if err != nil {
-		return nil, fmt.Errorf("dump the routes: %w", err)
-	}
-	messages, err := syscall.ParseNetlinkMessage(rib)
-	if err != nil {
-		return nil, fmt.Errorf("parse the route dump: %w", err)
+	var messages []syscall.NetlinkMessage
+	for interrupted := true; interrupted; {
+		rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
+		if err != nil {
+			return nil, fmt.Errorf("dump the routes: %w", err)
+		}
+		if messages, err = syscall.ParseNetlinkMessage(rib); err != nil {
+			return nil, fmt.Errorf("parse the route dump: %w", err)
+		}
+		interrupted = slices.ContainsFunc(messages, func(message syscall.NetlinkMessage) bool {
+			return message.Header.Flags&unix.NLM_F_DUMP_INTR != 0
+		})
 	}
 	var routes []kernelRoute
 	for _, message := range messages {
