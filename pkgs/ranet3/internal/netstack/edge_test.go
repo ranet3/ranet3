@@ -700,8 +700,8 @@ func fateOf(m *Mesh, raw []byte) readFate {
 
 // each kind of read off the tun by its source and destination, on a mesh ownedOnly and on one that is not
 // ownedOnly drops a read from a source this node does not own toward another node, a LAN another node announces, no route and a hold, as toward an exit
-// and toward an IPv4 link-local destination and an IPv4-mapped one, and leaves every other read its own
-// a read to an IPv6 link-local destination is dropped martian before the check, whatever its source and the table
+// and leaves every other read its own
+// a read to a link-local destination, IPv6, IPv4 or IPv4-mapped, is dropped martian, the check leaving it to the rule on addresses no router forwards, whatever its source and the table
 // a packet an IPv6 read carries to another node's SID meets the same rule, and the drop records the event as toward an exit
 func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestination(t *testing.T) {
 	leaf := func(t *testing.T, _ int) *Mesh {
@@ -765,14 +765,14 @@ func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestination(t *testing.T
 			{"carrying a packet from this node's own address to another node", carried, encapsulated(transitOwn[6], edgeOtherSID, udp(transitOwn[family], transitFar[family])), forwarded("peer")},
 		}
 		if family == 4 {
-			rows = append(rows, row{"from a neighbor to an IPv4 link-local address", bare, udp(edgeNeighbor[4], segAddr("169.254.0.1")), opened(TransitCounters{NoRoute: 1})})
+			rows = append(rows, row{"from a neighbor to an IPv4 link-local address", bare, udp(edgeNeighbor[4], segAddr("169.254.0.1")), same(TransitCounters{Martian: 1})})
 		} else {
 			linkLocal := segAddr("fe80::1")
 			rows = append(rows,
 				row{"from a neighbor to a link-local address under the exit's default", leaf, udp(edgeNeighbor[6], linkLocal), same(TransitCounters{Martian: 1})},
 				row{"from a neighbor to a link-local address with no default", bare, udp(edgeNeighbor[6], linkLocal), same(TransitCounters{Martian: 1})},
 				row{"from this node's own address to a link-local address under the exit's default", leaf, udp(transitOwn[6], linkLocal), same(TransitCounters{Martian: 1})},
-				row{"from a neighbor to an IPv4-mapped link-local address", bare, udp(edgeNeighbor[6], segAddr("::ffff:169.254.0.1")), opened(TransitCounters{NoRoute: 1})},
+				row{"from a neighbor to an IPv4-mapped link-local address", bare, udp(edgeNeighbor[6], segAddr("::ffff:169.254.0.1")), same(TransitCounters{Martian: 1})},
 				row{"carrying a packet from a neighbor to a link-local address", carriedBare, encapsulated(transitOwn[6], edgeOtherSID, udp(edgeNeighbor[6], linkLocal)), [2]readFate{{to: "peer"}, unowned}},
 			)
 		}

@@ -82,7 +82,7 @@ func (m *Mesh) answerFor(kept *keptAnswers, source, destination netip.Addr) sour
 // and reports true with the reason for a packet it drops
 // everything entering the mesh through this node is read off the tun, the host's own packets and what its kernel forwards from its other links alike
 // segments is this node's own SIDs, and leaves is the packet leaving the mesh through an exit, as classify decides it
-// skipUnowned leaves the packet itself out of the unowned-source drop, never what it carries, for a read classify drops or answers for its link scope
+// skipUnowned leaves the packet itself out of the unowned-source drop, never what it carries, for a read classify drops or answers as one no router forwards
 // an IPv4 or IPv6 packet an IPv6 one carries meets the same checks, one level deep, since another node's End.DT46 SID would deliver it into the mesh
 // and this node keeps no list of other nodes' SIDs to tell a packet to one apart
 func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves, skipUnowned bool) (transitReason, bool) {
@@ -97,7 +97,7 @@ func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byt
 		return transitInvalid, true
 	}
 	_, _, match := m.Routes.Resolve(innerSource, innerDestination)
-	// the carried packet meets the unowned-source drop whatever the read's own link scope
+	// the carried packet meets the unowned-source drop whatever the read's own addresses
 	reason, dropped, carried, _ = m.checkPacket(kept, segments, inner, carried, innerSource, innerDestination, match.Counted, false)
 	if !dropped && carried != 0 {
 		return transitNested, true

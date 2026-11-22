@@ -271,7 +271,7 @@ func TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink(t *testing.T) {
 // l's datagrams of each family to i leave e's uplink translated to e's address there, mode 2
 // a datagram l carries from a source the mesh routes no reply to is refused at e and counted, with nothing at i
 // and so is the answer e owes such a source, a datagram from it expiring at e on its way to t drawing nothing at i
-// a datagram l carries to an IPv4 link-local address, from l's source or a stranger's, is a martian at e, and one to an IPv6 link-local address a martian at l's read, with nothing at i
+// a datagram l carries to a link-local address, IPv4 from l's source or a stranger's or IPv6, is a martian at l's read, with nothing at i
 // though i holds the IPv6 address there and reads a datagram e's host sends it
 func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 	for _, shape := range []struct {
@@ -414,8 +414,8 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 					// at is the node that counts the datagram a martian
 					at *labNode
 				}{
-					{"IPv4 from l's source", lineA[4], metadata, 0, e},
-					{"IPv4 from a stranger's source", stranger[4], metadata, 0, e},
+					{"IPv4 from l's source", lineA[4], metadata, 0, l},
+					{"IPv4 from a stranger's source", stranger[4], metadata, 0, l},
 					{"IPv6 from l's source", lineA[6], linkLocal, zone, l},
 				} {
 					payload := []byte("to a link-local address " + c.name)

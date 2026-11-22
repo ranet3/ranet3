@@ -80,6 +80,10 @@ func (m *Mesh) steerPolicy(table *srv6.SteerTable, source, destination netip.Add
 // and classify resolves the first segment from the outer header it parsed, which writeOuter builds from the policy's source and first segment
 func (m *Mesh) sessionToward(table *srv6.SteerTable, source, destination netip.Addr) *Peer {
 	peer, verdict, match := m.Routes.Resolve(source, destination)
+	// classify writes back a read to an address the tun holds where martian refuses either of its addresses, whatever steer claims it
+	if verdict == RouteLocal && martian(source, destination) && m.holdsAddress(destination) {
+		return nil
+	}
 	alongPath, _ := m.takesPath(table, verdict, match, destination)
 	if policy, path := m.steerPolicy(table, source, destination, alongPath); policy != nil {
 		var firstMatch Match

@@ -132,9 +132,9 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	peer, verdict, match := m.Routes.Resolve(src, dst)
 	e.Match = match
 	held := verdict == RouteLocal && m.holdsAddress(dst)
-	toLink := !held && (linkLocalUnicast(dst) || loopbackAddress(dst))
-	fromLink := !held && linkLocalUnicast(src)
-	skipUnowned := toLink || fromLink
+	refused := martian(src, dst)
+	fromLink := !held && linkLocalUnicast(src) && !martianDestination(dst)
+	skipUnowned := refused && !held
 	steering := m.steerTable.Load()
 	// as classify tests it
 	alongPath, leaves := false, match.Counted
@@ -145,13 +145,17 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	if reason, dropped := m.edgeCheck(&kept, m.segmentTable.Load(), raw, nextHeader, src, dst, leaves, skipUnowned); dropped {
 		return e.decided(readSite(TraceDrop, reason))
 	}
-	if toLink {
+	if skipUnowned && !fromLink {
 		return e.decided(readSite(TraceDrop, transitMartian))
 	}
 	if fromLink {
 		return e.decided(readSite(TraceAnswer, transitMartian).answered(answerBeyondScope, TraceNoAnswer))
 	}
 	site, header := readSite(TraceForward, transitForwarded), []byte(nil)
+	// as in classify, no steer claims a refused read
+	if refused {
+		steering = nil
+	}
 	if policy, path := m.steerPolicy(steering, src, dst, alongPath); policy != nil {
 		e.Policy, e.Path = policy, path
 		steered, err := srv6.AppendEncapsulated(nil, raw, policy.Source, policy.Path)

@@ -313,7 +313,8 @@ func TestTunReadWrittenBackHasItsUnfinishedChecksumCompleted(t *testing.T) {
 // each is answered into the tun from its destination, quoting the read: over IPv6 with RFC 4443 section 3.1 code 3
 // over IPv4 with host unreachable, but network unreachable under its own default, which counts as one, RFC 1812 section 5.2.7.1
 // and no read is answered that is an ICMP error, or that goes to the prefix's base address or, over IPv4, its all-ones host, RFC 1812 sections 4.2.2.11 and 4.3.2.7
-// the base of its own default among them, but in a /31 or a /127, whose two addresses are hosts, and a host route, whose base is its host
+// but in a /31 or a /127, whose two addresses are hosts, and a host route, whose base is its host
+// and a read to the base of its own default, the unspecified address, which no router forwards, is counted martian, read alone after the rest
 // a read to the limited broadcast is counted multicast before its route is looked up, and so unanswered as well
 // so the answers are all the reads put into the tun
 func TestTunReadToAnOwnDestinationTheTunDoesNotHoldIsAnsweredAndNotWrittenBack(t *testing.T) {
@@ -322,7 +323,7 @@ func TestTunReadToAnOwnDestinationTheTunDoesNotHoldIsAnsweredAndNotWrittenBack(t
 	ownHost := map[int]netip.Addr{4: segAddr("192.0.2.9"), 6: segAddr("3fff::9")}
 	// both addresses of a /31 and of a /127 are hosts, RFC 3021 and RFC 6164
 	pointToPoint := map[int][]string{4: {"192.0.2.6", "192.0.2.7"}, 6: {"3fff:0:0:7::", "3fff:0:0:7::1"}}
-	noHost := map[int][]netip.Addr{4: {segAddr("192.0.2.128"), segAddr("192.0.2.255"), segAddr("0.0.0.0")}, 6: {segAddr("3fff:0:0:80::"), segAddr("::")}}
+	noHost := map[int][]netip.Addr{4: {segAddr("192.0.2.128"), segAddr("192.0.2.255")}, 6: {segAddr("3fff:0:0:80::")}}
 	// answeredRead is a read and the code of the answer it gets
 	type answeredRead struct {
 		read []byte
@@ -384,6 +385,11 @@ func TestTunReadToAnOwnDestinationTheTunDoesNotHoldIsAnsweredAndNotWrittenBack(t
 		}
 		if got := m.TransitCounters(); got != want {
 			t.Errorf("ipv%d: the reads counted %+v, want %+v", family, got, want)
+		}
+		unspecified := map[int]netip.Addr{4: netip.IPv4Unspecified(), 6: netip.IPv6Unspecified()}[family]
+		want.Martian = 1
+		if written := classifyWritten(m, dev, udpPacket(ownSource[family], unspecified, 200, false)); len(written) != 0 || m.TransitCounters() != want {
+			t.Errorf("ipv%d: a read to %s put %d packets into the tun and the reads counted %+v, want nothing and %+v", family, unspecified, len(written), m.TransitCounters(), want)
 		}
 	}
 }
@@ -580,22 +586,21 @@ func TestLaneDropsAnErrorRelayedFromALinkLocalOffender(t *testing.T) {
 	}
 }
 
-// a read to an IPv6 link-local address cap.table assigns the tun, steered to a segment with no route, is answered no route from that address into the tun
-// the answer stays on the link the host sent the read on, as RFC 4291 section 2.5.6 lets a link-local address be used
-func TestTunReadToAHeldLinkLocalAddressSteeredToNoRouteIsAnsweredFromIt(t *testing.T) {
+// a read to an IPv6 link-local address cap.table assigns the tun, which a steer to a segment with no route claims, goes back into the tun unchanged
+// this node starts no steer's detour for a read that is delivery on one link
+func TestTunReadToAHeldLinkLocalAddressASteerClaimsIsWrittenBack(t *testing.T) {
 	m, dev := unroutedMesh(t, nil)
 	m.Routes.Set(netip.Prefix{}, hostPrefix(transitOwn[6]), Local)
 	steerOwn(t, m)
 	held := segAddr("fe80::5")
 	m.Routes.Set(netip.Prefix{}, hostPrefix(held), Local)
 	m.SetTunAddresses([]netip.Addr{held})
-	raw := udpPacket(transitOwn[6], held, 100, false)
+	raw := withTransportSum(udpPacket(transitOwn[6], held, 100, false), false)
 	_, written := classifyOne(m, dev, raw)
-	if len(written) != 1 {
-		t.Fatalf("the read put %d packets into the tun, want the one answer", len(written))
+	if len(written) != 1 || !bytes.Equal(written[0], raw) {
+		t.Fatalf("the read put %x into the tun, want the read unchanged", written)
 	}
-	checkICMPv6(t, written[0], raw, held, 1, 0, 0)
-	if got := m.TransitCounters(); got.NoRoute != 1 || got.Answered != 1 {
-		t.Errorf("the read counted %+v, want no route and one answer", got)
+	if got := m.TransitCounters(); got != (TransitCounters{Delivered: 1}) {
+		t.Errorf("the read counted %+v, want it delivered", got)
 	}
 }

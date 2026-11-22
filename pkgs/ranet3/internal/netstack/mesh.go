@@ -482,12 +482,12 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// the checks judge a steered packet by the destination it was read with
 		peer, verdict, match := last.peer, last.verdict, last.match
-		// a read to an address the tun holds goes back into the tun unless a steer claims it, whatever its addresses' scope, so the link-scope rule leaves it to the edge and the steer
+		// a read to an address the tun holds goes back into the tun whatever its addresses, so the rule on addresses no router forwards leaves it to the edge
 		held := verdict == RouteLocal && m.holdsAddress(dst)
-		// toLink takes a loopback destination too, which never leaves its host, so fromLink answers code 2 only to a destination wider than the source, RFC 4443 section 3.1
-		toLink := !held && (linkLocalUnicast(dst) || loopbackAddress(dst))
-		fromLink := !held && linkLocalUnicast(src)
-		skipUnowned := toLink || fromLink
+		refused := martian(src, dst)
+		// a destination no router forwards never leaves the source's own link either, so code 2 answers only one wider than the source, RFC 4443 section 3.1
+		fromLink := !held && linkLocalUnicast(src) && !martianDestination(dst)
+		skipUnowned := refused && !held
 		// mode off pays the nil test alone, since takesPath is past the inliner's budget
 		alongPath, leaves := false, match.Counted
 		if steering.Default() != nil {
@@ -500,9 +500,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 			}
 			continue
 		}
-		// RFC 4291 section 2.5.6 has a router forward no packet of link scope to another link, and a session is one, and section 2.5.3 and RFC 1122 section 3.2.1.3 keep a loopback destination inside its host
-		if toLink {
-			tally.add(transitMartian)
+		// a session is a link of its own, and no router forwards a packet from or to one of these addresses to another, RFC 1812 section 5.3.7, RFC 3927 section 7, RFC 4291 sections 2.5.2, 2.5.3, 2.5.6 and 2.7 and RFC 6890
+		if skipUnowned && !fromLink {
+			m.dropTransit(&tally, transitMartian, src, dst)
 			if trace != nil {
 				trace.read(TraceDrop, transitMartian, netip.Addr{}, raw)
 			}
@@ -520,8 +520,12 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// a steered packet is routed by the segment it is going to rather than by the address it was read with
 		// and its record names the read's addresses and the first segment
-		sent, segment := raw, netip.Addr{}
-		if policy, path := m.steerPolicy(steering, src, dst, alongPath); policy != nil {
+		// a read still refused here is held, and goes back into the tun rather than inside an outer packet onto a session, so no steer claims it
+		sent, segment, claims := raw, netip.Addr{}, steering
+		if refused {
+			claims = nil
+		}
+		if policy, path := m.steerPolicy(claims, src, dst, alongPath); policy != nil {
 			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
 				tally.add(transitTooBig)
 				if trace != nil {

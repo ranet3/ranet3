@@ -403,8 +403,8 @@ func spentNothing(t *testing.T, m *Mesh, feed *TraceFeed) {
 	}
 }
 
-// a read from an IPv6 link-local source to an address the tun holds that a steer claims leaves by the steer to its segment's peer, inside an outer packet of no link scope, rather than back into the tun
-func TestTunReadFromALinkLocalSourceToAHeldAddressGoesWhereASteerSendsIt(t *testing.T) {
+// a read from an IPv6 link-local source to an address the tun holds that a steer claims goes back into the tun, never inside the steer's outer packet onto a session
+func TestTunReadFromALinkLocalSourceToAHeldAddressIsWrittenBackWhereASteerClaimsIt(t *testing.T) {
 	m := explainLeaf(t)
 	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), (&recordingPeer{}).peer(t, "segment"))
 	linkLocal := segAddr("fe80::9")
@@ -414,8 +414,8 @@ func TestTunReadFromALinkLocalSourceToAHeldAddressGoesWhereASteerSendsIt(t *test
 	}
 	m.SetSteering(steering)
 	holdOwn(m)
-	if got := fateOf(m, udpPacket(linkLocal, edgeHeld[6], 100, false)); got.to != "segment" || got.counted != (TransitCounters{}) {
-		t.Errorf("the steered read went to %q and counted %+v, want the segment's peer and nothing counted at the read", got.to, got.counted)
+	if got := fateOf(m, udpPacket(linkLocal, edgeHeld[6], 100, false)); got != (readFate{counted: TransitCounters{Delivered: 1}}) {
+		t.Errorf("the read went to %q and counted %+v, want it written back", got.to, got.counted)
 	}
 }
 
