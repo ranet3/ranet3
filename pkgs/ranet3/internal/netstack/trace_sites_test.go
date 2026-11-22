@@ -164,7 +164,7 @@ var outcomeCases = func() []outcomeCase {
 		{"a forward", transitForwarded, throughDecide(nil, udp(4, transitSender, transitFar, 100, false)), with(session(TraceForward, ""), func(r *TraceRecord) { r.Next = "out" })},
 		{"a forward cut into fragments", transitForwarded, throughDecide(nil, udp(4, transitSender, transitFar, tracedMTU+100, false)), with(session(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Fragments = "out", 2 })},
 		{"a delivery to this node", transitDelivered, throughDecide(nil, udp(6, transitSender, transitOwn, 100, false)), session(TraceDeliver, "")},
-		{"a delivery of link scope", transitDelivered, throughDecide(nil, udpPacket(transitSender[6], segAddr("fe80::1"), 100, false)), session(TraceDeliver, "")},
+		{"a link-local destination", transitMartian, throughDecide(nil, udpPacket(segAddr("fe80::9"), segAddr("fe80::1"), 100, false)), session(TraceDrop, "martian")},
 		{"a packet to a group", transitSessionMulticast, throughDecide(nil, udpPacket(transitSender[6], segAddr("ff02::1"), 100, false)), session(TraceDrop, "session_multicast")},
 		{"an egress", transitDelivered, throughDecide(nil, udp(4, transitSender, transitNowhere, 100, false)), session(TraceEgress, "")},
 		{"an expired packet", transitExpired, throughDecide(nil, withTTL(udp(4, transitSender, transitFar, 100, false), 1)), with(session(TraceAnswer, "expired"), func(r *TraceRecord) { r.Answer, r.Outcome = "expired", TraceSent })},

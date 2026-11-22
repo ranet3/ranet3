@@ -40,7 +40,7 @@ var transitStranger = map[int]netip.Addr{4: segAddr("203.0.113.66"), 6: segAddr(
 // an overlay address inside the prefix that no route holds is answered as no route and never egressed
 // a packet from a source the mesh routes no reply to is dropped and counted with no answer
 // and so is every packet from it this node answers, expired, refused, held or for an overlay address, its answer counted unsent, since only the exit's default reaches the source
-// an IPv4 link-local destination is a martian, never in the tun, and an IPv6 one goes to the tun as link scope does and never to the exit
+// a link-local destination of either family is a martian, never in the tun or at the exit
 func TestDecisionEgressesAtAnExit(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		hostCode := map[int]byte{4: 1, 6: 0}[family]
@@ -57,7 +57,6 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 					transitOff      bool
 					ready           bool
 					carried, answer bool
-					linkScope       bool
 					want            TransitCounters
 				}{
 					{name: "from a peer's source", from: transitSender[family], to: transitNowhere[family], ready: true, carried: true, want: TransitCounters{Delivered: 1}},
@@ -70,8 +69,7 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 					{name: "refused from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], transitOff: true, ready: true, want: TransitCounters{Refused: 1, Unsent: 1}},
 					{name: "held from a source the mesh routes no reply to", from: transitStranger[family], to: transitHeldHost[family], ready: true, want: TransitCounters{Held: 1, Unsent: 1}},
 					{name: "to an overlay address no route holds from a source the mesh routes no reply to", from: transitStranger[family], to: transitUnrouted[family], ready: true, want: TransitCounters{NoRoute: 1, Unsent: 1}},
-					{name: "to a link-local address", from: transitSender[family], to: linkLocal, ready: true, linkScope: family == 6,
-						want: map[int]TransitCounters{4: {Martian: 1}, 6: {Delivered: 1}}[family]},
+					{name: "to a link-local address", from: transitSender[family], to: linkLocal, ready: true, want: TransitCounters{Martian: 1}},
 					{name: "while the translation is not ready", from: transitSender[family], to: transitNowhere[family], carried: !advertised,
 						want: map[bool]TransitCounters{true: {NotReady: 1}, false: {Delivered: 1}}[advertised]},
 				} {
@@ -96,7 +94,7 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 						tun, out, back := n.deliver(t, raw)
 						egressed := n.egressed()
 						// a counted prefix cap.egress advertises is carried by the exit, and one cap.route announces by the tun
-						atExit, atTUN := c.carried && advertised, c.linkScope || c.carried && !advertised
+						atExit, atTUN := c.carried && advertised, c.carried && !advertised
 						if atTUN != (len(tun) == 1) || atTUN && !bytes.Equal(tun[0], raw) || len(out) != 0 {
 							t.Errorf("the tun took %x and the next hop was sent %x, want the packet in the tun %v", tun, out, atTUN)
 						}

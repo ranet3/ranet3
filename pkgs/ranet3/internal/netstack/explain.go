@@ -65,15 +65,12 @@ func (m *Mesh) Explain(raw []byte) Explanation {
 	if mappedAddress(src) {
 		return e.decided(sessionSite(nil, TraceDrop, transitMartian))
 	}
-	if linkScoped(dst) {
-		if group(dst) {
-			return e.decided(sessionSite(nil, TraceDrop, transitSessionMulticast))
-		}
-		return e.decided(sessionSite(nil, TraceDeliver, transitDelivered))
+	if nativeGroup(dst) {
+		return e.decided(sessionSite(nil, TraceDrop, transitSessionMulticast))
 	}
 	if invalid := martianDestination(dst); packet.InvalidSource(src) || invalid {
 		site := sessionSite(nil, TraceDrop, transitMartian)
-		if version == 6 && src.IsLinkLocalUnicast() && !invalid {
+		if linkLocalUnicast(src) && !invalid {
 			site = sessionSite(nil, TraceAnswer, transitMartian).answered(answerBeyondScope, TraceNoAnswer)
 		}
 		return e.decided(site)

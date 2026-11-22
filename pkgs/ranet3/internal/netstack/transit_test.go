@@ -388,12 +388,39 @@ func TestPayloadLengthAnswersDrawOnTheBucketOfTheirSource(t *testing.T) {
 	}
 }
 
-// a destination of IPv6 link-local unicast goes to the tun whatever the table holds, RFC 4291 section 2.5.6
-// and one of a group or the limited broadcast is dropped and counted session_multicast whatever the table or the packet's source
+// advertisedPrefix is the prefix information of routerAdvertisement
+var advertisedPrefix = segPrefix("3fff:a1::/64")
+
+// routerAdvertisement is RFC 4861 section 4.2's message from source to destination at hop limit hops
+// a default router for 1800 seconds with a current hop limit of 7, an autonomous on-link prefix of section 4.6.2 and an MTU of 1300, section 4.6.4
+func routerAdvertisement(source, destination netip.Addr, hops byte) []byte {
+	message := []byte{134, 0, 0, 0, 7, 0}
+	message = binary.BigEndian.AppendUint16(message, 1800)
+	message = append(message, make([]byte, 8)...)
+	// L and A, valid for 3600 seconds and preferred for 1800
+	message = append(message, 3, 4, byte(advertisedPrefix.Bits()), 0xc0)
+	message = binary.BigEndian.AppendUint32(message, 3600)
+	message = binary.BigEndian.AppendUint32(message, 1800)
+	message = append(message, make([]byte, 4)...)
+	message = append(message, advertisedPrefix.Addr().AsSlice()...)
+	message = append(message, 5, 1, 0, 0)
+	message = binary.BigEndian.AppendUint32(message, 1300)
+	raw := make([]byte, 40, 40+len(message))
+	raw[0] = 0x60
+	binary.BigEndian.PutUint16(raw[4:], uint16(len(message)))
+	raw[6], raw[7] = 58, hops
+	copy(raw[8:], source.AsSlice())
+	copy(raw[24:], destination.AsSlice())
+	raw = append(raw, message...)
+	binary.BigEndian.PutUint16(raw[42:], ^uint16(packet.Sum(pseudoSum(raw, 40, 58), raw[40:])))
+	return raw
+}
+
+// a destination of a group or the limited broadcast is dropped and counted session_multicast whatever the table or the packet's source
 // so a neighbor's mDNS query, link-local multicast name resolution query or DHCP Discover reaches no responder of the host through the mesh
 // for the limited broadcast that departs from RFC 1812 section 5.3.5.1, as protocol deviations lists
 // the mesh forwards and answers none of them
-func TestDecisionWritesIPv6LinkLocalToTheTunAndDropsGroups(t *testing.T) {
+func TestDecisionDropsGroups(t *testing.T) {
 	n := newTransitNode(t, DefaultMTU)
 	n.m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), n.outPeer)
 	n.m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), n.outPeer)
@@ -417,14 +444,71 @@ func TestDecisionWritesIPv6LinkLocalToTheTunAndDropsGroups(t *testing.T) {
 			t.Errorf("%s counted %+v, want session_multicast at %d", name, got, dropped)
 		}
 	}
-	linkLocal := udpPacket(transitSender[6], segAddr("fe80::1"), 100, false)
-	tun, out, back := n.deliver(t, linkLocal)
-	if len(tun) != 1 || !bytes.Equal(tun[0], linkLocal) || len(out)+len(back) != 0 {
-		t.Errorf("a packet to fe80::1 went to the tun %x, the next hop %x and the sender %x, want the tun alone", tun, out, back)
+}
+
+// linkLocalNode is a transit node with a default of each family and a route for fe80::/10 to its next hop
+// and an End.DT46 delivering to the mesh at explainDT46 and an egress segment at explainEgress admitting explainAllow, both families ready to egress
+func linkLocalNode(t *testing.T) *transitNode {
+	t.Helper()
+	n := newTransitNode(t, DefaultMTU)
+	for _, prefix := range []string{"::/0", "0.0.0.0/0", "fe80::/10"} {
+		n.m.Routes.Set(netip.Prefix{}, segPrefix(prefix), n.outPeer)
 	}
-	if got := n.m.TransitCounters(); got != (TransitCounters{SessionMulticast: dropped, Delivered: 1}) {
-		t.Errorf("the packet to fe80::1 counted %+v", got)
+	table, err := srv6.NewLocalTable([]srv6.Segment{
+		{SID: schema.AddrFrom(explainDT46), Behavior: srv6.BehaviorEndDT46},
+		{SID: schema.AddrFrom(explainEgress), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: explainAllow},
+	}, transitOverlay)
+	if err != nil {
+		t.Fatal(err)
 	}
+	n.m.SetSegments(table)
+	n.m.SetEgressReady(true, true)
+	return n
+}
+
+// a session's packet to IPv6 link-local unicast is a martian whatever its source, its hop limit or the table, RFC 4291 section 2.5.6
+// as a packet of its own and as the inner packet of an End.DT46 delivering to the mesh, which the decision takes whatever cap.transit says
+// it is dropped and counted once and answered for no source, a link-local one among them
+// and an egress segment refuses one, so none reaches the tun, a peer or the exit
+func TestDecisionDropsIPv6LinkLocalDestinationsUnanswered(t *testing.T) {
+	destination := segAddr("fe80::1")
+	for _, source := range []netip.Addr{transitSender[6], segAddr("fe80::9"), netip.IPv6Unspecified()} {
+		for _, hops := range []byte{255, 64} {
+			raw := routerAdvertisement(source, destination, hops)
+			for _, inner := range []bool{false, true} {
+				t.Run(fmt.Sprintf("from %s at hop limit %d inside an End.DT46 %t", source, hops, inner), func(t *testing.T) {
+					n := linkLocalNode(t)
+					if inner {
+						n.m.SetTransit(false)
+					}
+					if got := n.m.Explain(raw); got != explainedDrop("martian", Match{}) {
+						t.Errorf("explanation %+v, want a martian's drop", got)
+					}
+					delivered := raw
+					if inner {
+						delivered = steered(t, raw, transitSender[6], explainDT46)
+					}
+					tun, out, back := n.deliver(t, delivered)
+					if exit := n.egressed(); len(tun)+len(out)+len(back)+len(exit) != 0 {
+						t.Errorf("the tun took %x, the next hop %x, the sender %x and the exit %x, want nothing", tun, out, back, exit)
+					}
+					if got := n.m.TransitCounters(); got != (TransitCounters{Martian: 1}) {
+						t.Errorf("the decision counted %+v, want one martian", got)
+					}
+				})
+			}
+		}
+	}
+	t.Run("inside an egress segment", func(t *testing.T) {
+		n := linkLocalNode(t)
+		tun, out, back := n.deliver(t, steered(t, routerAdvertisement(transitSender[6], destination, 255), transitSender[6], explainEgress))
+		if exit := n.egressed(); len(tun)+len(out)+len(back)+len(exit) != 0 {
+			t.Errorf("the tun took %x, the next hop %x, the sender %x and the exit %x, want nothing", tun, out, back, exit)
+		}
+		if got := n.m.SegmentCounters(); got.Refused != 1 {
+			t.Errorf("the segments counted %+v, want one refused", got)
+		}
+	})
 }
 
 // buildAnswer builds the ICMP error each kind names in either family, RFC 792, RFC 1812 section 5.2.7.1, RFC 1191 section 4 and RFC 4443 sections 3.1 to 3.4
@@ -451,7 +535,7 @@ func TestBuildAnswerBuildsOnlyTheKindsItNames(t *testing.T) {
 	}
 }
 
-// a source or destination no router forwards is dropped and counted martian, past the destinations linkScoped takes, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
+// a source or destination no router forwards is dropped and counted martian, past the groups nativeGroup takes, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
 // an IPv4 link-local destination among them, which never reaches the tun, as a cloud's metadata address would from a host forwarding it
 // and an IPv4-mapped destination, which RFC 6890 has no router forward, whatever its IPv4 form
 // an IPv6 link-local source to a wider unicast destination a router forwards is answered beyond the scope of the source, RFC 4443 section 3.1 code 2, on the session it came through

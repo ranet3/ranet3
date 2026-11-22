@@ -446,7 +446,7 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 						continue
 					}
 					src, dst, _ := packet.Addrs(raw)
-					if _, verdict, _ := meshes[i].Routes.Resolve(src, dst); verdict != RouteLocal && !linkScoped(dst) {
+					if _, verdict, _ := meshes[i].Routes.Resolve(src, dst); verdict != RouteLocal && !nativeGroup(dst) && !linkLocalUnicast(dst) {
 						ht.Fatalf("node %d wrote to its tun a packet from %s to %s it resolves as verdict %d", i, src, dst, verdict)
 					}
 					if ok {

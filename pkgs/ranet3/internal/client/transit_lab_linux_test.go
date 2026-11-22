@@ -258,9 +258,8 @@ func TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink(t *testing.T) {
 // l's datagrams of each family to i leave e's uplink translated to e's address there, mode 2
 // a datagram l carries from a source the mesh routes no reply to is refused at e and counted, with nothing at i
 // and so is the answer e owes such a source, a datagram from it expiring at e on its way to t drawing nothing at i
-// a datagram l carries to an IPv4 link-local address is a martian at e, from l's source and from a stranger's, with nothing at i
-// and e's host takes one to an IPv6 link-local address from its tun and sends nothing of it out of its uplink
-// though i holds that address there and reads a datagram e's host sends it
+// a datagram l carries to an IPv4 link-local address, from l's source or a stranger's, or to an IPv6 link-local address is a martian at e, with nothing at i
+// though i holds the IPv6 address there and reads a datagram e's host sends it
 func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 	for _, shape := range []struct {
 		name     string
@@ -395,24 +394,21 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("find l's tun: %v", err)
 				}
-				martian := func(c netstack.TransitCounters) uint64 { return c.Martian }
-				delivered := func(c netstack.TransitCounters) uint64 { return c.Delivered }
 				for _, c := range []struct {
 					name     string
 					from, to netip.Addr
 					zone     uint32
-					counted  func(netstack.TransitCounters) uint64
 				}{
-					{"IPv4 from l's source", lineA[4], metadata, 0, martian},
-					{"IPv4 from a stranger's source", stranger[4], metadata, 0, martian},
-					{"IPv6 from l's source", lineA[6], linkLocal, zone, delivered},
+					{"IPv4 from l's source", lineA[4], metadata, 0},
+					{"IPv4 from a stranger's source", stranger[4], metadata, 0},
+					{"IPv6 from l's source", lineA[6], linkLocal, zone},
 				} {
 					payload := []byte("to a link-local address " + c.name)
 					raw := udpPacket(c.from, c.to, labLeafPort, lineListen, payload)
-					before := c.counted(e.client.Mesh.TransitCounters())
-					waitFor(t, convergeBudget, "e to count l's datagram to a link-local address "+c.name, func() bool {
+					before := e.client.Mesh.TransitCounters().Martian
+					waitFor(t, convergeBudget, "e to count l's datagram to a link-local address "+c.name+" a martian", func() bool {
 						labSendRaw(t, l, raw, c.to, c.zone)
-						return c.counted(e.client.Mesh.TransitCounters()) > before
+						return e.client.Mesh.TransitCounters().Martian > before
 					})
 					if labCaptured(capture, func(packet []byte) bool {
 						_, _, carried, ok := labUDPOf(packet)

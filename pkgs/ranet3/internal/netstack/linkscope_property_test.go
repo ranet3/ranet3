@@ -69,7 +69,7 @@ var scopeClasses = []scopeClass{
 		raw := drawBytes(tc, 16)
 		raw[0], raw[1] = 0xfe, 0x80|byte(hegel.Draw(tc, pbt.Spanning(0, 0x3f)))
 		return addr16(raw)
-	}, fateTun, false},
+	}, fateMartian, false},
 	{"a mapped group, limited broadcast or link-local address", 6, func(tc hegel.TestCase) netip.Addr {
 		raw := drawBytes(tc, 16)
 		copy(raw, []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff})
@@ -95,9 +95,10 @@ var scopeClasses = []scopeClass{
 }
 
 // over drawn batches a session delivers, of destinations in every class above, from the sender, the unspecified address or a mapped source, under a default of each family to another peer
-// the tun takes exactly the packets to IPv6 link-local unicast from non-mapped sources, and those to this node's own from the sender, in their order
+// and to an IPv6 class the table does not decide from a drawn IPv6 link-local source too, whose fate is the class's
+// the tun takes exactly the packets to this node's own from the sender, in their order
 // every packet to a group or the limited broadcast from a non-mapped source is dropped and counted session_multicast, so none reaches the tun or a peer
-// a mapped source or destination, an IPv4 link-local destination, and the unspecified source past link scope, is a martian, and nothing is answered
+// a mapped source or destination, a link-local destination of either family, and the unspecified source to a destination the table decides, is a martian, and nothing is answered
 // every batch also holds both mapped endpoints, their native neighbors and a genuine source of each family, and Explain must name each modeled fate
 func TestDecisionWritesNoGroupToTheTun(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -145,12 +146,21 @@ func TestDecisionWritesNoGroupToTheTun(t *testing.T) {
 			kinds := 1
 			if class.family == 6 {
 				kinds = 2
+				// a link-local source to a destination the table decides would draw code 2 on the session, which the fates here do not model
+				if !class.routed {
+					kinds = 3
+				}
 			}
 			kind := hegel.Draw(ht, pbt.Spanning(0, kinds))
-			if kind == 1 {
+			switch kind {
+			case 1:
 				source = map[int]netip.Addr{4: netip.IPv4Unspecified(), 6: netip.IPv6Unspecified()}[class.family]
-			} else if kind == 2 {
+			case 2:
 				source = mapped(netip.AddrFrom4([4]byte(drawBytes(ht, 4))))
+			case 3:
+				raw := drawBytes(ht, 16)
+				raw[0], raw[1] = 0xfe, 0x80|byte(hegel.Draw(ht, pbt.Spanning(0, 0x3f)))
+				source = addr16(raw)
 			}
 			fate := class.fate
 			if kind == 2 || kind == 1 && class.routed {

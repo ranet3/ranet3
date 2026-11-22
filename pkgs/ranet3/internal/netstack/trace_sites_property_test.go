@@ -35,7 +35,7 @@ var decideKinds = []siteKind{
 	{"cut", v4, func(f int) []byte { return udpPacket(transitSender[f], transitFar[f], tracedMTU+100, false) }, TraceForward, "", true, false},
 	{"budget", both, func(f int) []byte { return udpPacket(transitSender[f], transitClosed[f], 100, false) }, TraceForward, "", true, true},
 	{"deliver", both, func(f int) []byte { return udpPacket(transitSender[f], transitOwn[f], 100, false) }, TraceDeliver, "", false, false},
-	{"link scope", v6, func(f int) []byte { return udpPacket(transitSender[f], segAddr("fe80::1"), 100, false) }, TraceDeliver, "", false, false},
+	{"link scope", v6, func(f int) []byte { return udpPacket(transitSender[f], segAddr("fe80::1"), 100, false) }, TraceDrop, "martian", false, false},
 	{"group", both, func(f int) []byte {
 		return udpPacket(transitSender[f], map[int]netip.Addr{4: segAddr("224.0.0.251"), 6: segAddr("ff02::fb")}[f], 100, false)
 	}, TraceDrop, "session_multicast", false, false},

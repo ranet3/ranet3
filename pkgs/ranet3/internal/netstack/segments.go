@@ -274,7 +274,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 				continue
 			}
 			// a group or the limited broadcast reaches no exit, whatever its source, as the decision's reaches no tun
-			if linkScoped(destination) && group(destination) {
+			if nativeGroup(destination) {
 				m.segmentsDropped.Add(1)
 				m.transitCounts[transitSessionMulticast].Add(1)
 				m.reportTransitDrop(transitSessionMulticast, source, destination)

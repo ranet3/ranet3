@@ -123,9 +123,8 @@ func TestMappedSourceControlsKeepTheirDestinations(t *testing.T) {
 				case "exit":
 					destination, want = transitNowhere[family], TraceEgress
 				case "link":
-					if family == 4 {
-						destination, want = segAddr("169.254.0.1"), TraceDrop
-					} else {
+					destination, want = segAddr("169.254.0.1"), TraceDrop
+					if family == 6 {
 						source, destination = segAddr("fe80::2"), segAddr("fe80::1")
 					}
 				}

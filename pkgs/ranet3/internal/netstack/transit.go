@@ -26,7 +26,7 @@ type transitReason uint8
 const (
 	// transitForwarded counts packets handed to the next peer's send, one cut into fragments once
 	transitForwarded transitReason = iota
-	// transitDelivered counts packets written to the tun, for this node's own destinations and IPv6 link-local ones, and those handed to the exit through a prefix cap.egress advertises that counts as a default
+	// transitDelivered counts packets written to the tun, for this node's own destinations, and those handed to the exit through a prefix cap.egress advertises that counts as a default
 	// and the reads off the tun written back into it to an address the tun holds
 	transitDelivered
 	transitExpired
@@ -38,7 +38,7 @@ const (
 	// transitInvalid counts a frame holding no whole IP packet, a read off the tun that is not exactly one, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
 	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
-	// transitMartian counts mapped sources before linkScoped and other sources or destinations no router forwards after it
+	// transitMartian counts mapped sources before nativeGroup and other sources or destinations no router forwards after it, IPv6 link-local ones among them
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute
@@ -252,15 +252,15 @@ func group(destination netip.Addr) bool {
 	return destination.IsMulticast() || destination == packet.LimitedBroadcast
 }
 
-// linkScoped is a destination the decision acts on whatever the table holds, a group or IPv6 link-local, RFC 4291 section 2.5.6
-// an IPv4 link-local destination is a martian instead, since RFC 3927 section 7 has a router forward none
-// and the host forwards 169.254/16 as any unicast destination, out of an exit's uplink, where it forwards no fe80::/10
-// an IPv4-mapped destination is no IPv6 link scope either, whatever its IPv4 form, and the decision counts it a martian
-func linkScoped(destination netip.Addr) bool {
-	if mappedAddress(destination) {
-		return false
-	}
-	return group(destination) || destination.Is6() && destination.IsLinkLocalUnicast()
+// nativeGroup is a group the decision drops whatever the table holds and whatever the source, never an IPv4-mapped one, which the decision counts a martian
+func nativeGroup(destination netip.Addr) bool {
+	return group(destination) && !mappedAddress(destination)
+}
+
+// linkLocalUnicast is an IPv6 address inside fe80::/10, which an IPv4-mapped address never is
+// RFC 4291 section 2.5.6 has a router forward no packet from or to one to another link, and each session is a link of its own, the tun another
+func linkLocalUnicast(address netip.Addr) bool {
+	return address.Is6() && !address.Is4In6() && address.IsLinkLocalUnicast()
 }
 
 // mappedAddress is the IPv4-mapped IPv6 form of RFC 4291 section 2.5.5.2, which RFC 6890 section 2.2.3 admits as neither source nor destination
@@ -303,7 +303,7 @@ func lengthAnswered(raw []byte) bool {
 		return false
 	}
 	src, dst := addressesOf(raw, 6)
-	return !linkScoped(dst) && !martian(src, dst)
+	return !nativeGroup(dst) && !martian(src, dst)
 }
 
 // hasOptions reports an IPv4 header longer than its fixed 20 bytes, the one kind ForwardOptions has work for
@@ -363,26 +363,19 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) []
 			}
 			continue
 		}
-		if linkScoped(dst) {
-			if group(dst) {
-				m.dropTransit(&tally, transitSessionMulticast, src, dst)
-				if trace != nil {
-					trace.session(from, TraceDrop, transitSessionMulticast, raw)
-				}
-				continue
-			}
+		// before the source checks, so a group is answered for no source
+		if nativeGroup(dst) {
+			m.dropTransit(&tally, transitSessionMulticast, src, dst)
 			if trace != nil {
-				trace.session(from, TraceDeliver, transitDelivered, raw)
+				trace.session(from, TraceDrop, transitSessionMulticast, raw)
 			}
-			out = append(out, frame)
-			tally.add(transitDelivered)
 			continue
 		}
 		if invalid := martianDestination(dst); packet.InvalidSource(src) || invalid {
 			m.dropTransit(&tally, transitMartian, src, dst)
 			// RFC 4443 section 3.1 code 2, on the session it came from, the one link its source can be on
 			// RFC 3927 section 7 has no answer for an IPv4 link-local source
-			if version == 6 && src.IsLinkLocalUnicast() && !invalid {
+			if linkLocalUnicast(src) && !invalid {
 				if trace != nil {
 					trace.beyondScope(m, from, raw)
 				} else {
