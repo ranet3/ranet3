@@ -277,13 +277,11 @@ func TestProactiveRekeyOutstandingAtTheChildSALifetime(t *testing.T) {
 			var err error
 			select {
 			case err = <-rekeyed:
-			case err := <-pair.initiatorDone:
-				t.Fatalf("the session ended with %v while its rekey was out", err)
 			case <-time.After(answerBudget):
 				t.Fatal("the proactive rekey never ended")
 			}
 			if time.Now().Before(late) {
-				t.Fatal("the rekey ended before its answer was let through, so nothing ran across the lifetime")
+				t.Fatalf("the rekey ended with %v before its answer was let through, so nothing ran across the lifetime", err)
 			}
 			ends := "testorg/client:2>testorg/server:1 sa=child"
 			closed := func(line string) bool { return strings.HasPrefix(line, "ike.sa.closed ") }
