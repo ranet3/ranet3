@@ -56,7 +56,8 @@ const hostTTL = 101
 // A failed dial is answered with the destination unreachable a server or
 // router raised about it, from that offender with its code and quoting the
 // leaf's SYN, at the host's TTL or hop limit, and with the stack's reset
-// otherwise
+// otherwise, an unreachable from an offender the mesh refuses as a source
+// among the others
 func TestFailedDialIsAnsweredFromItsOffender(t *testing.T) {
 	router4, router6 := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("2001:db8:2::1")
 	syn4 := tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 0, tcpSYN, nil)
@@ -76,6 +77,10 @@ func TestFailedDialIsAnsweredFromItsOffender(t *testing.T) {
 		{"port unreachable from the server", syn4, leaf4, dialFailure{err: syscall.ECONNREFUSED, cause: icmpError{offender: server4, kind: 3, code: 3}, caused: true}, false, server4, protoICMP, 3, 3},
 		{"address unreachable over ipv6", syn6, leaf6, dialFailure{err: syscall.EHOSTUNREACH, cause: icmpError{offender: router6, kind: 1, code: 3}, caused: true}, false, router6, protoICMPv6, 1, 3},
 		{"time exceeded", syn4, leaf4, dialFailure{err: syscall.EHOSTUNREACH, cause: icmpError{offender: router4, kind: 11}, caused: true}, true, netip.Addr{}, 0, 0, 0},
+		// an offender the mesh refuses as a source gives no error the leaf could take, so the stack resets the dial
+		{"address unreachable from a link-local router", syn6, leaf6, dialFailure{err: syscall.EHOSTUNREACH, cause: icmpError{offender: netip.MustParseAddr("fe80::1"), kind: 1, code: 3}, caused: true}, true, netip.Addr{}, 0, 0, 0},
+		{"address unreachable from the loopback address", syn6, leaf6, dialFailure{err: syscall.EHOSTUNREACH, cause: icmpError{offender: netip.IPv6Loopback(), kind: 1, code: 3}, caused: true}, true, netip.Addr{}, 0, 0, 0},
+		{"host unreachable from an ipv4 link-local router", syn4, leaf4, dialFailure{err: syscall.EHOSTUNREACH, cause: icmpError{offender: netip.MustParseAddr("169.254.0.1"), kind: 3, code: 1}, caused: true}, true, netip.Addr{}, 0, 0, 0},
 		{"timed out", syn6, leaf6, dialFailure{err: syscall.ETIMEDOUT}, true, netip.Addr{}, 0, 0, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -1074,9 +1074,13 @@ func (dst *destination) quote(length uint16, prefix []byte, padded bool) []byte 
 // on (its section 2.4 (a)). A type 1 or 3 carries the router's RFC 4884
 // length attribute as it came, also where the exit cut the extension it
 // names. The error carries the TTL or hop limit hops. nil for an IPv4 error
-// of another type, an ICMPv6 informational message, or an error from the other
-// family.
+// of another type, an ICMPv6 informational message, an error from the other
+// family, or one from an offender the mesh refuses as a source
+// (packet.InvalidSource), which a ranet3 node drops wherever it meets it.
 func relayedError(kept []byte, e icmpError, prefix []byte, hops uint8) []byte {
+	if packet.InvalidSource(e.offender) {
+		return nil
+	}
 	payload := int(binary.BigEndian.Uint16(kept[len(kept)-4:len(kept)-2])) - 8
 	quote := append(append(make([]byte, 0, len(kept)+len(prefix)), kept...), prefix[:max(min(len(prefix), payload), 0)]...)
 	switch {

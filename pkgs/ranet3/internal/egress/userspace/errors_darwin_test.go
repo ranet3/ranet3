@@ -21,43 +21,25 @@ import (
 )
 
 // A server's error about a leaf's datagram, which XNU queues on no socket the
-// exit reads, reaches the leaf through the exit's ICMP socket from the server
-// with its type and code, quoting the leaf's datagram as it sent it, and ends
-// neither the mapping nor its socket toward the server. The same error about
-// another program's socket on the host reaches no leaf and is counted. Over
-// IPv6's loopback alone, since IPv4's is network 127, which no error may come
-// from: the IPv4 quote is read below.
-func TestServersErrorReachesTheLeafThroughTheICMPSocket(t *testing.T) {
+// exit reads, reaches the exit through its ICMP socket and ends neither the
+// mapping nor its socket toward the server. Over IPv6's loopback alone, the
+// one address a test of no namespace holds, and loopback is a source the mesh
+// refuses, so the error reaches the leaf as nothing, which the window below
+// watches for. The same error about another program's socket on the host,
+// drawn after it, reaches no leaf and is counted: XNU carries both through
+// the loopback in turn and the socket's reader takes them in turn, so that
+// count shows the exit's error reached the reader before the window. The
+// same error from a router the mesh carries, handed to the reader, reaches
+// the leaf from the router. The IPv4 quote is read below.
+func TestServersErrorFromLoopbackIsNotRelayedThroughTheICMPSocket(t *testing.T) {
 	server := netip.IPv6Loopback()
 	live := loopbackServer(t, server)
 	closed := netip.AddrPortFrom(server, freeUDPPort(t, server))
 	h := newRelayHarness(t, nil)
 	leaf := netip.AddrPortFrom(leaf6, freeUDPPort(t, leaf6))
 	datagram := udpDatagram(leaf, closed, []byte("to a port no socket holds"))
-	h.x.udp.take(datagram, false)
-	laid := h.waitLaid(t, "the server's error", func(pkt []byte) bool {
-		p, ok := parse(pkt)
-		return ok && p.protocol == protoICMPv6
-	})
-	if p, _ := parse(laid); p.src != server || p.dst != leaf6 || p.kind != 1 || p.code != 4 {
-		t.Errorf("relayed %s, want port unreachable from %s to %s", p, server, leaf6)
-	}
-	if quote := laid[40+8:]; !bytes.Equal(quote, datagram) {
-		t.Errorf("quoted %x, want the leaf's datagram %x", quote, datagram)
-	}
-	port, ok := h.mappingOf(leaf)
-	if !ok {
-		t.Fatal("the error ended the leaf's mapping")
-	}
-	if !destinationLive(h.x, leaf, closed) {
-		t.Error("the error ended the mapping's socket toward the server")
-	}
-	h.x.udp.take(udpDatagram(leaf, serverAt(live), []byte("after the error")), false)
-	if from := readDatagramFrom(t, live, []byte("after the error")); from.Port() != port {
-		t.Errorf("the datagram after the error left from port %d, want the mapping's %d", from.Port(), port)
-	}
-
 	before := h.count(false, reasonNotOurs)
+	h.x.udp.take(datagram, false)
 	other, err := net.DialUDP("udp6", nil, net.UDPAddrFromAddrPort(closed))
 	if err != nil {
 		t.Fatal(err)
@@ -72,14 +54,22 @@ func TestServersErrorReachesTheLeafThroughTheICMPSocket(t *testing.T) {
 	}
 	deadline := time.Now().Add(exitWait)
 	for h.count(false, reasonNotOurs) == before && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(layPoll)
 	}
 	if h.count(false, reasonNotOurs) == before {
-		t.Error("the error about another program's socket was not counted")
+		t.Fatal("the error about another program's socket was not counted, so nothing shows the server's error reached the exit")
 	}
-	if pkt := h.x.link.poll(); pkt != nil {
-		t.Errorf("laid a packet of %d bytes toward a leaf for another program's error", pkt.Size())
-		h.x.link.release(pkt)
+	h.noneLaid(t, "a packet for an error from loopback", exitWait/10, func([]byte) bool { return true })
+	port, ok := h.mappingOf(leaf)
+	if !ok {
+		t.Fatal("the error ended the leaf's mapping")
+	}
+	if !destinationLive(h.x, leaf, closed) {
+		t.Error("the error ended the mapping's socket toward the server")
+	}
+	h.x.udp.take(udpDatagram(leaf, serverAt(live), []byte("after the error")), false)
+	if from := readDatagramFrom(t, live, []byte("after the error")); from.Port() != port {
+		t.Errorf("the datagram after the error left from port %d, want the mapping's %d", from.Port(), port)
 	}
 
 	// the same error handed to the reader directly, many times over, so the
@@ -103,6 +93,21 @@ func TestServersErrorReachesTheLeafThroughTheICMPSocket(t *testing.T) {
 	if pkt := h.x.link.poll(); pkt != nil {
 		t.Errorf("laid a packet of %d bytes toward a leaf for another program's error handed to the reader", pkt.Size())
 		h.x.link.release(pkt)
+	}
+
+	// the port unreachable from a router the mesh carries, quoting the
+	// datagram as the mapping's socket sent it, as the reader would read it
+	router := netip.MustParseAddr("2001:db8:2::1")
+	h.x.icmp.take(unbound, append([]byte{1, 4, 0, 0, 0, 0, 0, 0}, udpDatagram(h.mappingsOf(leaf)[0].external(), closed, []byte("to a port no socket holds"))...), router)
+	laid := h.waitLaid(t, "the router's error", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoICMPv6
+	})
+	if p, _ := parse(laid); p.src != router || p.dst != leaf6 || p.kind != 1 || p.code != 4 {
+		t.Errorf("relayed %s, want port unreachable from %s to %s", p, router, leaf6)
+	}
+	if quote := laid[40+8:]; !bytes.Equal(quote, datagram) {
+		t.Errorf("quoted %x, want the leaf's datagram %x", quote, datagram)
 	}
 }
 

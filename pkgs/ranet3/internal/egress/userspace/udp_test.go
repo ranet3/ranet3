@@ -155,7 +155,7 @@ func (h *relayHarness) waitLaid(t fataler, what string, match func(raw []byte) b
 	for time.Now().Before(deadline) {
 		raw := h.laid()
 		if raw == nil {
-			time.Sleep(time.Millisecond)
+			time.Sleep(layPoll)
 			continue
 		}
 		if match(raw) {
@@ -164,6 +164,25 @@ func (h *relayHarness) waitLaid(t fataler, what string, match func(raw []byte) b
 	}
 	t.Fatalf("no %s toward a leaf within %s", what, exitWait)
 	return nil
+}
+
+// layPoll is how often waitLaid and noneLaid look at what the exit sent
+// toward a leaf
+const layPoll = time.Millisecond
+
+// noneLaid fails where the exit sends a packet toward a leaf that match picks
+// within window, what naming it
+func (h *relayHarness) noneLaid(t fataler, what string, window time.Duration, match func(raw []byte) bool) {
+	for deadline := time.Now().Add(window); time.Now().Before(deadline); {
+		raw := h.laid()
+		if raw == nil {
+			time.Sleep(layPoll)
+			continue
+		}
+		if match(raw) {
+			t.Fatalf("sent %s toward a leaf, want none", what)
+		}
+	}
 }
 
 // laid is the bytes of the next packet the exit sent toward a leaf, nil

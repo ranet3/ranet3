@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -53,13 +54,17 @@ func TestExtendedErrorReadsItsInfo(t *testing.T) {
 	}
 }
 
-// A server's error about a leaf's datagram reaches the leaf from the server
-// with its type and code, quoting the leaf's datagram as it sent it, and ends
-// neither the mapping nor its socket toward the server (RFC 4787 REQ-12): a
-// datagram to another server goes out from the same port after it. Over
-// IPv6's loopback alone, since IPv4's is network 127, which no error may come
-// from. The root test below runs both families.
-func TestServersErrorReachesTheLeafAndEndsNoMapping(t *testing.T) {
+// A server's error about a leaf's datagram ends neither the mapping nor its
+// socket toward the server (RFC 4787 REQ-12): a datagram to another server
+// goes out from the same port after it. Over IPv6's loopback alone, the one
+// address a test of no namespace holds, and loopback is a source the mesh
+// refuses, so the error reaches the leaf as nothing, which the window below
+// watches for. The exit's reader takes a socket's errors only under the
+// destination's lock, so an error drawn while the test holds it stays on the
+// socket, which shows it reached the exit, and is gone once the window ends,
+// which shows the reader took it. The root test below has the error reach the
+// leaf in both families.
+func TestServersErrorFromLoopbackIsNotRelayedAndEndsNoMapping(t *testing.T) {
 	server := netip.IPv6Loopback()
 	live := loopbackServer(t, server)
 	closed := netip.AddrPortFrom(server, freeUDPPort(t, server))
@@ -67,15 +72,19 @@ func TestServersErrorReachesTheLeafAndEndsNoMapping(t *testing.T) {
 	leaf := netip.AddrPortFrom(leaf6, freeUDPPort(t, leaf6))
 	datagram := udpDatagram(leaf, closed, []byte("to a port no socket holds"))
 	h.x.udp.take(datagram, false)
-	laid := h.waitLaid(t, "the server's error", func(pkt []byte) bool {
-		p, ok := parse(pkt)
+	_, dst := h.x.udp.opened(leaf, closed)
+	if dst == nil {
+		t.Fatal("no socket toward the server")
+	}
+	if !errorHeld(t, dst, []byte("again to a port no socket holds")) {
+		t.Fatal("no error from loopback reached the exit's socket")
+	}
+	h.noneLaid(t, "an error from loopback", exitWait/10, func(raw []byte) bool {
+		p, ok := parse(raw)
 		return ok && p.protocol == protoICMPv6
 	})
-	if p, _ := parse(laid); p.src != server || p.dst != leaf6 || p.kind != 1 || p.code != 4 {
-		t.Errorf("relayed %s, want port unreachable from %s to %s", p, server, leaf6)
-	}
-	if quote := laid[40+8:]; !bytes.Equal(quote, datagram) {
-		t.Errorf("quoted %x, want the leaf's datagram %x", quote, datagram)
+	if errorShows(t, dst.conn) {
+		t.Error("the exit's reader left the error on its socket")
 	}
 	port, ok := h.mappingOf(leaf)
 	if !ok {
@@ -88,6 +97,64 @@ func TestServersErrorReachesTheLeafAndEndsNoMapping(t *testing.T) {
 	if from := readDatagramFrom(t, live, []byte("after the error")); from.Port() != port {
 		t.Errorf("the datagram after the error left from port %d, want the mapping's %d", from.Port(), port)
 	}
+}
+
+// errorHeld reports whether an error shows on dst's socket within exitWait
+// while the test holds dst.mu, under which alone the exit's reader takes the
+// socket's errors: one queued already, else the one a write of payload draws.
+// A write fails with the errno of an error the socket holds still, taking
+// the errno the reader would have woken to, so a write after the lock draws
+// one more error to wake it.
+func errorHeld(t *testing.T, dst *destination, payload []byte) bool {
+	t.Helper()
+	held, took := func() (bool, bool) {
+		dst.mu.Lock()
+		defer dst.mu.Unlock()
+		if errorShows(t, dst.conn) {
+			return true, false
+		}
+		if _, err := dst.conn.Write(payload); err != nil {
+			if !icmpErrno(err) {
+				t.Fatal(err)
+			}
+			return errorShows(t, dst.conn), true
+		}
+		for deadline := time.Now().Add(exitWait); time.Now().Before(deadline); time.Sleep(layPoll) {
+			if errorShows(t, dst.conn) {
+				return true, false
+			}
+		}
+		return false, false
+	}()
+	if took {
+		if _, err := dst.conn.Write(payload); err != nil && !icmpErrno(err) {
+			t.Fatal(err)
+		}
+	}
+	return held
+}
+
+// errorShows is whether conn's socket holds an error no read has taken, as
+// poll's POLLERR gives, which takes none
+func errorShows(t *testing.T, conn *net.UDPConn) bool {
+	t.Helper()
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fds := []unix.PollFd{{}}
+	var polled error
+	if err := raw.Control(func(fd uintptr) {
+		fds[0].Fd = int32(fd)
+		for {
+			if _, polled = unix.Poll(fds, 0); polled != unix.EINTR {
+				return
+			}
+		}
+	}); err != nil || polled != nil {
+		t.Fatalf("poll the socket: %v %v", err, polled)
+	}
+	return fds[0].Revents&unix.POLLERR != 0
 }
 
 // A server's port unreachable about a leaf's datagram reaches the leaf's own

@@ -21,9 +21,11 @@ import (
 // host's own or as failed by pending errors. The error is a port unreachable
 // handed through a raw ICMP or ICMPv6 socket, quoting the first datagram as
 // the destination's socket sent it, on a socket no reader takes so_error from.
-// The error itself reaches the leaf through the exit's ICMP socket, which no
-// reader of this test runs: TestServersErrorReachesTheLeafThroughTheICMPSocket
-// shows that over IPv6's loopback. Root alone opens the raw socket.
+// The error itself reaches the exit through its ICMP socket, which no reader
+// of this test runs, from loopback is relayed as nothing, and from a router
+// the mesh carries reaches the leaf:
+// TestServersErrorFromLoopbackIsNotRelayedThroughTheICMPSocket shows both.
+// Root alone opens the raw socket.
 func TestDatagramLeavesPastAnErrorsErrno(t *testing.T) {
 	for _, loopback := range []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()} {
 		t.Run(loopback.String(), func(t *testing.T) {

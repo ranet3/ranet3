@@ -946,3 +946,46 @@ func TestLeafErrorInFragmentsIsKeptFromTheStack(t *testing.T) {
 		})
 	}
 }
+
+// An error from an offender the mesh refuses as a source, which a ranet3 node
+// drops as martian wherever it meets one, is built into nothing, so nothing of
+// it is laid in the lane or crosses a session: each class packet.InvalidSource
+// names, in IPv4 network 0, network 127, 169.254.0.0/16, multicast, class E
+// and the limited broadcast, in IPv6 the unspecified, loopback, multicast and
+// link-local addresses. TestRelayedErrorQuotesNoMoreThanTheLeafsDatagram
+// relays an error from a router the mesh does take, as before.
+func TestRelayedErrorFromAnOffenderTheMeshRefusesIsNotBuilt(t *testing.T) {
+	for _, c := range []struct {
+		offender   string
+		kind, code byte
+		info       uint32
+	}{
+		{"fe80::1", 2, 0, 1280},
+		{"fe80::1", 1, 3, 0},
+		{"fe80::1", 3, 0, 0},
+		{"::1", 1, 3, 0},
+		{"::", 1, 3, 0},
+		{"169.254.0.1", 3, 1, 0},
+		{"169.254.0.1", 11, 0, 0},
+		{"127.0.0.1", 3, 1, 0},
+		{"0.1.2.3", 3, 1, 0},
+		{"224.0.0.1", 3, 1, 0},
+		{"240.0.0.1", 3, 1, 0},
+		{"255.255.255.255", 3, 1, 0},
+		{"ff02::1", 1, 3, 0},
+	} {
+		t.Run(fmt.Sprintf("type %d from %s", c.kind, c.offender), func(t *testing.T) {
+			offender := netip.MustParseAddr(c.offender)
+			leaf, server, header := leaf6, server6, 48
+			if offender.Is4() {
+				leaf, server, header = leaf4, server4, 28
+			}
+			payload := make([]byte, 100)
+			datagram := udpDatagram(netip.AddrPortFrom(leaf, 40000), netip.AddrPortFrom(server, 4000), payload)
+			if out := relayedError(datagram[:header], icmpError{offender: offender, kind: c.kind, code: c.code, info: c.info}, payload, hostHops(leaf)); out != nil {
+				p, _ := parse(out)
+				t.Errorf("built %s, want nothing", p)
+			}
+		})
+	}
+}

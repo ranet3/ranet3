@@ -491,10 +491,14 @@ func (x *Exit) answerDialFailure(req completer, syn []byte, failure dialFailure)
 // unreachableFrom is the destination unreachable cause raised about the
 // exit's own packet, answered about the leaf's offending packet from the
 // same offender with the same code, at the TTL or hop limit hops, nil for
-// any other error
+// any other error and for an offender the mesh refuses as a source
+// (packet.InvalidSource), whose error a ranet3 node drops wherever it meets
+// it, so that the stack resets the dial instead
 func unreachableFrom(offending []byte, cause icmpError, hops uint8) []byte {
 	always := func() bool { return true }
 	switch {
+	case packet.InvalidSource(cause.offender):
+		return nil
 	case cause.offender.Is4() && cause.kind == 3:
 		return packet.Unreachable(offending, cause.offender, hops, cause.code, always)
 	case cause.offender.Is6() && cause.kind == 1:
