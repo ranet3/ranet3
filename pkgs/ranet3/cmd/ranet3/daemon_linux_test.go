@@ -989,12 +989,17 @@ func ask(t *testing.T, socket, method, path string, request *control.Request) (i
 // unready is why the status f's daemon answers says its exit does not serve
 func unready(t *testing.T, f *daemonFiles) string {
 	t.Helper()
+	return daemonEgressStatus(t, f).Unready
+}
+
+func daemonEgressStatus(t *testing.T, f *daemonFiles) control.EgressStatus {
+	t.Helper()
 	answered, body := ask(t, f.opts.controlPath, http.MethodGet, control.PathStatus, nil)
 	var status control.Status
 	if err := json.Unmarshal([]byte(body), &status); answered != http.StatusOK || err != nil {
 		t.Fatalf("status answered %d %q (%v)", answered, body, err)
 	}
-	return status.Egress.Unready
+	return status.Egress
 }
 
 // dialTable opens the socket a test reads the table by, and answers its close, which the test calls before leftNothing
@@ -1269,7 +1274,6 @@ func TestDaemonReloadWhileDownLeavesTheStoppedExitsChains(t *testing.T) {
 	code := runAsync(f, watched(&bus))
 	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
 	nft, closeNft := dialTable(t)
-	// held is the rules the host holds in the table, each by its chain and its comment
 	held := func() []string {
 		t.Helper()
 		rules, err := nftables.TableRules(nft, unix.NFPROTO_INET, nftables.Table)
@@ -1286,7 +1290,19 @@ func TestDaemonReloadWhileDownLeavesTheStoppedExitsChains(t *testing.T) {
 	if answered, body := ask(t, f.opts.controlPath, http.MethodPost, control.PathDown, &control.Request{}); answered != http.StatusOK {
 		t.Fatalf("down answered %d %q", answered, body)
 	}
-	waitTill(t, "the stop", func() bool { return unready(t, f) == stopped })
+	var status control.EgressStatus
+	waitTill(t, "the stop", func() bool {
+		status = daemonEgressStatus(t, f)
+		return status.Unready == stopped
+	})
+	// the stopped layout drops more running rules than it adds in this fixture
+	installed := fmt.Sprint(status.Installed)
+	waitTill(t, "the recorded stop", func() bool {
+		passes := bus.Load().Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0)
+		return slices.ContainsFunc(passes, func(pass control.Event) bool {
+			return pass.Attrs["installed"] == installed && pass.Attrs["err"] == ""
+		})
+	})
 	lines, passes := held(), recorded(&bus, "egress.pass")
 	for _, line := range []string{
 		kernelexit.ChainName + ": out via " + daemonTUN + " ipv4 masquerade",
