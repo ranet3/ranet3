@@ -78,7 +78,8 @@ type rekeySchedule struct {
 	lastErr  error
 	// forced marks a rekey the lists asked for, which runs only while they still leave out its SA
 	forced bool
-	// waiting marks the Child SA schedule from the start of its rekey until the schedule is armed again, as settling any exchange that rekey runs arms it, so a rekey that found another holding the slot falls due again once the slot is let go
+	// waiting is set when the Child SA schedule starts a rekey and cleared when the schedule is armed again, which settling an exchange of that rekey does in a session that goes on, or when the schedule falls due again once no scheduled rekey runs and the slot is free
+	// so a rekey that found the slot taken, which runs no exchange, falls due again once the slot is let go unless the schedule was armed again first
 	waiting bool
 }
 
