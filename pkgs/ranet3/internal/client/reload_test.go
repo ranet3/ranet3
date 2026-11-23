@@ -1481,11 +1481,7 @@ func waitingForUnderlayRecords() bool {
 	return false
 }
 
-// A reload that takes the endpoint a dialed session runs over keeps the
-// session and the dialer serving it, since a removed endpoint is no
-// revocation. The map check fails on a reload that stops the dialer, the
-// context check on one that cancels it and leaves its entry to go later, and
-// the revocation check on a revocation sweep that closes the session.
+// Removing an endpoint does not revoke an established session.
 func TestReloadKeepsADialedSessionOverAnEndpointItTakes(t *testing.T) {
 	a, h := &listenNode{name: "a"}, &listenNode{name: "h", listen: true, dualStack: true}
 	a.dials = []*listenNode{h}
@@ -1506,8 +1502,15 @@ func TestReloadKeepsADialedSessionOverAnEndpointItTakes(t *testing.T) {
 		}
 	}
 	writeRegistry(t, a.trustPath, document)
+	session := held(a, h)
+	if session == nil {
+		t.Fatal("no dialed session held before reload")
+	}
 	if err := a.client.ReloadFrom(a.configPath); err != nil {
 		t.Fatalf("the reload was refused: %v", err)
+	}
+	if held(a, h) != session {
+		t.Error("the reload did not keep the dialed session over the endpoint it took")
 	}
 	if !hasDialer(a.client, pathTo(h)) {
 		t.Error("the reload stopped the dialer serving a session over the endpoint it took")
