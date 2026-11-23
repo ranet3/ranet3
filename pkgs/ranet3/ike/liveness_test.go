@@ -106,6 +106,239 @@ func TestNextDueRekeyPreservesChildPriority(t *testing.T) {
 	}
 }
 
+func localChildSchedule(t *testing.T, interval time.Duration) (*scheduledChildRekey, *rekeySchedule) {
+	t.Helper()
+	// With no remote SPI even a worker that starts stops before negotiation.
+	s := &Session{
+		child:             ChildSA{LocalSPI: 1, EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
+		current:           &ikeContext{},
+		childEstablished:  time.Now().Add(-interval),
+		timing:            RekeyTiming{ChildRekeyInterval: interval},
+		rekeyJitterSource: unjittered,
+	}
+	work := &scheduledChildRekey{session: s}
+	schedule, err := work.schedule()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { schedule.timer.Stop() })
+	return work, schedule
+}
+
+func advanceScheduledChild(s *Session) {
+	s.childMu.Lock()
+	defer s.childMu.Unlock()
+	s.child.LocalSPI++
+	s.childGeneration++
+	s.childEstablished = time.Now()
+}
+
+func wantLocalChildStart(t *testing.T, s *Session, generation uint64, err error) {
+	t.Helper()
+	got := s.childRetry.unsettled()
+	if len(got) != 1 || got[0].rekeyed != generation || err == nil || err.Error() != "ike: no Child SA to rekey" || got[0].err != err {
+		t.Fatalf("worker returned %v with outcomes %v, want one local start on generation %d", err, got, generation)
+	}
+}
+
+func TestScheduledChildRekeySkipsReplacedTarget(t *testing.T) {
+	work, schedule := localChildSchedule(t, time.Hour)
+	s := work.session
+	var started bool
+	s.events = onEvent("ike.rekey.started", func() { started = true })
+	<-schedule.timer.C
+	if !work.selectTarget(schedule) {
+		t.Fatal("the original target was not selected")
+	}
+	launched, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error)
+	go func() {
+		close(launched)
+		<-release
+		done <- schedule.run()
+	}()
+	<-launched
+	advanceScheduledChild(s)
+	close(release)
+	err := <-done
+	if got := s.childRetry.unsettled(); len(got) != 0 {
+		t.Fatalf("worker started on generation %d after its target changed: %v", got[0].rekeyed, err)
+	}
+	if started || err != errScheduledChildReplaced {
+		t.Errorf("worker recorded a start %t and returned %v, want no start on the replacement", started, err)
+	}
+}
+
+func TestScheduledChildRekeyKeepsReplacementDueTime(t *testing.T) {
+	for _, armed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retry_already_armed_%t", armed), bubble.Run(func(t *testing.T) {
+			work, r := localChildSchedule(t, time.Hour)
+			s := work.session
+			<-r.timer.C
+			if !work.selectTarget(r) {
+				t.Fatal("the original target was not selected")
+			}
+			r.waiting = true
+			advanceScheduledChild(s)
+			replacement := s.currentChildGeneration()
+			delay := r.interval
+			var failures uint
+			if armed {
+				delay = time.Minute
+				failures = 1
+				r.counted, r.failures = replacement, failures
+				r.reset(delay)
+			}
+			want := time.Now().Add(delay)
+			err := r.run()
+			if err != errScheduledChildReplaced {
+				t.Fatalf("worker returned %v after its target changed", err)
+			}
+			if err := s.settleScheduledChild(r, err); err != nil {
+				t.Fatal(err)
+			}
+			s.pollChildRekeySlot(r, nil)
+			if r.waiting || r.due || !r.deadline.Equal(want) || r.counted != replacement || r.failures != failures {
+				t.Fatalf("replacement counted %v, deadline %v, due %t, waiting %t, failures %d, want due at %v", r.counted, r.deadline, r.due, r.waiting, r.failures, want)
+			}
+			if at := <-r.timer.C; !at.Equal(want) || !work.selectTarget(r) {
+				t.Fatalf("replacement was not selected at %v, timer fired at %v", want, at)
+			}
+			wantLocalChildStart(t, s, replacement, r.run())
+		}))
+	}
+}
+
+func TestScheduledChildRekeySelectsTargetAtSlotRelease(t *testing.T) {
+	for _, change := range []string{"unchanged", "while held", "after selection"} {
+		t.Run(change, func(t *testing.T) {
+			work, r := localChildSchedule(t, time.Hour)
+			s := work.session
+			<-r.timer.C
+			if !work.selectTarget(r) {
+				t.Fatal("the original target was not selected")
+			}
+			r.waiting = true
+			s.childRekeying.Store(true)
+			err := r.run()
+			if err == nil || len(s.childRetry.unsettled()) != 0 {
+				t.Fatalf("worker started with the slot taken: %v", err)
+			}
+			if err := s.settleScheduledChild(r, err); err != nil {
+				t.Fatal(err)
+			}
+			s.pollChildRekeySlot(r, nil)
+			if !r.waiting || r.due {
+				t.Fatal("schedule did not wait for the slot")
+			}
+			if change == "while held" {
+				advanceScheduledChild(s)
+			}
+			s.childRekeying.Store(false)
+			s.pollChildRekeySlot(r, nil)
+			if nextDueRekey([]*rekeySchedule{r}, nil) != r {
+				t.Fatal("no operation was due at slot release")
+			}
+			if selected := work.selectTarget(r); selected != (change != "while held") {
+				t.Fatalf("selected a target at slot release: %t", selected)
+			}
+			switch change {
+			case "unchanged":
+				wantLocalChildStart(t, s, 0, r.run())
+			case "after selection":
+				advanceScheduledChild(s)
+				if err := r.run(); err != errScheduledChildReplaced || len(s.childRetry.unsettled()) != 0 {
+					t.Fatalf("worker took the replacement at slot release: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestScheduledChildRekeySelectsForcedAndRetryTargets(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		forced   bool
+		counted  any
+		unlisted bool
+		want     bool
+	}{
+		{"forced unlisted", true, nil, true, true},
+		{"forced listed", true, uint64(1), false, false},
+		{"retry counted", false, uint64(1), false, true},
+		{"retry replaced", false, uint64(0), false, false},
+		{"retry unlisted replacement", false, uint64(0), true, true},
+	} {
+		for _, move := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/moved_%t", tt.name, move), func(t *testing.T) {
+				work, r := localChildSchedule(t, 0)
+				s := work.session
+				advanceScheduledChild(s)
+				r.forced, r.counted = tt.forced, tt.counted
+				if !r.forced {
+					r.failures = 1
+				}
+				if tt.unlisted {
+					s.suites = func() Suites {
+						return Suites{espCipher: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256}}}
+					}
+				}
+				if selected := work.selectTarget(r); selected != tt.want {
+					t.Fatalf("selected a target: %t, want %t", selected, tt.want)
+				}
+				if !tt.want {
+					return
+				}
+				if !move {
+					wantLocalChildStart(t, s, 1, r.run())
+					return
+				}
+				advanceScheduledChild(s)
+				if err := r.run(); err != errScheduledChildReplaced || len(s.childRetry.unsettled()) != 0 {
+					t.Fatalf("worker started on the replacement: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestScheduledChildRekeyDoesNotTakeTargetInstalledDuringSuiteCheck(t *testing.T) {
+	work, r := localChildSchedule(t, time.Hour)
+	s := work.session
+	<-r.timer.C
+	s.suites = func() Suites {
+		advanceScheduledChild(s)
+		return Suites{}
+	}
+	if work.selectTarget(r) {
+		if err := r.run(); err != errScheduledChildReplaced || len(s.childRetry.unsettled()) != 0 {
+			t.Fatalf("worker took a target installed during the suite check: %v", err)
+		}
+	}
+}
+
+func TestChildRekeyKeepsScheduledTargetAcrossStart(t *testing.T) {
+	for _, path := range []string{"scheduled", "independent", "proactive"} {
+		t.Run(path, func(t *testing.T) {
+			work, r := localChildSchedule(t, time.Hour)
+			s := work.session
+			s.events = onEvent("ike.rekey.started", func() { advanceScheduledChild(s) })
+			run, want := s.RekeyChild, uint64(1)
+			switch path {
+			case "scheduled":
+				<-r.timer.C
+				if !work.selectTarget(r) {
+					t.Fatal("the original target was not selected")
+				}
+				run, want = r.run, 0
+			case "proactive":
+				run = s.RekeyChildProactively
+			}
+			wantLocalChildStart(t, s, want, run())
+		})
+	}
+}
+
 // RFC 7296 section 3.2: "all implementations MUST understand all payload types defined in this document"
 // this end understands every payload type RFC 7296 defines and the Encrypted Fragment payload of RFC 7383, and no other
 func TestSupportedPayloadTypeNamesEveryTypeThisEndUnderstands(t *testing.T) {

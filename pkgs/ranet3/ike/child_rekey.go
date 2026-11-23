@@ -24,7 +24,7 @@ import (
 // It fails while the peer's rekey of either SA runs its additional key
 // exchanges.
 func (s *Session) RekeyChild() error {
-	return s.rekeyChild(false)
+	return s.rekeyChild(false, nil)
 }
 
 // RekeyChildProactively starts a packet-count-triggered Child-SA rekey. If a
@@ -33,7 +33,7 @@ func (s *Session) RekeyChild() error {
 // failed one, the retry Run schedules for it satisfies the request the same
 // way.
 func (s *Session) RekeyChildProactively() error {
-	return s.rekeyChild(true)
+	return s.rekeyChild(true, nil)
 }
 
 // childRetry carries how the Child SA exchanges this end starts came out, on whichever path, to Run, which settles each on the Child SA schedule
@@ -101,7 +101,7 @@ func (s *Session) rekeyEnded(sa string, err error) {
 	s.emit("ike.rekey.completed", slog.String("sa", sa), slog.String("suite", replacement))
 }
 
-func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
+func (s *Session) rekeyChild(alreadyRunningIsSuccess bool, target *uint64) (err error) {
 	if !s.childRekeying.CompareAndSwap(false, true) {
 		if alreadyRunningIsSuccess {
 			return nil
@@ -115,6 +115,14 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		default:
 		}
 	}()
+	var old ChildSA
+	var rekeyed uint64
+	if target != nil {
+		old, rekeyed = s.childWithGeneration()
+		if rekeyed != *target {
+			return errScheduledChildReplaced
+		}
+	}
 	// the rekeys running when a Child SA's keys leave at its lifetime decide whether a new SA takes its place, so none starts once they have left
 	if s.childWithdrawn() {
 		return errors.New("ike: the Child SA is past its lifetime")
@@ -128,8 +136,10 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		return errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
 	}
 	s.emit("ike.rekey.started", slog.String("sa", "child"))
-	// the SA and its generation are read together: the outcome counts against the SA this exchange rekeys, and the check before its request ends the exchange where a restore or a Child SA the peer created made another SA current since
-	old, rekeyed := s.childWithGeneration()
+	// An independent request takes the SA current after its start is reported.
+	if target == nil {
+		old, rekeyed = s.childWithGeneration()
+	}
 	defer func() {
 		s.childRetry.end(childOutcome{rekeyed, err})
 		s.rekeyEnded("child", err)
@@ -161,6 +171,8 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 	}
 	return s.negotiateChild(nil, rekeyed)
 }
+
+var errScheduledChildReplaced = errors.New("ike: the scheduled Child SA rekey target was replaced")
 
 var errChildReplaced = errors.New("ike: the Child SA this exchange set out from was replaced before its request went out")
 

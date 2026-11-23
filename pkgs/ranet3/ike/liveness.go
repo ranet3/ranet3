@@ -98,6 +98,51 @@ func (r *rekeySchedule) replaced() bool {
 	return r.current() != r.counted
 }
 
+type scheduledChildRekey struct {
+	session *Session
+	// Run selects no other target until it has received this worker's result.
+	target uint64
+}
+
+func (w *scheduledChildRekey) schedule() (*rekeySchedule, error) {
+	s := w.session
+	current := func() any { return s.currentChildGeneration() }
+	r, err := s.newRekeySchedule("Child SA", "child", s.timing.ChildRekeyInterval, w.run, s.childEstablishedAt, current)
+	if err == nil && r == nil {
+		r = retryOnly("Child SA", "child", w.run, current)
+	}
+	return r, err
+}
+
+func (w *scheduledChildRekey) selectTarget(schedule *rekeySchedule) bool {
+	// A replacement during the suite check must not inherit that check's authorization.
+	target := w.session.currentChildGeneration()
+	child, _, _ := w.session.unlisted()
+	if (schedule.forced || schedule.counted != target) && child == "" {
+		return false
+	}
+	w.target = target
+	return true
+}
+
+func (w *scheduledChildRekey) run() error {
+	return w.session.rekeyChild(false, &w.target)
+}
+
+func (s *Session) settleScheduledChild(schedule *rekeySchedule, err error) error {
+	// A reset while the worker was out already armed the replacement's own schedule.
+	if err == errScheduledChildReplaced && schedule.waiting {
+		return s.rearm(schedule)
+	}
+	return nil
+}
+
+func (s *Session) pollChildRekeySlot(schedule, running *rekeySchedule) {
+	if schedule.waiting && running == nil && !s.childRekeying.Load() {
+		schedule.waiting, schedule.due = false, true
+	}
+}
+
 func (s *Session) childEstablishedAt() (time.Time, bool) {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
@@ -342,15 +387,10 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	var ender *pendingRequest
 	// RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 	deleted := false
-	childCurrent := func() any { return s.currentChildGeneration() }
-	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.timing.ChildRekeyInterval, s.RekeyChild, s.childEstablishedAt, childCurrent)
+	childWork := scheduledChildRekey{session: s}
+	childSchedule, err := childWork.schedule()
 	if err != nil {
 		return err
-	}
-	// a failed Child SA exchange is retried on this schedule's delay whichever path started it, and the rekeys the lists force run on it
-	// so with no interval the schedule is kept to do those alone
-	if childSchedule == nil {
-		childSchedule = retryOnly("Child SA", "child", s.RekeyChild, childCurrent)
 	}
 	defer childSchedule.timer.Stop()
 	ikeCurrent := func() any { return s.currentContext() }
@@ -452,11 +492,14 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			return
 		}
 		for schedule := nextDueRekey(schedules, running); schedule != nil; schedule = nextDueRekey(schedules, running) {
-			child, ikeSA, _ := s.unlisted()
-			// an unforced rekey falling due runs while its SA is the one the schedule counted it from, since a scheduled rekey counts from its SA's establishment
-			// any rekey falling due runs while the lists leave out its SA, forced or not, since force leaves an SA whose schedule is due or backing off to that schedule
-			// otherwise its schedule goes back to the rekey its interval gives, or to none
-			if (!schedule.forced && !schedule.replaced()) || schedule == ikeSchedule && ikeSA != "" || schedule == childSchedule && child != "" {
+			var start bool
+			if schedule == childSchedule {
+				start = childWork.selectTarget(schedule)
+			} else {
+				_, ikeSA, _ := s.unlisted()
+				start = (!schedule.forced && !schedule.replaced()) || ikeSA != ""
+			}
+			if start {
 				startRekey(schedule)
 				return
 			}
@@ -567,9 +610,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		s.expireChain(now)
 		fragmentsExpire, fragmentsHeld := s.expireFragments(now)
 		// the rekey holding the slot published its outcome before letting the slot go, so a settle here arms the schedule over the due bit given back
-		if childSchedule.waiting && running == nil && !s.childRekeying.Load() {
-			childSchedule.waiting, childSchedule.due = false, true
-		}
+		s.pollChildRekeySlot(childSchedule, running)
 		if err := settleChildRekeys(); err != nil {
 			fail(childSchedule, err)
 		}
@@ -609,11 +650,14 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				}
 				continue
 			}
-			// a Child SA rekey that ran an exchange left its outcome for settleChildRekeys, so its result here only ends the run, and one that found the slot taken waits for the slot
-			if result.schedule != childSchedule {
-				if _, err := settle(result.schedule, result.err); err != nil {
-					end(result.schedule, "local failure", err)
-				}
+			var settleErr error
+			if result.schedule == childSchedule {
+				settleErr = s.settleScheduledChild(childSchedule, result.err)
+			} else {
+				_, settleErr = settle(result.schedule, result.err)
+			}
+			if settleErr != nil {
+				end(result.schedule, "local failure", settleErr)
 			}
 			resuiteDue = true
 			continue
