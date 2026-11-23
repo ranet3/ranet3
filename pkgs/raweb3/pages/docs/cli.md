@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-21
+updated: 2026-11-23
 order: 75
 ---
 
@@ -228,10 +228,10 @@ it. [Debugging](development/debug.md) describes each command and the events.
 - `debug events` prints the recorded events and exits. With `--follow` it prints
   new events until `--for` has passed. `--kind` may be repeated, and a kind also
   selects the kinds under it, so `babel` selects every Babel event. `--since`
-  takes a duration and keeps only the events recorded within it.
+  keeps only the events recorded within the given duration.
 - `debug wait` prints the first event of the kind and how long after the start
   it came. `--attr` may be repeated, and every attribute must match. `--past`
-  takes a duration and also matches an event recorded within it.
+  also matches an event recorded within the given duration.
 - `debug pmtu` shows every session, or the sessions of 1 peer.
 - `debug sender` shows the sender of every session, or of the sessions of 1
   peer.
@@ -255,6 +255,14 @@ it. [Debugging](development/debug.md) describes each command and the events.
   instead, or to stdout for `-`, each packet's bytes as `--payload` asks, which
   `--pcap` needs, with its decision and the rest of its line as the packet's
   comment.
+
+### Duration input
+
+The duration flags of `debug socket` (`--timeout`), `debug events` (`--for` and
+`--since`), `debug wait` (`--past` and `--timeout`), and `debug trace`
+(`--for`), as well as `since` on `/v0/debug/events`, take
+[Go duration syntax](https://pkg.go.dev/time#ParseDuration) with `d` for an
+elapsed day of 24 hours. For example, `1d2h` is 26 hours.
 
 ## Other commands
 

@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-22
+updated: 2026-11-23
 order: 30
 ---
 
@@ -99,6 +99,9 @@ These commands take flags of their own:
 | `debug trace`  | `--payload`      | 0                    | the bytes of each packet a record carries, up to 65535                                  |
 | `debug trace`  | `--pcap`         | none                 | a pcapng file the records go to, created anew at mode 0600, or `-` for stdout           |
 | `debug trace`  | `--for`          | 30 seconds           | how long to trace                                                                       |
+
+The duration flags take the
+[command line duration form](../cli.md#duration-input).
 
 - `debug socket [METHOD] PATH [BODY|-]` sends 1 request as written and prints
   the answer's body as it arrives, with the status line on standard error, and

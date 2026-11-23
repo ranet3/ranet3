@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-22
+updated: 2026-11-23
 order: 80
 ---
 
@@ -241,6 +241,9 @@ POST.
 | `/v0/debug/segments` | GET, HEAD | none                                                               | segments view, a JSON object        |
 | `/v0/debug/probe`    | POST      | `peer` or `all`                                                    | a result                            |
 | `/v0/debug/trace`    | GET       | query `src`, `dst`, `proto`, `decision`, `peer`, `rate`, `payload` | trace lines, 1 JSON object per line |
+
+The events query's `since` takes a nonnegative
+[duration](cli.md#duration-input).
 
 A trace's query takes `src` and `dst` each up to 16 times, a prefix or an
 address, `proto` a protocol number, 0 selecting every protocol, or one of
