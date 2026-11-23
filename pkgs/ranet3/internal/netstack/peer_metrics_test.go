@@ -4,16 +4,20 @@
 package netstack
 
 import (
-	"sync"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
-// metricsHold is how long a test holds the transport or a seal, past every bucket bound a hold must not reach
-// and metricsIdle how long a sender sits on an empty queue
 const (
-	metricsHold = 100 * time.Millisecond
-	metricsIdle = 50 * time.Millisecond
+	metricsHold      = 100 * time.Millisecond
+	metricsIdle      = 50 * time.Millisecond
+	peerClockEnv     = "RANET3_TEST_PEER_CLOCK"
+	peerClockTimeout = 30 * time.Second
 )
 
 // observations is how many observations h holds and how many of them fell past bound, in h's unit
@@ -57,74 +61,83 @@ func TestReleaseSizesCountRunsBetweenWaits(t *testing.T) {
 	}
 }
 
+func withMetricsPeer(t *testing.T, run func(*testing.T, *Peer, *holdingTransport)) {
+	// pooled batch channels belong to the bubble that allocated them
+	if os.Getenv(peerClockEnv) == "" {
+		t.Helper()
+		pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(t.Name()), "/", "$/^") + "$"
+		child := exec.Command(os.Args[0], "-test.run="+pattern, "-test.v", "-test.timeout="+peerClockTimeout.String())
+		child.Env = append(os.Environ(), peerClockEnv+"=1")
+		out, err := child.CombinedOutput()
+		if err != nil {
+			t.Fatalf("the child test exited with %v:\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "--- PASS: "+t.Name()+" ") {
+			t.Fatalf("the child did not pass %s:\n%s", t.Name(), out)
+		}
+		return
+	}
+
+	synctest.Test(t, func(t *testing.T) {
+		h := newHoldingTransport(false)
+		peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
+		defer peer.Close()
+		defer h.letGo()
+		run(t, peer, h)
+	})
+}
+
 // a head wait is the sender waiting for the batch at the head of its queue to be sealed, and the release before it ends there
 // its wait on an empty queue is none, however long, and so is its taking a head already sealed
 func TestHeadWaitCountsOnlyAQueuedUnsealedHead(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	var hold sync.Once
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
-		hold.Do(func() { close(entered); <-release })
-		return nil
-	}, nil)
-	defer peer.Close()
-	time.Sleep(metricsIdle)
-	// sealed before the sender, idle until then, takes it
-	if err := filled(peer, 1).finish(); err != nil {
-		t.Fatal(err)
-	}
-	<-entered
-	// the next head is reserved and left unsealed, with a batch sealed behind it
-	head := filled(peer, 2)
-	if err := filled(peer, 4).finish(); err != nil {
-		t.Fatal(err)
-	}
-	close(release)
-	taken(t, peer)
-	time.Sleep(metricsHold)
-	if err := head.finish(); err != nil {
-		t.Fatal(err)
-	}
-	waitUntil(t, "the sender to end its releases", func() bool { return peer.SendStats().Releases.Sum == 7 })
-	stats := peer.SendStats()
-	held := uint64(metricsHold / WaitUnit)
-	if all, past := observations(stats.HeadWaits, held/2); all != 1 || past != 1 {
-		t.Errorf("one wait of %s for an unsealed head after one sealed head reads %+v, want it alone and past %s", metricsHold, stats.HeadWaits, metricsHold/2)
-	}
-	if stats.HeadWaits.Sum >= uint64((metricsHold+metricsIdle)/WaitUnit) {
-		t.Errorf("the head waits come to %d microseconds, which counts the empty queue's %s", stats.HeadWaits.Sum, metricsIdle)
-	}
-	if all, _ := observations(stats.Releases, 0); all != 2 || stats.Releases.Counts[0] != 1 || stats.Releases.Counts[3] != 1 {
-		t.Errorf("a release of 1 packet, a head wait and a release of 6 read %+v", stats.Releases)
-	}
+	withMetricsPeer(t, func(t *testing.T, peer *Peer, h *holdingTransport) {
+		time.Sleep(metricsIdle)
+		queue(t, filled(peer, 1))
+		<-h.entered
+		head := filled(peer, 2)
+		queue(t, filled(peer, 4))
+		time.Sleep(metricsHold)
+
+		start := time.Now()
+		h.letGo()
+		synctest.Wait()
+		time.Sleep(metricsHold)
+		queue(t, head)
+		waitUntil(t, "the sender to end its releases", func() bool { return peer.SendStats().Releases.Sum == 7 })
+		limit := uint64((time.Since(start) + WaitUnit - 1) / WaitUnit)
+		stats := peer.SendStats()
+		if all, _ := observations(stats.HeadWaits, 0); all != 1 || stats.HeadWaits.Sum < uint64(metricsHold/WaitUnit) {
+			t.Errorf("head waits read %+v, want one wait of at least %s", stats.HeadWaits, metricsHold)
+		}
+		if stats.HeadWaits.Sum > limit {
+			t.Errorf("the head waits total %d microseconds, past the %d since the transport was released", stats.HeadWaits.Sum, limit)
+		}
+		if all, _ := observations(stats.Releases, 0); all != 2 || stats.Releases.Counts[0] != 1 || stats.Releases.Counts[3] != 1 {
+			t.Errorf("a release of 1 packet, a head wait and a release of 6 read %+v", stats.Releases)
+		}
+	})
 }
 
 // a batch's seal time ends when its filler seals it, not when the sender takes it
 // so a batch sealed behind one the transport holds reads no time for that hold
 func TestSealTimeEndsAtTheSeal(t *testing.T) {
-	entered, release := make(chan struct{}, 1), make(chan struct{})
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
-		select {
-		case entered <- struct{}{}:
-			<-release
-		default:
+	withMetricsPeer(t, func(t *testing.T, peer *Peer, h *holdingTransport) {
+		seal := func() uint64 {
+			start := time.Now()
+			queue(t, filled(peer, 1))
+			return uint64((time.Since(start) + WaitUnit - 1) / WaitUnit)
 		}
-		return nil
-	}, nil)
-	defer peer.Close()
-	if err := filled(peer, 1).finish(); err != nil {
-		t.Fatal(err)
-	}
-	<-entered
-	if err := filled(peer, 1).finish(); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(metricsHold)
-	close(release)
-	waitUntil(t, "the sender to take both batches", func() bool { return peer.SendStats().Releases.Sum == 2 })
-	seals := peer.SendStats().Seals
-	if all, past := observations(seals, uint64(metricsHold/WaitUnit)/2); all != 2 || past != 0 {
-		t.Errorf("two batches sealed as they were reserved read %+v, want neither past %s", seals, metricsHold/2)
-	}
+		limit := seal()
+		<-h.entered
+		limit += seal()
+		time.Sleep(metricsHold)
+		h.letGo()
+		waitUntil(t, "the sender to take both batches", func() bool { return peer.SendStats().Releases.Sum == 2 })
+		seals := peer.SendStats().Seals
+		if all, _ := observations(seals, 0); all != 2 || seals.Sum > limit {
+			t.Errorf("seal times read %+v, want two totaling at most %d microseconds", seals, limit)
+		}
+	})
 }
 
 // the wait histograms' largest bound is past the delay the sender's CoDel holds its queue to
