@@ -84,7 +84,7 @@ func parseEventQuery(values url.Values) (EventQuery, error) {
 		}
 	}
 	if since := values.Get("since"); since != "" {
-		window, err := time.ParseDuration(since)
+		window, err := ParseInputDuration(since)
 		if err != nil || window < 0 {
 			return EventQuery{}, fmt.Errorf("since takes a duration such as 5m, not %q", since)
 		}

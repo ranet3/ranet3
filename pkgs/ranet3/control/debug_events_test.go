@@ -75,21 +75,24 @@ func (s *eventSource) asked() EventQuery {
 	return s.query
 }
 
-// the recorder answers whole as one line per event, and the query reaches the source as asked
 func TestEventsAnswerTheRecorder(t *testing.T) {
 	src := &eventSource{}
 	server := httptest.NewServer(Handler(src))
 	defer server.Close()
-	status, body := get(t, server.Client(), server.URL+PathDebugEvents+"?kind=dial&kind=ike.session&peer=gateway&attr=role%3Dinitiator&since=5m")
-	if status != http.StatusOK || strings.Count(body, "\n") != 3 {
-		t.Fatalf("the recorder answered %d %q", status, body)
+	for _, row := range []struct {
+		text string
+		want time.Duration
+	}{{"5m", 5 * time.Minute}, {"1d2h", 26 * time.Hour}} {
+		status, body := get(t, server.Client(), server.URL+PathDebugEvents+"?kind=dial&kind=ike.session&peer=gateway&attr=role%3Dinitiator&since="+row.text)
+		if status != http.StatusOK || strings.Count(body, "\n") != 3 {
+			t.Fatalf("since=%s answered %d %q", row.text, status, body)
+		}
+		want := EventQuery{Kinds: []string{"dial", "ike.session"}, Peer: "gateway", Attrs: map[string]string{"role": "initiator"}, Since: row.want}
+		if !reflect.DeepEqual(src.asked(), want) {
+			t.Errorf("the source was asked %+v, want %+v", src.asked(), want)
+		}
 	}
-	want := EventQuery{Kinds: []string{"dial", "ike.session"}, Peer: "gateway", Attrs: map[string]string{"role": "initiator"}, Since: 5 * time.Minute}
-	if !reflect.DeepEqual(src.asked(), want) {
-		t.Errorf("the source was asked %+v, want %+v", src.asked(), want)
-	}
-	// a window that does not parse or runs backward, and a follow that is no boolean, are refused by name
-	for _, query := range []string{"since=yesterday", "since=-5m", "follow=maybe"} {
+	for _, query := range []string{"since=yesterday", "since=-5m", "since=-1d", "since=106752d", "follow=maybe"} {
 		name, _, _ := strings.Cut(query, "=")
 		if status, body := get(t, server.Client(), server.URL+PathDebugEvents+"?"+query); status != http.StatusBadRequest || !strings.Contains(body, name) {
 			t.Errorf("%s answered %d %q", query, status, body)
@@ -98,7 +101,6 @@ func TestEventsAnswerTheRecorder(t *testing.T) {
 	if refused := post(t, server.URL+PathDebugEvents, ""); refused.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("a POST to the recorder was answered %s", refused.Status)
 	}
-	// as many kinds as a query may name are read, one more is refused, and so is a query that does not parse
 	kinds := strings.TrimPrefix(strings.Repeat("&kind=dial", maxEventKinds), "&")
 	if status, body := get(t, server.Client(), server.URL+PathDebugEvents+"?"+kinds); status != http.StatusOK {
 		t.Errorf("a query naming %d kinds answered %d %q", maxEventKinds, status, body)
