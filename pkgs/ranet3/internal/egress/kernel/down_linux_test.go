@@ -947,7 +947,11 @@ func TestKernelExitDownNamesTheFlagOfItsTableMadeAgain(t *testing.T) {
 	passes := func() []control.Event {
 		return bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0)
 	}
-	// mark is the number of the last egress.pass event before the change
+	waitFor(t, "the successful stop recorded", func() bool {
+		return slices.ContainsFunc(passes(), func(event control.Event) bool {
+			return event.Attrs["trigger"] == "disable" && event.Attrs["err"] == ""
+		})
+	})
 	var mark uint64
 	for _, event := range passes() {
 		mark = max(mark, event.Seq)
