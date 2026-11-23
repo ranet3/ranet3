@@ -1481,7 +1481,7 @@ func waitingForUnderlayRecords() bool {
 	return false
 }
 
-// Removing an endpoint does not revoke an established session.
+// removing an endpoint does not revoke an established session
 func TestReloadKeepsADialedSessionOverAnEndpointItTakes(t *testing.T) {
 	a, h := &listenNode{name: "a"}, &listenNode{name: "h", listen: true, dualStack: true}
 	a.dials = []*listenNode{h}
