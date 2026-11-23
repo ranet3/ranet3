@@ -15,7 +15,6 @@ import (
 	"os"
 	"slices"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -30,7 +29,7 @@ func (r *reader) traceCommand() *cobra.Command {
 	query := control.TraceQuery{Rate: control.TraceRateDefault}
 	var sources, destinations []string
 	var protocol, pcap string
-	var bound time.Duration
+	bound := followFor
 	cmd := &cobra.Command{
 		Use:   "trace",
 		Short: "Show each packet's forwarding decision",
@@ -94,7 +93,7 @@ of the caller's, and the stream's notes go to stderr.`,
 				}
 			}
 			for line, err := range control.Dial(r.socket).Trace(ctx, query) {
-				// a trace ends at --for, which is the command doing what it was asked
+				// control.Stream distinguishes a trace deadline from failure to get the daemon's answer
 				if errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}
@@ -131,7 +130,7 @@ of the caller's, and the stream's notes go to stderr.`,
 	f.StringVar(&query.Peer, "peer", "", "Only show packets from or to this peer")
 	f.IntVar(&query.Rate, "rate", control.TraceRateDefault, "Most records a second")
 	f.IntVar(&query.Payload, "payload", 0, "Bytes of each packet to show")
-	f.DurationVar(&bound, "for", followFor, "How long to trace")
+	f.Var((*durationValue)(&bound), "for", "How long to trace")
 	f.StringVar(&pcap, "pcap", "", "Write the records as pcapng to this file")
 	cmd.MarkFlagFilename("pcap", "pcapng")
 	cmd.RegisterFlagCompletionFunc("decision", cobra.FixedCompletions(control.TraceDecisions, cobra.ShellCompDirectiveNoFileComp))

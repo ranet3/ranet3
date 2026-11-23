@@ -58,7 +58,6 @@ func TestDebugIsListedAndListsItsCommands(t *testing.T) {
 	}
 }
 
-// debug socket prints the daemon's own bytes and its status line apart from them
 func TestDebugSocketPrintsTheDaemonsBytes(t *testing.T) {
 	socket := serveStub(t)
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -74,7 +73,7 @@ func TestDebugSocketPrintsTheDaemonsBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stdout, stderr, err := executeApart(t, nil, "debug", "socket", "GET", control.PathStatus, "--control", socket)
+	stdout, stderr, err := executeApart(t, nil, "debug", "socket", "GET", control.PathStatus, "--control", socket, "--timeout", "1d")
 	if err != nil {
 		t.Fatalf("debug socket failed: %v", err)
 	}

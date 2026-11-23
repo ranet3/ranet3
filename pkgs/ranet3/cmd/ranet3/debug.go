@@ -13,7 +13,6 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,7 +49,7 @@ change in any revision.`,
 // socketCommand sends one request as written, for a path no command covers yet
 // or a daemon of another revision
 func (r *reader) socketCommand() *cobra.Command {
-	var timeout time.Duration
+	timeout := control.ReadTimeout
 	cmd := &cobra.Command{
 		Use:   "socket [METHOD] PATH [BODY|-]",
 		Short: "Send a raw control socket request",
@@ -74,7 +73,7 @@ command exits 1 when the status is not 2xx.`,
 			}
 			defer response.Body.Close()
 			fmt.Fprintln(cmd.ErrOrStderr(), response.Proto, response.Status)
-			// a stream ends at the timeout like any other answer, with what arrived printed
+			// a timed out stream counts as an answer once its status has arrived
 			if _, err := io.Copy(cmd.OutOrStdout(), response.Body); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 				return err
 			}
@@ -84,7 +83,7 @@ command exits 1 when the status is not 2xx.`,
 			return nil
 		},
 	}
-	cmd.Flags().DurationVar(&timeout, "timeout", control.ReadTimeout, "Request timeout")
+	cmd.Flags().Var((*durationValue)(&timeout), "timeout", "Request timeout")
 	cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
 	return cmd
 }

@@ -41,7 +41,6 @@ func (s endingSource) DebugFollow(query control.EventQuery) ([]control.Event, co
 	return s.DebugEvents(query), scripted{live}
 }
 
-// debug events prints the recorder and exits, and with -f the events after it until the stream ends or --for has passed
 func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 	socket := serveStub(t)
 	out, err := execute(t, "debug", "events", "--control", socket)
@@ -51,7 +50,7 @@ func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 	if out, err := executeBounded(t, "--for", answerBound, "debug", "events", "-f", "--control", socket); err != nil || !strings.Contains(out, "stream.live") {
 		t.Errorf("debug events -f on a stream held past --for printed %q and ended with %v", out, err)
 	}
-	out, err = execute(t, "debug", "events", "-f", "--for", waitLong.String(), "--json", "--control", serve(t, endingSource{}))
+	out, err = execute(t, "debug", "events", "-f", "--for", "1d2h", "--json", "--control", serve(t, endingSource{}))
 	if err != nil {
 		t.Fatalf("debug events -f ended with %v", err)
 	}
@@ -66,24 +65,31 @@ func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 	if strings.Join(kinds, " ") != "dial.attempt stream.live ike.session.established stream.closed" {
 		t.Errorf("debug events -f printed %q", kinds)
 	}
-	if _, err := execute(t, "debug", "events", "-f", "--for", "0s", "--control", socket); err == nil || !strings.Contains(err.Error(), "--for") {
-		t.Errorf("debug events -f --for 0s ended with %v", err)
+	for _, value := range []struct{ text, want string }{{"0s", "0s"}, {"-1d", "-24h0m0s"}} {
+		if _, err := execute(t, "debug", "events", "-f", "--for", value.text, "--control", socket); err == nil || err.Error() != "--for takes a duration above zero, not "+value.want {
+			t.Errorf("debug events -f --for %s ended with %v", value.text, err)
+		}
 	}
 }
 
-// debug wait exits 0 printing the event and how long it took, and 1 saying so when none comes in time
 func TestDebugWaitEndsWithTheEventOrTheTimeout(t *testing.T) {
 	socket := serveStub(t)
 	out, err := execute(t, "debug", "wait", "ike.session.established", "--attr", "role=initiator", "--timeout", waitLong.String(), "--control", socket)
 	if err != nil || !strings.Contains(out, "ike.session.established example/gateway:0@0") || !strings.Contains(out, "After ") {
 		t.Errorf("a wait for an event that came printed %q and ended with %v", out, err)
 	}
-	// the recorder's dial is older than the wait, so only --past reaches it
-	out, err = execute(t, "debug", "wait", "dial.attempt", "--past", pastLong.String(), "--timeout", waitLong.String(), "--control", socket)
-	if err != nil || !strings.Contains(out, "before the wait began") {
-		t.Errorf("a wait reaching back for a recorded event printed %q and ended with %v", out, err)
+	ending := serve(t, endingSource{})
+	for _, past := range []string{pastLong.String(), "1d2h"} {
+		out, err := execute(t, "debug", "wait", "dial.attempt", "--past", past, "--timeout", waitLong.String(), "--control", ending)
+		if err != nil || !strings.Contains(out, "before the wait began") {
+			t.Errorf("a wait with --past %s printed %q and ended with %v", past, out, err)
+		}
 	}
-	// each waits out its timeout, so they wait at once, each on a stub of its own whose stream places no other run holds
+	out, err = execute(t, "debug", "wait", "ike.session.established", "--timeout", "1d2h", "--control", ending)
+	if err != nil || !strings.Contains(out, "ike.session.established example/gateway:0@0") {
+		t.Errorf("a wait with --timeout 1d2h printed %q and ended with %v", out, err)
+	}
+	// these cases wait out their timeouts
 	for name, args := range map[string][]string{
 		"a kind that never comes":  {"babel.neighbor.down"},
 		"a recorded event":         {"dial.attempt"},
@@ -138,8 +144,6 @@ func serveCutStream(t *testing.T) string {
 	return path
 }
 
-// a wait that could not watch for its event, or lost it, exits 2 saying why, apart from a wait whose event did not come
-// a command line it cannot use is refused before the wait dials a stub whose session would answer it
 func TestDebugWaitTellsAFailureToWatchFromATimeout(t *testing.T) {
 	socket, dropping, closing, cut := serveStub(t), serve(t, droppingSource{}), serve(t, closingSource{}), serveCutStream(t)
 	gone := filepath.Join(filepath.Dir(socketPath(t)), "gone.sock")
@@ -153,15 +157,22 @@ func TestDebugWaitTellsAFailureToWatchFromATimeout(t *testing.T) {
 		"a stream ending without a word":    {[]string{"ike.session.established", "--control", cut}, "the stream ended"},
 		"an attribute that is no key=value": {[]string{"ike.session.established", "--attr", "role", "--control", socket}, "key=value"},
 		"a past below zero":                 {[]string{"ike.session.established", "--past", "-1s", "--control", socket}, "--past"},
+		"a past below zero in days":         {[]string{"ike.session.established", "--past", "-1d", "--control", socket}, "--past takes a duration of zero or more, not -24h0m0s"},
 	} {
 		args := append([]string{"debug", "wait"}, append(test.args, "--timeout", waitLong.String())...)
 		if out, err := execute(t, args...); !errors.Is(err, waitUnwatched) || !strings.Contains(out, test.want) {
 			t.Errorf("%s: %q printed %q and ended with %v", name, args, out, err)
 		}
 	}
-	args := []string{"debug", "wait", "ike.session.established", "--timeout", "0s", "--control", socket}
-	if out, err := execute(t, args...); !errors.Is(err, waitUnwatched) || !strings.Contains(out, "--timeout") {
-		t.Errorf("%q printed %q and ended with %v", args, out, err)
+	for _, row := range []struct{ value, want string }{
+		{"0s", "--timeout takes a duration above zero, not 0s"},
+		{"-1d", "--timeout takes a duration above zero, not -24h0m0s"},
+		{"106752d", `invalid argument "106752d" for "--timeout" flag`},
+	} {
+		args := []string{"debug", "wait", "ike.session.established", "--timeout", row.value, "--control", socket}
+		if out, err := execute(t, args...); !errors.Is(err, waitUnwatched) || !strings.Contains(out, row.want) {
+			t.Errorf("%q printed %q and ended with %v", args, out, err)
+		}
 	}
 }
 
@@ -205,14 +216,14 @@ func (s *askedSource) DebugFollow(query control.EventQuery) ([]control.Event, co
 	return s.stubSource.DebugFollow(query)
 }
 
-// the selection flags of events and wait reach the daemon as the query they spell
-// and wait answers --json with the wire form of its answer
 func TestDebugSelectionReachesTheDaemon(t *testing.T) {
 	src := &askedSource{}
 	socket := serve(t, src)
 
-	if _, err := execute(t, "debug", "events", "--kind", "dial", "--kind", "ike.session", "--peer", "gateway", "--since", "5m", "--control", socket); err != nil {
-		t.Fatal(err)
+	for _, since := range []string{"5m", "1d2h"} {
+		if _, err := execute(t, "debug", "events", "--kind", "dial", "--kind", "ike.session", "--peer", "gateway", "--since", since, "--control", socket); err != nil {
+			t.Fatal(err)
+		}
 	}
 	out, err := execute(t, "debug", "wait", "ike.session.established", "--peer", "gateway", "--attr", "role=initiator", "--json", "--timeout", waitLong.String(), "--control", socket)
 	if err != nil {
@@ -226,6 +237,7 @@ func TestDebugSelectionReachesTheDaemon(t *testing.T) {
 	defer src.mu.Unlock()
 	want := []control.EventQuery{
 		{Kinds: []string{"dial", "ike.session"}, Peer: "gateway", Since: 5 * time.Minute},
+		{Kinds: []string{"dial", "ike.session"}, Peer: "gateway", Since: 26 * time.Hour},
 		{Kinds: []string{"ike.session.established"}, Peer: "gateway", Attrs: map[string]string{"role": "initiator"}, Follow: true},
 	}
 	if !reflect.DeepEqual(src.asked, want) {

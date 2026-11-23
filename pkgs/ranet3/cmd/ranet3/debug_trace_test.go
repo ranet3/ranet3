@@ -49,8 +49,6 @@ func serveTrace(t *testing.T, held bool) (string, chan url.Values) {
 	return path, asked
 }
 
-// debug trace prints what the daemon streams until --for has passed, then exits 0, and under --json the wire lines
-// its flags reach the daemon as the query they spell
 func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 	socket, asked := serveTrace(t, true)
 	out, err := executeBounded(t, "--for", answerBound, "debug", "trace", "--control", socket,
@@ -64,7 +62,7 @@ func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 		t.Errorf("the daemon was asked %v, want %v", got, want)
 	}
 	ending, asked := serveTrace(t, false)
-	out, err = execute(t, "debug", "trace", "--for", waitLong.String(), "--json", "--control", ending)
+	out, err = execute(t, "debug", "trace", "--for", "1d2h", "--json", "--control", ending)
 	if err != nil {
 		t.Fatalf("debug trace --json ended with %v", err)
 	}
@@ -397,7 +395,6 @@ func (o ownedByNext) Sys() any {
 	return &st
 }
 
-// a flag out of bounds or that does not parse is refused with its value before the command dials
 func TestDebugTraceRefusesItsFlagsOutOfBounds(t *testing.T) {
 	gone := filepath.Join(filepath.Dir(socketPath(t)), "gone.sock")
 	for _, c := range []struct {
@@ -405,6 +402,7 @@ func TestDebugTraceRefusesItsFlagsOutOfBounds(t *testing.T) {
 		want string
 	}{
 		{[]string{"--for", "0s"}, "--for"},
+		{[]string{"--for", "-1d"}, "--for takes a duration above zero, not -24h0m0s"},
 		{[]string{"--src", "192.0.2.0/33"}, "192.0.2.0/33"},
 		{[]string{"--dst", "example.org"}, "example.org"},
 		{[]string{"--proto", "ospf"}, "ospf"},

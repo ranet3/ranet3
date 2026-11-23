@@ -24,7 +24,7 @@ func init() {
 
 func (r *reader) eventsCommand() *cobra.Command {
 	var query control.EventQuery
-	var bound time.Duration
+	bound := followFor
 	cmd := &cobra.Command{
 		Use:   "events",
 		Short: "Show node events",
@@ -46,8 +46,7 @@ peer is named by its path, by org/name:serial, by org/name or by name.`,
 			defer cancel()
 			w := &outputWriter{writer: cmd.OutOrStdout()}
 			for event, err := range control.Dial(r.socket).Events(ctx, query) {
-				// a follow ends at --for, which is the command doing what it was asked
-				// a daemon that never answered fails with an error of its own, which control.Stream keeps apart from this
+				// control.Stream distinguishes a follow deadline from failure to get the daemon's answer
 				if query.Follow && errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}
@@ -63,9 +62,9 @@ peer is named by its path, by org/name:serial, by org/name or by name.`,
 	}
 	f := cmd.Flags()
 	f.BoolVarP(&query.Follow, "follow", "f", false, "Follow new events")
-	f.DurationVar(&bound, "for", followFor, "How long to follow")
+	f.Var((*durationValue)(&bound), "for", "How long to follow")
 	f.StringArrayVar(&query.Kinds, "kind", nil, "Only show events of this kind")
-	f.DurationVar(&query.Since, "since", 0, "Only show events this recent")
+	f.Var((*durationValue)(&query.Since), "since", "Only show events this recent")
 	r.peerFlag(cmd, &query.Peer, "Only show events about this peer")
 	cmd.RegisterFlagCompletionFunc("for", cobra.NoFileCompletions)
 	cmd.RegisterFlagCompletionFunc("kind", r.recorded(func(e control.Event) string { return e.Kind }))
@@ -91,7 +90,8 @@ func (r *reader) printEvent(w *outputWriter, event control.Event) error {
 func (r *reader) waitCommand() *cobra.Command {
 	var query control.EventQuery
 	var attrs []string
-	var past, timeout time.Duration
+	var past time.Duration
+	timeout := waitTimeout
 	cmd := &cobra.Command{
 		Use:   "wait <kind>",
 		Short: "Wait for a node event",
@@ -126,10 +126,8 @@ A peer is named by its path, by org/name:serial, by org/name or by name.`,
 				}
 				query.Attrs[key] = value
 			}
-			// the whole recorder of the kind is read, so an event between this start and the subscription is not lost
-			// the start is the boundary of the recorded events alone, on the clock the daemon shares with this host
-			// an event after the stream.live note came after the subscription, so after the start, whatever its stamp says
-			// the daemon queues only what the query takes, so the first such event after the subscription finds the queue empty
+			// read the whole recorder so an event between this start and the subscription is not lost
+			// live events are ordered by the subscription rather than the daemon's clock
 			started := time.Now()
 			query.Kinds, query.Follow = args, true
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
@@ -164,8 +162,8 @@ A peer is named by its path, by org/name:serial, by org/name or by name.`,
 	}
 	f := cmd.Flags()
 	f.StringArrayVar(&attrs, "attr", nil, "Require this key=value attribute")
-	f.DurationVar(&past, "past", 0, "Also match a recorded event this recent")
-	f.DurationVar(&timeout, "timeout", waitTimeout, "How long to wait")
+	f.Var((*durationValue)(&past), "past", "Also match a recorded event this recent")
+	f.Var((*durationValue)(&timeout), "timeout", "How long to wait")
 	r.peerFlag(cmd, &query.Peer, "Only match events about this peer")
 	cmd.RegisterFlagCompletionFunc("attr", cobra.NoFileCompletions)
 	cmd.RegisterFlagCompletionFunc("past", cobra.NoFileCompletions)

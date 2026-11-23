@@ -349,18 +349,18 @@ func TestSubcommandHelpExitsClean(t *testing.T) {
 	}
 }
 
-// the flag library words a value it refuses, and main prints that error alone, so each want is all the user reads
 func TestRefusedFlagValueReadsInFull(t *testing.T) {
 	for name, test := range map[string]struct {
 		args []string
 		want string
 	}{
-		"duration": {args: []string{"debug", "events", "--for", "x"}, want: `invalid argument "x" for "--for" flag: must be a duration like "30s" or "5m"`},
-		"integer":  {args: []string{"debug", "trace", "--rate", "x"}, want: `invalid argument "x" for "--rate" flag: must be an integer`},
-		"bool":     {args: []string{"status", "--json=maybe"}, want: `invalid argument "maybe" for "--json" flag: must be true or false`},
+		"duration":          {args: []string{"debug", "events", "--for", "x"}, want: `invalid argument "x" for "--for" flag: must be a duration in range, such as "30s", "5m" or "1d2h"`},
+		"duration overflow": {args: []string{"debug", "events", "--for", "106752d"}, want: `invalid argument "106752d" for "--for" flag: must be a duration in range, such as "30s", "5m" or "1d2h"`},
+		"integer":           {args: []string{"debug", "trace", "--rate", "x"}, want: `invalid argument "x" for "--rate" flag: must be an integer`},
+		"bool":              {args: []string{"status", "--json=maybe"}, want: `invalid argument "maybe" for "--json" flag: must be true or false`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			// a socket that does not exist, so a value the library ever takes reaches no daemon
+			// an accepted value cannot reach a running daemon
 			args := append(append([]string{}, test.args...), "--control", filepath.Join(t.TempDir(), "control.sock"))
 			out, err := execute(t, args...)
 			if err == nil || err.Error() != test.want {
