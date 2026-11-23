@@ -90,7 +90,7 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	}
 	refuse, skip := validatePeers(effectivePeers(cfg, x), x, families)
 	for _, problem := range skip {
-		slog.Warn(fmt.Sprintf("%v, so nothing will dial it", problem))
+		slog.Warn(problem.Error())
 	}
 	refuse = append(refuse, validateAliases(cfg.Auth.Aliases, x)...)
 	return errors.Join(refuse...)
