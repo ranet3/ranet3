@@ -32,6 +32,12 @@ func (p Payload) validateHeader() error {
 	}
 	return p.Mesh.Validate()
 }
+func (p Payload) Validate() error {
+	if err := p.validateHeader(); err != nil {
+		return err
+	}
+	return p.Document.Validate()
+}
 
 func encodePayload(payload Payload) ([]byte, error) {
 	if err := payload.validateHeader(); err != nil {
@@ -49,6 +55,17 @@ func encodePayload(payload Payload) ([]byte, error) {
 }
 
 func decodePayload(body []byte) (Payload, error) {
+	payload, err := decodePayloadUnvalidated(body)
+	if err != nil {
+		return Payload{}, err
+	}
+	if err := payload.Validate(); err != nil {
+		return Payload{}, err
+	}
+	return payload, nil
+}
+
+func decodePayloadUnvalidated(body []byte) (Payload, error) {
 	if len(body) > MaxSignedBytes {
 		return Payload{}, errors.New("trust: payload exceeds signed file limit")
 	}
@@ -70,13 +87,6 @@ func decodePayload(body []byte) (Payload, error) {
 		payload.Previous = new([32]byte)
 		copy(payload.Previous[:], wire.Previous)
 	}
-	if err := payload.validateHeader(); err != nil {
-		return Payload{}, err
-	}
-	document, err := documentFromWire(wire.Document)
-	if err != nil {
-		return Payload{}, err
-	}
-	payload.Document = document
+	payload.Document = documentFromWire(wire.Document)
 	return payload, nil
 }

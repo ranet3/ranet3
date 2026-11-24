@@ -51,10 +51,14 @@ func decodeDocumentCBOR(body []byte) (Document, error) {
 	if err := unmarshalCBOR(body, &wire); err != nil {
 		return Document{}, err
 	}
-	return documentFromWire(wire)
+	document := documentFromWire(wire)
+	if err := document.Validate(); err != nil {
+		return Document{}, err
+	}
+	return document, nil
 }
 
-func documentFromWire(wire cborDocument) (Document, error) {
+func documentFromWire(wire cborDocument) Document {
 	document := Document{Nodes: make([]Node, len(wire.Nodes))}
 	for i, node := range wire.Nodes {
 		document.Nodes[i] = Node{Name: node.Name, Endpoints: node.Endpoints}
@@ -62,8 +66,5 @@ func documentFromWire(wire cborDocument) (Document, error) {
 			document.Nodes[i].Key = new(base64.StdEncoding.EncodeToString(node.Key))
 		}
 	}
-	if err := document.Validate(); err != nil {
-		return Document{}, err
-	}
-	return document, nil
+	return document
 }

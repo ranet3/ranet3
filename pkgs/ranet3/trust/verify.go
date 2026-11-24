@@ -12,31 +12,61 @@ import (
 	"crypto/sha512"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"os"
 )
 
-// Verified contains only a payload authenticated by one supplied authority key.
+// Authenticated is an intact, strictly decoded file whose signature verified.
+// Its document profile is checked separately after the authority overlap check.
+type Authenticated struct {
+	payload Payload
+	digest  [32]byte
+	key     AuthorityKey
+}
+
+func (a Authenticated) Payload() Payload { return a.payload }
+
+// Verified contains only a fully validated payload authenticated by a supplied key.
 type Verified struct {
 	Payload Payload
 	Digest  [32]byte
 	Key     AuthorityKey
 }
 
+func (a Authenticated) Validate() (Verified, error) {
+	if err := a.payload.Validate(); err != nil {
+		return Verified{}, fmt.Errorf("trust: signed payload: %w", err)
+	}
+	return Verified{Payload: a.payload, Digest: a.digest, Key: a.key}, nil
+}
+
 // VerifySignedFile authenticates before decoding any payload member.
 func VerifySignedFile(file []byte, keys []AuthorityKey) (Verified, error) {
-	envelope, err := parseEnvelope(file)
+	authenticated, err := AuthenticateSignedFile(file, keys)
 	if err != nil {
 		return Verified{}, err
 	}
+	return authenticated.Validate()
+}
+
+// AuthenticateSignedFile performs load steps 5a and 5b, before the overlap
+// check and the field validation of step 7.
+func AuthenticateSignedFile(file []byte, keys []AuthorityKey) (Authenticated, error) {
+	envelope, err := parseEnvelope(file)
+	if err != nil {
+		return Authenticated{}, err
+	}
+	return authenticateParsedEnvelope(file, envelope, keys)
+}
+
+func authenticateParsedEnvelope(file []byte, envelope signedEnvelope, keys []AuthorityKey) (Authenticated, error) {
 	key, ok := verifySignature(envelope, keys)
 	if !ok {
-		return Verified{}, errors.New("trust: no authority key verifies the signature")
+		return Authenticated{}, errors.New("trust: no authority key verifies the signature")
 	}
-	payload, err := decodePayload(envelope.Payload)
+	payload, err := decodePayloadUnvalidated(envelope.Payload)
 	if err != nil {
-		return Verified{}, fmt.Errorf("trust: signed payload: %w", err)
+		return Authenticated{}, fmt.Errorf("trust: signed payload: %w", err)
 	}
 	canonical := make([]byte, 0, len(file))
 	canonical = append(canonical, 0xd2, 0x84)
@@ -45,9 +75,9 @@ func VerifySignedFile(file []byte, keys []AuthorityKey) (Verified, error) {
 	canonical = appendBstr(canonical, envelope.Payload)
 	canonical = appendBstr(canonical, envelope.Signature)
 	if !bytes.Equal(canonical, file) {
-		return Verified{}, errors.New("trust: signed file is not canonical")
+		return Authenticated{}, errors.New("trust: signed file is not canonical")
 	}
-	return Verified{Payload: payload, Digest: sha256.Sum256(envelope.Payload), Key: key}, nil
+	return Authenticated{payload: payload, digest: sha256.Sum256(envelope.Payload), key: key}, nil
 }
 
 func verifySignature(envelope signedEnvelope, keys []AuthorityKey) (AuthorityKey, bool) {
@@ -86,26 +116,25 @@ func verifySignature(envelope signedEnvelope, keys []AuthorityKey) (AuthorityKey
 	return AuthorityKey{}, false
 }
 
-// ReadSignedFile caps the read even if a file grows after stat or is a FIFO.
+// ReadSignedFile reads and fully validates a signed file under supplied keys.
 func ReadSignedFile(path string, keys []AuthorityKey) (Verified, error) {
+	authenticated, err := ReadAuthenticatedFile(path, keys)
+	if err != nil {
+		return Verified{}, err
+	}
+	return authenticated.Validate()
+}
+
+// ReadAuthenticatedFile caps the read even if a file grows after stat or is a FIFO.
+func ReadAuthenticatedFile(path string, keys []AuthorityKey) (Authenticated, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return Verified{}, fmt.Errorf("trust: open signed file: %w", err)
+		return Authenticated{}, fmt.Errorf("trust: open signed file: %w", err)
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	body, err := readBounded(file, MaxSignedBytes, "signed file", "64 MiB", false)
 	if err != nil {
-		return Verified{}, fmt.Errorf("trust: stat signed file: %w", err)
+		return Authenticated{}, err
 	}
-	if info.Size() > MaxSignedBytes {
-		return Verified{}, errors.New("trust: signed file exceeds 64 MiB at stat")
-	}
-	body, err := io.ReadAll(io.LimitReader(file, MaxSignedBytes+1))
-	if err != nil {
-		return Verified{}, fmt.Errorf("trust: read signed file: %w", err)
-	}
-	if len(body) > MaxSignedBytes {
-		return Verified{}, errors.New("trust: signed file exceeds 64 MiB at read")
-	}
-	return VerifySignedFile(body, keys)
+	return AuthenticateSignedFile(body, keys)
 }
