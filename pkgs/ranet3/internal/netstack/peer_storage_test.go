@@ -882,7 +882,7 @@ func TestBatchCycleAllocatesNothing(t *testing.T) {
 	}
 	cycle()
 	cycle()
-	if allocations := testing.AllocsPerRun(1000, cycle); allocations > cycleAllocations {
+	if allocations := leastAllocsOver(1000, cycle); allocations > cycleAllocations {
 		t.Errorf("a batch's cycle allocates %v times", allocations)
 	}
 }

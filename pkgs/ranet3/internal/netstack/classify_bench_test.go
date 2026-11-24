@@ -223,7 +223,7 @@ func TestClassifyBenchmarkReadPassesEveryCheck(t *testing.T) {
 // and nor does one it answers, with no route to the path's first segment or only another exit's default to it, beyond the interval's one report
 func TestClassifyAlongThePathAllocatesNothing(t *testing.T) {
 	allocsOf := func(m *Mesh, read *outboundBatch, count int) float64 {
-		return testing.AllocsPerRun(20, func() {
+		return leastAllocsOver(20, func() {
 			read.n = count
 			m.classify(read)
 			read.reset()

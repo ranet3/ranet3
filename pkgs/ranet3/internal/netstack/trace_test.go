@@ -172,11 +172,15 @@ func TestTraceRateRefusesPastItsBurstAndBuildsNothing(t *testing.T) {
 	if got := feed.Counts(); got != (TraceCounts{Recorded: 1, RefusedRate: 4}) {
 		t.Errorf("the feed counted %+v", got)
 	}
-	if allocs := testing.AllocsPerRun(100, func() { emit(m, site, raw) }); allocs != 0 {
+	var attempts uint64
+	if allocs := leastAllocs(func() {
+		attempts++
+		emit(m, site, raw)
+	}); allocs != 0 {
 		t.Errorf("a packet past the rate allocated %v times", allocs)
 	}
-	if got := feed.Counts().RefusedRate; got < 4+100 {
-		t.Errorf("the feed counted %d refused, want every packet past the first", got)
+	if got, want := feed.Counts().RefusedRate, 4+attempts-1; got < want {
+		t.Errorf("the feed counted %d refused, want at least %d", got, want)
 	}
 }
 

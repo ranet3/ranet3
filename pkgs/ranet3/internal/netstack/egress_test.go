@@ -490,11 +490,15 @@ func TestEgressResultsReachTheTunInOneWrite(t *testing.T) {
 
 const allocTries = 5
 
-// AllocsPerRun counts every goroutine's allocations, which only ever add to f's own
 func leastAllocs(f func()) float64 {
+	return leastAllocsOver(100, f)
+}
+
+// AllocsPerRun counts every goroutine's allocations, which only ever add to f's own
+func leastAllocsOver(runs int, f func()) float64 {
 	least := math.Inf(1)
 	for range allocTries {
-		least = min(least, testing.AllocsPerRun(100, f))
+		least = min(least, testing.AllocsPerRun(runs, f))
 	}
 	return least
 }

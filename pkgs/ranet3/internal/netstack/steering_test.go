@@ -272,7 +272,7 @@ func TestSteeredReadAllocatesNoMoreThanItsEncapsulation(t *testing.T) {
 			outs[i], _ = srv6.AppendEncapsulated(outs[i][:0], packet, policies[i].Source, policies[i].Path)
 		}
 	}
-	if got, want := testing.AllocsPerRun(100, read), testing.AllocsPerRun(100, encapsulate); got > want {
+	if got, want := leastAllocs(read), leastAllocs(encapsulate); got > want {
 		t.Errorf("a read steering %d packets allocated %.0f times, want at most the %.0f of encapsulating them", len(packets), got, want)
 	}
 }

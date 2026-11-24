@@ -557,7 +557,7 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 			m.SetAnswerTTL(64)
 			c.spend(m)
 			answered := false
-			if allocs := testing.AllocsPerRun(100, func() { answered = c.answer(m) || answered }); allocs != 0 || answered {
+			if allocs := leastAllocs(func() { answered = c.answer(m) || answered }); allocs != 0 || answered {
 				t.Errorf("%s cost %.0f allocations and was answered %t, want none and no answer", c.name, allocs, answered)
 			}
 		})

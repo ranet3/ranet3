@@ -398,7 +398,7 @@ func TestEndTestsTheSourceOfItsIPv4AnswerWithoutAllocating(t *testing.T) {
 		{"an ICMP error", icmpv4Error(endSender4, ll4, DefaultMTU), false},
 	} {
 		var got bool
-		if allocs := testing.AllocsPerRun(100, func() { got = answersFromUnforwarded(c.inner, to) }); allocs != 0 || got != c.want {
+		if allocs := leastAllocs(func() { got = answersFromUnforwarded(c.inner, to) }); allocs != 0 || got != c.want {
 			t.Errorf("%s to 169.254.9.9: the test reports %t with %v allocations, want %t with none", c.name, got, allocs, c.want)
 		}
 	}

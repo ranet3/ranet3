@@ -740,9 +740,6 @@ func TestDecisionCountsNoAnswerUnsentToALinkLocalErrorOfNoSession(t *testing.T) 
 	}
 }
 
-// unbuiltRuns is how many answers an allocation count averages over
-const unbuiltRuns = 100
-
 // an answer due that no way back carries is counted unsent and never built, to a source only a counted default reaches as beyond the scope of a link-local source of no session
 func TestAnswerNoWayBackCarriesIsNeverBuilt(t *testing.T) {
 	n := newTransitNode(t, DefaultMTU)
@@ -763,12 +760,15 @@ func TestAnswerNoWayBackCarriesIsNeverBuilt(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			before := n.m.TransitCounters().Unsent
 			fate := TraceSent
-			if allocs := testing.AllocsPerRun(unbuiltRuns, func() { fate = c.answer() }); allocs != 0 || fate != TraceUnsent {
+			var attempts uint64
+			if allocs := leastAllocs(func() {
+				attempts++
+				fate = c.answer()
+			}); allocs != 0 || fate != TraceUnsent {
 				t.Errorf("an answer no way back carries allocated %.1f times and met %v, want none and unsent", allocs, fate)
 			}
-			// AllocsPerRun runs the answer once more to warm up
-			if got := n.m.TransitCounters().Unsent - before; got != unbuiltRuns+1 {
-				t.Errorf("%d answers counted %d unsent", unbuiltRuns+1, got)
+			if got := n.m.TransitCounters().Unsent - before; got != attempts {
+				t.Errorf("%d answers counted %d unsent", attempts, got)
 			}
 		})
 	}

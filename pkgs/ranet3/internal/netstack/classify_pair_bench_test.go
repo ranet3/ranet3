@@ -105,7 +105,7 @@ func classifyPairRead(tb testing.TB, arm classifyPairArm) (*Mesh, *outboundBatch
 func TestClassifyPairReadsGoWhereTheirRunsName(t *testing.T) {
 	for _, arm := range classifyPairArms {
 		m, b := classifyPairRead(t, arm)
-		allocs := testing.AllocsPerRun(20, func() {
+		allocs := leastAllocsOver(20, func() {
 			b.n = arm.count
 			m.classify(b)
 			b.reset()

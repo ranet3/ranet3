@@ -29,9 +29,6 @@ const (
 // capSpentWait is how long decidedUnderLock waits for draws on a spent cap while it holds every shard's lock
 const capSpentWait = 5 * time.Second
 
-// warmDrawRuns is how many times TestWarmDrawAllocatesNothing makes its draws
-const warmDrawRuns = 100
-
 // spreadSeeds is how many seeds TestSequentialSourcesSpreadOverTheShardsUnderEachSeed draws from its generator
 const spreadSeeds = 4096
 
@@ -455,7 +452,7 @@ func TestWarmDrawAllocatesNothing(t *testing.T) {
 	draws(&l, 0, v4, 1)
 	draws(&l, 0, v6, 1)
 	now := time.Duration(0)
-	if allocs := testing.AllocsPerRun(warmDrawRuns, func() {
+	if allocs := leastAllocs(func() {
 		now += time.Microsecond
 		draws(&l, now, v4, 3)
 		draws(&l, now, v6, 3)

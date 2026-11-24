@@ -266,7 +266,7 @@ func TestTUNWriteAllocatesNothing(t *testing.T) {
 		if _, err := m.write(0, work, TUNHeadroom); err != nil {
 			t.Fatalf("write %s: %v", write.name, err)
 		}
-		allocations := testing.AllocsPerRun(100, func() {
+		allocations := leastAllocs(func() {
 			for i, frame := range write.frames {
 				copy(work[i], frame)
 			}
