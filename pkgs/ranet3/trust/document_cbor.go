@@ -21,8 +21,16 @@ type cborNode struct {
 }
 
 func encodeDocumentCBOR(document Document) ([]byte, error) {
-	if err := document.Validate(); err != nil {
+	wire, err := documentToWire(document)
+	if err != nil {
 		return nil, err
+	}
+	return marshalCBOR(wire)
+}
+
+func documentToWire(document Document) (cborDocument, error) {
+	if err := document.Validate(); err != nil {
+		return cborDocument{}, err
 	}
 	wire := cborDocument{Nodes: make([]cborNode, len(document.Nodes))}
 	for i, node := range document.Nodes {
@@ -30,12 +38,12 @@ func encodeDocumentCBOR(document Document) ([]byte, error) {
 		if node.Key != nil {
 			der, err := base64.StdEncoding.DecodeString(*node.Key)
 			if err != nil {
-				return nil, fmt.Errorf("trust: decode validated node key: %w", err)
+				return cborDocument{}, fmt.Errorf("trust: decode validated node key: %w", err)
 			}
 			wire.Nodes[i].Key = der
 		}
 	}
-	return marshalCBOR(wire)
+	return wire, nil
 }
 
 func decodeDocumentCBOR(body []byte) (Document, error) {
@@ -43,6 +51,10 @@ func decodeDocumentCBOR(body []byte) (Document, error) {
 	if err := unmarshalCBOR(body, &wire); err != nil {
 		return Document{}, err
 	}
+	return documentFromWire(wire)
+}
+
+func documentFromWire(wire cborDocument) (Document, error) {
 	document := Document{Nodes: make([]Node, len(wire.Nodes))}
 	for i, node := range wire.Nodes {
 		document.Nodes[i] = Node{Name: node.Name, Endpoints: node.Endpoints}
