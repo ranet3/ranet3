@@ -4,6 +4,7 @@
 package control
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -12,9 +13,8 @@ import (
 func ParseInputDuration(text string) (time.Duration, error) {
 	days := strings.Count(text, "d")
 	if days == 0 {
-		return time.ParseDuration(text)
+		return parseInputDuration(text)
 	}
-	// decimal multiplication adds at most two digits and leaves the range check to time.ParseDuration
 	hours := make([]byte, len(text)+2*days)
 	start := len(hours)
 	for i := len(text); i > 0; {
@@ -47,5 +47,41 @@ func ParseInputDuration(text string) (time.Duration, error) {
 			carry /= 10
 		}
 	}
-	return time.ParseDuration(string(hours[start:]))
+	return parseInputDuration(string(hours[start:]))
+}
+
+func parseInputDuration(text string) (time.Duration, error) {
+	// a term of 1<<63 ns needs at least seven whole digits even in hours
+	const minBoundaryTermLen = len("1000000h")
+	d, err := time.ParseDuration(text)
+	if err != nil || len(text) < minBoundaryTermLen {
+		return d, err
+	}
+	unsigned := text
+	if unsigned[0] == '-' || unsigned[0] == '+' {
+		unsigned = unsigned[1:]
+	}
+	end := 0
+	for start := 0; start < len(unsigned); start = end {
+		for end < len(unsigned) && durationNumberByte(unsigned[end]) {
+			end++
+		}
+		for end < len(unsigned) && !durationNumberByte(unsigned[end]) {
+			end++
+		}
+		if start == 0 || end-start < minBoundaryTermLen {
+			continue
+		}
+		// Go reads each term to whole nanoseconds before adding, and their sum must fit int64
+		if _, err := time.ParseDuration(unsigned[start:end]); err != nil {
+			if _, err := time.ParseDuration(unsigned[:start]); err != nil {
+				return 0, fmt.Errorf("time: invalid duration %q", text)
+			}
+		}
+	}
+	return d, nil
+}
+
+func durationNumberByte(c byte) bool {
+	return c == '.' || c >= '0' && c <= '9'
 }

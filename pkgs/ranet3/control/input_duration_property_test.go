@@ -46,23 +46,49 @@ func TestInputDurationMatchesSignedSum(t *testing.T) {
 		{"ms", time.Millisecond}, {"s", time.Second}, {"m", time.Minute}, {"h", time.Hour}, {"d", 24 * time.Hour},
 	}
 	type term struct {
-		unit  unit
-		count uint64
+		unit    unit
+		decimal string
 	}
+	fractional := func(u unit, ns uint64, quarter int64) term {
+		var amount, offset, scale big.Rat
+		amount.SetUint64(ns)
+		amount.Add(&amount, offset.SetFrac64(quarter, 4))
+		amount.Quo(&amount, scale.SetInt64(int64(u.scale)))
+		return term{u, amount.FloatString(18)}
+	}
+	cases := 0
 	check := func(fatalf func(string, ...any), sign string, terms []term) {
+		cases++
 		var text strings.Builder
 		text.WriteString(sign)
-		var sum, count, scale big.Int
+		var sum big.Int
+		valid := true
 		for _, term := range terms {
-			text.WriteString(strconv.FormatUint(term.count, 10))
+			text.WriteString(term.decimal)
 			text.WriteString(term.unit.name)
-			sum.Add(&sum, count.Mul(count.SetUint64(term.count), scale.SetInt64(int64(term.unit.scale))))
+			spelling := term.decimal + term.unit.name
+			if term.unit.name == "d" {
+				var hours, factor big.Rat
+				if _, ok := hours.SetString(term.decimal); !ok {
+					fatalf("invalid decimal %q", term.decimal)
+				}
+				hours.Mul(&hours, factor.SetInt64(24))
+				spelling = hours.FloatString(18) + "h"
+			}
+			value, err := time.ParseDuration("-" + spelling)
+			if err != nil {
+				valid = false
+				continue
+			}
+			var magnitude big.Int
+			magnitude.SetInt64(int64(value))
+			sum.Sub(&sum, &magnitude)
 		}
 		if sign == "-" {
 			sum.Neg(&sum)
 		}
 		got, err := ParseInputDuration(text.String())
-		if sum.IsInt64() {
+		if valid && sum.IsInt64() {
 			if err != nil || got != time.Duration(sum.Int64()) {
 				fatalf("%q read as %v, %v, want %s ns", text.String(), got, err, &sum)
 			}
@@ -70,6 +96,7 @@ func TestInputDurationMatchesSignedSum(t *testing.T) {
 			fatalf("%q read as %v, want a refusal of %s ns", text.String(), got, &sum)
 		}
 	}
+	const edge = uint64(1) << 63
 	signs := []string{"", "+", "-"}
 	for _, sign := range signs {
 		for _, u := range units {
@@ -78,26 +105,32 @@ func TestInputDurationMatchesSignedSum(t *testing.T) {
 				limit++
 			}
 			maxCount := limit / uint64(u.scale)
-			check(t.Fatalf, sign, []term{{u, maxCount}})
-			check(t.Fatalf, sign, []term{{u, maxCount + 1}})
+			check(t.Fatalf, sign, []term{{u, strconv.FormatUint(maxCount, 10)}})
+			check(t.Fatalf, sign, []term{{u, strconv.FormatUint(maxCount+1, 10)}})
+			check(t.Fatalf, sign, []term{{u, "0"}, fractional(u, edge, 1)})
+			for _, next := range units {
+				half := fractional(u, edge/2, 1)
+				full := fractional(next, edge, 1)
+				check(t.Fatalf, sign, []term{fractional(u, edge, 1), full})
+				check(t.Fatalf, sign, []term{half, half, {u, "0"}, full})
+			}
 		}
 	}
 	pbt.Check(t, func(ht *hegel.T) {
 		sign := hegel.Draw(ht, hegel.SampledFrom(signs))
 		n := hegel.Draw(ht, pbt.Spanning(1, 5))
-		large := hegel.Draw(ht, pbt.Spanning(0, n-1))
-		// only one term can approach 1<<63 so the sum never reaches Go's uint64 wrap
-		var terms []term
-		for i := range n {
+		terms := make([]term, n)
+		for i := range terms {
 			u := hegel.Draw(ht, hegel.SampledFrom(units))
-			limit := uint64(100)
-			if i == large {
-				limit = uint64(math.MaxInt64)/uint64(u.scale) + 1
+			ns := hegel.Draw(ht, pbt.Spanning(uint64(0), edge+1))
+			if hegel.Draw(ht, hegel.Booleans()) {
+				ns = hegel.Draw(ht, hegel.SampledFrom([]uint64{0, 1, edge / 2, edge - 1, edge, edge + 1}))
 			}
-			terms = append(terms, term{u, hegel.Draw(ht, pbt.Spanning(0, limit))})
+			terms[i] = fractional(u, ns, hegel.Draw(ht, pbt.Spanning(int64(1), 3)))
 		}
 		check(ht.Fatalf, sign, terms)
 	})
+	t.Logf("checked %d duration texts against per-term Go values, 0 disagreements", cases)
 }
 
 func TestInputDurationWithoutDaysMatchesGo(t *testing.T) {
