@@ -24,10 +24,10 @@ type Node struct {
 }
 
 type Endpoint struct {
-	Address *string `json:"address,omitempty"`
-	Family  string  `json:"family"`
-	ID      *string `json:"id,omitempty"`
-	Port    uint32  `json:"port"`
+	Address *string `json:"address,omitempty" cbor:"3,keyasint,omitempty"`
+	Family  string  `json:"family" cbor:"2,keyasint"`
+	ID      *string `json:"id,omitempty" cbor:"1,keyasint,omitempty"`
+	Port    uint32  `json:"port" cbor:"4,keyasint"`
 }
 
 func (d Document) Validate() error {
