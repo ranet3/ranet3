@@ -107,6 +107,7 @@ the path.`,
 		licensesCommand(),
 		completionCommand(root),
 		debugCommand(),
+		keyCommand(),
 	)
 	root.AddCommand(r.queryCommands()...)
 	root.AddCommand(r.writeCommands()...)
