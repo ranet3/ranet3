@@ -93,7 +93,7 @@ of the caller's, and the stream's notes go to stderr.`,
 				}
 			}
 			for line, err := range control.Dial(r.socket).Trace(ctx, query) {
-				// control.Stream distinguishes a trace deadline from failure to get the daemon's answer
+				// (*control.Client).Stream distinguishes a trace deadline from failure to get the daemon's answer
 				if errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}

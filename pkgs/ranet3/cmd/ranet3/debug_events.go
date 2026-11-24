@@ -46,7 +46,7 @@ peer is named by its path, by org/name:serial, by org/name or by name.`,
 			defer cancel()
 			w := &outputWriter{writer: cmd.OutOrStdout()}
 			for event, err := range control.Dial(r.socket).Events(ctx, query) {
-				// control.Stream distinguishes a follow deadline from failure to get the daemon's answer
+				// (*control.Client).Stream distinguishes a follow deadline from failure to get the daemon's answer
 				if query.Follow && errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}
