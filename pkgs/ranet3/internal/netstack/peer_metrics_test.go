@@ -61,7 +61,7 @@ func TestReleaseSizesCountRunsBetweenWaits(t *testing.T) {
 	}
 }
 
-func withMetricsPeer(t *testing.T, run func(*testing.T, *Peer, *holdingTransport)) {
+func withPeerClock(t *testing.T, run func(*testing.T)) {
 	// pooled batch channels belong to the bubble that allocated them
 	if os.Getenv(peerClockEnv) == "" {
 		t.Helper()
@@ -78,7 +78,11 @@ func withMetricsPeer(t *testing.T, run func(*testing.T, *Peer, *holdingTransport
 		return
 	}
 
-	synctest.Test(t, func(t *testing.T) {
+	synctest.Test(t, run)
+}
+
+func withMetricsPeer(t *testing.T, run func(*testing.T, *Peer, *holdingTransport)) {
+	withPeerClock(t, func(t *testing.T) {
 		h := newHoldingTransport(false)
 		peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
 		defer peer.Close()

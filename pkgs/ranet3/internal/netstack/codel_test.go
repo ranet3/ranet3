@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
@@ -152,58 +153,65 @@ func TestSenderKeepsALoneBatchPastTheTarget(t *testing.T) {
 // and records the change of state, as it does again when a batch comes through below the target
 // a packet the transport then loses is counted there and only there
 func TestSenderDropsTheHeadOfAStandingQueue(t *testing.T) {
+	const oldAge = time.Second
+	const freshAge = codelTarget / 2
 	for _, transportFails := range []bool{false, true} {
 		t.Run(map[bool]string{false: "the transport takes the rest", true: "the transport loses the rest"}[transportFails], func(t *testing.T) {
-			h := newHoldingTransport(transportFails)
-			bus := events.New()
-			peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit))
-			defer peer.Close()
-			defer h.letGo()
+			withPeerClock(t, func(t *testing.T) {
+				h := newHoldingTransport(transportFails)
+				bus := events.New()
+				peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit))
+				defer peer.Close()
+				defer h.letGo()
 
-			stand(t, h, func() {
-				queue(t, aged(t, peer, time.Second, "first"))
-			}, func() {
-				queue(t, aged(t, peer, time.Second, "head", "tail"))
-				// and one that reads below the target ends the dropping state
-				queue(t, aged(t, peer, -time.Second, "fresh"))
-			})
-			waitForBudget(t, peer)
+				queue(t, aged(t, peer, oldAge, "first"))
+				<-h.entered
+				queue(t, aged(t, peer, oldAge, "head", "tail"))
+				time.Sleep(codelInterval)
+				queue(t, aged(t, peer, 0, "fresh"))
+				time.Sleep(freshAge)
+				h.letGo()
+				synctest.Wait()
 
-			want := [][]byte{[]byte("first"), []byte("tail"), []byte("fresh")}
-			if got := h.transmitted(); !slices.EqualFunc(got, want, bytes.Equal) {
-				t.Errorf("the transport was handed %q, want %q", got, want)
-			}
-			if peer.Dropped() != 1 || peer.DelayDropped() != 1 {
-				t.Errorf("the peer counted %d drops, %d of them for the delay, want the one head", peer.Dropped(), peer.DelayDropped())
-			}
-			if want := map[bool]uint64{false: 0, true: 3}[transportFails]; peer.SendFailed() != want {
-				t.Errorf("the peer counted %d packets lost in the transport, want %d", peer.SendFailed(), want)
-			}
-			got := codelEvents(bus)
-			if len(got) != 2 || got[0].Kind != "netstack.codel.dropping" || got[1].Kind != "netstack.codel.drained" {
-				t.Fatalf("the peer recorded %+v, want it to start dropping and then drain", got)
-			}
-			for _, event := range got {
-				if event.Peer != "peer" || event.Attrs["target"] != codelTarget.String() {
-					t.Errorf("the peer recorded %+v, want its own name and a target of %s", event, codelTarget)
+				want := [][]byte{[]byte("first"), []byte("tail"), []byte("fresh")}
+				if got := h.transmitted(); !slices.EqualFunc(got, want, bytes.Equal) {
+					t.Errorf("the transport was handed %q, want %q", got, want)
 				}
-			}
-			if dropping, drained := sojournOf(t, got[0]), sojournOf(t, got[1]); dropping < time.Second || drained >= codelTarget {
-				t.Errorf("the events carry sojourns of %s and %s, want the batch a second old and the one below the target", dropping, drained)
-			}
+				if peer.Dropped() != 1 || peer.DelayDropped() != 1 {
+					t.Errorf("the peer counted %d drops, %d of them for the delay, want the one head", peer.Dropped(), peer.DelayDropped())
+				}
+				if want := map[bool]uint64{false: 0, true: 3}[transportFails]; peer.SendFailed() != want {
+					t.Errorf("the peer counted %d packets lost in the transport, want %d", peer.SendFailed(), want)
+				}
+				got := codelEvents(bus)
+				if len(got) != 2 || got[0].Kind != "netstack.codel.dropping" || got[1].Kind != "netstack.codel.drained" {
+					t.Fatalf("the peer recorded %+v, want it to start dropping and then drain", got)
+				}
+				for _, event := range got {
+					if event.Peer != "peer" || event.Attrs["target"] != codelTarget.String() {
+						t.Errorf("the peer recorded %+v, want its own name and a target of %s", event, codelTarget)
+					}
+				}
+				if dropping, want := sojournOf(t, got[0]), oldAge+codelInterval+freshAge; dropping != want {
+					t.Errorf("the dropping event carries a sojourn of %s, want %s", dropping, want)
+				}
+				if drained := sojournOf(t, got[1]); drained != freshAge {
+					t.Errorf("the drained event carries a sojourn of %s, want the fresh batch's %s", drained, freshAge)
+				}
 
-			// a read the budget has no room for is dropped too, under no reason of the delay's
-			full := peer.reserveBatchNow(1, peerDataBudget)
-			if full == nil {
-				t.Fatal("an empty budget refused a read of all of it")
-			}
-			if peer.reserveBatchNow(1, 1) != nil {
-				t.Fatal("a full budget admitted one more byte")
-			}
-			queue(t, full)
-			if peer.Dropped() != 1+1 || peer.DelayDropped() != 1 {
-				t.Errorf("a refused read left %d drops, %d of them for the delay", peer.Dropped(), peer.DelayDropped())
-			}
+				// a read the budget has no room for is dropped too, under no reason of the delay's
+				full := peer.reserveBatchNow(1, peerDataBudget)
+				if full == nil {
+					t.Fatal("an empty budget refused a read of all of it")
+				}
+				if peer.reserveBatchNow(1, 1) != nil {
+					t.Fatal("a full budget admitted one more byte")
+				}
+				queue(t, full)
+				if peer.Dropped() != 1+1 || peer.DelayDropped() != 1 {
+					t.Errorf("a refused read left %d drops, %d of them for the delay", peer.Dropped(), peer.DelayDropped())
+				}
+			})
 		})
 	}
 }
@@ -385,15 +393,17 @@ func TestDelayControlLeavesABatchThatSealedNothing(t *testing.T) {
 // the delay the control reads is from the reservation, not from the peer's start
 // or every batch of a peer that has run past the target would read as late and an idle queue would be dropped from
 func TestBatchIsStampedWhenReserved(t *testing.T) {
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil },
-		func([][]byte) error { return nil }, nil)
-	defer peer.Close()
-	// the sender reads started only once a batch reaches it, after this
-	peer.started = peer.started.Add(-time.Hour)
-	b := peer.reserveBatchNow(1, 1)
-	if age := time.Since(peer.started) - b.admitted; age < 0 || age >= deliveryTimeout {
-		t.Errorf("a batch just reserved reads %s old", age)
-	}
+	const uptime = codelTarget + codelTarget/2
+	withPeerClock(t, func(t *testing.T) {
+		peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil },
+			func([][]byte) error { return nil }, nil)
+		defer peer.Close()
+		time.Sleep(uptime)
+		b := peer.reserveBatchNow(1, 1)
+		if got := b.admitted; got != uptime {
+			t.Errorf("the batch was stamped %s after peer start, want %s", got, uptime)
+		}
+	})
 }
 
 // mergeLate is how long after the sender read its clock for a merge a batch is reserved and sealed during that merge
@@ -403,48 +413,50 @@ const mergeLate = 2 * time.Millisecond
 // is measured against a clock read after its reservation
 // so the sojourn it ends the dropping state with, and the delay control reads, is never negative
 func TestBatchReservedDuringAMergeNeverWaitsANegativeTime(t *testing.T) {
-	h := newHoldingTransport(false)
-	bus := events.New()
-	var peer *Peer
-	var during sync.Once
-	emit := func(kind, id string, attrs ...slog.Attr) {
-		bus.Emit(kind, id, attrs...)
-		if kind != "netstack.codel.dropping" {
-			return
-		}
-		// on the sender, inside the merge of the batch that began the dropping state
-		during.Do(func() {
-			time.Sleep(mergeLate)
-			b := peer.reserveBatchNow(1, len("during"))
-			if b == nil {
-				t.Error("the budget refused a batch while the sender merged")
+	withPeerClock(t, func(t *testing.T) {
+		h := newHoldingTransport(false)
+		bus := events.New()
+		var peer *Peer
+		var during sync.Once
+		emit := func(kind, id string, attrs ...slog.Attr) {
+			bus.Emit(kind, id, attrs...)
+			if kind != "netstack.codel.dropping" {
 				return
 			}
-			b.append([]byte("during"), 0)
-			if err := b.finish(); err != nil {
-				t.Errorf("an open peer refused the batch: %v", err)
-			}
-		})
-	}
-	peer = floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, emit))
-	defer peer.Close()
-	defer h.letGo()
+			// on the sender, inside the merge of the batch that began the dropping state
+			during.Do(func() {
+				time.Sleep(mergeLate)
+				b := peer.reserveBatchNow(1, len("during"))
+				if b == nil {
+					t.Error("the budget refused a batch while the sender merged")
+					return
+				}
+				b.append([]byte("during"), 0)
+				if err := b.finish(); err != nil {
+					t.Errorf("an open peer refused the batch: %v", err)
+				}
+			})
+		}
+		peer = floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, emit))
+		defer peer.Close()
+		defer h.letGo()
 
-	stand(t, h, func() {
-		queue(t, aged(t, peer, time.Second, "first"))
-	}, func() {
-		queue(t, aged(t, peer, time.Second, "head", "tail"))
+		stand(t, h, func() {
+			queue(t, aged(t, peer, time.Second, "first"))
+		}, func() {
+			queue(t, aged(t, peer, time.Second, "head", "tail"))
+		})
+		waitForBudget(t, peer)
+		got := codelEvents(bus)
+		if len(got) != 2 || got[0].Kind != "netstack.codel.dropping" || got[1].Kind != "netstack.codel.drained" {
+			t.Fatalf("the peer recorded %+v, want it to start dropping and then drain", got)
+		}
+		if sojourn := sojournOf(t, got[1]); sojourn < 0 {
+			t.Errorf("the batch reserved during the merge ended the dropping state with a sojourn of %s", sojourn)
+		}
+		want := [][]byte{[]byte("first"), []byte("tail"), []byte("during")}
+		if got := h.transmitted(); !slices.EqualFunc(got, want, bytes.Equal) {
+			t.Errorf("the transport was handed %q, want %q", got, want)
+		}
 	})
-	waitForBudget(t, peer)
-	got := codelEvents(bus)
-	if len(got) != 2 || got[0].Kind != "netstack.codel.dropping" || got[1].Kind != "netstack.codel.drained" {
-		t.Fatalf("the peer recorded %+v, want it to start dropping and then drain", got)
-	}
-	if sojourn := sojournOf(t, got[1]); sojourn < 0 {
-		t.Errorf("the batch reserved during the merge ended the dropping state with a sojourn of %s", sojourn)
-	}
-	want := [][]byte{[]byte("first"), []byte("tail"), []byte("during")}
-	if got := h.transmitted(); !slices.EqualFunc(got, want, bytes.Equal) {
-		t.Errorf("the transport was handed %q, want %q", got, want)
-	}
 }
