@@ -1854,10 +1854,10 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 	exit, policy, steered := r.exit(), r.rules != nil, r.table.steers()
 	apart := r.keyer != nil
 	for _, entry := range snapshot {
-		// The host's kernel holds every address cap.table assigns as one of its
+		// the host's kernel holds every address cap.table assigns as one of its
 		// own already, so the mirror copies no entry for one this node does not
-		// originate. An overlay prefix equal to such an address still gets its
-		// hold from overlayHolds.
+		// originate, and an overlay prefix equal to such an address still gets its
+		// hold from overlayHolds where no carve-out equals it
 		if entry.Value == netstack.Assigned {
 			continue
 		}
