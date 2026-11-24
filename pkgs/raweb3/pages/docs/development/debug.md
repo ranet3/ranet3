@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-23
+updated: 2026-11-24
 order: 30
 ---
 
@@ -911,12 +911,13 @@ to that rekey show the peer holds them.
 
 An `ike.suite.unlisted` is recorded when a session schedules a rekey or a
 replacement for an SA running a transform the lists in force leave out. An SA
-whose rekey is already running, due, scheduled this way or backing off from a
-failure records none. The event's `sa` names the SA, its `suite` the transforms
-that SA runs, named as above, and its `action` what the session does about it:
-`rekey` for a rekey under the lists, or `replace` when the lists left out the
-IKE SA's PRF, which no rekey changes, so the session deletes the IKE SA for a
-new handshake, as [reloading](../reloading.md#capcrypto) describes.
+records none while its schedule is running its rekey, or while its rekey is due,
+scheduled this way or backing off from a failure. The event's `sa` names the SA,
+its `suite` the transforms that SA runs, named as above, and its `action` what
+the session does about it: `rekey` for a rekey under the lists, or `replace`
+when the lists left out the IKE SA's PRF, which no rekey changes, so the session
+deletes the IKE SA for a new handshake, as
+[reloading](../reloading.md#capcrypto) describes.
 
 A `COOKIE` challenge, an `INVALID_KE_PAYLOAD` answer naming the group to use,
 and a message of an IKE SA this node does not hold record no

@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-22
+updated: 2026-11-24
 order: 45
 ---
 
@@ -558,17 +558,18 @@ An IPv4 address another program put on the utun with another far end or none has
 no route of XNU's at it, and the reconciler, which leaves another writer's
 address on the utun, declines a route there all the same. An overlay prefix
 equal to any address the utun holds, a `/32` or a `/128`, still gets its hold on
-`lo0`. A hold of the mesh's with no source at such an overlay prefix goes there
-too, this node's own prefix among them, even where a carve-out equals the
-overlay prefix. An address `cap.table` assigns gets no route of its own there
-unless this node originates it too, since the host's kernel holds it as one of
-its own already, though an overlay prefix equal to it still gets its hold,
-unless a carve-out equals it, as the table below gives. On Linux a hold or a
-throw names no device, though an IPv6 one reads back as `dev lo`, and every
-other route leaves through the tun. On macOS every route it installs is on the
-utun, but the hold of each overlay prefix and the kill switch's rejects, which
-are on `lo0`. The reconciler also assigns the tun's addresses. On Linux it also
-installs the [policy rules](#policy-rules-on-linux) it derives.
+`lo0`, unless a carve-out equals it. A hold of the mesh's with no source at such
+an overlay prefix goes there too, this node's own prefix among them, even where
+a carve-out equals the overlay prefix. An address `cap.table` assigns gets no
+route of its own there unless this node originates it too, since the host's
+kernel holds it as one of its own already, though an overlay prefix equal to it
+still gets its hold, unless a carve-out equals it, as the table below gives. On
+Linux a hold or a throw names no device, though an IPv6 one reads back as
+`dev lo`, and every other route leaves through the tun. On macOS every route it
+installs is on the utun, but the hold of each overlay prefix and the kill
+switch's rejects, which are on `lo0`. The reconciler also assigns the tun's
+addresses. On Linux it also installs the [policy rules](#policy-rules-on-linux)
+it derives.
 
 ### What it installs
 
