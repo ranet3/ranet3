@@ -24,6 +24,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
+	trustdoc "ranet3.com/pkgs/ranet3/trust"
 )
 
 // syncPeers starts a dialer for every pair dials names and stops the rest, and off the mesh stops every one
@@ -388,7 +389,7 @@ func (c *Client) syncResponder() int {
 // rather than the path compared, because a rotation is staged by writing the
 // new key where the old one was.
 func (c *Client) sameIdentityKey(path string) error {
-	key, err := registry.LoadPrivateKey(path)
+	key, err := trustdoc.LoadPrivateKey(path)
 	if err != nil {
 		return err
 	}

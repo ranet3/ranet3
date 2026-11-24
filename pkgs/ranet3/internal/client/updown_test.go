@@ -24,6 +24,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/goldentest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	trustdoc "ranet3.com/pkgs/ranet3/trust"
 )
 
 // a renamed method would drop the verbs and the view without a word, since the server finds both by assertion
@@ -395,7 +396,7 @@ func restartNode(t *testing.T, node *loopbackNode) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := registry.LoadPrivateKey(cfg.Auth.Key)
+	key, err := trustdoc.LoadPrivateKey(cfg.Auth.Key)
 	if err != nil {
 		t.Fatal(err)
 	}

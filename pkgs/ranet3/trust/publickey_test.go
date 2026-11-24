@@ -1,14 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-package registry
+package trust
 
 import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha512"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"math/big"
 	"slices"
@@ -150,15 +148,6 @@ func smallOrderEncodings(t testing.TB) [][ed25519.PublicKeySize]byte {
 	return encodings
 }
 
-func publicKeyPEM(t testing.TB, key []byte) string {
-	t.Helper()
-	der, err := x509.MarshalPKIXPublicKey(ed25519.PublicKey(key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-}
-
 func honestKey(label string, i int) ed25519.PrivateKey {
 	seed := sha512.Sum512(fmt.Appendf(nil, "%s %d", label, i))
 	return ed25519.NewKeyFromSeed(seed[:ed25519.SeedSize])
@@ -227,7 +216,6 @@ func TestValidatePublicKeyRefusesEveryEncodingOfASmallOrderPoint(t *testing.T) {
 		if err := ValidatePublicKey(key[:]); err == nil {
 			t.Errorf("%x was accepted", key)
 		}
-		checkDocumentRefused(t, key[:])
 	}
 }
 
@@ -241,19 +229,6 @@ func TestValidatePublicKeyRefusesKeyOnNoPoint(t *testing.T) {
 		if err := ValidatePublicKey(key[:]); err == nil {
 			t.Errorf("%x was accepted", key)
 		}
-		checkDocumentRefused(t, key[:])
-	}
-}
-
-// checkDocumentRefused wants New to refuse a document whose organization other holds key, naming other
-func checkDocumentRefused(t *testing.T, key []byte) {
-	t.Helper()
-	document := Registry{
-		{Organization: "example", PublicKey: publicKeyPEM(t, honestKey("registry", 0).Public().(ed25519.PublicKey)), Nodes: []Node{{CommonName: "gateway"}}},
-		{Organization: "other", PublicKey: publicKeyPEM(t, key), Nodes: []Node{{CommonName: "laptop"}}},
-	}
-	if _, err := New(document); err == nil || !strings.HasPrefix(err.Error(), `registry: organization "other": not a usable public key: `) {
-		t.Errorf("a document whose organization other holds %x was indexed or refused as %v", key, err)
 	}
 }
 

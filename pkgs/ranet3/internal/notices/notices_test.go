@@ -26,8 +26,9 @@ var testOnly = []string{
 	"hegel.dev/go/hegel",
 }
 
-// unlinked holds direct requirements imported by code not yet linked into a binary
-var unlinked = []string{"github.com/fxamacker/cbor/v2"}
+// unlinked is the direct requirements that only packages no binary links yet
+// import, so the notice has no section for them yet.
+var unlinked []string
 
 // The notice is generated, so the thing worth holding is not its text but that
 // nobody added a dependency and shipped without regenerating it. A direct

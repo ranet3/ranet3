@@ -32,6 +32,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	trustdoc "ranet3.com/pkgs/ranet3/trust"
 )
 
 // This file runs one configuration file all the way to a running daemon and
@@ -910,7 +911,7 @@ func writeDaemonIdentity(t *testing.T, keyPath, trustPath string, port uint16) {
 // daemonIdentity reads back the key the file names, the way client.New does.
 func daemonIdentity(t *testing.T, cfg *config.Config) ed25519.PrivateKey {
 	t.Helper()
-	privateKey, err := registry.LoadPrivateKey(cfg.Auth.Key)
+	privateKey, err := trustdoc.LoadPrivateKey(cfg.Auth.Key)
 	if err != nil {
 		t.Fatal(err)
 	}

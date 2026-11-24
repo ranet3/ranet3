@@ -37,6 +37,7 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
+	trustdoc "ranet3.com/pkgs/ranet3/trust"
 )
 
 type Client struct {
@@ -217,7 +218,7 @@ const readsOwnedOnly = !kernelexit.EntryRuns
 
 // New builds the node from its configuration, recording what it does on bus
 func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
-	privateKey, err := registry.LoadPrivateKey(cfg.Auth.Key)
+	privateKey, err := trustdoc.LoadPrivateKey(cfg.Auth.Key)
 	if err != nil {
 		return nil, err
 	}

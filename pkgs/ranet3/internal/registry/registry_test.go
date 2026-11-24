@@ -308,3 +308,14 @@ func TestLoadRefusesRepeatedOrMisspelledNamesAndInvalidUTF8(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistryRefusesSmallOrderKey(t *testing.T) {
+	der, err := x509.MarshalPKIXPublicKey(ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := Registry{{Organization: "example", PublicKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), Nodes: []Node{{CommonName: "gateway"}}}}
+	if _, err := New(document); err == nil || !strings.Contains(err.Error(), "small order") {
+		t.Fatalf("small-order organization key accepted or misclassified: %v", err)
+	}
+}

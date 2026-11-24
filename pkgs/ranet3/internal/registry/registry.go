@@ -23,6 +23,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/trust"
 )
 
 // errUnprepared refuses a resolution handed no Prepare, never read as one that does nothing,
@@ -205,7 +206,7 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 	if !ok {
 		return nil, fmt.Errorf("registry: organization %q: public key is not Ed25519", o.Organization)
 	}
-	if err := ValidatePublicKey(ed); err != nil {
+	if err := trust.ValidatePublicKey(ed); err != nil {
 		return nil, fmt.Errorf("registry: organization %q: not a usable public key: %w", o.Organization, err)
 	}
 	return ed, nil

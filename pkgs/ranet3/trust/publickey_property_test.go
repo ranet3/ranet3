@@ -3,7 +3,7 @@
 
 //go:build linux || darwin
 
-package registry
+package trust
 
 import (
 	"crypto/sha512"
