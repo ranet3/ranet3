@@ -133,11 +133,11 @@ func advanceScheduledChild(s *Session) {
 	s.childEstablished = time.Now()
 }
 
-func wantLocalChildStart(t *testing.T, s *Session, generation uint64, err error) {
+func wantLocalChildPreflightOutcome(t *testing.T, s *Session, generation uint64, err error) {
 	t.Helper()
 	got := s.childRetry.unsettled()
 	if len(got) != 1 || got[0].rekeyed != generation || err == nil || err.Error() != "ike: no Child SA to rekey" || got[0].err != err {
-		t.Fatalf("worker returned %v with outcomes %v, want one local start on generation %d", err, got, generation)
+		t.Fatalf("worker returned %v with outcomes %v, want one preflight failure on generation %d", err, got, generation)
 	}
 }
 
@@ -194,6 +194,17 @@ func TestScheduledChildRekeyKeepsReplacementDueTime(t *testing.T) {
 			if err != errScheduledChildReplaced {
 				t.Fatalf("worker returned %v after its target changed", err)
 			}
+			if !armed {
+				before := r.deadline
+				s.childRekeying.Store(true)
+				if err := s.settleScheduledChild(r, err); err != nil {
+					t.Fatal(err)
+				}
+				if !r.waiting || !r.deadline.Equal(before) {
+					t.Fatalf("the stale worker rearmed the timer while an independent worker held the slot: %v", r.deadline)
+				}
+				s.childRekeying.Store(false)
+			}
 			if err := s.settleScheduledChild(r, err); err != nil {
 				t.Fatal(err)
 			}
@@ -204,7 +215,7 @@ func TestScheduledChildRekeyKeepsReplacementDueTime(t *testing.T) {
 			if at := <-r.timer.C; !at.Equal(want) || !work.selectTarget(r) {
 				t.Fatalf("replacement was not selected at %v, timer fired at %v", want, at)
 			}
-			wantLocalChildStart(t, s, replacement, r.run())
+			wantLocalChildPreflightOutcome(t, s, replacement, r.run())
 		}))
 	}
 }
@@ -244,7 +255,7 @@ func TestScheduledChildRekeySelectsTargetAtSlotRelease(t *testing.T) {
 			}
 			switch change {
 			case "unchanged":
-				wantLocalChildStart(t, s, 0, r.run())
+				wantLocalChildPreflightOutcome(t, s, 0, r.run())
 			case "after selection":
 				advanceScheduledChild(s)
 				if err := r.run(); err != errScheduledChildReplaced || len(s.childRetry.unsettled()) != 0 {
@@ -290,7 +301,7 @@ func TestScheduledChildRekeySelectsForcedAndRetryTargets(t *testing.T) {
 					return
 				}
 				if !move {
-					wantLocalChildStart(t, s, 1, r.run())
+					wantLocalChildPreflightOutcome(t, s, 1, r.run())
 					return
 				}
 				advanceScheduledChild(s)
@@ -310,10 +321,11 @@ func TestScheduledChildRekeyDoesNotTakeTargetInstalledDuringSuiteCheck(t *testin
 		advanceScheduledChild(s)
 		return Suites{}
 	}
-	if work.selectTarget(r) {
-		if err := r.run(); err != errScheduledChildReplaced || len(s.childRetry.unsettled()) != 0 {
-			t.Fatalf("worker took a target installed during the suite check: %v", err)
-		}
+	if !work.selectTarget(r) {
+		t.Fatal("the original target was not selected during the suite check")
+	}
+	if err := r.run(); err != errScheduledChildReplaced || len(s.childRetry.unsettled()) != 0 {
+		t.Fatalf("worker took a target installed during the suite check: %v", err)
 	}
 }
 
@@ -334,9 +346,819 @@ func TestChildRekeyKeepsScheduledTargetAcrossStart(t *testing.T) {
 			case "proactive":
 				run = s.RekeyChildProactively
 			}
-			wantLocalChildStart(t, s, want, run())
+			wantLocalChildPreflightOutcome(t, s, want, run())
 		})
 	}
+}
+
+func TestStaleChildRekeyOutcomeLeavesTheReplacementSchedule(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		for _, closing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("after_snapshot_%t/closing_%t", after, closing), bubble.Run(func(t *testing.T) {
+				const (
+					interval = time.Hour
+					lead     = 23 * time.Second
+					step     = time.Second
+				)
+				work, r := localChildSchedule(t, interval)
+				s := work.session
+				s.timing.RekeyMargin = interval - lead
+				s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+				original := s.currentChildGeneration()
+				failure := errors.New("local rekey failure")
+				s.childRetry.end(childOutcome{original, failure})
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				if at := <-r.timer.C; !at.Equal(s.childRetry.opens()) || r.failures != 1 || !work.selectTarget(r) {
+					t.Fatal("the original generation's one-failure retry was not due")
+				}
+				r.waiting = true
+				release, returned := make(chan struct{}), make(chan error, 1)
+				go func(wait <-chan struct{}) {
+					<-wait
+					returned <- r.run()
+				}(release)
+				defer func() {
+					if release != nil {
+						close(release)
+						<-returned
+					}
+				}()
+				var started int
+				s.events = onEvent("ike.rekey.started", func() { started++ })
+				reason := errors.New("local close")
+				if closing {
+					s.keepReason(reason)
+					s.startClosing()
+				}
+				time.Sleep(step)
+				advanceScheduledChild(s)
+				s.childMu.Lock()
+				s.child.InboundKey, s.child.OutboundKey = []byte{1}, []byte{2}
+				s.childMu.Unlock()
+				made, _ := s.childEstablishedAt()
+				wantChild := s.Child()
+				wantChild.InboundKey, wantChild.OutboundKey = []byte{1}, []byte{2}
+				replacement := s.currentChildGeneration()
+				time.Sleep(step)
+				publish := func() {
+					s.childRetry.end(childOutcome{original, failure})
+					close(release)
+					release = nil
+				}
+				if !after {
+					publish()
+				}
+				ended := s.childRetry.unsettled()
+				if after {
+					publish()
+				}
+				if _, err := s.settleChildRekeys(r, ended); err != nil {
+					t.Fatal(err)
+				}
+				err := <-returned
+				if err != errScheduledChildReplaced {
+					t.Fatalf("the stale worker returned %v", err)
+				}
+				if err := s.settleScheduledChild(r, err); err != nil {
+					t.Fatal(err)
+				}
+				s.pollChildRekeySlot(r, nil)
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				if !closing {
+					if until := s.childRetry.opens(); !s.childRetry.held(time.Now()) || time.Until(until) != 2*DefaultRetryFirst {
+						t.Fatalf("stale failure opened the session at %v, want its second retry delay", until)
+					}
+				}
+				child, generation := s.childWithGeneration()
+				if started != 0 || generation != replacement || child.LocalSPI != wantChild.LocalSPI ||
+					child.RemoteSPI != wantChild.RemoteSPI || child.EncrID != wantChild.EncrID ||
+					!bytes.Equal(child.InboundKey, wantChild.InboundKey) || !bytes.Equal(child.OutboundKey, wantChild.OutboundKey) {
+					t.Fatalf("stale worker started %d times and left generation %d, Child SA %08x/%08x", started, generation, child.LocalSPI, child.RemoteSPI)
+				}
+				if closing {
+					if s.endedBy != reason || r.failures != 1 || r.counted != original || !r.waiting || !r.deadline.Equal(s.childRetry.opens()) {
+						t.Fatalf("close kept reason %v, count %d and deadline %v", s.endedBy, r.failures, r.deadline)
+					}
+					if err := s.RekeyChild(); err == nil || started != 0 {
+						t.Fatalf("independent rekey while closing returned %v and started %d times", err, started)
+					}
+					return
+				}
+				if want := made.Add(lead); r.failures != 0 || r.counted != replacement || !r.deadline.Equal(want) || r.waiting || r.due {
+					t.Fatalf("replacement has count %d, generation %v, deadline %v, want 0, %d, %v", r.failures, r.counted, r.deadline, replacement, want)
+				}
+				time.Sleep(time.Until(s.childRetry.opens()))
+				wantLocalChildPreflightOutcome(t, s, replacement, s.RekeyChild())
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				s.childRetry.mu.Lock()
+				count := s.childRetry.failures
+				s.childRetry.mu.Unlock()
+				if count != 2 || time.Until(s.childRetry.opens()) != 2*DefaultRetryFirst {
+					t.Fatalf("no-request preflight left session count %d and admission %v, want count two and its unchanged 10-second delay",
+						count, time.Until(s.childRetry.opens()))
+				}
+				retry := r.deadline
+				s.childRetry.end(childOutcome{original, failure})
+				s.childRetry.end(childOutcome{original, nil})
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				if r.failures != 1 || r.counted != replacement || !r.deadline.Equal(retry) {
+					t.Fatalf("stale outcomes left %d failures of generation %v due at %v, want 1 of %d at %v", r.failures, r.counted, r.deadline, replacement, retry)
+				}
+			}))
+		}
+	}
+}
+
+func TestRunSettlesStaleChildRekeyOutcomes(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		for _, closing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("after_snapshot_%t/closing_%t", after, closing), bubble.Run(func(t *testing.T) {
+				const (
+					interval             = time.Hour
+					lead                 = 23 * time.Second
+					step                 = time.Second
+					missedRetryPassLimit = 8
+				)
+				lines := recordLines(t)
+				mux, peer := lifecycleMuxes(t)
+				start := time.Now()
+				context := testContext()
+				context.suite.DHGroup = DH_CURVE25519
+				s := seamed(&Session{
+					mux: mux, current: context, rechecks: make(chan struct{}, 1),
+					child:            ChildSA{LocalSPI: 1, EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
+					childEstablished: start, dpdEvery: interval,
+					timing: RekeyTiming{
+						ChildRekeyInterval: interval, RekeyMargin: interval - lead,
+						RekeyRetryInitial: DefaultRetryFirst, RekeyRetryMax: DefaultRetryMax,
+					},
+					rekeyJitterSource: unjittered,
+				})
+				original := s.currentChildGeneration()
+				failure := errors.New("local rekey failure")
+				s.childRetry.end(childOutcome{original, failure})
+				selected, release, publishedReady := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				defer func() {
+					mux.Close()
+					releaseOnce.Do(func() { close(release) })
+				}()
+				var selecting, published atomic.Bool
+				reason := errors.New("local close")
+				missed := make(chan struct{}, 1)
+				passes := 0
+				s.clock = func() time.Time {
+					now := time.Now()
+					if !now.Before(start.Add(lead)) && !selecting.Load() {
+						passes++
+						if passes == missedRetryPassLimit {
+							missed <- struct{}{}
+						}
+					}
+					return now
+				}
+				s.suites = func() Suites {
+					if selecting.Load() && after && published.CompareAndSwap(false, true) {
+						s.childRetry.end(childOutcome{original, failure})
+						if closing {
+							s.keepReason(reason)
+							s.startClosing()
+						} else {
+							s.SuitesChanged()
+						}
+						close(publishedReady)
+					}
+					return Suites{}
+				}
+				starts := make(chan time.Time, 2)
+				s.events = onEvent("ike.rekey.started", func() {
+					if selecting.CompareAndSwap(false, true) {
+						close(selected)
+						<-release
+					} else {
+						starts <- time.Now()
+					}
+				})
+				done := runSession(t, s)
+				select {
+				case <-selected:
+				case <-missed:
+					t.Fatalf("the original generation's failure was not settled before %d overdue passes", missedRetryPassLimit)
+				case <-time.After(DefaultRetryFirst + lead):
+					t.Fatalf("the original generation's one-failure retry did not start; scheduled starts %d", len(lines.said(slog.LevelInfo, "ike scheduled rekey starting", "sa")))
+				}
+				time.Sleep(step)
+				advanceScheduledChild(s)
+				made, _ := s.childEstablishedAt()
+				replacement := s.currentChildGeneration()
+				if !after {
+					s.childRetry.end(childOutcome{original, failure})
+					published.Store(true)
+					if closing {
+						s.keepReason(reason)
+						s.startClosing()
+					}
+				}
+				s.SuitesChanged()
+				if after {
+					select {
+					case <-publishedReady:
+					case <-time.After(step):
+						t.Fatal("the session did not reach the post-snapshot suite check")
+					}
+				}
+				releaseOnce.Do(func() { close(release) })
+				if closing {
+					time.Sleep(step)
+					mux.Close()
+					select {
+					case <-done:
+					case <-time.After(step):
+						t.Fatal("the closing session did not finish its scheduled worker")
+					}
+					if s.endedBy != reason || len(starts) != 0 {
+						t.Fatalf("close kept reason %v and started %d Child rekeys", s.endedBy, len(starts))
+					}
+				} else {
+					select {
+					case at := <-starts:
+						if want := made.Add(lead); !at.Equal(want) {
+							t.Fatalf("replacement rekey started at %v, want the establishment deadline %v", at, want)
+						}
+					case <-time.After(lead + step):
+						t.Fatal("the replacement did not start at its establishment deadline")
+					}
+				}
+				if !closing {
+					time.Sleep(step)
+				}
+				if got := lines.said(slog.LevelInfo, "ike scheduled rekey starting", "sa"); len(got) != 1+map[bool]int{false: 1, true: 0}[closing] {
+					t.Fatalf("scheduled starts = %v, want one old attempt and one replacement only while open", got)
+				}
+				if !published.Load() {
+					t.Fatal("the stale failure was not published")
+				}
+				if got := s.childRetry.unsettled(); len(got) != 0 {
+					t.Fatalf("the session left %d Child outcomes unsettled", len(got))
+				}
+				if child, generation := s.childWithGeneration(); generation != replacement || child.LocalSPI != 2 {
+					t.Fatalf("the session left Child generation %d, SPI %08x", generation, child.LocalSPI)
+				}
+				select {
+				case request := <-peer.IKE():
+					t.Fatalf("the stale worker sent a request: %v", request)
+				default:
+				}
+			}))
+		}
+	}
+}
+
+func TestPendingStaleChildFailureHoldsEachRekeyPath(t *testing.T) {
+	for _, path := range []string{"scheduled", "proactive", "peer deleted", "ranet3 rekey"} {
+		t.Run(path, bubble.Run(func(t *testing.T) {
+			old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1, RemoteSPI: 2}
+			s := newRekeyableSession(t, old)
+			s.childEstablished = time.Now()
+			s.timing = RekeyTiming{
+				ChildRekeyInterval: time.Hour, RekeyMargin: time.Hour - time.Second,
+				RekeyRetryInitial: DefaultRetryFirst, RekeyRetryMax: DefaultRetryMax,
+			}
+			s.rekeyJitterSource = unjittered
+			work := scheduledChildRekey{session: s}
+			r, err := work.schedule()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.timer.Stop()
+			previous := s.currentChildGeneration()
+			advanceScheduledChild(s)
+			if path == "peer deleted" {
+				s.childMu.Lock()
+				s.child = ChildSA{}
+				s.childMu.Unlock()
+			}
+			if err := s.rearm(r); err != nil {
+				t.Fatal(err)
+			}
+			if path == "scheduled" {
+				if at := <-r.timer.C; !at.Equal(r.deadline) || !work.selectTarget(r) {
+					t.Fatal("the replacement's due rekey was not selected")
+				}
+				r.waiting = true
+			}
+			s.childRetry.end(childOutcome{previous, errors.New("old local rekey failed")})
+			if !s.childRetry.opens().IsZero() {
+				t.Fatal("the session wait was installed before settlement")
+			}
+			started := make(chan struct{}, 1)
+			s.events = onEvent("ike.rekey.started", func() { started <- struct{}{} })
+			run := s.RekeyChild
+			switch path {
+			case "scheduled":
+				run = work.run
+			case "proactive":
+				run = s.RekeyChildProactively
+			}
+			done := make(chan error, 1)
+			go func() { done <- run() }()
+			select {
+			case request := <-s.requests:
+				request.result <- requestResult{err: errors.New("unexpected early Child exchange")}
+				<-done
+				t.Fatalf("%s started an exchange before the pending stale failure was settled", path)
+			case err := <-done:
+				if path == "proactive" {
+					if err != nil {
+						t.Fatalf("proactive ask returned %v, want no exchange", err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "waits out the retry delay") {
+					t.Fatalf("%s returned %v, want session admission refusal", path, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not return while the old outcome was pending", path)
+			}
+			if len(started) != 0 || len(s.childRetry.unsettled()) != 1 {
+				t.Fatalf("%s started %d rekeys with %d pending outcomes", path, len(started), len(s.childRetry.unsettled()))
+			}
+			if path == "scheduled" {
+				s.pollChildRekeySlot(r, nil)
+				if !r.due || r.waiting {
+					t.Fatalf("the scheduled worker lost its due attempt: due %t, waiting %t", r.due, r.waiting)
+				}
+			}
+			now := time.Now()
+			if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+				t.Fatal(err)
+			}
+			opens := s.childRetry.opens()
+			if got := opens.Sub(now); got != DefaultRetryFirst || len(s.childRetry.unsettled()) != 0 {
+				t.Fatalf("the pending failure settled to %v with %d outcomes remaining, want the first retry delay", got, len(s.childRetry.unsettled()))
+			}
+			if path == "scheduled" {
+				if !r.due || r.waiting {
+					t.Fatalf("settlement lost the scheduled attempt: due %t, waiting %t", r.due, r.waiting)
+				}
+				time.Sleep(time.Until(opens))
+				done := make(chan error, 1)
+				go func() { done <- work.run() }()
+				select {
+				case request := <-s.requests:
+					request.result <- requestResult{err: errors.New("scheduled attempt reached the peer")}
+					<-done
+				case err := <-done:
+					t.Fatalf("the scheduled attempt never reached the peer after admission opened: %v", err)
+				case <-time.After(time.Second):
+					t.Fatal("the scheduled attempt remained blocked after admission opened")
+				}
+			}
+		}))
+	}
+}
+
+func TestChildNotFoundThenUnsentCreationCountsTheFirstRequest(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+		s := newRekeyableSession(t, old)
+		s.current = testContext()
+		s.childEstablished = time.Now()
+		s.timing = RekeyTiming{ChildRekeyInterval: time.Hour, RekeyRetryInitial: DefaultRetryFirst, RekeyRetryMax: DefaultRetryMax}
+		s.rekeyJitterSource = unjittered
+		r, err := (&scheduledChildRekey{session: s}).schedule()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.timer.Stop()
+		done := make(chan error, 1)
+		go func() { done <- s.RekeyChild() }()
+		var first *localRequest
+		select {
+		case first = <-s.requests:
+		case <-time.After(time.Second):
+			t.Fatal("the first CREATE_CHILD_SA was not queued")
+		}
+		if first.exchange != CREATE_CHILD_SA {
+			t.Fatalf("first exchange = %d, want CREATE_CHILD_SA", first.exchange)
+		}
+		pending, err := s.startRequest(first)
+		if err != nil || pending == nil || s.current.nextLocalMID != 1 {
+			t.Fatalf("first Child request took no Message ID: pending %v, error %v, next ID %d",
+				pending, err, s.current.nextLocalMID)
+		}
+		s.childMu.Lock()
+		s.retiring = old
+		s.childMu.Unlock()
+		first.result <- requestResult{inner: []RawPayload{{Type: PayloadN,
+			Body: EncodeNotify(Notify{Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, old.LocalSPI), Type: N_CHILD_SA_NOT_FOUND})}}}
+		select {
+		case err = <-done:
+			if err == nil || !strings.Contains(err.Error(), "still awaiting retirement") {
+				t.Fatalf("second negotiation returned %v, want a no-request retirement refusal", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the second negotiation did not return at its preflight")
+		}
+		select {
+		case request := <-s.requests:
+			t.Fatalf("the second negotiation sent request %v", request)
+		default:
+		}
+		now := time.Now()
+		if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+			t.Fatal(err)
+		}
+		s.childRetry.mu.Lock()
+		count := s.childRetry.failures
+		s.childRetry.mu.Unlock()
+		if count != 1 || s.childRetry.opens().Sub(now) != DefaultRetryFirst {
+			t.Fatalf("the first sent request followed by an unsent second left count %d and wait %v, want one and %v",
+				count, s.childRetry.opens().Sub(now), DefaultRetryFirst)
+		}
+	})(t)
+}
+
+func TestStaleUnsentChildFailureHoldsAdmissionWithoutBackoffGrowth(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		work, r := localChildSchedule(t, time.Hour)
+		s := work.session
+		s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+		generation := s.currentChildGeneration()
+		wantLocalChildPreflightOutcome(t, s, generation, s.RekeyChild())
+		advanceScheduledChild(s)
+		now := time.Now()
+		if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+			t.Fatal(err)
+		}
+		s.childRetry.mu.Lock()
+		count := s.childRetry.failures
+		s.childRetry.mu.Unlock()
+		if count != 0 || s.childRetry.opens().Sub(now) != DefaultRetryFirst || r.failures != 0 {
+			t.Fatalf("stale unsent failure left session count %d, wait %v and replacement count %d; want zero, %v and zero",
+				count, s.childRetry.opens().Sub(now), r.failures, DefaultRetryFirst)
+		}
+	})(t)
+}
+
+func TestClosedMuxChildRegistrationRefusalDoesNotChargeSessionRetry(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+		s := newRekeyableSession(t, old)
+		s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+		s.rekeyJitterSource = unjittered
+		r, err := (&scheduledChildRekey{session: s}).schedule()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.timer.Stop()
+		if err := s.mux.Close(); err != nil {
+			t.Fatal(err)
+		}
+		err = s.RekeyChild()
+		if !errors.Is(err, transport.ErrClosed) {
+			t.Fatalf("registration on a closed mux returned %v, want transport.ErrClosed", err)
+		}
+		var unsent childUnsentError
+		if !errors.As(err, &unsent) {
+			t.Fatalf("the closed-mux registration error %v has no pre-Message-ID mark", err)
+		}
+		select {
+		case req := <-s.requests:
+			t.Fatalf("closed-mux registration queued CREATE_CHILD_SA request %v", req)
+		default:
+		}
+		if s.current.nextLocalMID != 0 {
+			t.Fatalf("closed-mux registration took Message ID %d, want none", s.current.nextLocalMID)
+		}
+		now := time.Now()
+		if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+			t.Fatal(err)
+		}
+		s.childRetry.mu.Lock()
+		count := s.childRetry.failures
+		s.childRetry.mu.Unlock()
+		if count != 0 || s.childRetry.opens().Sub(now) != DefaultRetryFirst {
+			t.Fatalf("closed-mux refusal left session count %d and recorded wait %v; want zero and %v",
+				count, s.childRetry.opens().Sub(now), DefaultRetryFirst)
+		}
+	})(t)
+}
+
+func TestOpenPeerChainRefusesChildRetryWithoutChargingAnExchange(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		var requests atomic.Int32
+		failed := make(chan struct{}, 2)
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay,
+			watch: func(fromAsker bool, h *Header) {
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					requests.Add(1)
+				}
+			},
+			seed: func(_, answerer *Session) {
+				answerer.timing.ChildRekeyInterval = 0
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+				answerer.rekeyJitterSource = unjittered
+				answerer.events = func(_, _ identity.Identity, kind string, _ ...slog.Attr) {
+					if kind == "ike.rekey.failed" {
+						failed <- struct{}{}
+					}
+				}
+			},
+		})
+		p.answerer.stateMu.Lock()
+		p.answerer.peerChain = &followupChain{ctx: p.answerer.current, made: &peerChild{}, deadline: time.Now().Add(followupWait), done: make(chan struct{})}
+		p.answerer.stateMu.Unlock()
+		if err := p.answerer.RekeyChild(); err == nil || !strings.Contains(err.Error(), "additional key exchange") {
+			t.Fatalf("chain-open attempt returned %v, want a pre-request refusal", err)
+		}
+		synctest.Wait()
+		select {
+		case <-failed:
+		case <-time.After(time.Second):
+			t.Fatal("the first chain-open refusal did not emit ike.rekey.failed")
+		}
+		for attempt := range 2 {
+			if attempt != 0 {
+				time.Sleep(time.Until(p.answerer.childRetry.opens()))
+				select {
+				case <-failed:
+				case <-time.After(time.Second):
+					t.Fatal("the scheduled chain-open retry did not fail")
+				}
+			}
+			synctest.Wait()
+			p.answerer.childRetry.mu.Lock()
+			count := p.answerer.childRetry.failures
+			p.answerer.childRetry.mu.Unlock()
+			if requests.Load() != 0 || count != 0 || time.Until(p.answerer.childRetry.opens()) != DefaultRetryFirst {
+				t.Fatalf("chain-open attempt %d sent %d requests, count %d and wait %v; want none, zero and %v",
+					attempt+1, requests.Load(), count, time.Until(p.answerer.childRetry.opens()), DefaultRetryFirst)
+			}
+		}
+	})(t)
+}
+
+func TestQueuedChildRekeyOnReplacedIKEWaitsWithoutChargingAnExchange(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		var paused atomic.Bool
+		loopReady, releaseLoop := make(chan struct{}, 1), make(chan struct{}, 1)
+		started := make(chan struct{}, 1)
+		var requests atomic.Int32
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay,
+			watch: func(fromAsker bool, h *Header) {
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					requests.Add(1)
+				}
+			},
+			seed: func(_, answerer *Session) {
+				paused.Store(true)
+				answerer.timing.ChildRekeyInterval, answerer.timing.IKERekeyInterval = 0, 0
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+				answerer.rekeyJitterSource = unjittered
+				answerer.events = func(_, _ identity.Identity, kind string, _ ...slog.Attr) {
+					if kind == "ike.rekey.started" {
+						started <- struct{}{}
+					}
+				}
+				answerer.clock = func() time.Time {
+					if paused.CompareAndSwap(true, false) {
+						loopReady <- struct{}{}
+						<-releaseLoop
+					}
+					return time.Now()
+				}
+			},
+		})
+		t.Cleanup(func() {
+			select {
+			case releaseLoop <- struct{}{}:
+			default:
+			}
+		})
+		select {
+		case <-loopReady:
+		case <-time.After(time.Second):
+			t.Fatal("the session did not pause before receiving a queued request")
+		}
+		done := make(chan error, 1)
+		go func() { done <- p.answerer.RekeyChild() }()
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("the Child rekey did not start while Run was paused")
+		}
+		synctest.Wait()
+		p.answerer.stateMu.Lock()
+		old := p.answerer.current
+		p.answerer.current = &ikeContext{
+			suite: old.suite, skD: old.skD, skei: old.skei, sker: old.sker, skpi: old.skpi, skpr: old.skpr,
+			spiI: old.spiI, spiR: old.spiR, responder: old.responder, established: old.established,
+		}
+		p.answerer.stateMu.Unlock()
+		releaseLoop <- struct{}{}
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "IKE SA changed before Child SA exchange started") {
+				t.Fatalf("queued rekey returned %v, want the retired IKE SA refusal", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the queued Child SA request did not return")
+		}
+		synctest.Wait()
+		p.answerer.childRetry.mu.Lock()
+		count := p.answerer.childRetry.failures
+		p.answerer.childRetry.mu.Unlock()
+		if requests.Load() != 0 || count != 0 || time.Until(p.answerer.childRetry.opens()) != DefaultRetryFirst {
+			t.Fatalf("Run refused a queued request after %d sends, count %d and wait %v; want zero, zero and %v",
+				requests.Load(), count, time.Until(p.answerer.childRetry.opens()), DefaultRetryFirst)
+		}
+	})(t)
+}
+
+func TestChildRekeyAdmissionSurvivesReplacement(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		work, r := localChildSchedule(t, time.Hour)
+		s := work.session
+		s.started = time.Now()
+		s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+		refusal := &rejectedError{notify: Notify{Type: N_TEMPORARY_FAILURE}}
+		original := s.currentChildGeneration()
+		s.childRetry.end(childOutcome{original, refusal})
+		settle := func() error {
+			_, err := s.settleChildRekeys(r, s.childRetry.unsettled())
+			return err
+		}
+		if err := settle(); err != nil {
+			t.Fatal(err)
+		}
+		if !s.allowPeerChildRekey() {
+			t.Fatal("the first peer rekey was refused")
+		}
+		opens := s.childRetry.opens()
+		var starts int
+		s.events = onEvent("ike.rekey.started", func() { starts++ })
+		for range 3 {
+			advanceScheduledChild(s)
+			s.childRetry.end(childOutcome{original, errors.New("local rekey failure")})
+			if err := settle(); err != nil {
+				t.Fatal(err)
+			}
+			if s.allowPeerChildRekey() {
+				t.Fatal("replacement reopened peer admission")
+			}
+			if err := s.RekeyChild(); err == nil || starts != 0 || r.failures != 0 {
+				t.Fatalf("replacement left %d failures and admitted %d local starts with error %v", r.failures, starts, err)
+			}
+		}
+		time.Sleep(minPeerChildRekeyInterval)
+		if !s.allowPeerChildRekey() {
+			t.Fatal("peer admission did not reopen at its floor")
+		}
+		time.Sleep(time.Until(opens))
+		generation := s.currentChildGeneration()
+		s.childRetry.end(childOutcome{original, refusal})
+		if err := s.RekeyChild(); err == nil || starts != 0 {
+			t.Fatalf("unsettled refusal on a replaced SA admitted a local start: %v", err)
+		}
+		if err := settle(); err != nil || r.failures != 0 || s.temporary.child != original {
+			t.Fatalf("stale refusal changed the replacement or streak: count %d, streak %+v, error %v", r.failures, s.temporary, err)
+		}
+		if err := s.RekeyChild(); err == nil || starts != 0 {
+			t.Fatalf("settled refusal on a replaced SA admitted a local start: %v", err)
+		}
+		time.Sleep(time.Until(s.childRetry.opens()))
+		wantLocalChildPreflightOutcome(t, s, generation, s.RekeyChild())
+		if err := settle(); err != nil {
+			t.Fatal(err)
+		}
+		s.childRetry.end(childOutcome{generation, refusal})
+		if err := settle(); err != nil || s.temporary.child != generation {
+			t.Fatalf("the replacement did not start its own refusal streak: %+v, error %v", s.temporary, err)
+		}
+		time.Sleep(temporaryFailureSpan)
+		s.childRetry.end(childOutcome{generation, refusal})
+		if ended, ok := errors.AsType[*saEnding](settle()); !ok || ended.reason != "temporary failure" {
+			t.Fatalf("refusals on the same generation past the streak did not close it: %v", ended)
+		}
+	})(t)
+}
+
+func TestScheduledChildRekeyWaitsForSessionAdmission(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		const lead = time.Second
+		mux, _ := lifecycleMuxes(t)
+		start := time.Now()
+		s := seamed(&Session{
+			mux:              mux,
+			child:            ChildSA{LocalSPI: 1},
+			childEstablished: start,
+			current:          &ikeContext{},
+			dpdEvery:         time.Hour,
+			timing: RekeyTiming{
+				ChildRekeyInterval: time.Hour,
+				RekeyMargin:        time.Hour - lead,
+			},
+			rekeyJitterSource: unjittered,
+		})
+		opens := start.Add(DefaultRetryFirst)
+		s.childRetry.settled(0, opens)
+		started, early := make(chan time.Time, 1), make(chan struct{})
+		s.events = onEvent("ike.rekey.started", func() { started <- time.Now() })
+		passes := 0
+		s.clock = func() time.Time {
+			now := time.Now()
+			if now.Equal(start.Add(lead)) {
+				passes++
+				if passes == 2 {
+					close(early)
+				}
+			}
+			return now
+		}
+		runSession(t, s)
+		select {
+		case got := <-started:
+			if !got.Equal(opens) {
+				t.Errorf("scheduled rekey started at %v, want %v", got, opens)
+			}
+		case <-early:
+			t.Fatal("the due rekey woke the loop again before admission opened")
+		case <-time.After(DefaultRetryFirst + lead):
+			t.Fatal("the due rekey never started after admission opened")
+		}
+	})(t)
+}
+
+func TestChildRekeyReportsInstallAndRetirementFailureSeparately(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		old := ChildSA{LocalSPI: 1, RemoteSPI: 2, EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
+		s := newRekeyableSession(t, old)
+		s.rekeyJitterSource = unjittered
+		r, err := (&scheduledChildRekey{session: s}).schedule()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.timer.Stop()
+		events := &recorder{}
+		var retireErr string
+		s.events = func(local, remote identity.Identity, kind string, attrs ...slog.Attr) {
+			events.record(local, remote, kind, attrs...)
+			if kind == "ike.rekey.retire_failed" {
+				for _, attr := range attrs {
+					if attr.Key == "err" {
+						retireErr = attr.Value.String()
+					}
+				}
+			}
+		}
+		s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+		s.childRetry.end(childOutcome{s.currentChildGeneration(), errors.New("previous local rekey failed")})
+		if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+			t.Fatal(err)
+		}
+		opens := s.childRetry.opens()
+		time.Sleep(DefaultRetryFirst)
+		failed := errors.New("retirement failed")
+		err = driveChildRekey(t, s, old, func(remove *localRequest) {
+			remove.result <- requestResult{err: failed}
+		})
+		if !errors.Is(err, failed) {
+			t.Fatalf("the caller received %v, want the retirement error", err)
+		}
+		if retireErr != err.Error() {
+			t.Fatalf("retirement event error = %q, want %q", retireErr, err)
+		}
+		if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+			t.Fatal(err)
+		}
+		if replacement := s.Child(); replacement.LocalSPI == old.LocalSPI || replacement.RemoteSPI != old.RemoteSPI+1 ||
+			r.failures != 0 || !s.childRetry.opens().Equal(opens) {
+			t.Fatalf("replacement SPI %08x/%08x, failures %d, admission %v, want unchanged %v", replacement.LocalSPI, replacement.RemoteSPI, r.failures, s.childRetry.opens(), opens)
+		}
+		want := []string{
+			"ike.rekey.started > sa=child",
+			"ike.rekey.completed > sa=child suite=aes128gcm",
+			"ike.rekey.retire_failed > sa=child",
+		}
+		if got := events.recorded(); !slices.Equal(got, want) {
+			t.Fatalf("rekey events = %q, want %q", got, want)
+		}
+		s.childRetry.end(childOutcome{s.currentChildGeneration(), errors.New("next local rekey failed")})
+		now := time.Now()
+		if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.deadline.Sub(now); got != DefaultRetryFirst {
+			t.Fatalf("retry after a locally installed replacement = %v, want %v", got, DefaultRetryFirst)
+		}
+	})(t)
 }
 
 // RFC 7296 section 3.2: "all implementations MUST understand all payload types defined in this document"
@@ -350,6 +1172,150 @@ func TestSupportedPayloadTypeNamesEveryTypeThisEndUnderstands(t *testing.T) {
 			t.Errorf("payload type %d is understood %v", payloadType, got)
 		}
 	}
+}
+
+func TestStaleChildFailuresBackOffTheSessionAcrossGenerations(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		err  error
+	}{
+		{"ordinary", errors.New("local rekey failure")},
+		{"temporary failure", &rejectedError{notify: Notify{Type: N_TEMPORARY_FAILURE}}},
+	} {
+		t.Run(row.name, bubble.Run(func(t *testing.T) {
+			work, r := localChildSchedule(t, time.Hour)
+			s := work.session
+			s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+			for _, want := range []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second} {
+				previous := s.currentChildGeneration()
+				advanceScheduledChild(s)
+				current := s.currentChildGeneration()
+				s.childRetry.end(childOutcome{previous, row.err})
+				now := time.Now()
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				if got := s.childRetry.opens().Sub(now); got != want {
+					t.Fatalf("after stale failure on generation %d with replacement %d, admission opens in %v, want %v", previous, current, got, want)
+				}
+				if r.failures != 0 || r.counted != current || r.lastErr != nil || r.due || r.waiting {
+					t.Fatalf("replacement %d inherits count %d, counted %v, error %v, due %t, waiting %t", current, r.failures, r.counted, r.lastErr, r.due, r.waiting)
+				}
+				time.Sleep(want)
+			}
+		}))
+	}
+}
+
+func TestStaleChildFailureCountsOnlyTowardSessionBackoff(t *testing.T) {
+	for _, stale := range []struct {
+		name string
+		err  error
+	}{
+		{"ordinary", errors.New("old generation failed")},
+		{"temporary failure", &rejectedError{notify: Notify{Type: N_TEMPORARY_FAILURE}}},
+	} {
+		for _, staleFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stale_first_%t", stale.name, staleFirst), bubble.Run(func(t *testing.T) {
+				work, r := localChildSchedule(t, time.Hour)
+				s := work.session
+				s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+				previous := s.currentChildGeneration()
+				advanceScheduledChild(s)
+				current := s.currentChildGeneration()
+				failure := errors.New("replacement rekey failed")
+				outcomes := []childOutcome{{current, failure}, {previous, stale.err}}
+				if staleFirst {
+					outcomes[0], outcomes[1] = outcomes[1], outcomes[0]
+				}
+				for _, outcome := range outcomes {
+					s.childRetry.end(outcome)
+				}
+				now := time.Now()
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				wantSchedule := now.Add(DefaultRetryFirst)
+				if staleFirst {
+					wantSchedule = now.Add(2 * DefaultRetryFirst)
+				}
+				wantAdmission := now.Add(2 * DefaultRetryFirst)
+				if r.failures != 1 || r.counted != current || r.lastErr != failure ||
+					!r.deadline.Equal(wantSchedule) || r.due || r.waiting || !s.childRetry.opens().Equal(wantAdmission) || s.temporary.child != 0 {
+					t.Fatalf("replacement %d has count %d, error %v, deadline %v, due %t, waiting %t, admission %v, streak %+v, want one failure due %v and session opens %v",
+						r.counted, r.failures, r.lastErr, r.deadline, r.due, r.waiting, s.childRetry.opens(), s.temporary, wantSchedule, wantAdmission)
+				}
+				time.Sleep(2 * DefaultRetryFirst)
+				s.childRetry.end(childOutcome{current, failure})
+				now = time.Now()
+				if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+					t.Fatal(err)
+				}
+				if want := now.Add(4 * DefaultRetryFirst); r.failures != 2 || !r.deadline.Equal(want) || !s.childRetry.opens().Equal(want) {
+					t.Fatalf("the next failure left %d replacement failures, deadline %v and admission %v, want two failures and %v", r.failures, r.deadline, s.childRetry.opens(), want)
+				}
+			}))
+		}
+	}
+}
+
+func TestChildRetryBackoffAccumulatesMixedFailures(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		work, r := localChildSchedule(t, time.Hour)
+		s := work.session
+		s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+		ordinary := errors.New("local rekey failure")
+		refusal := &rejectedError{notify: Notify{Type: N_TEMPORARY_FAILURE}}
+		for i, err := range []error{ordinary, refusal, ordinary} {
+			advanceScheduledChild(s)
+			generation := s.currentChildGeneration()
+			now := time.Now()
+			s.childRetry.end(childOutcome{generation, err})
+			if _, settled := s.settleChildRekeys(r, s.childRetry.unsettled()); settled != nil {
+				t.Fatal(settled)
+			}
+			want := DefaultRetryFirst << i
+			if got := r.deadline.Sub(now); got != want || !s.childRetry.opens().Equal(r.deadline) {
+				t.Fatalf("generation %d failed with %v: retry %v, admission %v, want both after %v", generation, err, got, s.childRetry.opens(), want)
+			}
+			if r.failures != 1 || r.counted != generation || r.lastErr != err {
+				t.Fatalf("generation %d inherited count %d on %v with error %v", generation, r.failures, r.counted, r.lastErr)
+			}
+			time.Sleep(want)
+		}
+	})(t)
+}
+
+func TestChildRetryBackoffSurvivesRepeatedPeerRekeys(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		work, r := localChildSchedule(t, time.Hour)
+		s := work.session
+		s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+		refusal := &rejectedError{notify: Notify{Type: N_TEMPORARY_FAILURE}}
+		first := time.Now()
+		for _, want := range []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, 80 * time.Second, 160 * time.Second, 5 * time.Minute} {
+			advanceScheduledChild(s)
+			generation := s.currentChildGeneration()
+			now := time.Now()
+			s.childRetry.end(childOutcome{generation, refusal})
+			if _, err := s.settleChildRekeys(r, s.childRetry.unsettled()); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.deadline.Sub(now); got != want {
+				t.Fatalf("generation %d refused at %v: retry in %v, want %v", generation, now, got, want)
+			}
+			if r.failures != 1 || r.counted != generation || !s.childRetry.opens().Equal(r.deadline) {
+				t.Fatalf("generation %d: count %d on %v, deadline %v, session admission %v", generation, r.failures, r.counted, r.deadline, s.childRetry.opens())
+			}
+			if s.temporary.child != generation || !s.temporary.since.Equal(now) {
+				t.Fatalf("generation %d: refusal streak %+v, want this generation from %v", generation, s.temporary, now)
+			}
+			if generation == 7 && now.Sub(first) < temporaryFailureSpan {
+				t.Fatalf("the seventh refusal happened after %v, want past the refusal span", now.Sub(first))
+			}
+			time.Sleep(want)
+		}
+	})(t)
 }
 
 func TestRekeyRetryDelay(t *testing.T) {

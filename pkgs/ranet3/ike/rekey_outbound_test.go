@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -56,7 +57,8 @@ type outboundPlane struct {
 	beforeCancel func()
 	moves        []outboundMove
 	// installed is when each Child SA was installed, by its inbound SPI
-	installed map[uint32]time.Time
+	installed    map[uint32]time.Time
+	afterInstall func()
 }
 
 func newOutboundPlane(s *Session) *outboundPlane {
@@ -89,9 +91,12 @@ func (p *outboundPlane) place(child ChildSA, hold bool) error {
 	p.next, p.nextIn = 0, 0
 	if hold && p.out != 0 {
 		p.next, p.nextIn = child.RemoteSPI, child.LocalSPI
-		return nil
+	} else {
+		p.moveLocked(child.RemoteSPI, child.LocalSPI, "install")
 	}
-	p.moveLocked(child.RemoteSPI, child.LocalSPI, "install")
+	if p.afterInstall != nil {
+		p.afterInstall()
+	}
 	return nil
 }
 
@@ -230,6 +235,8 @@ type outboundCase struct {
 	// lostDeletes is how many sends of the asking end's next request, its Delete, the relay loses, and lostDeletesFor loses every one sent within that long of the dial
 	lostDeletes    int
 	lostDeletesFor time.Duration
+	// lostPeerDeletesFor loses the answering end's own Delete while the asking end waits for its unanswered one
+	lostPeerDeletesFor time.Duration
 	// refusals is how many Child SAs the asking end's dataplane refuses
 	refusals int
 	// configure and seed reach dialRefusing's
@@ -237,6 +244,8 @@ type outboundCase struct {
 	seed      func(asker, answerer *Session)
 	// watch sees the header of each IKE message the relay takes, and whether the asking end sent it
 	watch func(fromAsker bool, h *Header)
+	// hold delays delivery of one relay datagram until its channel is released
+	hold func(fromAsker bool, h *Header) <-chan struct{}
 }
 
 // outboundPair is two sessions with a stand-in dataplane each and the ESP flows between them
@@ -279,8 +288,15 @@ func dialOutbound(t *testing.T, c outboundCase) *outboundPair {
 			case fromAsker && rekeyed && h.ExchangeType == INFORMATIONAL && !h.IsResponse() && h.MessageID == rekeyID+1:
 				deletes++
 				return deletes <= c.lostDeletes || time.Since(dialed) < c.lostDeletesFor
+			case !fromAsker && rekeyed && h.ExchangeType == INFORMATIONAL && !h.IsResponse():
+				return time.Since(dialed) < c.lostPeerDeletesFor
 			}
 			return false
+		}, func(fromInitiator bool, h *Header) <-chan struct{} {
+			if c.hold != nil {
+				return c.hold(fromInitiator == c.askerIsInitiator, h)
+			}
+			return nil
 		})
 	}, func(initiator, responder *Session) {
 		p.asker, p.answerer = initiator, responder
@@ -355,15 +371,18 @@ func (p *outboundPair) close() {
 	p.flows.Wait()
 }
 
-// delayedRelay carries UDP between an initiator and the responder at responderPort, each datagram delay later and in order, loses each IKE message lose reports, and returns the port to dial
-func delayedRelay(t *testing.T, responderPort int, delay time.Duration, lose func(fromInitiator bool, h *Header) bool) int {
+// delayedRelay carries UDP between an initiator and the responder at responderPort,
+// each datagram delay later and in order, losing what lose reports and holding
+// delivery where hold returns a channel.
+func delayedRelay(t *testing.T, responderPort int, delay time.Duration, lose func(fromInitiator bool, h *Header) bool, hold func(fromInitiator bool, h *Header) <-chan struct{}) int {
 	t.Helper()
 	conn := listenPeer(t)
 	responder := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: responderPort}
 	type datagram struct {
-		due time.Time
-		raw []byte
-		to  *net.UDPAddr
+		due     time.Time
+		raw     []byte
+		to      *net.UDPAddr
+		release <-chan struct{}
 	}
 	queue := make(chan datagram, 1<<15)
 	done := make(chan struct{})
@@ -374,6 +393,9 @@ func delayedRelay(t *testing.T, responderPort int, delay time.Duration, lose fun
 	go func() {
 		defer close(done)
 		for d := range queue {
+			if d.release != nil {
+				<-d.release
+			}
 			time.Sleep(time.Until(d.due))
 			_, _ = conn.WriteToUDP(d.raw, d.to)
 		}
@@ -398,12 +420,16 @@ func delayedRelay(t *testing.T, responderPort int, delay time.Duration, lose fun
 				continue
 			}
 			// a datagram whose first four octets are zero carries IKE behind the non-ESP marker
+			var release <-chan struct{}
 			if n > 4 && binary.BigEndian.Uint32(buf[:4]) == 0 {
-				if h, err := decodeHeader(buf[4:n]); err == nil && lose(fromInitiator, h) {
-					continue
+				if h, err := decodeHeader(buf[4:n]); err == nil {
+					if lose(fromInitiator, h) {
+						continue
+					}
+					release = hold(fromInitiator, h)
 				}
 			}
-			queue <- datagram{time.Now().Add(delay), append([]byte(nil), buf[:n]...), to}
+			queue <- datagram{time.Now().Add(delay), append([]byte(nil), buf[:n]...), to, release}
 		}
 	}()
 	return conn.LocalAddr().(*net.UDPAddr).Port
@@ -483,6 +509,89 @@ func TestAnsweringEndKeepsSendingOnTheReplacedChildSA(t *testing.T) {
 			}
 		}))
 	}
+}
+
+func TestUnansweredChildRekeyDeleteReportsRetirementWithOldSAAtPeer(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		events := &recorder{}
+		var retireErr string
+		deleteSent := make(chan struct{}, 1)
+		var sends atomic.Int32
+		p := dialOutbound(t, outboundCase{
+			askerIsInitiator:   true,
+			delay:              outboundDelay,
+			lostDeletesFor:     2 * busyRequestBudget,
+			lostPeerDeletesFor: 2 * busyRequestBudget,
+			watch: func(fromAsker bool, h *Header) {
+				if fromAsker && h.ExchangeType == INFORMATIONAL && !h.IsResponse() {
+					sends.Add(1)
+					select {
+					case deleteSent <- struct{}{}:
+					default:
+					}
+				}
+			},
+			seed: func(asker, answerer *Session) {
+				// The inbound drain outlasts the unanswered exchange so the peer's old SA can be observed after the error.
+				answerer.childRetireDelay = 2 * busyRequestBudget
+				asker.events = func(local, remote identity.Identity, kind string, attrs ...slog.Attr) {
+					events.record(local, remote, kind, attrs...)
+					if kind == "ike.rekey.retire_failed" {
+						for _, attr := range attrs {
+							if attr.Key == "err" {
+								retireErr = attr.Value.String()
+							}
+						}
+					}
+				}
+			},
+		})
+		old := p.answerer.Child()
+		done := make(chan error, 1)
+		go func() { done <- p.asker.RekeyChild() }()
+		select {
+		case <-deleteSent:
+		case <-time.After(answerBudget):
+			t.Fatal("the rekey sent no Delete for the old Child SA")
+		}
+		for deadline := time.Now().Add(answerBudget); p.answerer.retiringChild().LocalSPI != old.LocalSPI; time.Sleep(outboundDelay) {
+			if time.Now().After(deadline) {
+				t.Fatal("the peer did not retain the old Child SA while the Delete was withheld")
+			}
+		}
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(busyRequestBudget + retirementDeadline):
+			t.Fatal("the unanswered Delete did not end the rekey")
+		}
+		if err == nil || !strings.Contains(err.Error(), "ike: delete replaced Child SA") {
+			t.Fatalf("the caller received %v, want an unanswered old-SA Delete error", err)
+		}
+		if retireErr != err.Error() {
+			t.Fatalf("retirement event error = %q, want the caller's error %q", retireErr, err)
+		}
+		if got := sends.Load(); got < maxRetransmits {
+			t.Errorf("the withheld Delete was sent %d times, want all %d attempts before the error", got, maxRetransmits)
+		}
+		got := slices.DeleteFunc(events.recorded(), func(line string) bool { return !strings.HasPrefix(line, "ike.rekey.") })
+		names := p.asker.local.String() + ">" + p.asker.remote.String()
+		want := []string{
+			"ike.rekey.started " + names + " sa=child",
+			"ike.rekey.completed " + names + " sa=child suite=" + p.asker.Suite().ESP(),
+			"ike.rekey.retire_failed " + names + " sa=child",
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("the unanswered Delete recorded events %q, want %q", got, want)
+		}
+		if local, peer := p.asker.Child(), p.answerer.Child(); local.LocalSPI == old.RemoteSPI || peer.LocalSPI == old.LocalSPI ||
+			local.RemoteSPI != peer.LocalSPI || local.LocalSPI != peer.RemoteSPI {
+			t.Errorf("after the unanswered Delete the asking end holds %08x/%08x and the peer %08x/%08x, want the same installed replacement", local.LocalSPI, local.RemoteSPI, peer.LocalSPI, peer.RemoteSPI)
+		}
+		if !p.answererPlane.open(old.LocalSPI) {
+			t.Errorf("the peer no longer holds the old Child SA's inbound SPI %08x after the unanswered Delete", old.LocalSPI)
+		}
+	})(t)
 }
 
 // an asking end whose dataplane refuses the Child SA its rekey made deletes that SA, and the answering end, whose outbound SA had not left the SA it replaced, makes that one current again with nothing awaiting retirement, so the next rekey is answered with an SA and no packet is lost
@@ -578,6 +687,427 @@ func TestRestoredChildSAIsRekeyedBeforeItsLifetime(t *testing.T) {
 		}
 		for _, lost := range p.losses() {
 			t.Error(lost)
+		}
+	})(t)
+}
+
+func TestChildRetryBackoffSurvivesPeerInstallAndRestore(t *testing.T) {
+	for _, restore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restore_%t", restore), bubble.Run(func(t *testing.T) {
+			refusals := 0
+			requests, failed := make(chan struct{}, 2), make(chan struct{}, 2)
+			if restore {
+				refusals = 1
+			}
+			p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay, refusals: refusals,
+				watch: func(fromAsker bool, h *Header) {
+					if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+						requests <- struct{}{}
+					}
+				},
+				seed: func(asker, answerer *Session) {
+					asker.timing.ChildRekeyInterval, answerer.timing.ChildRekeyInterval = 0, 0
+					asker.timing.RekeyRetryInitial, asker.timing.RekeyRetryMax = time.Hour, time.Hour
+					asker.rekeyJitterSource = unjittered
+					answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+					answerer.rekeyJitterSource = unjittered
+					answerer.events = func(_, _ identity.Identity, kind string, _ ...slog.Attr) {
+						if kind == "ike.rekey.failed" {
+							failed <- struct{}{}
+						}
+					}
+					asker.childRekeying.Store(true)
+				},
+			})
+			old := p.answerer.Child()
+			generation := p.answerer.currentChildGeneration()
+			if err := p.answerer.RekeyChild(); !temporaryRefusal(err) {
+				t.Fatalf("the first local rekey ended with %v, want the peer's refusal", err)
+			}
+			synctest.Wait()
+			if len(requests) != 1 || len(failed) != 1 {
+				t.Fatalf("first local attempt sent %d requests and reported %d failures", len(requests), len(failed))
+			}
+			<-requests
+			<-failed
+			first := p.answerer.childRetry.opens()
+			if got := time.Until(first); got != DefaultRetryFirst {
+				t.Fatalf("first local failure delayed admission by %v, want %v", got, DefaultRetryFirst)
+			}
+			p.asker.childRekeying.Store(false)
+			err := p.rekeyChild(t)
+			if restore {
+				if !errors.Is(err, errRefusedInstall) {
+					t.Fatalf("the peer's rejected replacement ended with %v, want its dataplane's refusal", err)
+				}
+			} else if err != nil {
+				t.Fatalf("the peer's replacement failed: %v", err)
+			}
+			if restore {
+				for deadline := time.Now().Add(rekeyAnswered); ; time.Sleep(outboundDelay) {
+					replacement := p.answerer.Child()
+					retiring := p.answerer.retiringChild()
+					if p.answerer.currentChildGeneration() >= generation+2 && replacement.LocalSPI == old.LocalSPI && retiring.LocalSPI == 0 {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("the refused replacement never restored %08x: current %08x, retiring %08x, generation %d",
+							old.LocalSPI, replacement.LocalSPI, retiring.LocalSPI, p.answerer.currentChildGeneration())
+					}
+				}
+			} else if replacement := p.answerer.Child(); replacement.LocalSPI == old.LocalSPI {
+				t.Fatalf("the peer's rekey kept old Child SA %08x without replacing it", old.LocalSPI)
+			}
+			time.Sleep(time.Until(first))
+			p.asker.childRekeying.Store(true)
+			retried := make(chan error, 1)
+			go func() { retried <- p.answerer.RekeyChild() }()
+			select {
+			case <-requests:
+			case <-time.After(rekeyAnswered):
+				t.Fatal("no local CREATE_CHILD_SA reached the peer after admission reopened")
+			}
+			select {
+			case <-failed:
+			case <-time.After(rekeyAnswered):
+				t.Fatal("the local CREATE_CHILD_SA did not settle its refusal")
+			}
+			select {
+			case err := <-retried:
+				if !temporaryRefusal(err) {
+					t.Fatalf("the request that reached the peer ended with %v, want TEMPORARY_FAILURE", err)
+				}
+			case <-time.After(rekeyAnswered):
+				t.Fatal("the local retry did not return after its refusal")
+			}
+			synctest.Wait()
+			p.answerer.childRetry.mu.Lock()
+			count := p.answerer.childRetry.failures
+			p.answerer.childRetry.mu.Unlock()
+			if count != 2 || len(requests) != 0 {
+				t.Fatalf("the local retry sent %d extra requests and left session count %d, want one later request and count two", len(requests), count)
+			}
+			if got := time.Until(p.answerer.childRetry.opens()); got != 2*DefaultRetryFirst {
+				t.Fatalf("the local retry after the peer's rekey and restore=%t waits %v, want %v", restore, got, 2*DefaultRetryFirst)
+			}
+		}))
+	}
+}
+
+func TestRestoredChildRetryDuringPeerRetirementDoesNotAdvanceSessionCount(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		var requests atomic.Int32
+		sent, failed := make(chan struct{}, 2), make(chan string, 3)
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay, refusals: 1,
+			watch: func(fromAsker bool, h *Header) {
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					requests.Add(1)
+					sent <- struct{}{}
+				}
+			},
+			seed: func(asker, answerer *Session) {
+				asker.timing.ChildRekeyInterval, answerer.timing.ChildRekeyInterval = 0, 0
+				asker.timing.RekeyRetryInitial, asker.timing.RekeyRetryMax = time.Hour, time.Hour
+				asker.rekeyJitterSource = unjittered
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+				answerer.rekeyJitterSource = unjittered
+				answerer.events = func(_, _ identity.Identity, kind string, attrs ...slog.Attr) {
+					if kind == "ike.rekey.failed" {
+						for _, attr := range attrs {
+							if attr.Key == "err" {
+								failed <- attr.Value.String()
+							}
+						}
+					}
+				}
+				asker.childRekeying.Store(true)
+			},
+		})
+		old := p.answerer.Child()
+		generation := p.answerer.currentChildGeneration()
+		if err := p.answerer.RekeyChild(); !temporaryRefusal(err) {
+			t.Fatalf("first local exchange returned %v, want TEMPORARY_FAILURE", err)
+		}
+		synctest.Wait()
+		select {
+		case <-sent:
+		case <-time.After(time.Second):
+			t.Fatal("the first local CREATE_CHILD_SA did not reach the relay")
+		}
+		select {
+		case <-failed:
+		case <-time.After(time.Second):
+			t.Fatal("the first local CREATE_CHILD_SA did not emit ike.rekey.failed")
+		}
+		first := p.answerer.childRetry.opens()
+		if requests.Load() != 1 || time.Until(first) != DefaultRetryFirst {
+			t.Fatalf("first local exchange sent %d requests and waits %v, want one and %v", requests.Load(), time.Until(first), DefaultRetryFirst)
+		}
+		p.asker.childRekeying.Store(false)
+		if err := p.rekeyChild(t); !errors.Is(err, errRefusedInstall) {
+			t.Fatalf("peer's rejected replacement returned %v, want dataplane refusal", err)
+		}
+		for deadline := time.Now().Add(rekeyAnswered); ; time.Sleep(outboundDelay) {
+			if p.answerer.currentChildGeneration() >= generation+2 && p.answerer.Child().LocalSPI == old.LocalSPI &&
+				p.answerer.retiringChild().LocalSPI == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the peer's refused replacement did not restore the old Child SA")
+			}
+		}
+		p.asker.childRekeying.Store(true)
+		// The next peer installation precedes its Delete and this end permits
+		// that order, so its restored SA is now awaiting retirement.
+		replacement := old
+		replacement.LocalSPI, replacement.RemoteSPI = old.LocalSPI^0x55555555, old.RemoteSPI^0x66666666
+		if err := p.answerer.replaceChild(replacement); err != nil {
+			t.Fatal(err)
+		}
+		if retiring := p.answerer.retiringChild(); retiring.LocalSPI != old.LocalSPI {
+			t.Fatalf("replacement left retired SPI %08x, want %08x", retiring.LocalSPI, old.LocalSPI)
+		}
+		time.Sleep(time.Until(first))
+		if err := p.answerer.RekeyChild(); err == nil || !strings.Contains(err.Error(), "still awaiting retirement") {
+			t.Fatalf("rekey during retirement returned %v, want a local preflight refusal", err)
+		}
+		synctest.Wait()
+		select {
+		case reason := <-failed:
+			if !strings.Contains(reason, "still awaiting retirement") {
+				t.Fatalf("the preflight reported %q, want the retirement-window refusal", reason)
+			}
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the local retirement preflight did not report its refusal")
+		}
+		p.answerer.childRetry.mu.Lock()
+		count := p.answerer.childRetry.failures
+		p.answerer.childRetry.mu.Unlock()
+		opens := p.answerer.childRetry.opens()
+		if requests.Load() != 1 || count != 1 || time.Until(opens) != DefaultRetryFirst {
+			t.Fatalf("retirement preflight sent %d requests, left count %d and wait %v; want one, one and %v",
+				requests.Load(), count, time.Until(opens), DefaultRetryFirst)
+		}
+		if err := p.answerer.retireChild(old.RemoteSPI); err != nil {
+			t.Fatalf("the peer's Delete could not end the retirement: %v", err)
+		}
+		time.Sleep(time.Until(opens))
+		select {
+		case <-sent:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("no local CREATE_CHILD_SA reached the peer after retirement")
+		}
+		select {
+		case reason := <-failed:
+			if !strings.Contains(reason, "notify type 43") {
+				t.Fatalf("the local request ended with %q, want the peer's refusal", reason)
+			}
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the local CREATE_CHILD_SA did not report the peer's refusal")
+		}
+		synctest.Wait()
+		p.answerer.childRetry.mu.Lock()
+		count = p.answerer.childRetry.failures
+		p.answerer.childRetry.mu.Unlock()
+		if requests.Load() != 2 || count != 2 || time.Until(p.answerer.childRetry.opens()) != 2*DefaultRetryFirst {
+			t.Fatalf("after retirement sent %d requests, count %d and wait %v; want two, two and %v",
+				requests.Load(), count, time.Until(p.answerer.childRetry.opens()), 2*DefaultRetryFirst)
+		}
+	})(t)
+}
+
+func TestPeerRekeyMakesAnInFlightLocalFailureStale(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		var peerOffer, peerHeld, localFailed, localReplyHeld atomic.Bool
+		peerReady, releasePeer := make(chan struct{}, 1), make(chan struct{}, 1)
+		peerAnswered, installed := make(chan struct{}, 1), make(chan struct{}, 1)
+		replyHeld, releaseReply := make(chan struct{}, 1), make(chan struct{}, 1)
+		loopReady, releaseLoop := make(chan struct{}, 1), make(chan struct{}, 1)
+		releaseWorker := make(chan struct{}, 1)
+		classical := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"x25519"}}})
+		var localRequests atomic.Int32
+		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay,
+			configure: func(cfg *PeerConfig) { cfg.Suites = func() Suites { return classical } },
+			watch: func(fromAsker bool, h *Header) {
+				if fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					peerOffer.Store(true)
+				}
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
+					localRequests.Add(1)
+				}
+				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && h.IsResponse() {
+					select {
+					case peerAnswered <- struct{}{}:
+					default:
+					}
+				}
+			},
+			hold: func(fromAsker bool, h *Header) <-chan struct{} {
+				if fromAsker && h.ExchangeType == CREATE_CHILD_SA && h.IsResponse() &&
+					peerHeld.Load() && localReplyHeld.CompareAndSwap(false, true) {
+					replyHeld <- struct{}{}
+					return releaseReply
+				}
+				return nil
+			},
+			seed: func(asker, answerer *Session) {
+				answerer.timing.ChildRekeyInterval = time.Hour
+				answerer.timing.RekeyMargin = DefaultRekeyMargin
+				answerer.timing.RekeyJitter = 0
+				answerer.timing.RekeyRetryInitial, answerer.timing.RekeyRetryMax = DefaultRetryFirst, DefaultRetryMax
+				answerer.rekeyJitterSource = unjittered
+				lists := answerer.suites
+				answerer.suites = func() Suites {
+					if !answerer.childRekeying.Load() && peerOffer.CompareAndSwap(true, false) {
+						peerHeld.Store(true)
+						peerReady <- struct{}{}
+						<-releasePeer
+					}
+					return current(lists)
+				}
+				answerer.events = func(_, _ identity.Identity, kind string, _ ...slog.Attr) {
+					if kind == "ike.rekey.failed" {
+						localFailed.Store(true)
+						answerer.SuitesChanged()
+						<-releaseWorker
+					}
+				}
+				answerer.clock = func() time.Time {
+					if localFailed.CompareAndSwap(true, false) {
+						loopReady <- struct{}{}
+						<-releaseLoop
+					}
+					return time.Now()
+				}
+			},
+		})
+		t.Cleanup(func() {
+			select {
+			case releasePeer <- struct{}{}:
+			default:
+			}
+			select {
+			case releaseReply <- struct{}{}:
+			default:
+			}
+			select {
+			case releaseWorker <- struct{}{}:
+			default:
+			}
+			select {
+			case releaseLoop <- struct{}{}:
+			default:
+			}
+		})
+		p.answererPlane.mu.Lock()
+		p.answererPlane.afterInstall = func() {
+			select {
+			case installed <- struct{}{}:
+			default:
+			}
+		}
+		p.answererPlane.mu.Unlock()
+		// Run's initial suites check must finish before the relay observes the
+		// peer's offer, so the next suites check is the handler's, after its slot check.
+		synctest.Wait()
+		before := p.answerer.currentChildGeneration()
+		peer := make(chan error, 1)
+		go func() { peer <- p.asker.RekeyChild() }()
+		select {
+		case <-peerReady:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the peer's rekey did not reach the suite check after the slot check")
+		}
+		own := make(chan error, 1)
+		go func() { own <- p.answerer.RekeyChild() }()
+		synctest.Wait()
+		if !peerHeld.Load() || !p.answerer.childRekeying.Load() || p.answerer.currentChildGeneration() != before {
+			t.Fatalf("this end did not take the slot at generation %d before the peer installed its SA", before)
+		}
+		releasePeer <- struct{}{}
+		select {
+		case <-replyHeld:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the peer did not hold the answer to this end's local request")
+		}
+		select {
+		case <-installed:
+		case <-peerAnswered:
+			if p.answerer.currentChildGeneration() == before {
+				t.Fatal("the peer was answered before installing: its request was refused while this end held the slot")
+			}
+			select {
+			case <-installed:
+			case <-time.After(rekeyAnswered):
+				t.Fatal("the peer's answer had no Child SA installation event")
+			}
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the peer's replacement was not installed while this end's answer was held")
+		}
+		if p.answerer.currentChildGeneration() == before {
+			t.Fatal("the peer's installation did not advance the Child generation")
+		}
+		releaseReply <- struct{}{}
+		select {
+		case <-loopReady:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the session did not reach the pass that settles the real stale outcome")
+		}
+		releaseWorker <- struct{}{}
+		select {
+		case err := <-own:
+			if !temporaryRefusal(err) {
+				t.Fatalf("this end's in-flight exchange ended with %v, want TEMPORARY_FAILURE", err)
+			}
+		case <-time.After(rekeyAnswered):
+			t.Fatal("this end's local rekey did not end")
+		}
+		after := p.answerer.currentChildGeneration()
+		ended := p.answerer.childRetry.unsettled()
+		if localRequests.Load() != 1 || after == before || len(ended) != 1 ||
+			ended[0].rekeyed != before || !temporaryRefusal(ended[0].err) {
+			t.Fatalf("this end sent %d requests, generation %d to %d, outcomes %v; want one stale refusal",
+				localRequests.Load(), before, after, ended)
+		}
+		work := scheduledChildRekey{session: p.answerer}
+		r, err := work.schedule()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.timer.Stop()
+		made, ok := p.answerer.childEstablishedAt()
+		if !ok {
+			t.Fatal("the peer's replacement has no establishment time")
+		}
+		deadline := made.Add(time.Hour - DefaultRekeyMargin)
+		if r.counted != after || !r.deadline.Equal(deadline) || r.failures != 0 || r.due || r.waiting || r.lastErr != nil {
+			t.Fatalf("peer-installed generation %v has deadline %v, count %d, due %t, waiting %t, error %v; want %d at %v",
+				r.counted, r.deadline, r.failures, r.due, r.waiting, r.lastErr, after, deadline)
+		}
+		now := time.Now()
+		if _, err := p.answerer.settleChildRekeys(r, ended); err != nil {
+			t.Fatal(err)
+		}
+		p.answerer.childRetry.mu.Lock()
+		count := p.answerer.childRetry.failures
+		p.answerer.childRetry.mu.Unlock()
+		opens := p.answerer.childRetry.opens()
+		if count != 1 || opens.Sub(now) != DefaultRetryFirst || len(p.answerer.childRetry.unsettled()) != 0 {
+			t.Fatalf("the real stale refusal left session count %d, wait %v, pending %d; want one failure and %v",
+				count, opens.Sub(now), len(p.answerer.childRetry.unsettled()), DefaultRetryFirst)
+		}
+		if r.counted != after || !r.deadline.Equal(deadline) || r.failures != 0 || r.due || r.waiting || r.lastErr != nil {
+			t.Fatalf("the stale refusal changed replacement %v: deadline %v, count %d, due %t, waiting %t, error %v",
+				r.counted, r.deadline, r.failures, r.due, r.waiting, r.lastErr)
+		}
+		releaseLoop <- struct{}{}
+		select {
+		case err := <-peer:
+			if err != nil {
+				t.Fatalf("the peer's replacement failed: %v", err)
+			}
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the peer's replacement did not complete")
 		}
 	})(t)
 }
@@ -810,9 +1340,11 @@ func TestScheduledRekeyThatFindsTheSlotTakenStartsAgainAtItsRelease(t *testing.T
 		// a rekey of the answering end that reads the lists while armed is held there, after it read its SA and before it checks that SA, until the test lets it go
 		// one that ends while ending is armed is held after its outcome is published and before it lets the slot go
 		var armed, ending atomic.Bool
-		held, resume := make(chan struct{}), make(chan struct{})
+		held, resume := make(chan struct{}, 1), make(chan struct{}, 2)
 		ended, release := make(chan struct{}), make(chan struct{})
-		completed := make(chan struct{})
+		completed := make(chan struct{}, 1)
+		var completions atomic.Int32
+		var releaseOnce sync.Once
 		p := dialOutbound(t, outboundCase{askerIsInitiator: true, delay: outboundDelay, lostDeletes: 1, refusals: 1,
 			watch: func(fromAsker bool, h *Header) {
 				if !fromAsker && h.ExchangeType == CREATE_CHILD_SA && !h.IsResponse() {
@@ -837,11 +1369,18 @@ func TestScheduledRekeyThatFindsTheSlotTakenStartsAgainAtItsRelease(t *testing.T
 						close(ended)
 						<-release
 					case kind == "ike.rekey.completed" && slices.ContainsFunc(attrs, func(attr slog.Attr) bool { return attr.Equal(slog.String("sa", "child")) }):
-						close(completed)
+						if completions.Add(1) == 1 {
+							completed <- struct{}{}
+						}
 					}
 				}
 				dialed = answerer.childEstablished
 			}})
+		t.Cleanup(func() {
+			p.answerer.Mux().Close()
+			releaseOnce.Do(func() { close(release) })
+			close(resume)
+		})
 		old := p.answerer.Child()
 		p.carry(true, true)
 		time.Sleep(time.Until(dialed.Add(restoredAsk)))
@@ -857,7 +1396,11 @@ func TestScheduledRekeyThatFindsTheSlotTakenStartsAgainAtItsRelease(t *testing.T
 		armed.Store(true)
 		asked := make(chan error, 1)
 		go func() { asked <- p.answerer.RekeyChildProactively() }()
-		<-held
+		select {
+		case <-held:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the proactive rekey did not reach the suite check")
+		}
 		for deadline := time.Now().Add(rekeyAnswered); p.answerer.Child().LocalSPI != old.LocalSPI; time.Sleep(outboundDelay) {
 			if time.Now().After(deadline) {
 				t.Fatal("the asking end's Delete did not make the replaced SA current again")
@@ -872,16 +1415,25 @@ func TestScheduledRekeyThatFindsTheSlotTakenStartsAgainAtItsRelease(t *testing.T
 		}
 		ending.Store(true)
 		resume <- struct{}{}
-		<-ended
+		select {
+		case <-ended:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the proactive rekey did not report its failure before releasing the slot")
+		}
 		p.answerer.SuitesChanged()
 		synctest.Wait()
 		if got := scheduled(); got != 2 {
 			t.Fatalf("while the proactive rekey held the slot past its outcome the answering end's schedule had started %d rekeys, want 2, the second started while the slot was taken", got)
 		}
 		armed.Store(true)
-		close(release)
-		if err := <-asked; !errors.Is(err, errChildReplaced) {
-			t.Errorf("the rekey that read the replacement %08x ended with %v, want errChildReplaced", replacement.LocalSPI, err)
+		releaseOnce.Do(func() { close(release) })
+		select {
+		case err := <-asked:
+			if !errors.Is(err, errChildReplaced) {
+				t.Errorf("the rekey that read the replacement %08x ended with %v, want errChildReplaced", replacement.LocalSPI, err)
+			}
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the proactive rekey did not end after releasing its slot")
 		}
 		synctest.Wait()
 		select {
@@ -893,8 +1445,15 @@ func TestScheduledRekeyThatFindsTheSlotTakenStartsAgainAtItsRelease(t *testing.T
 			t.Errorf("the answering end's schedule had started %d rekeys when the rekey of the restored SA was held, want 3", got)
 		}
 		resume <- struct{}{}
-		<-completed
+		select {
+		case <-completed:
+		case <-time.After(rekeyAnswered):
+			t.Fatal("the scheduled rekey did not report completion")
+		}
 		synctest.Wait()
+		if got := completions.Load(); got != 1 {
+			t.Errorf("the scheduled rekey reported %d completions, want one", got)
+		}
 		if made, peer := p.answerer.Child(), p.asker.Child(); made.LocalSPI == old.LocalSPI || made.RemoteSPI != peer.LocalSPI || made.LocalSPI != peer.RemoteSPI {
 			t.Errorf("once its rekey completed the answering end holds %08x/%08x and the asking end %08x/%08x, want a new SA both hold", made.LocalSPI, made.RemoteSPI, peer.LocalSPI, peer.RemoteSPI)
 		}

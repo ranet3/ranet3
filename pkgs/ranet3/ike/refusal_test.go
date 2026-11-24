@@ -301,11 +301,19 @@ func TestRefusedChildSADeleteLeavesItsPairHalfClosed(t *testing.T) {
 	} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			lines := recordLines(t)
+			events := &recorder{}
 			s := newRekeyableSession(t, old)
+			s.events = events.record
 			s.current.skei, s.current.sker = make([]byte, 20), make([]byte, 20)
 			spi, err := test.refuse(t, s)
 			if failed := err != nil; failed != test.failure {
 				t.Errorf("the path returned %v, want failed %v", err, test.failure)
+			}
+			if name == "the SA a rekey replaced" {
+				want := []string{"ike.rekey.started > sa=child", "ike.rekey.completed > sa=child suite=aes128gcm"}
+				if got := events.recorded(); !slices.Equal(got, want) {
+					t.Errorf("the refused Delete recorded events %q, want %q without a retirement failure", got, want)
+				}
 			}
 			if retiring := s.retiringChild(); retiring.LocalSPI != 0 {
 				t.Errorf("Child SA %08x is still awaiting retirement, want its SAs down", retiring.LocalSPI)

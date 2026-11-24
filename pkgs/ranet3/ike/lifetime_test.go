@@ -44,6 +44,7 @@ func (p *refusingPair) ended(t *testing.T, why string) error {
 // the retry backoff is longer than the test, so only the lifetime wakes the session to close it, and a dial after it builds a new IKE SA
 func TestSAWhoseRekeyKeepsFailingIsDeletedAtItsLifetime(t *testing.T) {
 	const lifetime = time.Second
+	const expiryPassLimit = 8
 	for _, tc := range []struct {
 		sa          string
 		set         func(*PeerConfig)
@@ -54,6 +55,7 @@ func TestSAWhoseRekeyKeepsFailingIsDeletedAtItsLifetime(t *testing.T) {
 	} {
 		t.Run(tc.sa, bubble.Run(func(t *testing.T) {
 			var established time.Time
+			overdue := make(chan struct{}, 1)
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				tc.set(cfg)
 				cfg.RekeyMargin = lifetime - 300*time.Millisecond
@@ -61,8 +63,31 @@ func TestSAWhoseRekeyKeepsFailingIsDeletedAtItsLifetime(t *testing.T) {
 			}, func(initiator, responder *Session) {
 				established = tc.established(initiator)
 				refuseRekeys(initiator, responder)
+				passes := 0
+				initiator.clock = func() time.Time {
+					now := time.Now()
+					if !now.Before(established.Add(lifetime)) {
+						passes++
+						if passes == expiryPassLimit {
+							overdue <- struct{}{}
+						}
+					}
+					return now
+				}
 			})
-			err := pair.ended(t, "the session went on past its SA's lifetime")
+			var err error
+			select {
+			case err = <-pair.initiatorDone:
+				select {
+				case <-pair.responderDone:
+				case <-time.After(answerBudget):
+					t.Fatal("the responder still holds the IKE SA, so no Delete for it reached it")
+				}
+			case <-overdue:
+				t.Fatal("the session went on past its SA's lifetime without closing it")
+			case <-time.After(answerBudget):
+				t.Fatal("the session went on past its SA's lifetime")
+			}
 			ended := time.Since(established)
 			if err == nil || !strings.Contains(err.Error(), "reached its lifetime") {
 				t.Errorf("the session ended with %v, want its SA's lifetime", err)

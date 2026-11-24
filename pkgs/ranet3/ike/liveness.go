@@ -71,15 +71,14 @@ type rekeySchedule struct {
 	current  func() any
 	timer    *time.Timer
 	deadline time.Time
-	// counted is the SA an unforced rekey falling due runs on, the one current gave as the interval's delay was drawn or, for a retry, the one the failed rekey set out to replace
+	// counted owns the failure count and deadline
 	counted  any
 	due      bool
 	failures uint
 	lastErr  error
 	// forced marks a rekey the lists asked for, which runs only while they still leave out its SA
 	forced bool
-	// waiting is set when the Child SA schedule starts a rekey and cleared when the schedule is armed again, which settling an exchange of that rekey does in a session that goes on, or when the schedule falls due again once no scheduled rekey runs and the slot is free
-	// so a rekey that found the slot taken, which runs no exchange, falls due again once the slot is let go unless the schedule was armed again first
+	// waiting belongs to a Child worker until settlement supersedes it or the slot opens
 	waiting bool
 }
 
@@ -100,7 +99,7 @@ func (r *rekeySchedule) replaced() bool {
 
 type scheduledChildRekey struct {
 	session *Session
-	// Run selects no other target until it has received this worker's result.
+	// run selects no other target until it has received this worker's result
 	target uint64
 }
 
@@ -115,7 +114,7 @@ func (w *scheduledChildRekey) schedule() (*rekeySchedule, error) {
 }
 
 func (w *scheduledChildRekey) selectTarget(schedule *rekeySchedule) bool {
-	// A replacement during the suite check must not inherit that check's authorization.
+	// a replacement during the suite check must not inherit that check's authorization
 	target := w.session.currentChildGeneration()
 	child, _, _ := w.session.unlisted()
 	if (schedule.forced || schedule.counted != target) && child == "" {
@@ -130,15 +129,14 @@ func (w *scheduledChildRekey) run() error {
 }
 
 func (s *Session) settleScheduledChild(schedule *rekeySchedule, err error) error {
-	// A reset while the worker was out already armed the replacement's own schedule.
-	if err == errScheduledChildReplaced && schedule.waiting {
+	if err == errScheduledChildReplaced && schedule.waiting && !s.closing.Load() && !s.childRekeying.Load() {
 		return s.rearm(schedule)
 	}
 	return nil
 }
 
 func (s *Session) pollChildRekeySlot(schedule, running *rekeySchedule) {
-	if schedule.waiting && running == nil && !s.childRekeying.Load() {
+	if schedule.waiting && running == nil && !s.closing.Load() && !s.childRekeying.Load() {
 		schedule.waiting, schedule.due = false, true
 	}
 }
@@ -175,13 +173,16 @@ type temporaryStreak struct {
 	since time.Time
 }
 
-func (t *temporaryStreak) outlasted(on *ikeContext, child uint64, err error, now time.Time) bool {
+func temporaryRefusal(err error) bool {
 	rejected, ok := errors.AsType[*rejectedError](err)
-	if !ok || rejected.notify.Type != N_TEMPORARY_FAILURE {
+	return ok && rejected.notify.Type == N_TEMPORARY_FAILURE
+}
+
+func (t *temporaryStreak) outlasted(on *ikeContext, child uint64, err error, now time.Time) bool {
+	if !temporaryRefusal(err) {
 		return false
 	}
 	// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
-	// the run is the IKE SA's, and a rekey completed on it ends the run whichever end started that rekey, so a refusal under another IKE SA or Child SA starts a new one
 	if t.on != on || t.child != child {
 		*t = temporaryStreak{on: on, child: child, since: now}
 		return false
@@ -295,9 +296,8 @@ func (s *Session) newRekeySchedule(name, sa string, interval time.Duration, run 
 func retryOnly(name, sa string, run func() error, current func() any) *rekeySchedule {
 	timer := time.NewTimer(0)
 	timer.Stop()
-	return &rekeySchedule{name: name, sa: sa, run: run, timer: timer,
-		established: func() (time.Time, bool) { return time.Time{}, false },
-		current:     current}
+	return &rekeySchedule{name: name, sa: sa, run: run, timer: timer, counted: current(),
+		established: func() (time.Time, bool) { return time.Time{}, false }, current: current}
 }
 
 func (r *rekeySchedule) poll() {
@@ -315,17 +315,17 @@ func (r *rekeySchedule) reset(delay time.Duration) {
 	r.due, r.waiting = false, false
 }
 
-// rearm puts schedule back on the rekey its interval gives, so a forced delay a rekey on another path overtook, a packet count's among them, runs out on nothing
-// a schedule with no interval then holds no rekey, and no deadline for the loop's wait
+// a forced or retry deadline does not carry over to a replacement
 func (s *Session) rearm(schedule *rekeySchedule) error {
 	schedule.forced, schedule.failures, schedule.lastErr = false, 0, nil
+	counted := schedule.current()
 	if schedule.interval == 0 {
 		schedule.timer.Stop()
 		schedule.deadline = time.Time{}
 		schedule.due, schedule.waiting = false, false
+		schedule.counted = counted
 		return nil
 	}
-	counted := schedule.current()
 	delay, err := s.scheduledDelay(schedule)
 	if err != nil {
 		return err
@@ -333,6 +333,80 @@ func (s *Session) rearm(schedule *rekeySchedule) error {
 	schedule.reset(delay)
 	schedule.counted = counted
 	return nil
+}
+
+func (s *Session) settleRekey(schedule *rekeySchedule, child uint64, err error) (time.Time, error) {
+	if err == nil {
+		slog.Info("ike rekey completed", "sa", schedule.name)
+		return time.Time{}, s.rearm(schedule)
+	}
+	schedule.failures, schedule.lastErr = schedule.failures+1, err
+	if s.temporary.outlasted(s.currentContext(), child, err, time.Now()) {
+		return time.Time{}, &saEnding{reason: "temporary failure", err: fmt.Errorf("ike: the peer answered TEMPORARY_FAILURE for %s: %w", temporaryFailureSpan, err)}
+	}
+	failures := schedule.failures
+	if schedule.sa == "child" {
+		_, unsent := errors.AsType[childUnsentError](err)
+		failures = s.childRetry.failed(!unsent)
+	}
+	delay := s.rekeyRetryDelay(failures)
+	next := time.Now().Add(delay)
+	schedule.reset(delay)
+	slog.Warn("ike rekey failed, retrying", "sa", schedule.name, "err", err, "retry_in", delay)
+	return next, nil
+}
+
+func (s *Session) settleChildRekeys(schedule *rekeySchedule, ended []childOutcome) (bool, error) {
+	if s.closing.Load() {
+		if len(ended) != 0 {
+			s.childRetry.settled(len(ended), time.Time{})
+		}
+		return false, nil
+	}
+	generation := s.currentChildGeneration()
+	changed := schedule.counted != generation || s.childRestored
+	// a local replacement still owes the old SA's Delete while its worker holds the slot
+	if changed && !s.childRestored && s.childRekeying.Load() {
+		return false, nil
+	}
+	s.childRestored = false
+	if changed {
+		if err := s.rearm(schedule); err != nil {
+			return false, err
+		}
+		generation = schedule.counted.(uint64)
+	}
+	var next time.Time
+	for _, outcome := range ended {
+		var until time.Time
+		switch {
+		case outcome.err == nil:
+			slog.Info("ike rekey completed", "sa", schedule.name)
+		case errors.Is(outcome.err, errChildReplaced):
+			// a preflight abort cannot consume an already due attempt
+			if schedule.waiting && schedule.deadline.IsZero() {
+				schedule.due = true
+			}
+			continue
+		case outcome.rekeyed != generation:
+			// a stale failure extends only the session's admission wait
+			_, unsent := errors.AsType[childUnsentError](outcome.err)
+			until = time.Now().Add(s.rekeyRetryDelay(s.childRetry.failed(!unsent)))
+		default:
+			var err error
+			until, err = s.settleRekey(schedule, generation, outcome.err)
+			if err != nil {
+				return false, err
+			}
+		}
+		if until.After(next) {
+			next = until
+		}
+	}
+	if len(ended) != 0 {
+		s.childRetry.settled(len(ended), next)
+	}
+	return changed || len(ended) != 0, nil
 }
 
 // wake is the earlier of deadline and the time the loop wakes for r, its timer's deadline or its SA's lifetime while that is ahead of now
@@ -437,64 +511,30 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}
 	// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
 	fail := func(schedule *rekeySchedule, err error) {
-		if ending == nil {
-			end(schedule, "local failure", err)
-		}
-	}
-	// the time it returns is taken before the timer is reset, so the schedule's own retry never finds itself held
-	settle := func(schedule *rekeySchedule, err error) (time.Time, error) {
 		if ending != nil {
-			return time.Time{}, nil
+			return
 		}
-		// an exchange whose SA was replaced before its request went out failed at nothing, so the schedule goes back on the rekey of the SA now current
-		if errors.Is(err, errChildReplaced) {
-			return time.Time{}, s.rearm(schedule)
+		if ended, ok := errors.AsType[*saEnding](err); ok {
+			end(schedule, ended.reason, err)
+			return
 		}
-		if err != nil {
-			schedule.failures, schedule.lastErr = schedule.failures+1, err
-			if s.temporary.outlasted(s.currentContext(), s.currentChildGeneration(), err, time.Now()) {
-				end(schedule, "temporary failure", fmt.Errorf("ike: the peer answered TEMPORARY_FAILURE for %s: %w", temporaryFailureSpan, err))
-				return time.Time{}, nil
-			}
-			delay := s.rekeyRetryDelay(schedule.failures)
-			next := time.Now().Add(delay)
-			schedule.reset(delay)
-			slog.Warn("ike rekey failed, retrying", "sa", schedule.name, "err", err, "retry_in", delay)
-			return next, nil
-		}
-		slog.Info("ike rekey completed", "sa", schedule.name)
-		// a success is settled once the SA it made is in place, so the next refusal starts a new run
-		return time.Time{}, s.rearm(schedule)
+		end(schedule, "local failure", err)
 	}
-	// a rekey that ended is checked against the lists once its outcome is settled, since a check while it ran left its SA to it
 	resuiteDue := false
-	// every Child SA exchange this end starts is settled on the Child SA schedule, whichever path started it, and counted from the SA it set out to replace
-	// so its unforced retry is dropped only once a rekey has replaced that SA since the exchange began
-	settleChildRekeys := func() error {
-		ended := s.childRetry.unsettled()
-		if len(ended) == 0 {
-			return nil
-		}
-		var next time.Time
-		for _, outcome := range ended {
-			childSchedule.counted = outcome.rekeyed
-			var err error
-			if next, err = settle(childSchedule, outcome.err); err != nil {
-				return err
-			}
-		}
-		s.childRetry.settled(len(ended), next)
-		resuiteDue = true
-		return nil
-	}
 	startDueRekey := func() {
-		if ending != nil || replacing {
+		if ending != nil || replacing || s.closing.Load() {
 			return
 		}
 		for schedule := nextDueRekey(schedules, running); schedule != nil; schedule = nextDueRekey(schedules, running) {
 			var start bool
 			if schedule == childSchedule {
 				start = childWork.selectTarget(schedule)
+				if start {
+					if opens, now := s.childRetry.opens(), time.Now(); now.Before(opens) {
+						schedule.reset(opens.Sub(now))
+						continue
+					}
+				}
 			} else {
 				_, ikeSA, _ := s.unlisted()
 				start = (!schedule.forced && !schedule.replaced()) || ikeSA != ""
@@ -530,7 +570,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		return nil
 	}
 	resuite := func() (*rekeySchedule, error) {
-		if ending != nil || replacing {
+		if ending != nil || replacing || s.closing.Load() {
 			return nil, nil
 		}
 		child, ikeSA, prf := s.unlisted()
@@ -609,23 +649,13 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		s.expireRetainedContexts(now)
 		s.expireChain(now)
 		fragmentsExpire, fragmentsHeld := s.expireFragments(now)
-		// the rekey holding the slot published its outcome before letting the slot go, so a settle here arms the schedule over the due bit given back
+		// the slot holder publishes its outcome before releasing the slot
 		s.pollChildRekeySlot(childSchedule, running)
-		if err := settleChildRekeys(); err != nil {
+		changed, err := s.settleChildRekeys(childSchedule, s.childRetry.unsettled())
+		if err != nil {
 			fail(childSchedule, err)
 		}
-		// a replaced SA made current again rekeys at its own due time, which a schedule counted from its canceled replacement may have passed
-		// while a failed exchange's retry delay holds every Child SA exchange, a rekey started now would be refused with nothing to wake the schedule, so the schedule wakes at the delay's end and rekeys the SA from there
-		// the SA is checked against the lists with any check already asked for, since a forced rekey armed for its replacement does not carry over
-		if s.childRestored {
-			s.childRestored = false
-			if opens := s.childRetry.opens(); time.Now().Before(opens) {
-				childSchedule.reset(time.Until(opens))
-			} else if err := s.rearm(childSchedule); err != nil {
-				fail(childSchedule, err)
-			}
-			resuiteDue = true
-		}
+		resuiteDue = resuiteDue || changed
 		// a check the lists asked for runs here, taken here or by the wait below, which may take a datagram that came after it first
 		// so a peer's Delete crossing this end's own finds the IKE SA's replacement under way, and the session ends for a new handshake
 		select {
@@ -653,11 +683,11 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			var settleErr error
 			if result.schedule == childSchedule {
 				settleErr = s.settleScheduledChild(childSchedule, result.err)
-			} else {
-				_, settleErr = settle(result.schedule, result.err)
+			} else if ending == nil {
+				_, settleErr = s.settleRekey(result.schedule, s.currentChildGeneration(), result.err)
 			}
 			if settleErr != nil {
-				end(result.schedule, "local failure", settleErr)
+				fail(result.schedule, settleErr)
 			}
 			resuiteDue = true
 			continue
@@ -722,6 +752,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 					deleted = err == nil && deletes && pending.context == s.currentContext()
 				}
 				if err != nil {
+					if req.exchange == CREATE_CHILD_SA {
+						err = childUnsentError{err}
+					}
 					req.result <- requestResult{err: err}
 					if errors.Is(err, errMessageIDExhausted) {
 						s.mux.Close()
@@ -973,7 +1006,11 @@ func (s *Session) awaitLocked(req *localRequest) requestResult {
 	select {
 	case s.requests <- req:
 	case <-s.mux.Done():
-		return requestResult{err: fmt.Errorf("ike: session closed")}
+		err := fmt.Errorf("ike: session closed")
+		if req.exchange == CREATE_CHILD_SA {
+			err = childUnsentError{err}
+		}
+		return requestResult{err: err}
 	}
 	select {
 	case result := <-req.result:

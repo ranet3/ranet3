@@ -15,39 +15,43 @@ import (
 	"time"
 )
 
-// RekeyChild replaces the current Child SA without a new Diffie-Hellman
-// exchange. Run must be active to service the serialized IKE request.
-//
-// The old inbound Child SA remains installed until the INFORMATIONAL Delete
-// exchange acknowledges retirement. After a failed Child SA rekey, on any
-// path, it refuses until the retry delay Run gives the schedule has passed.
-// It fails while the peer's rekey of either SA runs its additional key
-// exchanges.
+// RekeyChild replaces the current Child SA without a new Diffie-Hellman exchange.
+// Run must be active, and an error after installation names the failed retirement.
 func (s *Session) RekeyChild() error {
 	return s.rekeyChild(false, nil)
 }
 
-// RekeyChildProactively starts a packet-count-triggered Child-SA rekey. If a
-// Child-SA rekey is already running, that exchange already satisfies the
-// request and this method succeeds without starting a duplicate. After a
-// failed one, the retry Run schedules for it satisfies the request the same
-// way.
+// RekeyChildProactively requests a packet-count-triggered Child SA rekey.
+// A running rekey or a session admission wait does not start another exchange.
 func (s *Session) RekeyChildProactively() error {
 	return s.rekeyChild(true, nil)
 }
 
-// childRetry carries how the Child SA exchanges this end starts came out, on whichever path, to Run, which settles each on the Child SA schedule
-// a failed one holds the next exchange of every path from its end until Run has settled it, and then until the retry delay Run gave the schedule has passed
+// session admission survives every Child SA replacement
+// only this end's installation clears its count of failed local rekeys
 type childRetry struct {
-	mu sync.Mutex
-	// ended holds the outcomes Run has not settled
-	ended []childOutcome
-	until time.Time
+	mu       sync.Mutex
+	ended    []childOutcome
+	until    time.Time
+	failures uint
 }
 
-// childOutcome is how a Child SA exchange came out, a nil err for a success
+func (r *childRetry) failed(sent bool) uint {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sent {
+		r.failures++
+	}
+	return r.failures
+}
+
+func (r *childRetry) installed() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures = 0
+}
+
 type childOutcome struct {
-	// rekeyed is the generation of the Child SA the exchange set out to replace, read as it began
 	rekeyed uint64
 	err     error
 }
@@ -55,10 +59,11 @@ type childOutcome struct {
 func (r *childRetry) held(now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return now.Before(r.until) || slices.ContainsFunc(r.ended, func(outcome childOutcome) bool { return outcome.err != nil })
+	return now.Before(r.until) || slices.ContainsFunc(r.ended, func(outcome childOutcome) bool {
+		return outcome.err != nil && !errors.Is(outcome.err, errChildReplaced)
+	})
 }
 
-// opens is when the retry delay Run gave the last failure ends
 func (r *childRetry) opens() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -71,18 +76,20 @@ func (r *childRetry) end(outcome childOutcome) {
 	r.ended = append(r.ended, outcome)
 }
 
-// unsettled leaves the outcomes in place, so a failure among them holds until settled drops it
+// until Run settles this prefix, writers can only append beyond it
 func (r *childRetry) unsettled() []childOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.Clone(r.ended)
+	return r.ended[:len(r.ended):len(r.ended)]
 }
 
 func (r *childRetry) settled(n int, until time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ended = slices.Delete(r.ended, 0, n)
-	r.until = until
+	if until.After(r.until) {
+		r.until = until
+	}
 }
 
 // rekeyEnded records how a rekey this end started came out
@@ -100,6 +107,16 @@ func (s *Session) rekeyEnded(sa string, err error) {
 	}
 	s.emit("ike.rekey.completed", slog.String("sa", sa), slog.String("suite", replacement))
 }
+
+type childRetirementError struct{ error }
+
+func (e childRetirementError) Unwrap() error { return e.error }
+
+// childUnsentError marks a CREATE_CHILD_SA refusal before the request takes a Message ID, including an IKE SA rekey request.
+// The Child rekey path keeps or removes it before Child retry settlement decides whether to count the attempt.
+type childUnsentError struct{ error }
+
+func (e childUnsentError) Unwrap() error { return e.error }
 
 func (s *Session) rekeyChild(alreadyRunningIsSuccess bool, target *uint64) (err error) {
 	if !s.childRekeying.CompareAndSwap(false, true) {
@@ -123,12 +140,13 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool, target *uint64) (err 
 			return errScheduledChildReplaced
 		}
 	}
-	// the rekeys running when a Child SA's keys leave at its lifetime decide whether a new SA takes its place, so none starts once they have left
 	if s.childWithdrawn() {
 		return errors.New("ike: the Child SA is past its lifetime")
 	}
+	if s.closing.Load() {
+		return errors.New("ike: the IKE SA is closing")
+	}
 	// RFC 7296 section 2.25: "When a peer receives a TEMPORARY_FAILURE notification, it MUST NOT immediately retry the operation" and "it MUST wait so that the sender may complete whatever operation caused the temporary condition."
-	// an exchange after a failed one, on whichever path, waits out the retry delay Run gives the Child SA schedule for it, and an ask in the meantime is left to the schedule's retry
 	if s.childRetry.held(time.Now()) {
 		if alreadyRunningIsSuccess {
 			return nil
@@ -136,24 +154,31 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool, target *uint64) (err 
 		return errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
 	}
 	s.emit("ike.rekey.started", slog.String("sa", "child"))
-	// An independent request takes the SA current after its start is reported.
+	// a scheduled request keeps the snapshot read under the slot
 	if target == nil {
 		old, rekeyed = s.childWithGeneration()
 	}
 	defer func() {
-		s.childRetry.end(childOutcome{rekeyed, err})
-		s.rekeyEnded("child", err)
+		retire, retired := errors.AsType[childRetirementError](err)
+		outcome := err
+		if retired {
+			outcome = nil
+		}
+		s.childRetry.end(childOutcome{rekeyed, outcome})
+		s.rekeyEnded("child", outcome)
+		if retired {
+			s.emit("ike.rekey.retire_failed", slog.String("sa", "child"), slog.String("err", retire.Error()))
+		}
 	}()
-	// RFC 7296 section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
-	// and a peer's creation or rekey of the Child SA replaces the SA this one would, so this end starts neither while the peer's chain is open, and the schedule retries after its backoff
+	// a peer's open chain may replace the SA this request would rekey
 	if s.chainKind() != "" {
-		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchange")
+		return childUnsentError{errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchange")}
 	}
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
 		return s.negotiateChild(nil, rekeyed)
 	}
 	if old.LocalSPI == 0 || old.RemoteSPI == 0 {
-		return fmt.Errorf("ike: no Child SA to rekey")
+		return childUnsentError{errors.New("ike: no Child SA to rekey")}
 	}
 	err = s.negotiateChild(&old, rekeyed)
 	var rejected *rejectedError
@@ -163,13 +188,17 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool, target *uint64) (err 
 	if rejected.notify.Protocol != ProtoESP || len(rejected.notify.SPI) != 4 || binary.BigEndian.Uint32(rejected.notify.SPI) != old.LocalSPI {
 		return fmt.Errorf("ike: invalid CHILD_SA_NOT_FOUND response")
 	}
-	// The peer no longer has this SA, so no Delete exchange is possible.
-	// RFC 7296 section 2.25 recommends silently removing our stale half and creating
-	// a new Child SA from scratch.
+	// RFC 7296 section 2.25 recommends removing the stale half without a Delete
 	if err := s.forgetChild(old); err != nil {
 		return fmt.Errorf("ike: forget missing peer Child SA: %w", err)
 	}
-	return s.negotiateChild(nil, rekeyed)
+	// CHILD_SA_NOT_FOUND answered the first request, so this attempt sent even
+	// if its second negotiation stops before taking another Message ID.
+	err = s.negotiateChild(nil, rekeyed)
+	if unsent, ok := errors.AsType[childUnsentError](err); ok {
+		return unsent.error
+	}
+	return err
 }
 
 var errScheduledChildReplaced = errors.New("ike: the scheduled Child SA rekey target was replaced")
@@ -189,7 +218,7 @@ func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 	binary.BigEndian.PutUint32(spi, localSPI)
 	nonce := make([]byte, nonceLen)
 	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("ike: generate Child SA rekey nonce: %w", err)
+		return childUnsentError{fmt.Errorf("ike: generate Child SA rekey nonce: %w", err)}
 	}
 	tsv4, tsv6 := FullRangeV4(), FullRangeV6()
 	lists := s.lists()
@@ -214,11 +243,10 @@ func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 	// RFC 7296 section 2.8: "the responder MAY begin sending on an SA as soon as it sends its response to the CREATE_CHILD_SA request"
 	// so an SPI this end could not then install is refused before the request goes out
 	if err := s.canReplaceChild(localSPI, generation); err != nil {
-		return err
+		return childUnsentError{err}
 	}
-	// and the SPI routes to this session before the answer can, so ESP on it never reaches the hub as unknown, until an exchange that installs no SA with it lets it go
 	if err := s.mux.RegisterESP(localSPI); err != nil {
-		return err
+		return childUnsentError{err}
 	}
 	installed := false
 	defer func() {
@@ -228,13 +256,14 @@ func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 	}()
 	response, err := s.requestOnLocked(context, CREATE_CHILD_SA, inner)
 	if err != nil {
+		if unsent, ok := errors.AsType[childUnsentError](err); ok {
+			return childUnsentError{fmt.Errorf("ike: Child SA negotiation request: %w", unsent.error)}
+		}
 		return fmt.Errorf("ike: Child SA negotiation request: %w", err)
 	}
 
 	// RFC 7296 section 2.8: "The responder to a CREATE_CHILD_SA MUST be prepared to accept messages on an SA before sending its response to the creation request, so there is no ambiguity for the initiator."
-	// so the peer holds a Child SA once it has answered, and every way out short of success deletes it, or each retry leaves one more behind
 	// section 1.4.1: "To delete an SA, an INFORMATIONAL exchange with one or more Delete payloads is sent listing the SPIs (as they would be expected in the headers of inbound packets) of the SAs to be deleted."
-	// that is the SPI this end drew before the request went out, so even an answer that does not parse can be withdrawn from
 	orphaned := func(cause error) error {
 		answer, delErr := s.requestLocked(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}})
 		if delErr != nil {
@@ -247,7 +276,6 @@ func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 
 	payloads, err := decodeChildNegotiationResponse(response, context.suite.PRFID)
 	if err != nil {
-		// a rejection is the one answer that installs nothing at the peer, and rekeyChild reads it to recover from CHILD_SA_NOT_FOUND
 		if _, ok := errors.AsType[*rejectedError](err); ok {
 			return err
 		}
@@ -272,20 +300,23 @@ func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 		return orphaned(err)
 	}
 	installed = true
+	s.childRetry.installed()
 	if old == nil {
 		return nil
 	}
 	s.deletingRetiring(old.RemoteSPI)
 	deleted, err := s.requestLocked(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{oldLocalSPI}})}})
 	// RFC 7296 section 1.4.1 on a Delete that crosses the peer's own: "In that case, the responses MUST NOT include Delete payloads for the deleted SAs, since that would result in duplicate deletion and could in theory delete the wrong SA."
-	// the replacement is installed, so the old SA retires on every path out, an answer naming no SPI, a refusal and a failed exchange among them, since a replaced SA left retiring refuses every later rekey
-	if retireErr := s.retireChild(old.RemoteSPI); retireErr != nil && err == nil {
-		return retireErr
+	retireErr := s.retireChild(old.RemoteSPI)
+	if err != nil && retireErr != nil {
+		return childRetirementError{fmt.Errorf("ike: retire replaced Child SA: %w, and its Delete failed: %w", retireErr, err)}
 	}
 	if err != nil {
-		return fmt.Errorf("ike: retire replaced Child SA: %w", err)
+		return childRetirementError{fmt.Errorf("ike: delete replaced Child SA: %w", err)}
 	}
-	// the rekey took effect whatever the peer makes of the old SA
+	if retireErr != nil {
+		return childRetirementError{fmt.Errorf("ike: retire replaced Child SA: %w", retireErr)}
+	}
 	if s.halfClosedBy(deleted, old.LocalSPI) {
 		return nil
 	}
@@ -294,7 +325,7 @@ func (s *Session) negotiateChild(old *ChildSA, generation uint64) error {
 			continue
 		}
 		if _, err := DecodeDelete(p.Body); err != nil {
-			return fmt.Errorf("ike: invalid Child SA retire response: %w", err)
+			return childRetirementError{fmt.Errorf("ike: invalid Child SA retire response: %w", err)}
 		}
 	}
 	return nil
