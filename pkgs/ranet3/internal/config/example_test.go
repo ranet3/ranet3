@@ -92,6 +92,34 @@ func TestShippedExamplesParse(t *testing.T) {
 	}
 }
 
+func TestShippedExamplesLoadWithoutAuthority(t *testing.T) {
+	for name := range examples {
+		t.Run(name, func(t *testing.T) {
+			body := readExample(t, name, false)
+			var withAuthority string
+			switch name {
+			case "toml":
+				withAuthority = "authority = [\"" + testAuthority + "\"]\n"
+			case "yaml":
+				withAuthority = "  authority: [\"" + testAuthority + "\"]\n"
+			case "json":
+				withAuthority = ",\n    \"authority\": [\n      \"" + testAuthority + "\"\n    ]"
+			}
+			withoutAuthority := strings.Replace(body, withAuthority, "", 1)
+			if body == withoutAuthority {
+				t.Fatal("example has no authority entry to remove")
+			}
+			cfg, err := load(t, "."+name, withoutAuthority)
+			if err != nil {
+				t.Fatalf("example without authority keys: %v", err)
+			}
+			if len(cfg.Auth.Authority) != 0 {
+				t.Fatalf("loaded authority keys: %q", cfg.Auth.Authority)
+			}
+		})
+	}
+}
+
 // an example writes an option beside the value the node runs without it
 // a default changed where the code sets it and not where the example says it leaves every operator who copied the line running another node
 // link.mtu, the speaker's two intervals and its cost, the reconcile interval, the capture grace, an exit's share of flows, the replay window and the four cap.crypto lists are the ones documented

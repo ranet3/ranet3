@@ -2,7 +2,10 @@
   "node": "example/my-laptop",
   "auth": {
     "key": "/etc/ranet3/key.pem",
-    "trust": "/etc/ranet3/trust.json"
+    "trust": "/etc/ranet3/trust.json",
+    "authority": [
+      "MCowBQYDK2VwAyEA7vRDY0q9Dah4orYnH+P9+VDDuev6ghmNsdhocuu9duc="
+    ]
   },
   "link": {
     "port": 13000,

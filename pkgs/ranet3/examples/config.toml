@@ -34,6 +34,8 @@ node = "example/my-laptop"
 # may join, which is a ranet registry.json today.
 key = "/etc/ranet3/key.pem"
 trust = "/etc/ranet3/trust.json"
+# Replace this example public SPKI with the deployed authority key.
+authority = ["MCowBQYDK2VwAyEA7vRDY0q9Dah4orYnH+P9+VDDuev6ghmNsdhocuu9duc="]
 
 # The IDs of RFC 7296 section 3.5 other than a DN, for a peer that is not
 # ranet3, such as strongSwan. A ranet3 peer names itself by its DN and needs

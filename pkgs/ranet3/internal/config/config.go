@@ -98,6 +98,8 @@ type Auth struct {
 	Key string `yaml:"key" json:"key" toml:"key"`
 	// Trust is the document naming who may join, a ranet registry.json today.
 	Trust string `yaml:"trust" json:"trust" toml:"trust"`
+	// Authority is the list of public keys eligible to sign a trust document.
+	Authority []string `yaml:"authority,omitempty" json:"authority,omitempty" toml:"authority,omitempty"`
 	// Aliases is the ID each peer may present in place of its DN and the ID this node presents to one, see [ike.Aliases]
 	Aliases ike.Aliases `yaml:"aliases,omitempty" json:"aliases,omitzero" toml:"aliases,omitempty"`
 }
@@ -708,6 +710,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: %s %q is not valid UTF-8, which a toml or a json file cannot hold", path, written)
 	}
 	if err := c.validateNode(); err != nil {
+		return err
+	}
+	if err := c.Auth.validateAuthority(); err != nil {
 		return err
 	}
 	// Returned as the capability wrote it. Each message already names the
