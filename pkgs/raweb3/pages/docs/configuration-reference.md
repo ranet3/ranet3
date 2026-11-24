@@ -559,7 +559,13 @@ the backoff holds back the next rekey whichever path asks for it: the schedule,
 the ask as the sequence numbers near their end, the replacement of a Child SA
 the peer deleted, or `ranet3 rekey`. The retries stop at the SA's lifetime, or
 once a rekey the peer starts replaces the SA, whose next rekey then counts from
-the SA the peer made.
+the SA the peer made. The delay before this end's next Child SA rekey uses the
+capped backoff from its consecutive failed local attempts that started a
+CREATE_CHILD_SA exchange. An attempt refused here before its request starts
+waits at the current delay without lengthening it. Only this end's installation
+of a Child SA starts the count again. A replacement the peer installs, or a
+restore, does not restart it, even when an earlier local attempt's failure
+arrives after the replacement.
 
 | Key     | Value    | Default | Meaning       |
 | ------- | -------- | ------- | ------------- |
