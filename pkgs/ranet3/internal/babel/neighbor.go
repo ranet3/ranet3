@@ -21,6 +21,7 @@ type neighborState struct {
 	extra                uint16
 	addr                 netip.Addr
 	alive                bool
+	helloTimedOut        bool
 	lastHelloTime        time.Time
 	helloInterval        time.Duration
 	unicastHelloTime     time.Time

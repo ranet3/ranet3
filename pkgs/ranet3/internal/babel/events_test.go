@@ -19,8 +19,6 @@ import (
 
 func everything(string, string, []slog.Attr) bool { return true }
 
-// a neighbor coming up and the request sent to it, every change of a selected next hop and the neighbor going down are recorded
-// the selection is recorded every time, where its log line is said once a second at most
 func TestSpeakerRecordsNeighborsAndSelections(t *testing.T) {
 	bus := events.New()
 	speaker, neighbor, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
@@ -46,7 +44,7 @@ func TestSpeakerRecordsNeighborsAndSelections(t *testing.T) {
 	selected, retracted := "babel.route.selected peer fd00:1::/64", "babel.route.retracted  fd00:1::/64"
 	want := []string{"babel.neighbor.up peer ", "babel.request.sent peer ",
 		selected, retracted, selected, retracted, selected, retracted,
-		"babel.neighbor.down peer "}
+		"babel.neighbor.down peer ", "babel.neighbor.timeout peer "}
 	if !slices.Equal(got, want) {
 		t.Errorf("the speaker recorded\n%q\nwant\n%q", got, want)
 	}

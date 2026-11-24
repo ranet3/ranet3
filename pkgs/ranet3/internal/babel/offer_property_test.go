@@ -36,14 +36,14 @@ const offerRxCost = 96
 
 // The offers a node keeps for its own keys follow a model of them under any
 // order of adopting and releasing a key, a neighbor's update, retraction and
-// wildcard retraction, the clock passing, a sweep, and a neighbor going down. An update for an owned key is its neighbor's offer and enters no route,
-// and one for any other key is a route. A retraction or a wildcard retraction
-// takes the offer or the route out, a sweep takes out each offer past its
-// expiry and each of a neighbor whose Hellos lapsed, and a neighbor going down
-// takes its offers and leaves its routes. Adopting a key makes each route of
-// it that is finite and not expired its neighbor's offer, and releasing one
-// makes each offer not expired its route, selecting at once the one of least
-// cost among those whose link is up, or leaving no entry where there is none.
+// wildcard retraction, the clock passing, a sweep, and a neighbor going down.
+// An update for an owned key is its neighbor's offer and enters no route,
+// and one for any other key is a route. A retraction takes out the offer or route.
+// A neighbor left silent after its Hellos lapse loses its offers at the next
+// sweep. A late Hello retains them. Its routes remain for selection on recovery.
+// Adopting a key makes each finite, unexpired route its neighbor's offer, and
+// releasing one makes each unexpired offer its route. Selection takes the
+// least cost among live links, or leaves no entry where there is none.
 // An owned key's forwarding entry is this node's own throughout.
 func TestOffersFollowTheirModel(t *testing.T) {
 	keys := []routeKey{
@@ -73,6 +73,11 @@ func TestOffersFollowTheirModel(t *testing.T) {
 		heard := make([]time.Time, len(names))
 		down := make([]bool, len(names))
 		var hellos uint16
+		dropOf := func(table map[routeKey]map[int]offerModel, gone func(int, offerModel) bool) {
+			for _, held := range table {
+				maps.DeleteFunc(held, gone)
+			}
+		}
 		// send hands the speaker one packet from neighbor i at now, a Hello and an IHU ahead of tlvs
 		send := func(i int, tlvs ...RawTLV) {
 			hellos++
@@ -82,11 +87,6 @@ func TestOffersFollowTheirModel(t *testing.T) {
 			}, tlvs...)
 			s.handlePacketLocked(neighbors[i], neighbors[i].addr, EncodePacket(packet), now)
 			heard[i], down[i] = now, false
-		}
-		dropOf := func(table map[routeKey]map[int]offerModel, gone func(int, offerModel) bool) {
-			for _, held := range table {
-				maps.DeleteFunc(held, gone)
-			}
 		}
 		linkUp := func(i int) bool {
 			return !heard[i].IsZero() && !down[i] && now.Before(heard[i].Add(deadTimeout(offerHello)))

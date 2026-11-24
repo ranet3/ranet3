@@ -268,10 +268,12 @@ type Status struct {
 	Kernel       KernelStatus `json:"kernel"`
 	Egress       EgressStatus `json:"egress"`
 	// Border is absent on a node that runs no antispoof filter and writes no overlay
-	Border    *BorderStatus `json:"antispoof,omitempty"`
-	Counts    Counts        `json:"counts"`
-	ESP       ESPCounters   `json:"esp"`
-	Originate []Originated  `json:"originate"`
+	Border *BorderStatus `json:"antispoof,omitempty"`
+	Counts Counts        `json:"counts"`
+	// BabelNeighborsDown names session paths whose previously heard neighbor timed out
+	BabelNeighborsDown []string     `json:"babel_neighbors_down,omitempty"`
+	ESP                ESPCounters  `json:"esp"`
+	Originate          []Originated `json:"originate"`
 	// MeshAddresses is the address of each host prefix cap.route announces or cap.table assigns, once, which cap.egress translates into the mesh under
 	MeshAddresses []netip.Addr `json:"mesh_addresses"`
 	// Segments lists the addresses this node answers for as a waypoint or an

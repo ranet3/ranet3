@@ -449,6 +449,42 @@ func TestStatusPlacesTheUserspaceRowsUnderEgress(t *testing.T) {
 	}
 }
 
+func TestStatusBoundsNeighborNotesWithoutTruncatingJSON(t *testing.T) {
+	paths := []string{
+		"example/alpha:0@0", "example/bravo:0@0", "example/charlie:0@0",
+		"example/delta:0@0", "example/echo:0@0", "example/foxtrot:0@0", "example/golf:0@0",
+	}
+	status := Status{BabelNeighborsDown: paths}
+	var out strings.Builder
+	RenderStatus(&out, status)
+	for _, path := range paths[:5] {
+		if !strings.Contains(out.String(), "Sessions: Babel neighbor down for "+path+"\n") {
+			t.Errorf("status lacks a note for %s", path)
+		}
+	}
+	for _, path := range paths[5:] {
+		if strings.Contains(out.String(), "Sessions: Babel neighbor down for "+path+"\n") {
+			t.Errorf("status printed the omitted path %s", path)
+		}
+	}
+	if !strings.Contains(out.String(), "Sessions: 2 more Babel neighbors down (see status --json)\n") {
+		t.Errorf("status did not count the omitted paths: %q", out.String())
+	}
+	body, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields struct {
+		Down []string `json:"babel_neighbors_down"`
+	}
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fields.Down, paths) {
+		t.Errorf("JSON lost down paths: %v", fields.Down)
+	}
+}
+
 // the antispoof row follows the egress row, naming where the filter is, what it
 // accepts, what it carves and what its drops counted, the entry chain's drops
 // alone on a node with no overlay, that it is not installed and why, on a

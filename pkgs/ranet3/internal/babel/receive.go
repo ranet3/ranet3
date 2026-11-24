@@ -60,6 +60,11 @@ func (s *Speaker) handlePacketLocked(n *neighborState, src netip.Addr, raw []byt
 			if h.Interval == 0 && !now.Before(n.helloExpiry()) {
 				continue
 			}
+			if n.alive && !n.isAlive(now) {
+				// The late Hello reports the missed hold without taking down a
+				// neighbor whose receive path is about to renew it.
+				s.events.Emit("babel.neighbor.timeout", n.peer.ID)
+			}
 			if !n.alive {
 				slog.Info("babel neighbor up", "peer", n.peer.ID)
 				s.events.Emit("babel.neighbor.up", n.peer.ID)

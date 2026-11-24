@@ -70,6 +70,8 @@ const (
 
 // how durations and columns are written for a person to read
 const (
+	// statusNeighborNotes bounds the paths printed under the status summary
+	statusNeighborNotes = 5
 	// tablePadding is the spaces between two aligned columns, more than the single space inside a header such as Invalid SPI
 	tablePadding = 2
 	// shortRoundUnderSecond is the compact form's precision under a second, which a round trip across a LAN is told apart by

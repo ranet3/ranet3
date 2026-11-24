@@ -65,24 +65,26 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Transit", transitLine(s.Transit)},
 		{"ESP", espLine(s.ESP)},
 	}
-	// under the egress line, and only on a node that runs the antispoof filter or writes an overlay
 	if s.Border != nil {
 		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1, []string{"Antispoof", borderLine(*s.Border)})
 	}
-	// right under the egress line, and only on an exit that carries its flows itself
 	if u := s.Egress.Userspace; u != nil {
 		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1,
 			[]string{"Flows", userspaceFlowsLine(*u)}, []string{"Buffers", userspaceBuffersLine(*u)})
 	}
-	// only on a node running less than its file says, since it would read none on every other
 	if len(s.Disabled) > 0 {
 		rows = append(rows, []string{"Disabled", disabledLine(s.Disabled)})
 	}
-	// under the name, since every count below reads zero on a node off the mesh
 	if s.Down != nil {
 		rows = slices.Insert(rows, 1, []string{"Down", downLine(*s.Down)})
 	}
 	pairs(w, rows)
+	for _, peer := range s.BabelNeighborsDown[:min(len(s.BabelNeighborsDown), statusNeighborNotes)] {
+		fmt.Fprintf(w, "Sessions: Babel neighbor down for %s\n", peer)
+	}
+	if omitted := len(s.BabelNeighborsDown) - statusNeighborNotes; omitted > 0 {
+		fmt.Fprintf(w, "Sessions: %d more Babel neighbors down (see status --json)\n", omitted)
+	}
 }
 
 // espLine always names the packets in, those their sessions dropped and the datagrams the hub refused

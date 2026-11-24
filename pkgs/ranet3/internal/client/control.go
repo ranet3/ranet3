@@ -34,13 +34,7 @@ func forwardsUnlessOff(v4, v6 *bool) (bool, bool) { return v4 == nil || *v4, v6 
 func (c *Client) Status() control.Status {
 	cfg, x := c.config(), c.index()
 	organizations, nodes := x.Size()
-	stats := c.speaker.Stats()
-	alive := 0
-	for _, neighbor := range stats.Neighbors {
-		if neighbor.Alive {
-			alive++
-		}
-	}
+	stats, alive, sessions, neighborsDown := c.routingStatus()
 	forwardsV4, forwardsV6 := forwardingEnabled()
 	endpoints := make([]string, 0, len(cfg.Link.Endpoints))
 	for _, endpoint := range cfg.Link.Endpoints {
@@ -78,13 +72,14 @@ func (c *Client) Status() control.Status {
 		Border: c.borderStatus(),
 		Counts: control.Counts{
 			Dialers:        c.dialerCount(),
-			Sessions:       len(c.sessions.paths()),
+			Sessions:       sessions,
 			Neighbors:      len(stats.Neighbors),
 			NeighborsAlive: alive,
 			Prefixes:       stats.Prefixes,
 			Selected:       stats.Selected,
 			Originated:     stats.Originated,
 		},
+		BabelNeighborsDown: neighborsDown,
 		ESP: control.ESPCounters{
 			InboundPackets:   c.inboundPackets.Load(),
 			InboundDropped:   c.inboundDropped.Load(),
@@ -103,6 +98,22 @@ func (c *Client) Status() control.Status {
 		Disabled:        c.disabledSubsystems(),
 		Down:            c.downStatus(),
 	}
+}
+
+func (c *Client) routingStatus() (stats babel.Stats, alive, sessions int, neighborsDown []string) {
+	// adoption changes both registries under the session lock
+	c.sessions.mu.Lock()
+	defer c.sessions.mu.Unlock()
+	stats = c.speaker.Stats()
+	for _, neighbor := range stats.Neighbors {
+		if neighbor.Alive {
+			alive++
+		}
+		if neighbor.TimedOut && c.sessions.live[neighbor.Peer] != nil {
+			neighborsDown = append(neighborsDown, neighbor.Peer)
+		}
+	}
+	return stats, alive, len(c.sessions.live), neighborsDown
 }
 
 // segmentText is the local segment table as an operator reads it, and nil on a

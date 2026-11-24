@@ -17,8 +17,7 @@ import (
 	"time"
 )
 
-// eventFixture is a dial, its session, a kernel pass and the notes a stream writes about itself
-// the pass is stamped two hours east of UTC, which the wire form keeps and the text renders in UTC
+// the wire form preserves the kernel pass's offset, while text renders it in UTC
 func eventFixture() []Event {
 	at := time.Date(2026, 10, 4, 12, 20, 1, 123456789, time.UTC)
 	return []Event{
@@ -28,6 +27,8 @@ func eventFixture() []Event {
 			Peer: "example/gateway:0@0", Attrs: map[string]string{"role": "initiator", "spi_in": "c0ffee01", "spi_out": "0badf00d"}},
 		{Seq: 43, At: at.Add(time.Second).In(time.FixedZone("", 2*60*60)), Mono: Duration(63345 * time.Millisecond), Kind: "kernel.pass",
 			Attrs: map[string]string{"trigger": "mesh", "took": "1.2ms", "err": "list routes: netlink is busy", "empty": ""}},
+		{Seq: 44, At: at.Add(1200 * time.Millisecond), Mono: Duration(63545 * time.Millisecond),
+			Kind: "babel.neighbor.timeout", Peer: "example/gateway:0@0"},
 		{At: at.Add(1500 * time.Millisecond), Kind: "stream.live"},
 		{At: at.Add(2 * time.Second), Kind: "stream.dropped", Attrs: map[string]string{"count": "12"}},
 		{At: at.Add(3 * time.Second), Kind: "stream.closed", Attrs: map[string]string{"reason": "the daemon is stopping"}},

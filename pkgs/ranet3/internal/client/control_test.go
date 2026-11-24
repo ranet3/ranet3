@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -12,12 +13,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -114,6 +118,209 @@ func TestStatusCarriesEveryCounterOfTheMesh(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("the scrape carries the series\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestStatusWarnsWhileASessionsBabelNeighborIsDown(t *testing.T) {
+	c := testClient(t)
+	const path = "example/gateway:1@0"
+	peer := sinkPeer(t, path)
+	// A closed peer refuses every send before reservePlace takes a pooled
+	// batch whose done channel would belong to the fake clock's bubble.
+	peer.Close()
+	bubble.Run(func(t *testing.T) {
+		const (
+			helloInterval = 100 * time.Millisecond
+			helloHold     = 350 * time.Millisecond
+			kind          = "babel.neighbor.timeout"
+		)
+		cfg := c.config()
+		speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: c.events}, c.Mesh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.speaker = speaker
+		sess := &ike.Session{}
+		release, adopted := c.sessions.adoptPreferred(t, path, sess, true, func() func() {
+			return c.speaker.AddPeer(peer, identity.Identity{}).Close
+		})
+		if !adopted {
+			t.Fatal("the session was not adopted")
+		}
+		defer release()
+		withoutNeighbor, adopted := c.sessions.adoptPreferred(t, "example/relay:0@0", &ike.Session{}, true, nil)
+		if !adopted {
+			t.Fatal("the session without a neighbor was not adopted")
+		}
+		defer withoutNeighbor()
+
+		ctx, stop := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = c.speaker.Run(ctx)
+		}()
+		defer func() {
+			stop()
+			<-done
+		}()
+		synctest.Wait()
+
+		check := func(stage string, sessions, timeouts int, wantDown bool) {
+			t.Helper()
+			wantJSON, wantNote := "", ""
+			if wantDown {
+				wantJSON, wantNote = `["`+path+`"]`, "Sessions: Babel neighbor down for "+path+"\n"
+			}
+			status := c.Status()
+			if status.Counts.Sessions != sessions {
+				t.Errorf("%s: %d sessions, want %d", stage, status.Counts.Sessions, sessions)
+			}
+			body, err := json.Marshal(status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(body, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(fields["babel_neighbors_down"]); got != wantJSON {
+				t.Errorf("%s: babel_neighbors_down = %q, want %q", stage, got, wantJSON)
+			}
+			var out strings.Builder
+			control.RenderStatus(&out, status)
+			_, note, found := strings.Cut(out.String(), "\nSessions: ")
+			if found {
+				note = "Sessions: " + note
+			}
+			if note != wantNote {
+				t.Errorf("%s: status note = %q, want %q", stage, note, wantNote)
+			}
+			if timeouts >= 0 {
+				events := c.DebugEvents(control.EventQuery{Kinds: []string{kind}})
+				if len(events) != timeouts {
+					t.Errorf("%s: %d timeout events, want %d", stage, len(events), timeouts)
+				}
+				for _, event := range events {
+					if event.Kind != kind || event.Peer != path {
+						t.Errorf("%s: unexpected timeout event %+v", stage, event)
+					}
+				}
+			}
+		}
+		hello := func(seq uint16) {
+			c.speaker.Receive(peer, babelPacket(babel.EncodeHello(babel.Hello{
+				Seqno: seq, Interval: uint16(helloInterval / (10 * time.Millisecond)),
+			})))
+		}
+
+		time.Sleep(helloHold)
+		synctest.Wait()
+		check("before first Hello", 2, 0, false)
+		hello(1)
+		check("up", 2, 0, false)
+		time.Sleep(helloHold - time.Nanosecond)
+		synctest.Wait()
+		check("before expiry", 2, 0, false)
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		check("down", 2, 1, true)
+		time.Sleep(2 * helloHold)
+		synctest.Wait()
+		check("still down", 2, 1, true)
+		hello(2)
+		check("recovered", 2, 1, false)
+		time.Sleep(helloHold)
+		synctest.Wait()
+		check("down again", 2, 2, true)
+		hello(3)
+		check("recovered before removal", 2, 2, false)
+		if !c.sessions.take(path, sess) {
+			t.Fatal("the recovered neighbor no longer had its session")
+		}
+		check("session removed before detach", 1, -1, false)
+		time.Sleep(helloHold)
+		synctest.Wait()
+		if stats := c.speaker.Stats(); len(stats.Neighbors) != 1 || !stats.Neighbors[0].TimedOut {
+			t.Fatalf("the speaker did not sweep the registered neighbor: %+v", stats.Neighbors)
+		}
+		check("session removed after sweep before detach", 1, -1, false)
+		release()
+
+		replacement, adopted := c.sessions.adoptPreferred(t, path, &ike.Session{}, true, func() func() {
+			return c.speaker.AddPeer(peer, identity.Identity{}).Close
+		})
+		if !adopted {
+			t.Fatal("the replacement was not adopted")
+		}
+		defer replacement()
+		check("replacement awaiting first Hello", 2, -1, false)
+		timeouts := len(c.DebugEvents(control.EventQuery{Kinds: []string{kind}}))
+		hello(4)
+		replacement()
+		check("healthy session closed", 1, timeouts, false)
+	})(t)
+}
+
+func TestLateHelloBeforeSweepLeavesStatusClear(t *testing.T) {
+	c := testClient(t)
+	cfg := c.config()
+	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: c.events}, c.Mesh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.speaker = speaker
+	const (
+		path              = "example/gateway:1@0"
+		helloInterval     = 10 * time.Millisecond
+		waitPastHelloHold = 5 * helloInterval
+	)
+	peer := sinkPeer(t, path)
+	release, adopted := c.sessions.adoptPreferred(t, path, &ike.Session{}, true, func() func() {
+		return speaker.AddPeer(peer, identity.Identity{}).Close
+	})
+	if !adopted {
+		t.Fatal("the session was not adopted")
+	}
+	defer release()
+	send := func(seq uint16) {
+		speaker.Receive(peer, babelPacket(babel.EncodeHello(babel.Hello{
+			Seqno: seq, Interval: uint16(helloInterval / (10 * time.Millisecond)),
+		})))
+	}
+	send(1)
+	// No sweep runs here. The received Hello itself must record the missed
+	// hold without changing the live session's status.
+	time.Sleep(waitPastHelloHold)
+	send(2)
+	status := c.Status()
+	if len(status.BabelNeighborsDown) != 0 {
+		t.Errorf("late Hello left a status warning for %v", status.BabelNeighborsDown)
+	}
+	body, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"babel_neighbors_down"`) {
+		t.Errorf("late Hello left a JSON status warning: %s", body)
+	}
+	var out strings.Builder
+	control.RenderStatus(&out, status)
+	if strings.Contains(out.String(), "Sessions: Babel neighbor down") {
+		t.Errorf("late Hello left a text status warning: %s", out.String())
+	}
+	for _, want := range []struct {
+		kind string
+		n    int
+	}{
+		{"babel.neighbor.timeout", 1},
+		{"babel.neighbor.down", 0},
+		{"babel.neighbor.up", 1},
+		{"babel.request.sent", 1},
+	} {
+		if got := len(c.DebugEvents(control.EventQuery{Kinds: []string{want.kind}})); got != want.n {
+			t.Errorf("late Hello recorded %d %s events, want %d", got, want.kind, want.n)
+		}
 	}
 }
 

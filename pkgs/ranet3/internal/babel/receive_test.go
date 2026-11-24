@@ -13,8 +13,68 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
+
+func TestLateHelloAccountsForExpiredNeighborBeforeRenewal(t *testing.T) {
+	bus := events.New()
+	speaker, neighbor, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
+	hello := func(seq uint16, at time.Time) int {
+		packet := EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: seq, Interval: 10})})
+		speaker.mu.Lock()
+		actions, _ := speaker.handlePacketLocked(neighbor, neighbor.addr, packet, at)
+		speaker.mu.Unlock()
+		return len(actions)
+	}
+	at := time.Now()
+	hold := deadTimeout(100 * time.Millisecond)
+	hello(1, at)
+	// An offer whose own expiry is later than both missed holds must not
+	// disappear merely because a scheduled Hello reached us late.
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:1::/48")}
+	speaker.mu.Lock()
+	speaker.routes.offer(neighbor, key, advertisement{routerID: routerID("origin"), seqno: 1, metric: 96}, time.Hour, at)
+	speaker.mu.Unlock()
+	before := hello(2, at.Add(hold-time.Nanosecond))
+	count := func(kind string) int {
+		return len(bus.Recorded(func(event, peer string, _ []slog.Attr) bool {
+			return event == kind && peer == neighbor.peer.ID
+		}, 0))
+	}
+	if got := count("babel.neighbor.timeout"); got != 0 {
+		t.Fatalf("a Hello before expiry recorded %d timeouts", got)
+	}
+	late := hello(3, at.Add(2*hold))
+	if got := count("babel.neighbor.timeout"); got != 1 {
+		t.Errorf("an expired Hello replaced before the sweep recorded %d timeouts, want 1", got)
+	}
+	if got := count("babel.neighbor.down"); got != 0 {
+		t.Errorf("late Hello recorded %d neighbor-down events, want none", got)
+	}
+	if before != 0 || late != before {
+		t.Errorf("a Hello before expiry made %d actions, late Hello made %d, want none", before, late)
+	}
+	if got := count("babel.neighbor.up"); got != 1 {
+		t.Errorf("late Hello recorded %d neighbor-up events, want only the first", got)
+	}
+	if got := count("babel.request.sent"); got != 1 {
+		t.Errorf("late Hello recorded %d route requests, want only the first", got)
+	}
+	if speaker.routes.offers[key][neighbor] == nil {
+		t.Error("late Hello dropped the neighbor's unexpired offer")
+	}
+	if !neighbor.isAlive(at.Add(2 * hold)) {
+		t.Error("the replacement Hello left the neighbor down")
+	}
+	if stats := speaker.Stats(); len(stats.Neighbors) != 1 || stats.Neighbors[0].TimedOut {
+		t.Errorf("late Hello left the neighbor timed out in the status snapshot: %+v", stats.Neighbors)
+	}
+	hello(4, at.Add(3*hold))
+	if got := count("babel.neighbor.timeout"); got != 2 {
+		t.Errorf("a second expired Hello recorded %d timeouts, want 2", got)
+	}
+}
 
 // saidCounts is the value of key on each line of said that holds msg
 func saidCounts(said, msg, key string) []string {

@@ -870,6 +870,12 @@ func (s *Speaker) neighborDownLocked(n *neighborState) {
 	s.routes.dropOffersOf(n)
 }
 
+func (s *Speaker) timeoutNeighborLocked(n *neighborState) {
+	s.neighborDownLocked(n)
+	n.helloTimedOut = true
+	s.events.Emit("babel.neighbor.timeout", n.peer.ID)
+}
+
 func (s *Speaker) sweepExpiredLocked(now time.Time) {
 	for _, n := range s.neighbors {
 		// The timer half of RFC 8966 Appendix A.1, before liveness, so a
@@ -883,7 +889,7 @@ func (s *Speaker) sweepExpiredLocked(now time.Time) {
 			n.nextHelloDue = n.nextHelloDue.Add(n.helloInterval)
 		}
 		if n.alive && !n.isAlive(now) {
-			s.neighborDownLocked(n)
+			s.timeoutNeighborLocked(n)
 		}
 		if n.haveReportedCost && !now.Before(n.ihuExpiry) {
 			n.haveReportedCost = false
@@ -1008,8 +1014,9 @@ type NeighborStat struct {
 	Peer string
 	// Addr is the neighbor's link-local address inside the tunnel, which is
 	// the address BIRD prints in its first column.
-	Addr  netip.Addr
-	Alive bool
+	Addr     netip.Addr
+	Alive    bool
+	TimedOut bool
 	// Cost includes Extra, the amount cap.babel cost.extra charges this neighbor, which this node's IHU adds to its rxcost too
 	Cost  uint16
 	Extra uint16
@@ -1080,6 +1087,7 @@ func (s *Speaker) Stats() Stats {
 			Peer:             neighbor.peer.ID,
 			Addr:             neighbor.addr,
 			Alive:            neighbor.isAlive(now),
+			TimedOut:         neighbor.helloTimedOut && !neighbor.alive,
 			Cost:             neighbor.linkCost(now, s.cost),
 			Extra:            neighbor.extra,
 			ReportedCost:     neighbor.reportedCost,
