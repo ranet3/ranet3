@@ -42,6 +42,7 @@ buildGoApplication (
           ./schema
           ./srv6
           ./transport
+          ./trust
           # the example is parsed by a test, so it has to be in the source the
           # checks see or that test passes only outside the sandbox
           ./examples

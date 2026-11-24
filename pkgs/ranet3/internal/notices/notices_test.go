@@ -26,12 +26,8 @@ var testOnly = []string{
 	"hegel.dev/go/hegel",
 }
 
-// unlinked is the direct requirements that only packages no binary links yet
-// import, so the notice has no section for them yet. Unlike testOnly's, a
-// package outside the tests may import one. None is now: gVisor was, until the
-// darwin daemon selected the userspace exit and the formatter wrote its
-// section.
-var unlinked []string
+// unlinked holds direct requirements imported by code not yet linked into a binary
+var unlinked = []string{"github.com/fxamacker/cbor/v2"}
 
 // The notice is generated, so the thing worth holding is not its text but that
 // nobody added a dependency and shipped without regenerating it. A direct
