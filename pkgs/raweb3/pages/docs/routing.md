@@ -49,6 +49,18 @@ Babel packet other than a path MTU probe fits in a 1280-byte inner IPv6 packet.
 | Route refresh   | 40 seconds | 2.5 x the interval of the carrying Update                                                                      |
 | Lost route hold | 60 seconds | the latest expiry of any update this node sent naming it reachable: 3.5 x that update's interval, plus 1 Hello |
 
+Losing a Babel neighbor does not end its session. If the neighbor goes down
+after its Hellos time out while the session remains up, `ranet3 status` names up
+to five such sessions in notes below the table and counts the rest in one more
+note. The `babel_neighbors_down` JSON field lists them all. The warning clears
+when the neighbor returns or the session ends. A session still waiting for its
+first Hello does not warn. The `babel.neighbor.timeout` event records a timeout
+for a neighbor registered with the speaker. A departing session can remain
+registered between leaving the live set and detaching its handle, unless a new
+registration replaces it first. The event can therefore be the last one of a
+session that has just left. The status warning, unlike the event, names only
+live sessions. See [Events](development/debug.md#events).
+
 The router id is random. The speaker keeps it in the state directory
 (`--state-dir`) together with a limit on the seqnos it has sent. A restart
 carries on with the same router id, past every seqno the last run sent.
