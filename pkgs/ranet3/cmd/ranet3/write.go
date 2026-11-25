@@ -35,12 +35,14 @@ command for a subsystem it does not run.`, true),
 		r.reloadCommand(),
 		r.meshCommand("down", "Take this node off the mesh", `The node closes every session with an IKE Delete and stops dialing,
 answering and speaking Babel, and it withdraws the routes, rules and
-addresses it installed and the kill switch. A Linux exit keeps its
-translation chain and writes stopped rules in place of its own, whose
-drops the exit nodes page gives under "Reloads, down and up". The
-daemon, its tun, the control socket and the metrics stay. A flag in
-the state directory keeps the node down through a restart or a reboot
-until ranet3 up.`, false),
+addresses it installed and the kill switch. On Linux with cap.table the
+node leaves the down set the routing page gives under "The overlay while
+a node is down", unless ranet3 disable reconciler stopped the reconciler
+first. A Linux exit keeps its translation chain and writes stopped rules
+in place of its own, whose drops the exit nodes page gives under
+"Reloads, down and up". The daemon, its tun, the control socket and the
+metrics stay. A flag in the state directory keeps the node down through
+a restart or a reboot until ranet3 up.`, false),
 		r.meshCommand("up", "Put this node back on the mesh", `This removes the flag ranet3 down left and starts Babel, the responder
 and every dialer at once. The addresses, rules and routes and the kill
 switch come back on the reconciler's next pass, which up does not wait
