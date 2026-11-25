@@ -207,7 +207,7 @@ type Sink interface {
 	Reload(ctx context.Context) (Result, error)
 	// Down takes the node off the mesh and keeps its daemon, tun and socket
 	// every dialer, the responder and Babel stop, every session is closed with a Delete
-	// and the routes, rules and addresses the node installed and the kill switch are withdrawn
+	// and the routes, rules and addresses the node installed and the kill switch are withdrawn, but on Linux a reconciler adds the down set and leaves it, unless SetSubsystem stopped the reconciler first
 	// an exit retracts its advertisement and on Linux keeps its translation chain and writes stopped rules in place of its own,
 	// whose drops exit-nodes.md gives under "Reloads, down and up"
 	// the flag it writes first keeps the node down through a restart until Up
