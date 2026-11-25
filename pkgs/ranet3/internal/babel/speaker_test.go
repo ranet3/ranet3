@@ -1078,14 +1078,14 @@ func TestPrefixNoLongerOriginatedIsHeldUntilANeighborsRouteIsSelected(t *testing
 }
 
 // With no route for the prefix forthcoming, the hold ends once the last
-// update this node sent for it has expired at a neighbor: "waiting until the
-// route's expiry timer has expired", RFC 8966 section 3.5.4, which is the route
-// expiry a neighbor derives from the interval that update carried, counted
-// from when it was sent rather than from the release, and one Hello interval
-// more for its transit. The run loop wakes for it, and once it ends nothing of
-// the prefix is left: the covering route is reached again, the route view and
-// the count no longer hold it, and the run loop sleeps until whatever comes
-// next.
+// update this node built for it would have expired at a neighbor: "waiting
+// until the route's expiry timer has expired", RFC 8966 section 3.5.4, which is
+// the route expiry a neighbor derives from the interval that update carried,
+// counted from when it was built rather than from the release, and one Hello
+// interval more for its transit. The run loop wakes for it, and once it ends
+// nothing of the prefix is left: the covering route is reached again, the route
+// view and the count no longer hold it, and the run loop sleeps until whatever
+// comes next.
 func TestPrefixNoLongerOriginatedIsHeldUntilItsAdvertisementsExpire(t *testing.T) {
 	speaker, _, specific, inside, told := releasedFixture(t)
 	key := routeKey{dest: specific}
@@ -1415,9 +1415,9 @@ func TestPrefixWhoseRetractionMayHaveBeenLostIsHeldUntilItsLastUpdateExpires(t *
 	heldUntil(t, speaker, routeKey{dest: specific}, inside, relayedAt.Add(hold))
 }
 
-// The end of a hold is the latest time any finite update this node sent for
-// the prefix expires at a neighbor. A neighbor that receives an update sent
-// under a shorter interval counts from it instead, but one that missed it
+// The end of a hold is the latest time any finite update this node built for
+// the prefix would expire at a neighbor. A neighbor that receives an update
+// sent under a shorter interval counts from it instead, but one that missed it
 // still counts toward the expiry of the update before, under the longer
 // interval. That update's expiry falls after the later one's, so the later
 // one moves nothing.
@@ -1442,8 +1442,9 @@ func TestHoldKeepsTheIntervalOfTheLastUpdateSentUnderALongerOne(t *testing.T) {
 	heldUntil(t, speaker, routeKey{dest: specific}, inside, told.Add(long))
 }
 
-// The same session going leaves nothing to hold when no update this node sent
-// ever named the prefix, since no neighbor can have selected this node for it.
+// The same session going leaves nothing to hold when no update this node
+// built ever named the prefix, since no neighbor can have selected this node
+// for it.
 // The route's own infinite entry goes with the routes of the neighbor that
 // offered it, and the covering route serves the prefix at once.
 func TestPrefixNoNeighborIsToldOfLeavesNothingWhenItsNeighborGoes(t *testing.T) {

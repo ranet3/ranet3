@@ -485,9 +485,10 @@ func TestNewSessionIsOwedItsDumpAlone(t *testing.T) {
 // A change to the keys this node originates, or to the addresses cap.table
 // assigns it, is recorded once, with the keys it added and removed and those
 // it holds, and the same set again records nothing. Only a key new to the set
-// is added. A key is held while a finite update this node sent for it has not
-// yet expired, so an address both announced and assigned is held once its
-// assignment goes too, though a retraction followed when its announcement went.
+// is added. A key is held while a finite update this node built for it would
+// not yet have expired, so an address both announced and assigned is held once
+// its assignment goes too, though a retraction followed when its announcement
+// went.
 func TestChangesToThisNodesOwnKeysAreRecorded(t *testing.T) {
 	bus := events.New()
 	speaker, _, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})

@@ -501,7 +501,7 @@ func TestRepeatedRetractionsNeitherExtendNorCutTheHold(t *testing.T) {
 	}
 }
 
-// a prefix that lost its last route is held until every update this node sent for it has expired at a neighbor, unless a route for it is selected first
+// a prefix that lost its last route is held until every update this node built for it would have expired at a neighbor, unless a route for it is selected first
 // an unfeasible candidate that arrives inside the hold is never selected, so the hold still ends when it was due to
 func TestUnfeasibleCandidateDoesNotLengthenTheHold(t *testing.T) {
 	now := time.Now()
@@ -534,7 +534,7 @@ func TestUnfeasibleCandidateDoesNotLengthenTheHold(t *testing.T) {
 	}
 }
 
-// a prefix whose last route that could carry it goes while an unfeasible candidate kept before is left is held as one that lost its last route, and released when every update this node sent for it has expired
+// a prefix whose last route that could carry it goes while an unfeasible candidate kept before is left is held as one that lost its last route, and released when every update this node built for it would have expired
 // the route goes by its flush at the end of its hold, or with its neighbor's session
 func TestCandidateKeptBeforeTheLossDoesNotLengthenTheHold(t *testing.T) {
 	for _, how := range []string{"flushed", "neighbor gone"} {
