@@ -5,6 +5,8 @@ package trust
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"runtime"
 	"testing"
 )
 
@@ -40,6 +42,34 @@ func TestCOSEWireAndBorrowedSlices(t *testing.T) {
 	if got := signatureStructure(header, payload); !bytes.Equal(got, wantSigInput) {
 		t.Fatalf("signature structure %x, want %x", got, wantSigInput)
 	}
+}
+
+func TestCOSEPreverificationAllocationGrowth(t *testing.T) {
+	private := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
+	_, wrongKey := signTestFile(t, []byte{0xa0}, other, algorithmEd25519)
+	var allocated [2]uint64
+	for i, size := range [...]int{8 << 20, 16 << 20} {
+		file, _ := signTestFile(t, bytes.Repeat([]byte{0xa0}, size), private, algorithmEd25519)
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := AuthenticateSignedFile(file, []AuthorityKey{wrongKey})
+		runtime.ReadMemStats(&after)
+		runtime.KeepAlive(file)
+		if err == nil || err.Error() != "trust: no authority key verifies the signature" {
+			t.Fatalf("accepted wrong key before decoding %d-byte payload: %v", size, err)
+		}
+		allocated[i] = after.TotalAlloc - before.TotalAlloc
+	}
+	if allocated[1] < allocated[0] {
+		t.Fatalf("larger payload allocated less: small %d large %d", allocated[0], allocated[1])
+	}
+	delta := allocated[1] - allocated[0]
+	if delta > (8<<20)+(1<<20) {
+		t.Fatalf("preverification allocation growth %d bytes for 8 MiB more payload, small %d large %d", delta, allocated[0], allocated[1])
+	}
+	t.Logf("preverification allocated small=%d large=%d bytes", allocated[0], allocated[1])
 }
 
 func TestCOSEWireRefusals(t *testing.T) {
@@ -78,5 +108,24 @@ func TestCOSEWireRefusals(t *testing.T) {
 	bad[len(bad)-64] = 0x3f
 	if _, err := parseEnvelope(bad); err == nil {
 		t.Fatal("accepted 63-byte signature")
+	}
+}
+
+func TestSignedFileRejectsNullOuterValue(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		file []byte
+	}{
+		{"null", []byte{0xf6}},
+		{"tagged null", []byte{0xd2, 0xf6}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseEnvelope(test.file); err == nil || err.Error() != "trust: signed file is not tagged COSE_Sign1" {
+				t.Fatalf("parsed null outer value %x: %v", test.file, err)
+			}
+			if _, err := AuthenticateSignedFile(test.file, nil); err == nil || err.Error() != "trust: signed file is not tagged COSE_Sign1" {
+				t.Fatalf("authenticated null outer value %x: %v", test.file, err)
+			}
+		})
 	}
 }

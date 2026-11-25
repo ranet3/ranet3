@@ -5,8 +5,76 @@ package trust
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"fmt"
+	"strings"
 	"testing"
 )
+
+var signedLengthBoundaries = [...]int{255, 256, 65535, 65536, 16777215, 16777216}
+
+// payloadAtLength uses valid document fields and real endpoint records, not
+// arbitrary padding outside the signed document. Node text fills the remainder.
+func payloadAtLength(t *testing.T, size int) (Payload, []byte) {
+	t.Helper()
+	endpoints := max(0, (size-1024)/8)
+	count := max(1, (endpoints+MaxEntries-1)/MaxEntries)
+	payload := Payload{Height: 1, Mesh: MeshID{6: 0x70, 8: 0x80}, Document: Document{Nodes: make([]Node, count)}}
+	for i := range payload.Document.Nodes {
+		node := &payload.Document.Nodes[i]
+		node.Name = fmt.Sprintf("example/n%d", i)
+		take := min(endpoints, MaxEntries)
+		node.Endpoints = make([]Endpoint, take)
+		for j := range node.Endpoints {
+			node.Endpoints[j] = Endpoint{Family: "ip4", Port: 1}
+		}
+		endpoints -= take
+	}
+	body, err := encodePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= size {
+		t.Fatalf("base payload of %d bytes leaves no room to reach %d", len(body), size)
+	}
+	first := &payload.Document.Nodes[0].Name
+	*first += strings.Repeat("x", size-len(body))
+	body, err = encodePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > size {
+		*first = (*first)[:len(*first)-(len(body)-size)]
+	} else if len(body) < size {
+		*first += strings.Repeat("x", size-len(body))
+	}
+	body, err = encodePayload(payload)
+	if err != nil || len(body) != size {
+		t.Fatalf("payload length %d, want %d: %v", len(body), size, err)
+	}
+	return payload, body
+}
+
+func TestSignedByteStringWidthBoundaries(t *testing.T) {
+	private := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x6c}, ed25519.SeedSize))
+	for _, size := range signedLengthBoundaries {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			payload, body := payloadAtLength(t, size)
+			file, key := signTestFile(t, body, private, algorithmEd25519)
+			if len(file) > MaxSignedBytes {
+				t.Fatalf("signed file has %d bytes, exceeds the cap", len(file))
+			}
+			authenticated, err := AuthenticateSignedFile(file, []AuthorityKey{key})
+			if err != nil {
+				t.Fatalf("authenticate %d-byte payload: %v", size, err)
+			}
+			verified, err := authenticated.Validate()
+			if err != nil || len(verified.Payload.Document.Nodes) != len(payload.Document.Nodes) {
+				t.Fatalf("validate %d-byte payload: %v", size, err)
+			}
+		})
+	}
+}
 
 func TestByteStringWidthForms(t *testing.T) {
 	for _, size := range []int{23, 24} {

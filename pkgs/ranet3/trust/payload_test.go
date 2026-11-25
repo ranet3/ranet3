@@ -5,6 +5,8 @@ package trust
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/hex"
 	"reflect"
 	"testing"
@@ -111,5 +113,41 @@ func TestPayloadSchemaRefusals(t *testing.T) {
 	bad = append([]byte{0xa4, 0x01, 0x01, 0x02, 0x40}, wire[3:]...)
 	if _, err := decodePayload(bad); err == nil {
 		t.Fatal("accepted previous at height 1")
+	}
+}
+
+func TestWireWidthsRejectBeforeOverlap(t *testing.T) {
+	private := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x54}, ed25519.SeedSize))
+	der, err := x509.MarshalPKIXPublicKey(private.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mesh := MeshID{6: 0x70, 8: 0x80}
+	for _, test := range []struct {
+		name     string
+		height   uint64
+		previous []byte
+		mesh     []byte
+		want     string
+	}{
+		{"mesh", 1, nil, mesh[:15], "trust: signed payload: trust: mesh has 15 bytes, want 16"},
+		{"previous", 2, []byte{0x42}, mesh[:], "trust: signed payload: trust: previous has 1 bytes, want 32"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wire := payloadWire{
+				Height:   test.height,
+				Previous: test.previous,
+				Mesh:     test.mesh,
+				Document: cborDocument{Nodes: []cborNode{{Name: "example/a", Key: der, Endpoints: []Endpoint{}}}},
+			}
+			body, err := marshalCBOR(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, authority := signTestFile(t, body, private, algorithmEd25519)
+			if _, err := AuthenticateSignedFile(file, []AuthorityKey{authority}); err == nil || err.Error() != test.want {
+				t.Fatalf("authenticated malformed wire with an overlapping key: %v, want %q", err, test.want)
+			}
+		})
 	}
 }
