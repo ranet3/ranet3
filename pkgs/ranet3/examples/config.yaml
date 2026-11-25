@@ -93,12 +93,13 @@ cap:
   #   assign_announced: false
   #   reconcile: 30s
   #   capture_grace: 10s          # how long an announced default outlives the last live session, 1s floor
+  #   sourced: { to: ["2001:db8:ffff::/48"], id: 300 }
   # segment:
   #   source: "3fff:b:0:100::1"
   #   local:
   #     - { sid: "3fff:b:0:106::1", behavior: "End.DT46" }
   #   steer:
-  #     - { from: "3fff:a::203:0:113:10/128", via: ["3fff:b:0:206::1"] }
+  #     - { from: "3fff:a::203:0:113:10/128", to: "2001:db8:2::/48", via: ["3fff:b:0:206::1"] }
   # crypto:
   #   replay: 4096
   #   rekey:

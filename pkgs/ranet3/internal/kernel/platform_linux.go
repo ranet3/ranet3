@@ -77,6 +77,9 @@ func (p *netlinkPlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
 // RefuseExitMode is nil here, where the reconciler's policy rules carry cap.exit
 func RefuseExitMode(ExitMode) error { return nil }
 
+// RefuseSourced permits the Linux key without installing rules or routes.
+func RefuseSourced(Table) error { return nil }
+
 // RefuseFallback is nil here, where the kill switch's chains carry
 // fallback = "none"
 func RefuseFallback(ExitMode) error { return nil }

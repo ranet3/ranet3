@@ -1281,12 +1281,17 @@ func leafConfig() Config {
 func TestEveryWrittenFieldSurvivesEachEncoder(t *testing.T) {
 	every := fullConfig()
 	every.Cap.Exit = leafConfig().Cap.Exit
+	every.Cap.Table.Sourced = &kernel.Sourced{To: []schema.Prefix{schema.MustPrefix("2001:db8:ffff::/48")}, ID: 300}
 	if missing := unwritten(reflect.ValueOf(every), ""); len(missing) > 0 {
 		t.Fatalf("fullConfig and leafConfig leave %d field(s) at zero, so no encoder below is asked to carry them: %s",
 			len(missing), strings.Join(missing, ", "))
 	}
 	sameAfterEachEncoder(t, fullConfig())
 	sameAfterEachEncoder(t, leafConfig())
+	sourced := fullConfig()
+	sourced.Cap.Segment.Steer = sourced.Cap.Segment.Steer[:1]
+	sourced.Cap.Table.Sourced = every.Cap.Table.Sourced
+	sameAfterEachEncoder(t, sourced)
 }
 
 // << names an FQDN alias and a cost.extra organization in every file, so the yaml rendering has to quote it

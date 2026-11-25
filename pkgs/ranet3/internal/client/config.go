@@ -31,17 +31,24 @@ import (
 	trustdoc "ranet3.com/pkgs/ranet3/trust"
 )
 
-// refuseExitModeHere refuses cap.exit, or the part of it, this platform has no exit mode for, and fallback = "none" where it has no kill switch
-// the start checks it ahead of every other capability's platform refusal, so a host writing cap.exit beside overlay is told about cap.exit
-// fallback goes first, so a host asking for the switch is told the switch is missing rather than only the mode
+// refuseExitModeHere refuses an exit mode this platform lacks, or the parts
+// of cap.exit it does not support, and sourced where it has no policy rules.
+// Startup checks it ahead of every other capability's platform refusal, so
+// cap.exit beside overlay is reported as cap.exit. Fallback goes first, so a
+// missing switch is reported before the exit mode it would have carried.
 func refuseExitModeHere(cfg *config.Config) error {
-	if cfg.Cap.Exit == nil {
-		return nil
+	if cfg.Cap.Exit != nil {
+		if err := kernel.RefuseFallback(*cfg.Cap.Exit); err != nil {
+			return err
+		}
+		if err := kernel.RefuseExitMode(*cfg.Cap.Exit); err != nil {
+			return err
+		}
 	}
-	if err := kernel.RefuseFallback(*cfg.Cap.Exit); err != nil {
-		return err
+	if cfg.Cap.Table != nil {
+		return kernel.RefuseSourced(*cfg.Cap.Table)
 	}
-	return kernel.RefuseExitMode(*cfg.Cap.Exit)
+	return nil
 }
 
 // refuseExitUnentered refuses, where entryRuns is false, a cap.route announcement that counts as a default, which makes this node an exit whose kernel forwards what it carries

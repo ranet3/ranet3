@@ -178,6 +178,7 @@ update = "16s"
 # assign_announced = false         # also assign what cap.route announces
 # reconcile = "30s"
 # capture_grace = "10s"            # how long an announced default outlives the last live session, 1s floor
+# sourced = { to = ["2001:db8:ffff::/48"], id = 300 }
 #
 # On linux the reconciler derives its policy rules, at priorities 5100 to 5490
 # and carrying the protocol above, from overlay and this node's own
@@ -234,6 +235,7 @@ update = "16s"
 # one long enough to take it under the 1280 bytes IPv6 requires is refused.
 # [[cap.segment.steer]]
 # from = "3fff:a::203:0:113:10/128"
+# to = "2001:db8:2::/48"
 # via = ["3fff:b:0:206::1"]
 
 # How long a key lives and how far out of order a packet may arrive.

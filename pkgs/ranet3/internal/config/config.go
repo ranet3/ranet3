@@ -748,6 +748,11 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if c.Cap.Table != nil && c.Cap.Table.Sourced != nil {
+		if err := c.Cap.Table.Sourced.Refuse(c.sourcedLimits()); err != nil {
+			return err
+		}
+	}
 	return c.validateAcrossCapabilities()
 }
 
@@ -1100,6 +1105,42 @@ func (c *Config) validateSteerTo() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) sourcedLimits() kernel.SourcedLimits {
+	limits := kernel.SourcedLimits{Overlay: c.Overlay}
+	for _, entry := range c.Routes().Announce {
+		if entry.From.IsValid() {
+			limits.Announced = append(limits.Announced, entry.Prefix.Prefix)
+		} else {
+			limits.Own = append(limits.Own, entry.Prefix.Prefix)
+		}
+	}
+	var announced []netip.Prefix
+	if c.Cap.Table.AssignAnnounced {
+		announced = c.Routes().Announced()
+	}
+	for _, assigned := range c.Cap.Table.Assigned(announced) {
+		address := assigned.Addr()
+		limits.Own = append(limits.Own, netip.PrefixFrom(address, address.BitLen()))
+	}
+	if c.Cap.Egress != nil {
+		for _, entry := range c.Cap.Egress.Advertise {
+			advertised := entry.Prefix
+			if !schema.CapturesTheMachine(advertised, c.Overlay) {
+				limits.Advertised = append(limits.Advertised, advertised)
+			}
+		}
+	}
+	for _, entry := range c.Segments().Steer {
+		switch {
+		case entry.To.IsValid():
+			limits.Steered = append(limits.Steered, entry.To.Prefix)
+		case entry.From.IsValid() && entry.From.Addr().Is6():
+			limits.Steered = append(limits.Steered, netip.PrefixFrom(netip.IPv6Unspecified(), 0))
+		}
+	}
+	return limits
 }
 
 // validateSteeredMTU refuses a link.mtu the longest cap.segment steer list or cap.exit via path takes under the 1280 bytes IPv6 requires of every link

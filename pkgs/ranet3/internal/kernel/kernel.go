@@ -138,6 +138,8 @@ type Table struct {
 	// node waits before falling back to its own uplink. Zero uses
 	// DefaultCaptureGrace.
 	CaptureGrace schema.Duration `yaml:"capture_grace,omitempty" json:"capture_grace,omitempty" toml:"capture_grace,omitempty"`
+	// Sourced names the IPv6 destinations with a separate table id
+	Sourced *Sourced `yaml:"sourced,omitempty" json:"sourced,omitempty" toml:"sourced,omitempty"`
 
 	// mode is cap.exit, which the file writes beside cap.table and the
 	// reconciler runs with it, nil in mode off. It is unexported so the file
@@ -340,6 +342,15 @@ func (t Table) Validate() error {
 	if t.CaptureGrace > 0 && t.CaptureGrace.Duration() < MinCaptureGrace {
 		return fmt.Errorf("kernel: cap.table capture_grace %s is shorter than %s, which the reconciler cannot honor: the sessions' liveness is sampled once a pass and a pass reads the routing table",
 			t.CaptureGrace, MinCaptureGrace)
+	}
+	if t.Sourced != nil {
+		mesh := t.ID
+		if mesh == 0 {
+			mesh = DefaultTable
+		}
+		if err := t.Sourced.validate(mesh); err != nil {
+			return err
+		}
 	}
 	if t.mode != nil {
 		return t.mode.Validate()
@@ -999,6 +1010,7 @@ func (t Table) Normalized() Table {
 	if t.ID == 0 {
 		t.ID = DefaultTable
 	}
+	t.Sourced = t.Sourced.normalized(t.ID)
 	if t.Proto == 0 {
 		t.Proto = DefaultProtocol
 	}

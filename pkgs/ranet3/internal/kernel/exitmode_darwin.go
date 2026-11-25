@@ -19,6 +19,14 @@ func RefuseExitMode(mode ExitMode) error {
 	return nil
 }
 
+// RefuseSourced rejects the key on macOS, which cannot enforce its policy.
+func RefuseSourced(t Table) error {
+	if t.Sourced != nil {
+		return errors.New("kernel: cap.table.sourced is refused on macOS, where this build writes no policy rules")
+	}
+	return nil
+}
+
 // RefuseFallback is nil here, where the rejects on lo0 carry
 // fallback = "none"
 func RefuseFallback(ExitMode) error { return nil }

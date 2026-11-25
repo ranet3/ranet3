@@ -16,6 +16,14 @@ func RefuseExitMode(ExitMode) error {
 	return fmt.Errorf("kernel: cap.exit is refused on %s, where this build has no exit mode: remove cap.exit, and this host keeps its own default", runtime.GOOS)
 }
 
+// RefuseSourced rejects the key on builds without sourced policy rules.
+func RefuseSourced(t Table) error {
+	if t.Sourced != nil {
+		return fmt.Errorf("kernel: cap.table.sourced is refused on %s, where this build writes no policy rules", runtime.GOOS)
+	}
+	return nil
+}
+
 // RefuseFallback refuses fallback = "none", written or unwritten in mode 3,
 // where this build has no filter to hold the host's traffic to the switch's
 // lines with
