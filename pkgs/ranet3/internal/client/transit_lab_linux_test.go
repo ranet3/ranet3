@@ -36,6 +36,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress/egresstest"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -265,6 +266,83 @@ func TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink(t *testing.T) {
 		t.Errorf("i read a datagram for t on e's uplink")
 	}
 	labForwardedNothing(t, e)
+}
+
+// A mesh router with cap.transit and the exit switch both active forwards a
+// session's ordinary packet in Go. The peer receives it, the mesh counts it,
+// and neither the kernel's tun nor its uplink carries that transit packet.
+func TestTUNTransitCarriesThroughASwitchedMiddleNode(t *testing.T) {
+	specs := lineSpecs(true)
+	specs[1].forwards = true
+	specs[1].hosts = []netip.Prefix{
+		netip.PrefixFrom(lineB[4], 32),
+		netip.PrefixFrom(lineB[6], 128),
+	}
+	transit := specs[1].change
+	specs[1].change = func(cfg *config.Config) {
+		transit(cfg)
+		cfg.Overlay = []schema.Prefix{schema.PrefixFrom(labOverlay[0]), schema.PrefixFrom(labOverlay[1])}
+		cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{
+			schema.PrefixFrom(specs[1].hosts[0]), schema.PrefixFrom(specs[1].hosts[1]),
+		}}
+		cfg.Cap.Exit = &kernel.ExitMode{Fallback: kernel.FallbackNone}
+	}
+	nodes := startLab(t, specs, lineLinks)
+	l, e, far := nodes[0], nodes[1], nodes[2]
+	_, capture := labExitUplink(t, e)
+	var routes *kernel.Reconciler
+	if err := e.ns.Do(func() (err error) {
+		routes, err = kernel.New(*e.cfg.ReconcilerTable(), e.client.KernelRuntime(), e.client.Mesh.Routes)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.client.SetReconciler(Reconciler{Network: routes.NetworkChanged})
+	ctx, stop := run(t, l.loopbackNode, e.loopbackNode, far.loopbackNode)
+	runner := netnstest.JoinThread(t, e.ns.Path)
+	stopped := make(chan error, 1)
+	go func() { stopped <- runner.Do(func() error { return routes.Run(ctx) }) }()
+	t.Cleanup(func() {
+		stop()
+		if err := <-stopped; err != nil {
+			t.Errorf("stop the middle node's reconciler: %v", err)
+		}
+	})
+	labRoutes(t, e, lineC[4], lineC[6])
+	labRoutes(t, l, lineC[4], lineC[6])
+	waitFor(t, convergeBudget, "the middle node's three-chain switch", func() bool {
+		var debug kernel.FallbackDebug
+		if err := e.ns.Do(func() (err error) { debug, err = kernel.ReadFallback(); return err }); err != nil || !debug.Held {
+			return false
+		}
+		return slices.ContainsFunc(debug.Rules, func(rule kernel.FallbackDebugRule) bool {
+			return rule.Chain == "routed" && rule.Spec == "counter drop"
+		})
+	})
+	listener := labListen(t, far)
+	for _, family := range labFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			before := e.client.Mesh.TransitCounters().Forwarded
+			payload := []byte("through the switched middle node over " + family.name)
+			labReceive(t, listener, payload, labWrite(labDatagrams(t, l, family, lineC[family.version], 0), payload))
+			labCounted(t, func() uint64 { return e.client.Mesh.TransitCounters().Forwarded }, before, "the receiver read the packet but the mesh counted %d forwarded, as before it")
+		})
+	}
+	if labCaptured(capture, func(raw []byte) bool {
+		to, _, _, ok := labUDPOf(raw)
+		return ok && (to == lineC[4] || to == lineC[6])
+	}) {
+		t.Error("the middle node's uplink carried an in-process transit packet")
+	}
+	if err := e.ns.Do(func() error {
+		got, err := labTUNReceived(e.client.Mesh.Name)
+		if err != nil || got != 0 {
+			return fmt.Errorf("%s's kernel read %d packets from its tun (%v), want none", e.name, got, err)
+		}
+		return nil
+	}); err != nil {
+		t.Error(err)
+	}
 }
 
 // e, an exit advertising the internet of each family through cap.egress as a default, a pair of halves or four quarters, runs the translator main builds

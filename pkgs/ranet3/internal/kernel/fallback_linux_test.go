@@ -1554,6 +1554,9 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 	off.Addresses = prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))
 	off = off.Normalized()
 	none := off.WithMode(&ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan.Masked())}}).Normalized()
+	bare := off.WithMode(&ExitMode{}).Normalized()
+	uplinkMode := off.WithMode(&ExitMode{Fallback: FallbackUplink}).Normalized()
+	via := off.WithMode(&ExitMode{Via: []schema.Addr{schema.MustAddr("3fff:0:0:e::46")}}).Normalized()
 	rt.Overlay = exitPassOverlay
 	rt.Sessions = func() int { return 1 }
 	rt.Network = func() NetworkState {
@@ -1593,10 +1596,15 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 		open, held    bool
 	}{
 		{name: "mode off", table: off},
+		{name: "bare mode two", table: bare},
+		{name: "explicit uplink", table: uplinkMode},
 		{name: "a reload into fallback none", table: none, open: true, held: true},
 		{name: "a refused reload out of it", table: moved, open: true, held: true},
 		{name: "a reload out of it", table: off},
 		{name: "a reload into it again", table: none, open: true, held: true},
+		{name: "implicit none through via", table: via, open: true, held: true},
+		{name: "explicit uplink after via", table: uplinkMode},
+		{name: "implicit none again", table: via, open: true, held: true},
 		{name: "a stop under it", table: none, stop: true},
 		{name: "a reload out of it while stopped", table: off, stopped: true},
 		{name: "a reload into it while stopped", table: none, stopped: true},
@@ -1622,6 +1630,17 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 		}
 		if open, held := plat.fallback != nil, held(); open != step.open || held != step.held {
 			t.Errorf("%s leaves the socket open %v and the table held %v, want %v and %v", step.name, open, held, step.open, step.held)
+		}
+		chains, err := nftables.TableChains(reader, unix.NFPROTO_INET, nftables.Table)
+		if err != nil {
+			t.Fatalf("%s: list the switch's chains: %v", step.name, err)
+		}
+		var want []string
+		if step.held {
+			want = []string{"fallback", "output", "routed"}
+		}
+		if !slices.Equal(chains, want) {
+			t.Errorf("%s leaves chains %v, want %v", step.name, chains, want)
 		}
 	}
 }

@@ -8,10 +8,13 @@ package kernel
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,7 +66,7 @@ func TestNetlinkFallbackRoutedSourcesMeetTheForwardChain(t *testing.T) {
 			t.Errorf("refused packet: drops changed from %d to %d, want one forward drop", before.dropped, after.dropped)
 		}
 	}
-	routedFirstMatches(t, trace(), tests)
+	routedFirstMatches(t, trace, tests)
 }
 
 // Real confirmed UDP flows in both families make the kernel classify quoted
@@ -191,7 +194,7 @@ func TestNetlinkFallbackRoutedICMPQuotesTheConnection(t *testing.T) {
 			t.Errorf("the table after quoted packets reads %+v (%v)", read, err)
 		}
 	}
-	routedFirstMatches(t, trace(), cases)
+	routedFirstMatches(t, trace, cases)
 }
 
 type routedCount struct{ drop, icmp4, icmp6 uint64 }
@@ -218,15 +221,34 @@ func routedCounters(t *testing.T) (out routedCount) {
 	return out
 }
 
-const routedTraceReady = 100 * time.Millisecond
+type routedTraceBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *routedTraceBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *routedTraceBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // A lower-priority test-owned forward chain marks only the probes. Monitoring
 // ends before the trace is inspected and both test processes are waited for.
-func routedTrace(t *testing.T) func() string {
+func routedTrace(t *testing.T) func(...routedCase) string { return routedTraceFor(t, 0) }
+
+// A packet's delivery can precede its complete trace record. Wait for each
+// requested packet and its rule before closing the monitor.
+func routedTraceFor(t *testing.T, want int) func(...routedCase) string {
 	t.Helper()
 	script := "table inet ranettrace {\n" +
 		"\tchain forward {\n\t\ttype filter hook forward priority -300; policy accept;\n" +
-		"\t\tmeta l4proto udp meta nftrace set 1\n" +
+		"\t\tmeta l4proto { tcp, udp } meta nftrace set 1\n" +
 		"\t\tmeta l4proto { icmp, ipv6-icmp } meta nftrace set 1\n\t}\n}\n"
 	write := exec.Command("nft", "-f", "-")
 	write.Stdin = strings.NewReader(script)
@@ -238,36 +260,68 @@ func routedTrace(t *testing.T) func() string {
 			t.Errorf("delete trace chain: %v\n%s", err, out)
 		}
 	})
-	var output bytes.Buffer
+	var output routedTraceBuffer
 	monitor := exec.Command("nft", "monitor", "trace")
 	monitor.Stdout, monitor.Stderr = &output, &output
 	if err := monitor.Start(); err != nil {
 		t.Fatal(err)
 	}
 	stopped := false
-	stop := func() string {
-		if !stopped {
-			stopped = true
-			if err := monitor.Process.Kill(); err != nil {
-				t.Errorf("stop trace reader: %v", err)
-			}
-			_ = monitor.Wait()
+	finish := func() {
+		if stopped {
+			return
 		}
-		return output.String()
+		stopped = true
+		if err := monitor.Process.Kill(); err != nil {
+			t.Errorf("stop trace reader: %v", err)
+		}
+		_ = monitor.Wait()
 	}
-	t.Cleanup(func() { stop() })
-	time.Sleep(routedTraceReady)
-	return stop
+	t.Cleanup(finish)
+	waitFor(t, func() bool { return routedTraceSubscribed(t) })
+	return func(cases ...routedCase) string {
+		if !stopped && (want > 0 || len(cases) > 0) {
+			deadline := time.Now().Add(waitBudget)
+			for !routedTraceComplete(output.String(), want, cases) && time.Now().Before(deadline) {
+				time.Sleep(waitPoll)
+			}
+		}
+		finish()
+		text := output.String()
+		if (want > 0 || len(cases) > 0) && !routedTraceComplete(text, want, cases) {
+			t.Errorf("the monitor missed a complete routed rule for %d packets and %d cases:\n%s", want, len(cases), text)
+		}
+		return text
+	}
 }
 
-func routedFirstMatches(t *testing.T, trace string, cases []routedCase) {
+// routedTraceSubscribed reports whether a NETLINK_NETFILTER socket of this
+// namespace, the monitor's, has joined NFNLGRP_NFTRACE, after which the kernel
+// queues it every trace event. /proc/net/netlink lists the groups below 32 in
+// hex (netlink_seq_show in af_netlink.c).
+func routedTraceSubscribed(t *testing.T) bool {
 	t.Helper()
-	installed, err := exec.Command("nft", "-a", "list", "chain", "inet", "ranet3", "routed").CombinedOutput()
+	raw, err := os.ReadFile("/proc/thread-self/net/netlink")
 	if err != nil {
-		t.Fatalf("list forward rules: %v\n%s", err, installed)
+		t.Fatalf("read the netlink sockets: %v", err)
 	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		// sk, Eth, Pid, Groups, then counters
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[1] != strconv.Itoa(unix.NETLINK_NETFILTER) {
+			continue
+		}
+		if groups, err := strconv.ParseUint(fields[3], 16, 32); err == nil && groups&(1<<(unix.NFNLGRP_NFTRACE-1)) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func routedTraceRecords(trace string) (map[string]string, map[string][]string) {
 	packets, rules := map[string]string{}, map[string][]string{}
-	for _, line := range strings.Split(trace, "\n") {
+	// A write can end inside a rule while the monitor is still printing it.
+	for _, line := range strings.Split(trace[:strings.LastIndexByte(trace, '\n')+1], "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 || fields[0] != "trace" || fields[1] != "id" {
 			continue
@@ -279,20 +333,67 @@ func routedFirstMatches(t *testing.T, trace string, cases []routedCase) {
 			rules[fields[2]] = append(rules[fields[2]], line)
 		}
 	}
-	for _, test := range cases {
-		family := "ip"
-		if netip.MustParseAddr(test.source).Is6() {
-			family = "ip6"
+	return packets, rules
+}
+
+func routedMatchingRules(packets map[string]string, rules map[string][]string, test routedCase) []string {
+	family := "ip"
+	if netip.MustParseAddr(test.source).Is6() {
+		family = "ip6"
+	}
+	var matched []string
+	for id, packet := range packets {
+		if strings.Contains(packet, `iif "`+test.in+`"`) &&
+			strings.Contains(packet, family+" saddr "+test.source+" "+family+" daddr "+test.target+" ") {
+			matched = append(matched, rules[id]...)
 		}
-		var matched []string
-		for id, packet := range packets {
-			if strings.Contains(packet, `iif "`+test.in+`"`) &&
-				strings.Contains(packet, family+" saddr "+test.source+" "+family+" daddr "+test.target+" ") {
-				matched = append(matched, rules[id]...)
+	}
+	return matched
+}
+
+func routedTraceComplete(trace string, want int, cases []routedCase) bool {
+	if want == 0 && len(cases) == 0 {
+		return true
+	}
+	packets, rules := routedTraceRecords(trace)
+	if len(packets) < want {
+		return false
+	}
+	count := 0
+	for _, lines := range rules {
+		count += len(lines)
+	}
+	if count < want {
+		return false
+	}
+	for _, test := range cases {
+		if len(routedMatchingRules(packets, rules, test)) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// routedFirstMatches reads the trace once each case has its complete rule
+// record, so no caller can inspect it before the monitor printed the last one.
+func routedFirstMatches(t *testing.T, trace func(...routedCase) string, cases []routedCase) {
+	t.Helper()
+	text := trace(cases...)
+	installed, err := exec.Command("nft", "-a", "list", "chain", "inet", "ranet3", "routed").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list forward rules: %v\n%s", err, installed)
+	}
+	packets, rules := routedTraceRecords(text)
+	for _, test := range cases {
+		matched := routedMatchingRules(packets, rules, test)
+		matchesFirst := len(matched) != 0
+		for _, line := range matched {
+			if !strings.Contains(line, "comment \""+test.first+"\"") {
+				matchesFirst = false
 			}
 		}
-		if len(matched) != 1 || !strings.Contains(matched[0], "comment \""+test.first+"\"") {
-			t.Errorf("%s: first matching forward rule %v, want %q", test.name, matched, test.first)
+		if !matchesFirst {
+			t.Errorf("%s: first matching forward rules %v, want %q; trace:\n%s", test.name, matched, test.first, text)
 			continue
 		}
 		found := false
@@ -308,6 +409,33 @@ func routedFirstMatches(t *testing.T, trace string, cases []routedCase) {
 		}
 		if !found {
 			t.Errorf("%s: traced rule %q has no handle in the installed chain", test.name, test.first)
+		}
+	}
+}
+
+func TestRoutedTraceWaitsForCompleteMatchingRecords(t *testing.T) {
+	cases := []routedCase{
+		{in: "ranetup0", source: "192.0.2.200", target: "198.51.100.20"},
+		{in: "ranetother0", source: "3fff:1::9", target: "2001:db8:e::200"},
+	}
+	request := "trace id 1 inet ranet3 routed packet: iif \"ranetup0\" ip saddr 192.0.2.200 ip daddr 198.51.100.20 udp\n" +
+		"trace id 1 inet ranet3 routed rule comment \"ip saddr != @from4 accept\" verdict accept\n"
+	retransmit := request + "trace id 2 inet ranet3 routed packet: iif \"ranetup0\" ip saddr 192.0.2.200 ip daddr 198.51.100.20 udp\n" +
+		"trace id 2 inet ranet3 routed rule comment \"ip saddr != @from4 accept\" verdict accept\n"
+	reply := "trace id 3 inet ranet3 routed packet: iif \"ranetother0\" ip6 saddr 3fff:1::9 ip6 daddr 2001:db8:e::200 tcp\n"
+	partial := retransmit + reply + "trace id 3 inet ranet3 routed rule ct direction reply ct protocol"
+	for _, test := range []struct {
+		name  string
+		trace string
+		want  bool
+	}{
+		{"request alone", request, false},
+		{"retransmission instead of reply", retransmit, false},
+		{"reply rule without its last line", partial, false},
+		{"complete reply", partial + " tcp comment \"ct direction reply ct protocol tcp ct original proto-dst @tcpports accept\"\n", true},
+	} {
+		if got := routedTraceComplete(test.trace, 2, cases); got != test.want {
+			t.Errorf("%s: complete trace %t, want %t", test.name, got, test.want)
 		}
 	}
 }
@@ -460,6 +588,10 @@ func routedCaptured(t *testing.T, fd int, src, dst netip.Addr) bool {
 		}
 		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 		n, err := unix.Poll(poll, wait)
+		if errors.Is(err, unix.EINTR) {
+			// a signal, such as the runtime's preemption, ends the wait early
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -93,6 +93,32 @@ func TestFallbackTableFollowsTheMode(t *testing.T) {
 	}
 }
 
+// A bare cap.exit block and an explicit uplink do not ask for a switch,
+// while explicit none and a path with no written fallback ask for one.
+func TestFallbackSwitchIsOnlyAskedForUnderRefusingModes(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		mode  *ExitMode
+		asked bool
+	}{
+		{name: "no cap.exit"},
+		{name: "bare cap.exit", mode: &ExitMode{}},
+		{name: "explicit uplink", mode: &ExitMode{Fallback: FallbackUplink}},
+		{name: "explicit none", mode: &ExitMode{Fallback: FallbackNone}, asked: true},
+		{name: "implicit none with a path", mode: &ExitMode{Via: []schema.Addr{schema.MustAddr("3fff:0:0:e::46")}}, asked: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reconciler, fake := fallbackHarness(t, c.mode)
+			if err := reconciler.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if held := fake.fallback != nil; held != c.asked {
+				t.Errorf("the pass wrote a switch %v, want %v", held, c.asked)
+			}
+		})
+	}
+}
+
 // While the switch does not read back as written, or cannot be written, the
 // pass leaves 5405 and 5435 out and keeps 5440 and 5450, and puts them back
 // once it reads back
