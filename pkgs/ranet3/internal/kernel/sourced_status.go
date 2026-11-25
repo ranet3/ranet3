@@ -43,7 +43,7 @@ func (r *Reconciler) SourcedStatus() (SourcedStatus, bool) {
 }
 
 // SourcedChanges reports changed answers, protection, counts, capacity or
-// failure state. It is nil until a sourced key has been accepted.
+// failure state. It remains nil until first keyed use, then survives removal.
 func (r *Reconciler) SourcedChanges() <-chan struct{} {
 	if channel := r.sourcedChanged.Load(); channel != nil {
 		return *channel
@@ -81,7 +81,7 @@ func (r *Reconciler) withdrawSourcedStatus() {
 }
 
 func (r *Reconciler) sourcedFailure(err error) {
-	if err == nil || r.table.Sourced == nil {
+	if err == nil || r.sourcedUnverified != nil || r.table.Sourced == nil {
 		return
 	}
 	previous := r.sourcedStatus.Load()

@@ -686,8 +686,8 @@ type Reconciler struct {
 	// last pass. A later over-cap link adds only refusal, never peer admission.
 	sourcedSources map[netip.Prefix]struct{}
 	sourcedLimited bool
-	// The published sourced view is immutable. No-key installations allocate
-	// neither a view nor a change channel.
+	// The published sourced view is immutable. A process that never attempts
+	// a sourced key allocates neither a view nor a change channel.
 	sourcedStatus  atomic.Pointer[SourcedStatus]
 	sourcedChanged atomic.Pointer[chan struct{}]
 
@@ -812,7 +812,10 @@ type Reconciler struct {
 	reloadPrevious   *accepted
 	reloadState      *sourcedReloadState
 	sourcedTentative *SourcedStatus
-	reload           chan struct{}
+	// A failed restoration retains the confirmed snapshot until fresh readback
+	// proves it has returned, even when that table has no sourced key.
+	sourcedUnverified *sourcedReloadState
+	reload            chan struct{}
 	// network carries NetworkChanged to the loop, and gained carries EndpointsChanged
 	network, gained chan struct{}
 	// firstPass closes once the loop's first pass or withdrawal has ended
@@ -1742,6 +1745,15 @@ func (r *Reconciler) reconcile() error {
 // observeSourced publishes a read-back answer, or lets the failed pass publish
 // an explicit unknown. Platforms without sourced policy never take this path.
 func (r *Reconciler) observeSourced(desired []Route) error {
+	if state := r.sourcedUnverified; state != nil {
+		if err := r.verifySourcedReloadState(*state); err != nil {
+			return fmt.Errorf("kernel: sourced restoration remains unverified: %w", err)
+		}
+		r.sourcedUnverified = nil
+		if r.table.Sourced == nil {
+			r.withdrawSourcedStatus()
+		}
+	}
 	if r.table.Sourced == nil {
 		return nil
 	}

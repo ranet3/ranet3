@@ -67,7 +67,20 @@ func (p *sourcedTransactionPlatform) DelRule(rule Rule) error {
 func (p *sourcedTransactionPlatform) where(table Table) string { return p.ordinary.where(table) }
 func (p *sourcedTransactionPlatform) Notify() <-chan struct{}  { return nil }
 func (p *sourcedTransactionPlatform) Close() error             { return nil }
-func (p *sourcedTransactionPlatform) retable(table Table)      { p.source.retable(table) }
+func (p *sourcedTransactionPlatform) retable(table Table) {
+	p.source.retable(table)
+	if table.Sourced != nil {
+		return
+	}
+	if p.failRestoreRead {
+		p.ordinary.mu.Lock()
+		p.ordinary.failAddrs = unix.EIO
+		p.ordinary.mu.Unlock()
+	}
+	if p.unexpectedAddress.IsValid() {
+		p.ordinary.byHand(p.unexpectedAddress, true)
+	}
+}
 func (p *sourcedTransactionPlatform) SourcedRules() ([]DumpedRule, error) {
 	return p.source.SourcedRules()
 }
@@ -348,5 +361,176 @@ func TestSourcedReloadRejectsUnverifiedRestorationReadback(t *testing.T) {
 				t.Fatalf("unverified kernel readback claimed unchanged policy: error %v, status %+v", err, status)
 			}
 		})
+	}
+}
+
+func waitSyntheticSourcedPass(t *testing.T, r *Reconciler, before time.Time) {
+	t.Helper()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for !r.Stats().At.After(before) {
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatal("synthetic reconciler pass did not finish")
+		}
+	}
+}
+
+func TestSourcedDegradedFirstKeyObservationPersistsUntilVerified(t *testing.T) {
+	cases := []struct {
+		name   string
+		inject func(*sourcedTransactionPlatform)
+		clear  func(*sourcedTransactionPlatform)
+	}{
+		{"unreadable", func(p *sourcedTransactionPlatform) { p.failRestoreRead = true },
+			func(p *sourcedTransactionPlatform) {
+				p.ordinary.mu.Lock()
+				p.ordinary.failAddrs = nil
+				p.ordinary.mu.Unlock()
+			}},
+		{"unequal", func(p *sourcedTransactionPlatform) {
+			p.unexpectedAddress = netip.MustParsePrefix("2001:db8:dd::1/128")
+		}, func(p *sourcedTransactionPlatform) {
+			p.ordinary.byHand(p.unexpectedAddress, false)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, ordinary, _, stop := sourcedTransactionHarness(t)
+			defer stop()
+			changed := r.SourcedChanges()
+			select {
+			case <-changed:
+			default:
+				t.Fatal("initial key did not signal")
+			}
+			keyed := r.Table()
+			keyless := keyed
+			keyless.Sourced = nil
+			overlay := []schema.Prefix{schema.MustPrefix("fd5e:db8:10::/48")}
+			if err := r.SetTable(keyless, overlay, nil); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-changed:
+			default:
+				t.Fatal("successful key withdrawal did not signal")
+			}
+			if _, present := r.SourcedStatus(); present {
+				t.Fatal("successful key withdrawal retained status")
+			}
+			platform := r.plat.(*sourcedTransactionPlatform)
+			tc.inject(platform)
+			other := netip.MustParsePrefix("2001:db8:cc::1/128")
+			keyed.Addresses = []schema.Prefix{schema.PrefixFrom(other)}
+			ordinary.failAssign[other] = unix.EIO
+			err := r.SetTable(keyed, overlay, nil)
+			status, present := r.SourcedStatus()
+			if !errors.Is(err, unix.EIO) || !strings.Contains(err.Error(), "could not be restored") ||
+				!present || status.State != "failing" || status.Error != err.Error() ||
+				status.Named != 0 || status.Supported != 0 || status.Pairs != 0 ||
+				status.Rules != 0 || len(status.Answers) != 0 ||
+				!reflect.DeepEqual(r.Table(), keyless) || r.SourcedChanges() != changed {
+				t.Fatalf("failed first key did not report keyless degradation: %v, %+v", err, status)
+			}
+			select {
+			case <-changed:
+			default:
+				t.Fatal("degraded restoration did not signal")
+			}
+			before := r.Stats().At
+			select {
+			case r.network <- struct{}{}:
+			default:
+			}
+			waitSyntheticSourcedPass(t, r, before)
+			current, present := r.SourcedStatus()
+			if !present || !reflect.DeepEqual(current, status) || r.Stats().Err == "" {
+				t.Fatalf("ordinary pass erased unverified degradation: %+v", current)
+			}
+			select {
+			case <-changed:
+				t.Fatal("unverified ordinary pass signaled recovery")
+			default:
+			}
+			tc.clear(platform)
+			select {
+			case r.network <- struct{}{}:
+			default:
+			}
+			select {
+			case <-changed:
+			case <-time.After(3 * time.Second):
+				t.Fatal("verified recovery did not signal")
+			}
+			if _, present := r.SourcedStatus(); present || r.SourcedChanges() != changed ||
+				!reflect.DeepEqual(r.Table(), keyless) {
+				t.Fatal("verified keyless recovery did not restore absent status")
+			}
+		})
+	}
+}
+
+func TestSourcedDegradedKeyedObservationPersistsUntilVerified(t *testing.T) {
+	r, ordinary, conn, stop := sourcedTransactionHarness(t)
+	defer stop()
+	changed := r.SourcedChanges()
+	select {
+	case <-changed:
+	default:
+		t.Fatal("initial key did not signal")
+	}
+	previous := r.Table()
+	next := previous
+	next.Sourced = &Sourced{To: []schema.Prefix{schema.MustPrefix("fd5e:db8:10:3::/96")}, ID: 201}
+	platform := r.plat.(*sourcedTransactionPlatform)
+	platform.restorePrefix = previous.Sourced.To[0].Prefix
+	platform.failRestoreRead = true
+	conn.failMainOnce = true
+	err := r.SetTable(next, []schema.Prefix{schema.MustPrefix("fd5e:db8:10::/48")}, nil)
+	status, present := r.SourcedStatus()
+	if !errors.Is(err, unix.EIO) || !strings.Contains(err.Error(), "could not be restored") ||
+		!present || status.State != "failing" || !reflect.DeepEqual(r.Table(), previous) {
+		t.Fatalf("unverified keyed restoration claimed accepted policy: %v, %+v", err, status)
+	}
+	select {
+	case <-changed:
+	default:
+		t.Fatal("degraded keyed restoration did not signal")
+	}
+	before := r.Stats().At
+	select {
+	case r.network <- struct{}{}:
+	default:
+	}
+	waitSyntheticSourcedPass(t, r, before)
+	current, present := r.SourcedStatus()
+	if !present || !reflect.DeepEqual(current, status) {
+		t.Fatalf("ordinary keyed error erased unverified degradation: %+v", current)
+	}
+	select {
+	case <-changed:
+		t.Fatal("unverified keyed pass signaled recovery")
+	default:
+	}
+	ordinary.mu.Lock()
+	ordinary.failAddrs = nil
+	ordinary.mu.Unlock()
+	select {
+	case r.network <- struct{}{}:
+	default:
+	}
+	select {
+	case <-changed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("verified keyed recovery did not signal")
+	}
+	current, present = r.SourcedStatus()
+	if !present || current.State == "failing" || current.Error != "" ||
+		!reflect.DeepEqual(r.Table(), previous) {
+		t.Fatalf("verified keyed recovery retained degradation: %+v", current)
 	}
 }

@@ -80,6 +80,21 @@ func sameSourcedMembers[T comparable](before, after []T) bool {
 	return true
 }
 
+func (r *Reconciler) verifySourcedReloadState(state sourcedReloadState) error {
+	actual, err := r.readSourcedReloadState(state.table)
+	if err != nil {
+		return err
+	}
+	if !sameSourcedMembers(state.addresses, actual.addresses) ||
+		!sameSourcedMembers(state.routes, actual.routes) ||
+		!sameSourcedMembers(state.rules, actual.rules) ||
+		!sameSourcedMembers(state.mirror, actual.mirror) ||
+		!sameSourcedMembers(state.admission, actual.admission) || !maps.Equal(state.owned, actual.owned) {
+		return errors.New("owned routes, rules, mirror or tun addresses differ from the old policy")
+	}
+	return nil
+}
+
 func (r *Reconciler) restoreSourcedReload(previous error) error {
 	state := r.reloadState
 	var restoreErr error
@@ -104,18 +119,18 @@ func (r *Reconciler) restoreSourcedReload(previous error) error {
 		}
 		restoreErr = errors.Join(restoreErr, withdrawErr)
 	}
-	actual, readErr := r.readSourcedReloadState(state.table)
-	if readErr == nil && (!sameSourcedMembers(state.addresses, actual.addresses) ||
-		!sameSourcedMembers(state.routes, actual.routes) ||
-		!sameSourcedMembers(state.rules, actual.rules) ||
-		!sameSourcedMembers(state.mirror, actual.mirror) ||
-		!sameSourcedMembers(state.admission, actual.admission) || !maps.Equal(state.owned, actual.owned)) {
-		readErr = errors.New("owned routes, rules, mirror or tun addresses differ from the old policy")
-	}
+	readErr := r.verifySourcedReloadState(*state)
 	r.reloadState = nil
 	if restoreErr != nil || readErr != nil {
 		degraded := fmt.Errorf("kernel: sourced reload failed and owned kernel state could not be restored: %w", errors.Join(previous, restoreErr, readErr))
-		r.sourcedFailure(degraded)
+		if r.sourcedUnverified == nil {
+			if r.table.Sourced == nil {
+				r.publishSourced(SourcedStatus{State: "failing", Error: degraded.Error()})
+			} else {
+				r.sourcedFailure(degraded)
+			}
+			r.sourcedUnverified = state
+		}
 		return degraded
 	}
 	return previous
