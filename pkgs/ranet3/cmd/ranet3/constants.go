@@ -31,3 +31,5 @@ const (
 	// writeMissed is a write's status when its answer lists an entry it did not reach, as a rekey lists a session that did not rekey
 	writeMissed exitCode = 1
 )
+
+const signedOutputMode = 0600

@@ -25,6 +25,7 @@ func trustCommand() *cobra.Command {
 	}
 	command.AddCommand(trustShowCommand())
 	command.AddCommand(trustVerifyCommand())
+	command.AddCommand(trustInitCommand())
 	return command
 }
 
