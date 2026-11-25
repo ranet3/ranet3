@@ -2325,8 +2325,8 @@ func (r *Reconciler) mendDownSet(cause error) error {
 var errStopped = errors.New("stopped over the control socket")
 
 // withdraw removes what this reconciler holds for a stop of cause: every route
-// and rule still carrying its marker, every address it added itself, and the
-// kill switch, whoever wrote it, but where cause is ErrMeshFailed and the
+// still carrying its marker, every address it added itself, and the kill
+// switch, whoever wrote it, but where cause is ErrMeshFailed and the
 // capability in force asks for the switch, which it leaves, listing it only
 // to say in a warning whether one is there.
 // Routes are read back rather than remembered, so routes an earlier crashed
