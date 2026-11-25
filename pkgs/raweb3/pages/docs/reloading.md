@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-11-22
+updated: 2026-11-25
 order: 70
 ---
 
@@ -146,8 +146,8 @@ assigns. An address another writer put on the tun stays, named or not. The
 mesh's own table holds each newly assigned address as this node's at once, and
 gives back each one the block no longer assigns at once too, unless this node
 still announces its host route. An address given back is held only while an
-update this node sent naming it reachable has yet to expire at a neighbor, as
-[routing](routing.md#retracted-routes) describes.
+update this node built naming it reachable has yet to reach its estimated expiry
+at a neighbor, as [routing](routing.md#retracted-routes) describes.
 
 On Linux the tun keeps an IPv4 address throughout while the new block assigns
 one, because Linux drops every IPv4 route through a device left with none,
@@ -334,7 +334,10 @@ describes them, the dialer of a peer the reload added included, and the
 reconciler takes a changed `cap.table` as a stopped one does and installs it at
 `ranet3 up`. `ranet3 down` withdraws the kill switch with the rest, as a clean
 stop does, so a node taken off the mesh sends its traffic by its own default
-until `ranet3 up`.
+until `ranet3 up`, but on Linux with `cap.table` its traffic to `overlay` meets
+the down set of
+[the overlay while a node is down](routing.md#the-overlay-while-a-node-is-down)
+unless `ranet3 disable reconciler` stopped the reconciler first.
 
 ## What a reload refuses
 

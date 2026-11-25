@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-11-09
+updated: 2026-11-25
 order: 40
 ---
 
@@ -248,7 +248,10 @@ The mesh tun going away under a running node, such as one an operator deleted,
 is a failure the daemon cannot repair. It logs `netstack tun failed` with the
 interface and the error, records a `netstack.tun.failed` event, and stops as it
 does on SIGTERM: it closes every session with its grace period and withdraws its
-routes and rules and its translation rules. Its antispoof filter's chains follow
+routes and rules and its translation rules, but on Linux with `cap.table` it
+first adds [the down set](routing.md#the-overlay-while-a-node-is-down) and
+leaves it, unless `ranet3 disable reconciler` stopped the reconciler. Its
+antispoof filter's chains follow
 [the filter's lifetime](antispoof.md#where-it-runs). Where
 `cap.exit.fallback = "none"`, or mode 3 with `fallback` unwritten, asks for
 [the kill switch](routing.md#the-kill-switch-on-linux), it leaves the switch's

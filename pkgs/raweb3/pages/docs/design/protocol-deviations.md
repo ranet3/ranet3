@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-24
+updated: 2026-11-25
 order: 20
 ---
 
@@ -2013,9 +2013,9 @@ program puts ahead of its own, as
 A prefix that loses its last route, because its route was flushed at that
 expiry, its neighbor's session went, or this node stopped announcing it while
 `cap.table` did not assign it, or `cap.table` stopped assigning its address
-while this node did not announce it, is held until the latest time any update
-this node sent naming it reachable expires at a neighbor, if that is later,
-whether or not a retraction followed, as
+while this node did not announce it, is held until the latest estimated expiry,
+at a neighbor, of any update this node built naming it reachable, if that is
+later, whether or not a retraction followed, as
 [the routing page](../routing.md#retracted-routes) says.
 
 Each link is 1 ESP tunnel that delivers in order rather than lossy multicast.

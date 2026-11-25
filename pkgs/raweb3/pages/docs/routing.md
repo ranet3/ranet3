@@ -39,15 +39,15 @@ triggered updates to its neighbor. The Hello carries a timestamp (RFC 9616). The
 IHU carries this node's receive cost and echoes the neighbor's timestamps. Each
 Babel packet other than a path MTU probe fits in a 1280-byte inner IPv6 packet.
 
-| Timer           | Default    | Rule                                                                                                           |
-| --------------- | ---------- | -------------------------------------------------------------------------------------------------------------- |
-| Hello interval  | 4 seconds  | `cap.babel.hello`                                                                                              |
-| Update interval | 16 seconds | `cap.babel.update`, or 4 x the Hello one                                                                       |
-| Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval                                                                            |
-| IHU expiry      | 14 seconds | 3.5 x the interval the IHU names                                                                               |
-| Route hold      | 56 seconds | 3.5 x the interval of the carrying Update                                                                      |
-| Route refresh   | 40 seconds | 2.5 x the interval of the carrying Update                                                                      |
-| Lost route hold | 60 seconds | the latest expiry of any update this node sent naming it reachable: 3.5 x that update's interval, plus 1 Hello |
+| Timer           | Default    | Rule                                                                                                                      |
+| --------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Hello interval  | 4 seconds  | `cap.babel.hello`                                                                                                         |
+| Update interval | 16 seconds | `cap.babel.update`, or 4 x the Hello one                                                                                  |
+| Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval                                                                                       |
+| IHU expiry      | 14 seconds | 3.5 x the interval the IHU names                                                                                          |
+| Route hold      | 56 seconds | 3.5 x the interval of the carrying Update                                                                                 |
+| Route refresh   | 40 seconds | 2.5 x the interval of the carrying Update                                                                                 |
+| Lost route hold | 60 seconds | the latest estimated expiry of any update this node built naming it reachable: 3.5 x that update's interval, plus 1 Hello |
 
 Losing a Babel neighbor does not end its session. If the neighbor goes down
 after its Hellos time out while the session remains up, `ranet3 status` names up
@@ -230,10 +230,10 @@ edge drop it, as [transit](#transit) says. The reconciler installs the same hold
 in the kernel where [what it installs](#what-it-installs) gives, which is not
 for a route that [counts as a default](#routes-that-count-as-a-default), nor on
 macOS for one at an address the utun holds, except as that table gives. Once the
-route is flushed, the prefix stays held until the latest time any update this
-node sent naming it reachable expires at a neighbor, if that is later, as the
-next paragraph says. Neither hold waits for every neighbor to acknowledge the
-retraction, as
+route is flushed, the prefix stays held until the latest estimated expiry, at a
+neighbor, of any update this node built naming it reachable, if that is later,
+as the next paragraph says. Neither hold waits for every neighbor to acknowledge
+the retraction, as
 [the protocol deviations](design/protocol-deviations.md#updates-and-requests)
 say.
 
@@ -247,19 +247,19 @@ request for the offer's origin, repeated as it is when only unfeasible routes
 remain. A neighbor this node told the prefix is reachable may still send packets
 for it here until that update expires there, even after a retraction, which is
 sent once and never acknowledged. So the prefix is held the same way until the
-latest time any update this node sent naming it reachable expires at a neighbor,
-unless a neighbor's route for it is selected first. Each update's time is the
-route expiry of
+latest estimated expiry, at a neighbor, of any update this node built naming it
+reachable, unless a neighbor's route for it is selected first. Each update's
+estimated expiry is the route expiry of
 [RFC 8966 Appendix B](https://www.rfc-editor.org/rfc/rfc8966.html#appendix-B),
-"3.5 times the advertised update interval", counted from when that update was
-sent and taken from the interval it carried, plus 1 Hello interval for it to
-arrive. That covers a neighbor that expires a route at the multiple Appendix B
-suggests, as ranet3 does. RFC 8966 section 3.5.3 lets a neighbor choose "a small
-multiple". A shorter update interval set later does not shorten the hold, since
-a neighbor that missed the update sent under it still counts toward the one
-before. The prefix stays unreachable for that time even when every neighbor read
-the retraction, since this node cannot know that they did. A prefix that no
-update from this node named reachable in that time is not held, and a covering
+"3.5 times the advertised update interval", counted from when this node built
+that update and taken from the interval it carried, plus 1 Hello interval for it
+to arrive. That covers a neighbor that expires a route at the multiple Appendix
+B suggests, as ranet3 does. RFC 8966 section 3.5.3 lets a neighbor choose "a
+small multiple". A shorter update interval set later does not shorten the hold,
+since a neighbor that missed the update built under it still counts toward the
+one before. The prefix stays unreachable for that time even when every neighbor
+read the retraction, since this node cannot know that they did. A prefix that no
+update this node built named reachable in that time is not held, and a covering
 route serves it at once.
 
 A hold refuses transit for as long as it lasts. The kernel's copy of a hold
@@ -270,12 +270,12 @@ of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) give, where a
 hold scoped to the utun refuses only the datagrams the paragraph below that
 table names, and any other lookup ends where those tables give. A retracted
 prefix covered by a shorter route is answered unreachable until the latest
-update this node sent for it expires, 60 seconds at the defaults. While an exit
-originates its own default it keeps another exit's as an offer, so once its
-readiness withdraws its default its transit for the internet moves at once to
-the other exit's default that selection takes. With none taken, it holds its own
-the same way and answers that transit unreachable, IPv6 code 0 and IPv4 Network
-Unreachable, until the hold ends.
+estimated expiry of any update this node built naming it reachable, 60 seconds
+at the defaults. While an exit originates its own default it keeps another
+exit's as an offer, so once its readiness withdraws its default its transit for
+the internet moves at once to the other exit's default that selection takes.
+With none taken, it holds its own the same way and answers that transit
+unreachable, IPv6 code 0 and IPv4 Network Unreachable, until the hold ends.
 [The protocol deviations](design/protocol-deviations.md#updates-and-requests)
 list the departure. Where the hold counts as a default the kernel keeps none,
 and that traffic ends as
@@ -875,23 +875,26 @@ the process that wrote them:
   completes runs no pass, so it writes no chain and leaves those an earlier
   instance left, with the rules and routes of its protocol.
 - The stop a failed tun causes withdraws the rules, routes and addresses, 5445
-  and mode 3's steered defaults among them. The antispoof filter's chains follow
-  [its lifetime](antispoof.md#where-it-runs). Where `fallback = "none"` is in
-  force, as it is in mode 3 unless `"uplink"` is written, it deletes no chain of
-  the kill switch: chains that are there it leaves as found, with no rule behind
-  them, whatever the last pass read or wrote, and before any pass an earlier
-  instance's. The chains alone then judge what leaves, by main's routes and the
-  sets the last pass wrote: what 5445 sent to a carve-out or this node's own
-  prefix leaves by the LAN's line or the own prefixes' line, what the mesh's
-  default or the steered defaults carried meets the drop unless another line
-  passes it, and a connect they refuse waits out its retransmissions rather than
-  meeting 5450's `ENETUNREACH`. Where no chain is there the host's traffic
-  leaves by its routes. It [logs a warning](#watching-it) that says whether a
-  listing found the chains, found none, or failed, but where the chains were
-  deleted or found absent since the last pass that asked for them, as after
-  `ranet3 down`, `ranet3 disable reconciler` or a pass under `"uplink"`, the
-  stop lists nothing and logs nothing. Where the file in force asks for no
-  switch it deletes the chains as the stops above do. The daemon exits 1 for
+  and mode 3's steered defaults among them, but it first adds
+  [the down set](#the-overlay-while-a-node-is-down) and leaves it, unless
+  `ranet3 disable reconciler` stopped the reconciler. The antispoof filter's
+  chains follow [its lifetime](antispoof.md#where-it-runs). Where
+  `fallback = "none"` is in force, as it is in mode 3 unless `"uplink"` is
+  written, it deletes no chain of the kill switch: chains that are there it
+  leaves as found, with no rule behind them, whatever the last pass read or
+  wrote, and before any pass an earlier instance's. The chains alone then judge
+  what leaves, by main's routes and the sets the last pass wrote: what 5445 sent
+  to a carve-out or this node's own prefix leaves by the LAN's line or the own
+  prefixes' line, what the mesh's default or the steered defaults carried meets
+  the drop unless another line passes it, and a connect they refuse waits out
+  its retransmissions rather than meeting 5450's `ENETUNREACH`. Where no chain
+  is there the host's traffic leaves by its routes. It
+  [logs a warning](#watching-it) that says whether a listing found the chains,
+  found none, or failed, but where the chains were deleted or found absent since
+  the last pass that asked for them, as after `ranet3 down`,
+  `ranet3 disable reconciler` or a pass under `"uplink"`, the stop lists nothing
+  and logs nothing. Where the file in force asks for no switch it deletes the
+  chains as the stops above do. The daemon exits 1 for
   [the supervisor's restart](service.md#restarts-and-the-network). While ranet3
   stays down, the operator removes the chains left with
   `nft delete chain inet ranet3 fallback` and
