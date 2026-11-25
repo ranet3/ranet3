@@ -108,6 +108,7 @@ the path.`,
 		completionCommand(root),
 		debugCommand(),
 		keyCommand(),
+		trustCommand(),
 	)
 	root.AddCommand(r.queryCommands()...)
 	root.AddCommand(r.writeCommands()...)

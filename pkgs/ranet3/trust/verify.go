@@ -16,6 +16,9 @@ import (
 	"os"
 )
 
+// ErrSignature means no supplied authority key verified the signed bytes.
+var ErrSignature = errors.New("trust: no authority key verifies the signature")
+
 // Authenticated is an intact, strictly decoded file whose signature verified.
 // Its document profile is checked separately after the authority overlap check.
 type Authenticated struct {
@@ -62,7 +65,7 @@ func AuthenticateSignedFile(file []byte, keys []AuthorityKey) (Authenticated, er
 func authenticateParsedEnvelope(file []byte, envelope signedEnvelope, keys []AuthorityKey) (Authenticated, error) {
 	key, ok := verifySignature(envelope, keys)
 	if !ok {
-		return Authenticated{}, errors.New("trust: no authority key verifies the signature")
+		return Authenticated{}, ErrSignature
 	}
 	payload, err := decodePayloadUnvalidated(envelope.Payload)
 	if err != nil {
