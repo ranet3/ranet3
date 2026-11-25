@@ -183,8 +183,10 @@ update = "16s"
 # A packet carrying the underlay's mark skips every lookup
 # of this table. The routing page's "Policy rules on Linux" lists each rule and
 # where a lookup ends under them. A dump reads back only these, a delete never reaches another writer's
-# rule, and they are withdrawn at shutdown with the routes. darwin installs no
-# policy rule.
+# rule, and they are withdrawn at shutdown with the routes. A shutdown
+# leaves in their place the down set the routing page gives under "The
+# overlay while a node is down", unless ranet3 disable reconciler stopped
+# the reconciler first. darwin installs no policy rule.
 
 # Segment routing, RFC 8986, performed in this process rather than by a kernel,
 # so steering works the same on every platform: darwin has no segment routing
