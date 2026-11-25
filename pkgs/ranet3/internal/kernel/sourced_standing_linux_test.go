@@ -174,6 +174,17 @@ func TestSourcedFirstPassReportsUninstalledProtection(t *testing.T) {
 	}
 }
 
+func TestSourcedReloadRefusesUntilFirstPassFinishes(t *testing.T) {
+	r, _, conn := sourcedStandingHarness(t)
+	before := conn.writes.Load()
+	if err := r.SetTable(r.Table(), nil, nil); err == nil {
+		t.Fatal("keyed reload returned success before any reconciler pass")
+	}
+	if r.next.Load() != nil || r.activeReload != nil || conn.writes.Load() != before {
+		t.Fatal("a refused early reload queued or wrote policy")
+	}
+}
+
 func TestSourcedReloadRefusesForeignSelectorWithoutPublishingOrWriting(t *testing.T) {
 	r, plat, conn := sourcedStandingHarness(t)
 	r.use(&sourcedRunPlatform{plat})

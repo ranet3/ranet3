@@ -806,10 +806,13 @@ type Reconciler struct {
 	dropHold atomic.Bool
 	// next is the capability SetTable accepted last, which reload wakes the loop to take
 	next atomic.Pointer[accepted]
-	// activeReload is the synchronous sourced reload awaiting this loop's pass.
-	activeReload   chan error
-	reloadPrevious *accepted
-	reload         chan struct{}
+	// A keyed reload keeps the last confirmed table visible until its pass
+	// completes, and retains its kernel snapshot until rollback is verified.
+	activeReload     chan error
+	reloadPrevious   *accepted
+	reloadState      *sourcedReloadState
+	sourcedTentative *SourcedStatus
+	reload           chan struct{}
 	// network carries NetworkChanged to the loop, and gained carries EndpointsChanged
 	network, gained chan struct{}
 	// firstPass closes once the loop's first pass or withdrawal has ended
@@ -817,7 +820,7 @@ type Reconciler struct {
 	finished  chan struct{}
 	// firstPassErr is published before firstPass closes for synchronous starts.
 	firstPassErr atomic.Pointer[error]
-	// inForce is table as another goroutine reads it, stored whole when the loop takes a capability
+	// inForce is the last confirmed table as another goroutine reads it.
 	inForce atomic.Pointer[Table]
 	// reloaded says the pass under way follows a capability the loop took, and belongs to that goroutine
 	reloaded bool
@@ -1234,6 +1237,8 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 		case <-r.firstPass:
 			done = make(chan error, 1)
 		default:
+			r.ending.Unlock()
+			return fmt.Errorf("kernel: sourced reconciler has not finished starting")
 		}
 	}
 	previous := r.next.Swap(&accepted{table: t, overlay: overlay, announced: announced, addresses: addresses, done: done})
@@ -1296,6 +1301,21 @@ func (r *Reconciler) adopt() bool {
 	if next == nil {
 		return false
 	}
+	if next.done != nil {
+		var id schema.TableID
+		if r.table.Sourced != nil {
+			id = r.table.Sourced.ID
+		} else {
+			id = next.table.Sourced.ID
+		}
+		state, err := r.readSourcedReloadState(id)
+		if err != nil {
+			next.done <- err
+			return false
+		}
+		r.reloadState = &state
+		r.reloadPrevious = &accepted{table: r.table, overlay: r.rt.Overlay, announced: r.rt.Announced, addresses: r.addresses}
+	}
 	var preflightErr error
 	switch {
 	case next.table.Sourced != nil:
@@ -1308,14 +1328,22 @@ func (r *Reconciler) adopt() bool {
 			preflightErr = preflight.preflightSourcedOccupancy(next.table, r.rt.Interface)
 		}
 	case r.table.Sourced != nil && next.table.Sourced == nil:
-		remove, ok := r.plat.(interface{ removeSourcedKey(*Reconciler) error })
+		remove, ok := r.plat.(interface {
+			preflightSourcedRemoval() error
+			removeSourcedKey(*Reconciler) error
+		})
 		if !ok {
 			preflightErr = fmt.Errorf("sourced key removal is unavailable on this platform")
-		} else {
+		} else if preflightErr = remove.preflightSourcedRemoval(); preflightErr == nil {
 			preflightErr = remove.removeSourcedKey(r)
+			if preflightErr != nil {
+				preflightErr = r.restoreSourcedReload(preflightErr)
+			}
 		}
 	}
 	if preflightErr != nil {
+		r.reloadState = nil
+		r.reloadPrevious = nil
 		if next.done != nil {
 			next.done <- preflightErr
 		} else {
@@ -1327,25 +1355,15 @@ func (r *Reconciler) adopt() bool {
 		changed := make(chan struct{}, 1)
 		r.sourcedChanged.Store(&changed)
 	}
-	if next.table.Sourced == nil && r.table.Sourced != nil {
-		r.sourcedStatus.Store(nil)
-		if changed := r.sourcedChanged.Load(); changed != nil {
-			select {
-			case *changed <- struct{}{}:
-			default:
-			}
-		}
-	}
-	if next.done != nil {
-		r.reloadPrevious = &accepted{table: r.table, overlay: r.rt.Overlay, announced: r.rt.Announced, addresses: r.addresses}
-	}
 	r.table, r.addresses, r.rt.Overlay, r.rt.Announced = next.table, next.addresses, next.overlay, next.announced
 	if r.rt.Selection != nil {
 		r.rt.Selection.holdOverlay(r.rt.Overlay)
 	}
 	r.liveness.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
-	r.inForce.Store(&next.table)
+	if next.done == nil {
+		r.inForce.Store(&next.table)
+	}
 	r.activeReload = next.done
 	r.reloaded = true
 	slog.Info("kernel reconciler took a reloaded cap.table", "where", r.Where())
@@ -1469,10 +1487,18 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		}
 		if r.activeReload != nil {
 			if firstErr != nil {
-				r.restoreReload()
+				firstErr = r.restoreSourcedReload(firstErr)
 			} else {
 				r.reloadPrevious = nil
+				r.reloadState = nil
+				r.inForce.Store(&r.table)
+				if r.table.Sourced == nil {
+					r.withdrawSourcedStatus()
+				} else if r.sourcedTentative != nil {
+					r.publishSourced(*r.sourcedTentative)
+				}
 			}
+			r.sourcedTentative = nil
 			r.activeReload <- firstErr
 			r.activeReload = nil
 		}
@@ -1727,7 +1753,11 @@ func (r *Reconciler) observeSourced(desired []Route) error {
 	}
 	status, err := observer.sourcedObserved(r, desired)
 	if err == nil {
-		r.publishSourced(status)
+		if r.activeReload != nil {
+			r.sourcedTentative = &status
+		} else {
+			r.publishSourced(status)
+		}
 	}
 	return err
 }
@@ -1766,7 +1796,9 @@ func (r *Reconciler) captureDeadline() (time.Time, bool) {
 // could count anything still records the attempt, so a stale PassAt cannot
 // read as a reconciler that is keeping up.
 func (r *Reconciler) recordPass(err error, took time.Duration) {
-	r.sourcedFailure(err)
+	if r.activeReload == nil {
+		r.sourcedFailure(err)
+	}
 	stats := r.routePass
 	stats.At, stats.Lookups, stats.Exit = time.Now(), r.lookups, r.exitStatus
 	if err != nil {

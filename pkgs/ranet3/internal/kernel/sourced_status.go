@@ -67,6 +67,19 @@ func (r *Reconciler) publishSourced(next SourcedStatus) {
 	}
 }
 
+// Withdrawal has no status object. The channel persists so its absence is observable.
+func (r *Reconciler) withdrawSourcedStatus() {
+	if r.sourcedStatus.Swap(nil) == nil {
+		return
+	}
+	if channel := r.sourcedChanged.Load(); channel != nil {
+		select {
+		case *channel <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (r *Reconciler) sourcedFailure(err error) {
 	if err == nil || r.table.Sourced == nil {
 		return

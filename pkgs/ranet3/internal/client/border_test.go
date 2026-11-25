@@ -575,6 +575,29 @@ func TestReloadRefusesAnInterfaceNameTheFilterCannotWriteAheadOfTheTable(t *test
 	changedNothing(t, c, old, bus)
 }
 
+func TestReloadRestoresTableAfterBorderRejectsHandoff(t *testing.T) {
+	c, path, reconciler, _ := reloadOf(t, func(cfg *config.Config) {
+		cfg.Cap.Table = &kernel.Table{}
+		cfg.Overlay = overlayOf("203.0.113.0/24")
+	})
+	old := c.config()
+	refusal := errors.New("synthetic filter handoff error")
+	border := &borderRecord{border: *old.Border(), refusal: refusal}
+	c.SetBorder(border)
+	next := *old
+	next.Cap.Table = &kernel.Table{Reconcile: schema.Duration(time.Minute)}
+	next.Cap.Antispoof = &egress.Antispoof{Exempt: overlayOf("203.0.113.128/25")}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); !errors.Is(err, refusal) {
+		t.Fatalf("failed filter handoff answered %v", err)
+	}
+	if c.config() != old || !reflect.DeepEqual(border.Capability(), *old.Border()) ||
+		len(reconciler.tables) != 2 || !reflect.DeepEqual(reconciler.tables[0], *next.ReconcilerTable()) ||
+		!reflect.DeepEqual(reconciler.tables[1], *old.ReconcilerTable()) {
+		t.Fatalf("failed filter handoff left new policy: tables %+v, config changed %v", reconciler.tables, c.config() != old)
+	}
+}
+
 // the start refuses an exemption's interface name the filter here cannot
 // write, which only pf does: on darwin br-lan is refused naming it, and on
 // every other platform it starts, as kernelexit.RefuseBorder answers for this

@@ -133,16 +133,35 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err != nil {
 		return err
 	}
-	// the last refusal
-	// the reconciler takes a table it accepts at once
-	// with cap.exit's mode, and the overlay and the announcements its exit rule reads
-	// and the outer source mode 3 resolves the path's SIDs from
+	// The reconciler commits only after the keyed policy reads back. If the
+	// border still refuses its handoff, restore the prior kernel capability
+	// before returning a rejected reload.
+	retabled := false
 	if !sameTable(old, cfg) || cfg.Cap.Table != nil && (!sameOverlay(old, cfg) || !sameExit(old, cfg) || !sameExitMode(old, cfg) || !sameExitPath(old, cfg)) {
 		if err := c.retable(old, cfg); err != nil {
 			return err
 		}
+		retabled = true
+	}
+	border := c.border.Load()
+	var beforeBorder egress.Border
+	if border != nil {
+		beforeBorder = (*border).Capability()
 	}
 	if err := c.reborder(old, cfg); err != nil {
+		var restoreErr error
+		if border != nil && !reflect.DeepEqual((*border).Capability(), beforeBorder) {
+			restoreErr = (*border).SetConfig(beforeBorder)
+			if restoreErr == nil && !reflect.DeepEqual((*border).Capability(), beforeBorder) {
+				restoreErr = errors.New("the old antispoof configuration did not read back")
+			}
+		}
+		if retabled {
+			restoreErr = errors.Join(restoreErr, c.retable(cfg, old))
+		}
+		if restoreErr != nil {
+			return fmt.Errorf("config: reload failed and the old policy could not be restored: %w", errors.Join(err, restoreErr))
+		}
 		return err
 	}
 	// a peer the trust document cannot support is skipped rather than refused
