@@ -57,6 +57,70 @@ func trustInitWithPublish(publish func(string, []byte, fs.FileMode) error) *cobr
 	return command
 }
 
+func trustSignCommand() *cobra.Command {
+	return trustSignWithPublish(statefile.PublishNew)
+}
+
+func trustSignWithPublish(publish func(string, []byte, fs.FileMode) error) *cobra.Command {
+	var keyPath, output, previousPath string
+	var source trustSource
+	command := &cobra.Command{
+		Use:   "sign <document.json>",
+		Short: "Sign a successor trust document",
+		Long:  "Verify the named parent under eligible authority keys and sign its next height to an absent file.",
+		Args:  cobra.ExactArgs(1),
+		ValidArgsFunction: func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return nil, cobra.ShellCompDirectiveDefault
+		},
+		RunE: func(command *cobra.Command, args []string) error {
+			if keyPath == "" {
+				return errors.New("--key is required")
+			}
+			if previousPath == "" {
+				return errors.New("--previous is required")
+			}
+			if output == "" {
+				return errors.New("--out is required")
+			}
+			if !command.Flags().Changed("authority") && !command.Flags().Changed("config") {
+				return errors.New("--previous requires --authority or --config")
+			}
+			keys, err := source.keys(command)
+			if err != nil {
+				return err
+			}
+			parent, err := trust.ReadSignedFile(previousPath, keys)
+			if err != nil {
+				if errors.Is(err, trust.ErrSignature) {
+					if command.Flags().Changed("authority") {
+						return fmt.Errorf("%s: parent does not verify under the key given", previousPath)
+					}
+					return fmt.Errorf("%s: parent does not verify under the eligible keys of %s", previousPath, source.configPath)
+				}
+				return fmt.Errorf("%s: %w", previousPath, err)
+			}
+			if parent.Payload.Height == trust.MaxHeight {
+				return fmt.Errorf("%s: parent is at the maximum height", previousPath)
+			}
+			signer, key, err := trust.LoadAuthorityPrivateKey(keyPath)
+			if err != nil {
+				return err
+			}
+			previous := parent.Digest
+			payload := trust.Payload{Height: parent.Payload.Height + 1, Previous: &previous, Mesh: parent.Payload.Mesh}
+			return signTrustDocument(command.ErrOrStderr(), args[0], output, payload, signer, key, publish, "signed output")
+		},
+	}
+	source.flags(command)
+	command.Flags().StringVar(&keyPath, "key", "", "Authority private key file")
+	command.Flags().StringVar(&previousPath, "previous", "", "Verified parent signed file")
+	command.Flags().StringVar(&output, "out", "", "New signed output file")
+	command.MarkFlagFilename("key")
+	command.MarkFlagFilename("previous")
+	command.MarkFlagFilename("out")
+	return command
+}
+
 func readAuthoredJSON(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
