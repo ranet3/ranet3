@@ -24,6 +24,7 @@ func trustCommand() *cobra.Command {
 		Long:  "Sign, inspect and verify trust documents under selected authority keys.",
 	}
 	command.AddCommand(trustShowCommand())
+	command.AddCommand(trustVerifyCommand())
 	return command
 }
 
@@ -170,5 +171,31 @@ func trustShowCommand() *cobra.Command {
 	}
 	source.flags(command)
 	command.Flags().BoolVar(&mesh, "mesh", false, "Print the mesh identifier")
+	return command
+}
+
+func trustVerifyCommand() *cobra.Command {
+	var source trustSource
+	command := &cobra.Command{
+		Use:   "verify <signed file>",
+		Short: "Verify a signed trust document",
+		Long:  "Verify a signed file under the selected authority keys and print its facts.",
+		Args:  cobra.ExactArgs(1),
+		ValidArgsFunction: func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return nil, cobra.ShellCompDirectiveDefault
+		},
+		RunE: func(command *cobra.Command, args []string) error {
+			keys, err := source.keys(command)
+			if err != nil {
+				return err
+			}
+			verified, err := trustVerified(args[0], keys, "verify")
+			if err != nil {
+				return err
+			}
+			return trustFacts(command.ErrOrStderr(), verified, false, false)
+		},
+	}
+	source.flags(command)
 	return command
 }

@@ -39,3 +39,30 @@ func TestTrustShowRefusalClasses(t *testing.T) {
 		t.Fatalf("show malformed input: stdout %q, stderr %q, error %v", out, stderr, err)
 	}
 }
+
+func TestTrustVerifyRefusalClasses(t *testing.T) {
+	path, _ := trustVector(t)
+	out, stderr, err := runTrustCommand("trust", "verify", path)
+	if err == nil || out != "" || stderr != "no authority key: supply --authority or --config\n" {
+		t.Fatalf("verify missing authority: stdout %q, stderr %q, error %v", out, stderr, err)
+	}
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file[len(file)-1] ^= 1
+	if err := os.WriteFile(path, file, 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err = runTrustCommand("trust", "verify", "--authority", vectorAuthority, path)
+	if err == nil || out != "" || stderr != path+": signature does not verify under the key given\n" {
+		t.Fatalf("verify bad signature: stdout %q, stderr %q, error %v", out, stderr, err)
+	}
+	if err := os.WriteFile(path, []byte{0xff}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err = runTrustCommand("trust", "verify", "--authority", vectorAuthority, path)
+	if err == nil || out != "" || stderr != path+": malformed input: not a COSE_Sign1 under tag 18\n" {
+		t.Fatalf("verify malformed input: stdout %q, stderr %q, error %v", out, stderr, err)
+	}
+}

@@ -31,7 +31,8 @@ func runTrustCommand(args ...string) (string, string, error) {
 	return out.String(), stderr.String(), err
 }
 
-func TestTrustShowFacts(t *testing.T) {
+func trustVector(t *testing.T) (string, string) {
+	t.Helper()
 	file, err := hex.DecodeString(vectorFile)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +52,11 @@ func TestTrustShowFacts(t *testing.T) {
 	digest := sha256.Sum256(payload)
 	fingerprint := sha256.Sum256(der)
 	facts := fmt.Sprintf("height 1\nprevious none\ndigest %x\nalgorithm Ed25519 (-19)\nkey SHA256:%s\n", digest, base64.RawStdEncoding.EncodeToString(fingerprint[:]))
+	return path, facts
+}
+
+func TestTrustShowFacts(t *testing.T) {
+	path, facts := trustVector(t)
 	for _, test := range []struct {
 		mesh bool
 		want string
@@ -65,6 +71,42 @@ func TestTrustShowFacts(t *testing.T) {
 		out, stderr, err := runTrustCommand(append(args, path)...)
 		if err != nil || out != `{"nodes":[]}` || stderr != test.want {
 			t.Fatalf("show mesh=%v: stdout %q, stderr %q, error %v", test.mesh, out, stderr, err)
+		}
+	}
+}
+
+func TestTrustVerifyFacts(t *testing.T) {
+	path, facts := trustVector(t)
+	out, stderr, err := runTrustCommand("trust", "verify", "--authority", vectorAuthority, path)
+	if err != nil || out != "" || stderr != facts {
+		t.Fatalf("verify: stdout %q, stderr %q, error %v", out, stderr, err)
+	}
+	out, stderr, err = runTrustCommand("trust", "verify", "--authority", vectorAuthority, "--mesh", path)
+	if err == nil || out != "" || !strings.Contains(stderr, "unknown flag: --mesh") {
+		t.Fatalf("verify accepted mesh flag: stdout %q, stderr %q, error %v", out, stderr, err)
+	}
+}
+
+func TestTrustAuthoritySources(t *testing.T) {
+	path, facts := trustVector(t)
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	configuration := fmt.Sprintf("node = \"example/laptop\"\n[auth]\nkey = \"key.pem\"\ntrust = \"trust.cose\"\nauthority = [%q]\n[link]\nport = 13000\nendpoints = [{serial = \"0\", family = \"ip4\"}]\n[dial]\nall = true\n", vectorAuthority)
+	if err := os.WriteFile(configPath, []byte(configuration), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := runTrustCommand("trust", "verify", "--config", configPath, path)
+	if err != nil || out != "" || stderr != facts {
+		t.Fatalf("config-only verification: stdout %q, stderr %q, error %v", out, stderr, err)
+	}
+	other := "MCowBQYDK2VwAyEAZ+47jCA4V9l+XpsxLQFHj0OW8zzog0Iw09LCmjad3YY="
+	for _, verb := range []string{"show", "verify"} {
+		out, stderr, err := runTrustCommand("trust", verb, "--config", configPath, "--authority", other, path)
+		if err == nil || out != "" || !strings.Contains(stderr, "signature") {
+			t.Fatalf("%s accepted signer from replaced config: stdout %q, stderr %q, error %v", verb, out, stderr, err)
+		}
+		out, stderr, err = runTrustCommand("trust", verb, "--config", configPath, "--authority", "not base64", path)
+		if err == nil || out != "" || !strings.Contains(stderr, "invalid --authority key") {
+			t.Fatalf("%s accepted invalid explicit key: stdout %q, stderr %q, error %v", verb, out, stderr, err)
 		}
 	}
 }
