@@ -420,6 +420,52 @@ func TestSourcedInitialOccupancyRefusesForeignBeforeWrites(t *testing.T) {
 	}
 }
 
+func TestSourcedStartupReadsOwnershipBeforeAnyKernelWrite(t *testing.T) {
+	destination := schema.MustPrefix("2001:db8:80::/96")
+	table := Table{ID: 200, Proto: DefaultProtocol, Sourced: &Sourced{To: []schema.Prefix{destination}, ID: 201}}
+	route := Route{Destination: destination.Prefix, Throw: true}
+	for _, tc := range []struct {
+		name, refusal string
+		foreignRoute  bool
+		unreadRule    bool
+	}{
+		{name: "foreign mirror", refusal: "foreign routes", foreignRoute: true},
+		{name: "unread rule", refusal: "unexpected occupant", unreadRule: true},
+		{name: "exact occupants"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &sourcedPreflightReplies{fakeNetlink: &fakeNetlink{}}
+			plat := &netlinkPlatform{table: table, conn: conn}
+			view := plat.sourcedRouteView(table.Sourced.ID)
+			routeData := view.routeMessage(route, false)
+			if tc.foreignRoute {
+				routeData[5] = unix.RTPROT_STATIC
+			}
+			conn.routeReplies = []netlink.Message{{Kind: unix.RTM_NEWROUTE, Data: routeData}}
+			ruleData := plat.ruleMessage(sourcedStandingRules(table.Sourced.To, nil)[0])
+			if tc.unreadRule {
+				ruleData = netlink.PutAttr(ruleData, unix.FRA_IP_PROTO, []byte{unix.IPPROTO_UDP})
+			}
+			conn.ruleReplies = []netlink.Message{{Kind: unix.RTM_NEWRULE, Data: ruleData}}
+			err := preflightSourcedOn(conn, table, nil, "tun7")
+			if tc.refusal == "" && err != nil || tc.refusal != "" && (err == nil || !strings.Contains(err.Error(), tc.refusal)) {
+				t.Fatalf("preflight error %v, want %q", err, tc.refusal)
+			}
+			if len(conn.sent) < 3 || conn.sent[0].kind != unix.RTM_GETLINK ||
+				conn.sent[1].kind != unix.RTM_GETADDR || conn.sent[2].kind != unix.RTM_GETROUTE {
+				t.Fatalf("capacity and occupancy order: %+v", conn.sent)
+			}
+			for _, sent := range conn.sent {
+				switch sent.kind {
+				case unix.RTM_GETLINK, unix.RTM_GETADDR, unix.RTM_GETROUTE, unix.RTM_GETRULE:
+				default:
+					t.Fatalf("preconstruction preflight wrote kernel object %d", sent.kind)
+				}
+			}
+		})
+	}
+}
+
 func TestSourcedInitialOccupancyChecksEveryRuleShape(t *testing.T) {
 	destination := schema.MustPrefix("2001:db8:80::/96")
 	source := netip.MustParsePrefix("2001:db8:aa::/64")

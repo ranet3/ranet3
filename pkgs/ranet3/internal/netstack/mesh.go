@@ -231,6 +231,14 @@ func NewOnDevice(dev tun.Device) *Mesh {
 	return m
 }
 
+// IntendedTUNName resolves the device identity before NewNamed creates it.
+func IntendedTUNName(name string) string {
+	if name == "" {
+		return defaultTUNName
+	}
+	return name
+}
+
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
 // mtu is the device's MTU, zero taking DefaultMTU
@@ -240,9 +248,7 @@ func NewNamed(mtu int, name string, ownedOnly bool, events func(kind, peer strin
 	if mtu == 0 {
 		mtu = DefaultMTU
 	}
-	if name == "" {
-		name = defaultTUNName
-	}
+	name = IntendedTUNName(name)
 	// refused when the daemon starts, the file naming it having loaded on every platform
 	// wireguard-go would open utun5x as utun5 and turn a unit past 32 bits into another one
 	if utunNamesOnly && !isUTUNName(name) {

@@ -7,6 +7,6 @@ package kernel
 
 import "net/netip"
 
-func preflightSourcedCapacity(t Table, _ []netip.Prefix) error {
+func preflightSourcedStartup(t Table, _ []netip.Prefix, _ string) error {
 	return RefuseSourced(t)
 }

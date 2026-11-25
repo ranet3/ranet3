@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"net/netip"
 	"os"
 	"os/signal"
 	"runtime"
@@ -38,6 +39,7 @@ import (
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/version"
 )
 
@@ -197,6 +199,8 @@ func runDaemon(opts options) int {
 // stages holds the constructor of each part of the daemon that can refuse,
 // and the exit a second stop signal forces, each of which a test replaces
 type stages struct {
+	preflight func(kernel.Table, []netip.Prefix, string) error
+
 	load   func(path string) (*config.Config, error)
 	node   func(*config.Config, *events.Bus) (*client.Client, error)
 	border func(*egress.Border, egress.BorderRuntime) (*kernelexit.BorderFilter, error)
@@ -206,7 +210,8 @@ type stages struct {
 }
 
 var production = stages{
-	load: config.Load, node: client.New, border: kernelexit.NewBorderFilter, exit: newExit, kernel: kernel.New,
+	load: config.Load, preflight: kernel.PreflightSourcedStartup, node: client.New,
+	border: kernelexit.NewBorderFilter, exit: newExit, kernel: kernel.New,
 	force: func() { os.Exit(1) },
 }
 
@@ -319,11 +324,11 @@ func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 	if !waited || err != nil {
 		return err
 	}
-	// Capacity depends on the accepted file and currently up addresses, not
-	// the mesh's previous route snapshot. Refuse it before constructing the
-	// tun, the antispoof filter or an exit backend.
+	// Refuse capacity and foreign ownership before the node or border can
+	// create a managed kernel object. The reconciler checks both again after
+	// construction to catch changes between the two reads.
 	if table := d.cfg.ReconcilerTable(); table != nil && table.Sourced != nil {
-		if err := kernel.PreflightSourcedCapacity(*table, d.cfg.Routes().Announced()); err != nil {
+		if err := s.preflight(*table, d.cfg.Routes().Announced(), netstack.IntendedTUNName(d.cfg.Link.TUN)); err != nil {
 			return err
 		}
 	}

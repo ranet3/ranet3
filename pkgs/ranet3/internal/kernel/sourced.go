@@ -126,15 +126,13 @@ func (t Table) refuseSourcedCapacity(network func() NetworkState, announced []ne
 	return sourcedCapacityError(destinations, pairs)
 }
 
-// PreflightSourcedCapacity checks accepted addresses and currently up links
-// before a daemon constructs its tun or other managed networking objects.
-// New repeats the check against its live runtime immediately before opening
-// its platform, so a link appearing between these reads is also refused.
-func PreflightSourcedCapacity(t Table, announced []netip.Prefix) error {
+// PreflightSourcedStartup reads capacity and reserved ownership before the
+// daemon constructs the tun or any other managed kernel object.
+func PreflightSourcedStartup(t Table, announced []netip.Prefix, tun string) error {
 	if t.Sourced == nil {
 		return nil
 	}
-	return preflightSourcedCapacity(t, announced)
+	return preflightSourcedStartup(t.Normalized(), announced, tun)
 }
 
 func sourcedCapacityError(destinations, pairs int) error {

@@ -6,6 +6,8 @@
 package kernel
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 
@@ -15,15 +17,19 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// preflightSourcedCapacity needs only link and IPv6 address dumps. Reading
-// main routes or creating a tun here would move the capacity decision after
-// the first managed kernel write.
-func preflightSourcedCapacity(t Table, announced []netip.Prefix) error {
+// preflightSourcedStartup uses only read-only netlink requests before a
+// daemon creates managed kernel objects. New repeats occupancy after the tun
+// exists, so a writer intervening between the two checks is also refused.
+func preflightSourcedStartup(t Table, announced []netip.Prefix, tun string) error {
 	conn, err := dialNetlink()
 	if err != nil {
 		return fmt.Errorf("kernel: read sourced links before creating tun: %w", err)
 	}
 	defer conn.Close()
+	return preflightSourcedOn(conn, t, announced, tun)
+}
+
+func preflightSourcedOn(conn netlinkConn, t Table, announced []netip.Prefix, tun string) error {
 	links, err := conn.execute(unix.RTM_GETLINK, unix.NLM_F_DUMP, make([]byte, unix.SizeofIfInfomsg))
 	if err != nil {
 		return fmt.Errorf("kernel: dump sourced links before creating tun: %w", err)
@@ -35,7 +41,17 @@ func preflightSourcedCapacity(t Table, announced []netip.Prefix) error {
 		return fmt.Errorf("kernel: dump sourced addresses before creating tun: %w", err)
 	}
 	network := NetworkState{IPv6: NetworkFamily{Links: upAddresses(addresses, unix.AF_INET6, upLinks(links, 0))}}
-	return t.refuseSourcedCapacity(func() NetworkState { return network }, announced)
+	if err := t.refuseSourcedCapacity(func() NetworkState { return network }, announced); err != nil {
+		return err
+	}
+	var index uint32
+	if link, err := conn.link(0, tun); err == nil {
+		index = link.index
+	} else if !errors.Is(err, unix.ENODEV) {
+		return fmt.Errorf("kernel: read sourced tun %s before creating it: %w", tun, err)
+	}
+	probe := &netlinkPlatform{table: t, index: index, conn: conn}
+	return probe.preflightSourcedOccupancy(t, tun)
 }
 
 // sourcedRouteView uses the reconciler's socket and tun index, but never owns
@@ -55,7 +71,7 @@ func (p *netlinkPlatform) SourcedRoutes(id schema.TableID) (ours []Route, foreig
 			return nil, 0, readErr
 		}
 		for _, reply := range replies {
-			if route, ok := view.decodeRoute(reply); ok && route.Destination.Addr().Is6() {
+			if route, ok := view.decodeRoute(reply); ok && sourcedRouteShape(reply, route, id, p.index) {
 				ours = append(ours, route)
 			} else {
 				foreign++
@@ -63,6 +79,103 @@ func (p *netlinkPlatform) SourcedRoutes(id schema.TableID) (ours []Route, foreig
 		}
 	}
 	return ours, foreign, nil
+}
+
+// sourcedRouteShape accepts only the mirror's wire shape. The ordinary route
+// decoder intentionally has a broader ownership contract.
+func sourcedRouteShape(message netlink.Message, route Route, id schema.TableID, tun uint32) bool {
+	data := message.Data
+	if len(data) < unix.SizeofRtMsg || data[0] != unix.AF_INET6 ||
+		data[3] != 0 || data[6] != unix.RT_SCOPE_UNIVERSE ||
+		binary.NativeEndian.Uint32(data[8:12]) != 0 ||
+		!route.Destination.Addr().Is6() {
+		return false
+	}
+	table := uint8(unix.RT_TABLE_UNSPEC)
+	if id <= 255 {
+		table = uint8(id)
+	}
+	if data[4] != table || data[1] != uint8(route.Destination.Bits()) {
+		return false
+	}
+	sourceBits := uint8(0)
+	if route.Source.IsValid() {
+		sourceBits = uint8(route.Source.Bits())
+	}
+	if data[2] != sourceBits {
+		return false
+	}
+	seenTable, seenDst, seenSrc, seenOIF, seenMetric, seenCache, seenPref := false, false, false, false, false, false, false
+	for attrs := data[unix.SizeofRtMsg:]; len(attrs) > 0; {
+		if len(attrs) < unix.SizeofRtAttr {
+			return false
+		}
+		length := int(binary.NativeEndian.Uint16(attrs))
+		if length < unix.SizeofRtAttr || length > len(attrs) {
+			return false
+		}
+		value := attrs[unix.SizeofRtAttr:length]
+		switch binary.NativeEndian.Uint16(attrs[2:]) {
+		case unix.RTA_TABLE:
+			if seenTable || len(value) != 4 || binary.NativeEndian.Uint32(value) != uint32(id) {
+				return false
+			}
+			seenTable = true
+		case unix.RTA_DST:
+			address, ok := addressFromBytes(value)
+			if seenDst || !ok || route.Destination.Bits() == 0 || address != route.Destination.Addr() {
+				return false
+			}
+			seenDst = true
+		case unix.RTA_SRC:
+			address, ok := addressFromBytes(value)
+			if seenSrc || !ok || !route.Source.IsValid() || address != route.Source.Addr() {
+				return false
+			}
+			seenSrc = true
+		case unix.RTA_OIF:
+			if seenOIF || len(value) != 4 {
+				return false
+			}
+			oif := binary.NativeEndian.Uint32(value)
+			if route.Unreachable || route.Throw {
+				if oif != 1 { // Linux may report lo for a device-free IPv6 hold.
+					return false
+				}
+			} else if oif != tun {
+				return false
+			}
+			seenOIF = true
+		case unix.RTA_PRIORITY:
+			if seenMetric || len(value) != 4 || binary.NativeEndian.Uint32(value) != route.Metric {
+				return false
+			}
+			seenMetric = true
+		case unix.RTA_CACHEINFO:
+			if seenCache || len(value) != 32 || binary.NativeEndian.Uint32(value[8:12]) != 0 {
+				return false
+			}
+			seenCache = true
+		case unix.RTA_PREF:
+			if seenPref || len(value) != 1 || value[0] != 0 {
+				return false
+			}
+			seenPref = true
+		default:
+			return false
+		}
+		next := netlink.AttrAlign(length)
+		if next > len(attrs) {
+			if length != len(attrs) {
+				return false
+			}
+			break
+		}
+		attrs = attrs[next:]
+	}
+	return seenDst == (route.Destination.Bits() > 0) &&
+		seenSrc == route.Source.IsValid() &&
+		(route.Unreachable || route.Throw || seenOIF) && seenMetric
 }
 
 func (p *netlinkPlatform) AddSourcedRoute(id schema.TableID, route Route) error {
