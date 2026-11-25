@@ -6,6 +6,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -80,9 +81,34 @@ func downable(t *testing.T, dir string) (*Client, *switchRecord, *switchRecord) 
 		t.Fatal(err)
 	}
 	reconciler, translator := &switchRecord{flag: flagOf(c)}, &switchRecord{flag: flagOf(c)}
-	c.SetReconciler(Reconciler{Enable: reconciler.set})
+	c.SetReconciler(Reconciler{Enable: func(on bool) error { reconciler.set(on); return nil }})
 	c.SetExit(&fakeExit{enable: translator.set})
 	return c, reconciler, translator
+}
+
+func TestUpRestoresDownFlagWhenSourcedEnableFails(t *testing.T) {
+	c, _, _ := downable(t, t.TempDir())
+	if _, err := c.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("sourced refusal did not read back")
+	var calls []bool
+	c.SetReconciler(Reconciler{Enable: func(on bool) error {
+		calls = append(calls, on)
+		if on {
+			return failure
+		}
+		return nil
+	}})
+	calls = nil
+	result, err := c.Up(context.Background())
+	if !errors.Is(err, failure) || len(result.Acted) != 0 ||
+		c.downSince.Load() == nil || !slices.Equal(calls, []bool{true, false}) {
+		t.Fatalf("failed sourced up left the node active: result %v, error %v, down %v, toggles %v", result, err, c.downSince.Load(), calls)
+	}
+	if _, err := os.Stat(flagOf(c)); err != nil {
+		t.Fatalf("failed sourced up did not restore the persistent down flag: %v", err)
+	}
 }
 
 // heldSessions stands in for the sessions a node holds, each with its Babel neighbor

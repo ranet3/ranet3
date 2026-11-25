@@ -190,23 +190,24 @@ func TestReconcilerRunsAPassWhenTheNetworkChanges(t *testing.T) {
 	awaitPass(t, last, "the pass the network asked for", "network", func() bool { return fake.has(ordinary) })
 }
 
-// a change of links alone wakes a pass in mode 2, whose rules follow the links, and none in mode off, whose rules read none
-// a change of the default or the addresses wakes one in either mode
-func TestReconcilerWakesForLinksAloneInModeTwoOnly(t *testing.T) {
+// A link-only change wakes sourced admission and mode 2, but leaves no-key
+// mode off idle. A path move still wakes each mode
+func TestReconcilerWakesForLinksWhenPolicyDependsOnThem(t *testing.T) {
 	bridged := NetworkState{IPv4: NetworkFamily{Links: []Link{{Name: "docker0"}}}}
 	moved := NetworkState{IPv4: NetworkFamily{Default: DefaultRoute{Interface: "eth0"}}}
 	for _, c := range []struct {
 		what  string
-		mode  *ExitMode
+		table Table
 		after NetworkState
 		wakes bool
 	}{
-		{"a link alone in mode off", nil, bridged, false},
-		{"a link alone in mode 2", &ExitMode{}, bridged, true},
-		{"a default in mode off", nil, moved, true},
-		{"a default in mode 2", &ExitMode{}, moved, true},
+		{"a link alone in mode off", Table{}, bridged, false},
+		{"a link alone with sourced", Table{Sourced: &Sourced{To: []schema.Prefix{schema.MustPrefix("2001:db8:80::/48")}}}, bridged, true},
+		{"a link alone in mode 2", Table{}.WithMode(&ExitMode{}), bridged, true},
+		{"a default in mode off", Table{}, moved, true},
+		{"a default in mode 2", Table{}.WithMode(&ExitMode{}), moved, true},
 	} {
-		reconciler, _, _ := harness(t, Table{}.WithMode(c.mode), Runtime{})
+		reconciler, _, _ := harness(t, c.table, Runtime{})
 		reconciler.NetworkChanged(NetworkChange{After: c.after})
 		if woke := len(reconciler.network) == 1; woke != c.wakes {
 			t.Errorf("%s woke a pass %v, want %v", c.what, woke, c.wakes)

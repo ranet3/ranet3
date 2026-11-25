@@ -15,6 +15,9 @@ const (
 	// DefaultReconcileInterval bounds how long drift caused by anything else
 	// on the box survives when no notification announces it.
 	DefaultReconcileInterval = 30 * time.Second
+	// sourcedPairLimit bounds named destinations and destination-source pairs
+	// accepted before the first write of sourced policy
+	sourcedPairLimit = 16
 
 	// minRetryInterval is the first delay of a RetryTimer's backoff, and a
 	// sweep below it is every delay.

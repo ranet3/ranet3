@@ -149,6 +149,9 @@ type Table struct {
 	// the pass resolves each SID from as the dataplane does, invalid outside
 	// mode 3
 	pathSource netip.Addr
+	// ownAnnounced is the accepted file's unsourced own announcements, less
+	// unroutable and egress-advertised prefixes, for sourced admission.
+	ownAnnounced []netip.Prefix
 }
 
 // WithMode is t running cap.exit's mode, mode off where m is nil
@@ -679,6 +682,14 @@ type Reconciler struct {
 	// derived is the rules the last rule pass derived, as another goroutine
 	// reads them, and nil while the reconciler holds none
 	derived atomic.Pointer[[]Rule]
+	// sourcedSources holds the networks whose standing rules read back in the
+	// last pass. A later over-cap link adds only refusal, never peer admission.
+	sourcedSources map[netip.Prefix]struct{}
+	sourcedLimited bool
+	// The published sourced view is immutable. No-key installations allocate
+	// neither a view nor a change channel.
+	sourcedStatus  atomic.Pointer[SourcedStatus]
+	sourcedChanged atomic.Pointer[chan struct{}]
 
 	src  RouteSource
 	plat platform
@@ -788,18 +799,24 @@ type Reconciler struct {
 	// when the reconciler starts again, which no write of a pass tells, since
 	// a stopped pass that puts back another writer's delete writes too.
 	enabled atomic.Bool
-	wake    chan struct{}
+	wake    chan chan error
 	stopped bool
 	// dropHold is set by the operator's stop (DropHold) and cleared by a start,
 	// and touched from outside the reconcile goroutine
 	dropHold atomic.Bool
 	// next is the capability SetTable accepted last, which reload wakes the loop to take
-	next   atomic.Pointer[accepted]
-	reload chan struct{}
+	next atomic.Pointer[accepted]
+	// activeReload is the synchronous sourced reload awaiting this loop's pass.
+	activeReload   chan error
+	reloadPrevious *accepted
+	reload         chan struct{}
 	// network carries NetworkChanged to the loop, and gained carries EndpointsChanged
 	network, gained chan struct{}
 	// firstPass closes once the loop's first pass or withdrawal has ended
 	firstPass chan struct{}
+	finished  chan struct{}
+	// firstPassErr is published before firstPass closes for synchronous starts.
+	firstPassErr atomic.Pointer[error]
 	// inForce is table as another goroutine reads it, stored whole when the loop takes a capability
 	inForce atomic.Pointer[Table]
 	// reloaded says the pass under way follows a capability the loop took, and belongs to that goroutine
@@ -968,6 +985,9 @@ func newOn(t Table, rt Runtime, src RouteSource, open func(Table, Runtime) (plat
 	if err != nil {
 		return nil, err
 	}
+	if err := t.refuseSourcedCapacity(rt.Network, rt.Announced); err != nil {
+		return nil, err
+	}
 	plat, err := open(t, rt)
 	if err != nil {
 		return nil, err
@@ -1052,11 +1072,16 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 		owned:     make(map[netip.Prefix]bool),
 		liveness:  captureLiveness{grace: t.CaptureGrace.Duration()},
 		now:       time.Now,
-		wake:      make(chan struct{}, 1),
+		wake:      make(chan chan error, 1),
 		reload:    make(chan struct{}, 1),
 		network:   make(chan struct{}, 1),
 		gained:    make(chan struct{}, 1),
 		firstPass: make(chan struct{}),
+		finished:  make(chan struct{}),
+	}
+	if t.Sourced != nil {
+		changed := make(chan struct{}, 1)
+		r.sourcedChanged.Store(&changed)
 	}
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
@@ -1112,30 +1137,58 @@ func (r *Reconciler) DerivedRules() []DumpedRule {
 // holding routes nobody maintains is the state a stop exists to avoid, so the
 // withdrawal is part of it rather than a separate ask.
 //
-// The withdrawal runs on the reconcile goroutine rather than here, because
-// every field it touches belongs to that goroutine alone. This records the
-// request and wakes the loop, so a caller returns before the kernel has
-// caught up and reads Stats to see that it has.
-func (r *Reconciler) SetEnabled(on bool) {
-	if on {
-		r.dropHold.Store(false)
+// The withdrawal runs on the reconcile goroutine, because every field it
+// touches belongs to that goroutine alone. A sourced enable waits for the pass
+// that accepted its wake and returns its actual kernel error. Other toggles
+// retain the asynchronous ordinary behavior.
+func (r *Reconciler) SetEnabled(on bool) error {
+	if !on || r.Table().Sourced == nil {
+		if on {
+			r.dropHold.Store(false)
+		}
+		r.enabled.Store(on)
+		select {
+		case r.wake <- nil:
+		default:
+		}
+		return nil
 	}
-	r.enabled.Store(on)
 	select {
-	case r.wake <- struct{}{}:
+	case <-r.firstPass:
 	default:
+		return fmt.Errorf("kernel: sourced reconciler has not finished starting")
+	}
+	done := make(chan error, 1)
+	select {
+	case r.wake <- done:
+	case <-r.finished:
+		return ErrStopping
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-r.finished:
+		return ErrStopping
 	}
 }
 
 // DropHold has the stop that follows it, the operator's, withdraw the down set
-// with the rest, and every stop after it until SetEnabled(true). A reconciler
-// already stopped withdraws the down set at its next pass, which the
-// SetEnabled(false) that follows wakes.
+// with the rest, and every stop after it until SetEnabled(true) succeeds. A
+// reconciler already stopped withdraws the down set at its next pass, which
+// the SetEnabled(false) that follows wakes.
 func (r *Reconciler) DropHold() { r.dropHold.Store(true) }
 
 // FirstPass is closed once Run's first pass has ended, or its first
 // withdrawal for a reconciler started disabled, whether or not it failed
 func (r *Reconciler) FirstPass() <-chan struct{} { return r.firstPass }
+
+// FirstPassError returns the first sourced pass failure after FirstPass closes.
+func (r *Reconciler) FirstPassError() error {
+	if err := r.firstPassErr.Load(); err != nil {
+		return *err
+	}
+	return nil
+}
 
 // Enabled reports whether this reconciler is writing to the kernel.
 func (r *Reconciler) Enabled() bool { return r.enabled.Load() }
@@ -1146,6 +1199,7 @@ type accepted struct {
 	overlay   []schema.Prefix
 	announced []netip.Prefix
 	addresses []netip.Prefix
+	done      chan error
 }
 
 // SetTable hands the loop the capability a reload read, with the overlay and the prefixes cap.route announces, for a pass at once
@@ -1166,15 +1220,43 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	if err != nil {
 		return err
 	}
+	if err := t.refuseSourcedCapacity(r.rt.Network, announced); err != nil {
+		return err
+	}
 	r.ending.Lock()
-	defer r.ending.Unlock()
 	if r.ended {
+		r.ending.Unlock()
 		return ErrStopping
 	}
-	r.next.Store(&accepted{table: t, overlay: overlay, announced: announced, addresses: addresses})
+	var done chan error
+	if t.Sourced != nil || r.Table().Sourced != nil {
+		select {
+		case <-r.firstPass:
+			done = make(chan error, 1)
+		default:
+		}
+	}
+	previous := r.next.Swap(&accepted{table: t, overlay: overlay, announced: announced, addresses: addresses, done: done})
+	if previous != nil && previous.done != nil {
+		previous.done <- fmt.Errorf("kernel: a newer cap.table superseded this reload")
+	}
 	select {
 	case r.reload <- struct{}{}:
 	default:
+	}
+	r.ending.Unlock()
+	if done != nil {
+		select {
+		case err := <-done:
+			return err
+		case <-r.finished:
+			select {
+			case err := <-done:
+				return err
+			default:
+				return ErrStopping
+			}
+		}
 	}
 	return nil
 }
@@ -1184,9 +1266,10 @@ var ErrStopping = errors.New("kernel: the reconciler is stopping, so it takes no
 
 // NetworkChanged wakes the loop for a pass over the host's network as Runtime.Network reads it now
 // the watch has already let the change settle, so the pass runs at once
-// mode off derives nothing from the links, so a change of links alone wakes nothing there
+// links alone affect sourced admission and cap.exit, not mode off without sourced
 func (r *Reconciler) NetworkChanged(change NetworkChange) {
-	if r.Table().Mode() == nil && !slices.ContainsFunc(change.Families(), FamilyChange.PathMoved) {
+	table := r.Table()
+	if table.Mode() == nil && table.Sourced == nil && !slices.ContainsFunc(change.Families(), FamilyChange.PathMoved) {
 		return
 	}
 	select {
@@ -1213,6 +1296,49 @@ func (r *Reconciler) adopt() bool {
 	if next == nil {
 		return false
 	}
+	var preflightErr error
+	switch {
+	case next.table.Sourced != nil:
+		preflight, ok := r.plat.(interface {
+			preflightSourcedOccupancy(Table, string) error
+		})
+		if !ok {
+			preflightErr = fmt.Errorf("sourced occupancy preflight is unavailable on this platform")
+		} else {
+			preflightErr = preflight.preflightSourcedOccupancy(next.table, r.rt.Interface)
+		}
+	case r.table.Sourced != nil && next.table.Sourced == nil:
+		remove, ok := r.plat.(interface{ removeSourcedKey(*Reconciler) error })
+		if !ok {
+			preflightErr = fmt.Errorf("sourced key removal is unavailable on this platform")
+		} else {
+			preflightErr = remove.removeSourcedKey(r)
+		}
+	}
+	if preflightErr != nil {
+		if next.done != nil {
+			next.done <- preflightErr
+		} else {
+			slog.Warn("kernel refused a reloaded cap.table before adoption", "err", preflightErr)
+		}
+		return false
+	}
+	if next.table.Sourced != nil && r.sourcedChanged.Load() == nil {
+		changed := make(chan struct{}, 1)
+		r.sourcedChanged.Store(&changed)
+	}
+	if next.table.Sourced == nil && r.table.Sourced != nil {
+		r.sourcedStatus.Store(nil)
+		if changed := r.sourcedChanged.Load(); changed != nil {
+			select {
+			case *changed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	if next.done != nil {
+		r.reloadPrevious = &accepted{table: r.table, overlay: r.rt.Overlay, announced: r.rt.Announced, addresses: r.addresses}
+	}
 	r.table, r.addresses, r.rt.Overlay, r.rt.Announced = next.table, next.addresses, next.overlay, next.announced
 	if r.rt.Selection != nil {
 		r.rt.Selection.holdOverlay(r.rt.Overlay)
@@ -1220,9 +1346,25 @@ func (r *Reconciler) adopt() bool {
 	r.liveness.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
 	r.inForce.Store(&next.table)
+	r.activeReload = next.done
 	r.reloaded = true
 	slog.Info("kernel reconciler took a reloaded cap.table", "where", r.Where())
 	return true
+}
+
+func (r *Reconciler) restoreReload() {
+	previous := r.reloadPrevious
+	if previous == nil {
+		return
+	}
+	r.table, r.addresses, r.rt.Overlay, r.rt.Announced = previous.table, previous.addresses, previous.overlay, previous.announced
+	if r.rt.Selection != nil {
+		r.rt.Selection.holdOverlay(r.rt.Overlay)
+	}
+	r.liveness.grace = previous.table.CaptureGrace.Duration()
+	r.plat.retable(previous.table)
+	r.inForce.Store(&previous.table)
+	r.reloadPrevious = nil
 }
 
 // Run reconciles until ctx is canceled, then withdraws everything this
@@ -1260,7 +1402,10 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.audit()
 
 	r.trigger = "start"
+	var replied chan error
+	var keptHold bool
 	for ctx.Err() == nil {
+		var firstErr error
 		switch {
 		case !r.enabled.Load():
 			// Stopped over the control socket. Every pass converges as a
@@ -1274,6 +1419,10 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			started := time.Now()
 			r.routePass = Stats{}
 			err := r.withdraw(errStopped)
+			if err == nil {
+				err = r.observeSourced(nil)
+			}
+			firstErr = err
 			r.recordPass(err, time.Since(started))
 			grace.Stop()
 			if err != nil {
@@ -1286,14 +1435,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				r.stopped = true
 			}
 		default:
-			if r.stopped {
-				r.stopped = false
-				slog.Info("kernel reconciler started again", "where", r.Where())
-			}
 			if err := r.reconcile(); err != nil {
+				firstErr = err
 				slog.Warn("kernel reconcile failed, retrying", "err", err, "retry_in", retry.Failed(r.table.Reconcile.Duration()))
 			} else {
 				retry.Passed()
+				if r.stopped {
+					r.stopped = false
+					slog.Info("kernel reconciler started again", "where", r.Where())
+				}
 			}
 
 			grace.Stop()
@@ -1304,7 +1454,27 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		select {
 		case <-r.firstPass:
 		default:
+			if firstErr != nil && r.table.Sourced != nil {
+				r.firstPassErr.Store(&firstErr)
+			}
 			close(r.firstPass)
+		}
+		if replied != nil {
+			if firstErr != nil {
+				r.dropHold.Store(keptHold)
+				r.enabled.Store(false)
+			}
+			replied <- firstErr
+			replied = nil
+		}
+		if r.activeReload != nil {
+			if firstErr != nil {
+				r.restoreReload()
+			} else {
+				r.reloadPrevious = nil
+			}
+			r.activeReload <- firstErr
+			r.activeReload = nil
 		}
 
 		select {
@@ -1315,10 +1485,16 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			r.trigger = "retry"
 		case <-grace.C:
 			r.trigger = "grace"
-		case <-r.wake:
+		case replied = <-r.wake:
 			// SetEnabled wakes the loop whichever way it went
 			r.trigger = "disable"
-			if r.enabled.Load() {
+			if replied != nil {
+				// A disabled pass cannot observe an enable's hold change
+				// before this loop has finished its withdrawal.
+				keptHold = r.dropHold.Swap(false)
+				r.enabled.Store(true)
+				r.trigger = "enable"
+			} else if r.enabled.Load() {
 				r.trigger = "enable"
 			}
 		case <-r.reload:
@@ -1352,7 +1528,18 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.ending.Lock()
 	r.ended = true
 	r.ending.Unlock()
-	r.adopt()
+	close(r.finished)
+	if r.activeReload != nil {
+		r.restoreReload()
+		r.activeReload <- ErrStopping
+		r.activeReload = nil
+	}
+	if pending := r.next.Load(); pending != nil && pending.done != nil {
+		r.next.Store(nil)
+		pending.done <- ErrStopping
+	} else {
+		r.adopt()
+	}
 	cause := context.Cause(ctx)
 	return errors.Join(r.withdraw(cause), r.mendDownSet(cause), r.plat.Close())
 }
@@ -1390,6 +1577,20 @@ func (r *Reconciler) settle(ctx context.Context, changed, notify <-chan struct{}
 // with a clean route count and no error at all.
 func (r *Reconciler) reconcile() error {
 	started := time.Now()
+	if r.table.Sourced != nil && r.trigger == "enable" {
+		preflight, ok := r.plat.(interface {
+			preflightSourcedOccupancy(Table, string) error
+		})
+		if !ok {
+			err := fmt.Errorf("kernel: sourced occupancy preflight is unavailable on %s", r.Where())
+			r.recordPass(err, time.Since(started))
+			return err
+		}
+		if err := preflight.preflightSourcedOccupancy(r.table, r.rt.Interface); err != nil {
+			r.recordPass(err, time.Since(started))
+			return err
+		}
+	}
 	// Sampled once for the whole pass, before any of the steps: a route
 	// installed under one answer and withdrawn under another would leave the
 	// kernel holding a key the diff never names again.
@@ -1397,6 +1598,20 @@ func (r *Reconciler) reconcile() error {
 	snapshot := r.src.Snapshot()
 	// the routes and the rules carve what one reading of the network gives
 	network := r.readNetwork()
+	if r.table.Sourced != nil {
+		stand, ok := r.plat.(interface {
+			standSourced(*Reconciler, passNetwork) error
+		})
+		if !ok {
+			err := fmt.Errorf("kernel: sourced protection is unavailable on %s", r.Where())
+			r.recordPass(err, time.Since(started))
+			return err
+		}
+		if err := stand.standSourced(r, network); err != nil {
+			r.recordPass(err, time.Since(started))
+			return err
+		}
+	}
 	// ahead of the address and route writes, and whether the address listing fails or not
 	rules := r.enterRules(network)
 	// under fallback = "none" a pass that cannot list the rules puts the refusing ones in all the same, ahead of those writes
@@ -1414,6 +1629,20 @@ func (r *Reconciler) reconcile() error {
 		own = r.ownPrefixes(snapshot)
 	}
 	desired := r.desired(snapshot, network)
+	if r.table.Sourced != nil {
+		retire, ok := r.plat.(interface {
+			retireSourced(*Reconciler, []Route, bool) error
+		})
+		if !ok {
+			err := fmt.Errorf("kernel: sourced admission withdrawal is unavailable on %s", r.Where())
+			r.recordPass(err, time.Since(started))
+			return err
+		}
+		if err := retire.retireSourced(r, desired, rules != nil && (rules.staging || slices.ContainsFunc(rules.rules, isDownRule))); err != nil {
+			r.recordPass(err, time.Since(started))
+			return err
+		}
+	}
 	// a pass that cannot list the tun keeps the last listing's, as the cover's families stand
 	if listed {
 		r.bare, r.tun = bareFamilies(held), held
@@ -1451,11 +1680,55 @@ func (r *Reconciler) reconcile() error {
 	}
 	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
 	err := errors.Join(addressErr, routesErr, r.applyRules(rules, own, exit, judged), fallbackErr)
+	if err == nil && r.table.Sourced != nil {
+		mirror, ok := r.plat.(interface {
+			mirrorSourced(*Reconciler, []Route) error
+			armSourced(*Reconciler, []Route) error
+			releaseSourcedGuards(*Reconciler) error
+			retireSourcedStanding(*Reconciler) error
+		})
+		if !ok {
+			err = fmt.Errorf("kernel: sourced mirror is unavailable on %s", r.Where())
+		} else {
+			err = mirror.mirrorSourced(r, desired)
+			if err == nil {
+				err = mirror.armSourced(r, desired)
+			}
+			if err == nil {
+				err = mirror.releaseSourcedGuards(r)
+			}
+			if err == nil {
+				err = mirror.retireSourcedStanding(r)
+			}
+		}
+	}
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
 	}
+	if err == nil {
+		err = r.observeSourced(desired)
+	}
 	r.recordPass(err, time.Since(started))
+	return err
+}
+
+// observeSourced publishes a read-back answer, or lets the failed pass publish
+// an explicit unknown. Platforms without sourced policy never take this path.
+func (r *Reconciler) observeSourced(desired []Route) error {
+	if r.table.Sourced == nil {
+		return nil
+	}
+	observer, ok := r.plat.(interface {
+		sourcedObserved(*Reconciler, []Route) (SourcedStatus, error)
+	})
+	if !ok {
+		return fmt.Errorf("kernel: sourced observation is unavailable on %s", r.Where())
+	}
+	status, err := observer.sourcedObserved(r, desired)
+	if err == nil {
+		r.publishSourced(status)
+	}
 	return err
 }
 
@@ -1493,6 +1766,7 @@ func (r *Reconciler) captureDeadline() (time.Time, bool) {
 // could count anything still records the attempt, so a stale PassAt cannot
 // read as a reconciler that is keeping up.
 func (r *Reconciler) recordPass(err error, took time.Duration) {
+	r.sourcedFailure(err)
 	stats := r.routePass
 	stats.At, stats.Lookups, stats.Exit = time.Now(), r.lookups, r.exitStatus
 	if err != nil {
@@ -2352,9 +2626,26 @@ var errStopped = errors.New("stopped over the control socket")
 // go as asked keeps its routes, and the error says so.
 // The rules go first, and the routes after them.
 func (r *Reconciler) withdraw(cause error) error {
+	var sourcedErr error
+	if r.table.Sourced != nil {
+		withdraw, ok := r.plat.(interface {
+			withdrawSourcedAdmission(*Reconciler) (bool, error)
+		})
+		if !ok {
+			return fmt.Errorf("sourced withdrawal is unavailable on this platform")
+		}
+		var safe bool
+		safe, sourcedErr = withdraw.withdrawSourcedAdmission(r)
+		if !safe {
+			return sourcedErr
+		}
+	}
 	r.report(nil)
 	r.reportExit(nil)
 	kept, rules, added, errs := r.withdrawRules(cause)
+	if sourcedErr != nil {
+		errs = append(errs, sourcedErr)
+	}
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
 		if kept[family] {
 			errs = append(errs, fmt.Errorf("left the %s routes and every %s rule not deleted in place", family, family))
@@ -2430,6 +2721,14 @@ func (r *Reconciler) withdraw(cause error) error {
 				r.fallbackDropped, r.fallbackBytes = 0, 0
 			}
 			r.reportFallbackState(nil)
+		}
+	}
+	if r.table.Sourced != nil && r.dropHold.Load() && len(errs) == 0 {
+		clear, ok := r.plat.(interface{ clearSourcedStanding() error })
+		if !ok {
+			errs = append(errs, fmt.Errorf("sourced standing withdrawal is unavailable on this platform"))
+		} else if err := clear.clearSourcedStanding(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	// Every count is of something that left, so a line reporting nothing

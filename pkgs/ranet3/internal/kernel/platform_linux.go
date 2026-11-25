@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 
@@ -38,6 +39,13 @@ type netlinkConn interface {
 // enforces the ownership marker on the way back in, so a route without the
 // reconciler's protocol, table and interface never reaches the diff.
 type netlinkPlatform struct {
+	// sourced is the immutable accepted key a notification may inspect while a
+	// reload changes the table on the reconcile goroutine.
+	sourced atomic.Pointer[Sourced]
+	// The initial pair limit is fixed at admission. Later links add refusal
+	// without withdrawing already admitted pairs.
+	sourcedStarted bool
+
 	table   Table
 	rt      Runtime
 	index   uint32
@@ -77,7 +85,7 @@ func (p *netlinkPlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
 // RefuseExitMode is nil here, where the reconciler's policy rules carry cap.exit
 func RefuseExitMode(ExitMode) error { return nil }
 
-// RefuseSourced permits the Linux key without installing rules or routes.
+// RefuseSourced permits the Linux key. Run installs its rules and mirror.
 func RefuseSourced(Table) error { return nil }
 
 // RefuseFallback is nil here, where the kill switch's chains carry
@@ -100,16 +108,25 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: look up interface %s: %w", rt.Interface, err)
 	}
+	if t.Sourced != nil {
+		probe := &netlinkPlatform{table: t, index: tun.index, conn: conn}
+		if err := probe.preflightSourcedOccupancy(t, rt.Interface); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
 	if err := promoteSecondaries(conn, tun.index); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: promote secondary addresses on %s: %w", rt.Interface, err)
 	}
-	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto, tun.index, conn.socket.Pid())
+	p := &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn}
+	p.sourced.Store(t.Sourced)
+	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto, tun.index, conn.socket.Pid(), &p.sourced)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	p := &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn, monitor: monitor}
+	p.monitor = monitor
 	// opened on this thread, so the table goes in the namespace the rules go
 	// in, and a kernel refusing it is answered at the first pass that asks
 	// for the table, which opens it again and reports the error
@@ -297,7 +314,10 @@ func (p *netlinkPlatform) where(t Table) string {
 	return fmt.Sprintf("table %d protocol %d", uint32(t.ID), t.Proto)
 }
 
-func (p *netlinkPlatform) retable(t Table) { p.table = t }
+func (p *netlinkPlatform) retable(t Table) {
+	p.table = t
+	p.sourced.Store(t.Sourced)
+}
 
 func (p *netlinkPlatform) AddRoute(route Route) error {
 	// EXCL rather than REPLACE. A replace takes over whatever sits first at the
@@ -461,8 +481,8 @@ type routeMonitor struct {
 	done    chan struct{}
 }
 
-func newRouteMonitor(table uint32, proto uint8, tun, ownPort uint32) (*routeMonitor, error) {
-	return openMonitor("rtnetlink-monitor", reconcilerGroups, reconcilerWakes(table, proto, tun, ownPort))
+func newRouteMonitor(table uint32, proto uint8, tun, ownPort uint32, sourced *atomic.Pointer[Sourced]) (*routeMonitor, error) {
+	return openMonitor("rtnetlink-monitor", reconcilerGroups, reconcilerWakes(table, proto, tun, ownPort, sourced))
 }
 
 // reconcilerGroups is the notification groups the reconciler's monitor joins
@@ -503,20 +523,40 @@ func (m *routeMonitor) run() {
 	})
 }
 
-// reconcilerWakes takes a notification touching what the reconciler owns
-// a route is woken on only where another socket wrote it, since the ack of each write tells the pass that sent it how it went
-// (rtmsg_fib in fib_semantics.c, inet6_rt_notify in route.c)
-// a rule is woken on only when it goes, since the pass that follows puts it back, and only where another socket deleted it, since
-// the ack of the pass's own delete tells it how it went and a pass that takes back the same rules at every pass would otherwise run
-// again at each settle, ahead of the retry's backoff (notify_rule_change in fib_rules.c carries the requester's port)
-// an address is woken on only where it is the tun's, whoever wrote it, since the rules of modes 2 and 3 follow the tun's overlay addresses
-func reconcilerWakes(table uint32, proto uint8, tun, ownPort uint32) func(netlink.Message) bool {
+// reconcilerWakes ignores writes from this socket: their acknowledgements
+// already tell the pass what happened. With a sourced key, another writer's
+// table-201, intersecting main route and reserved-priority rule changes wake
+// the pass. Without one the ordinary table, deleted own rules and tun address
+// notifications retain their existing wake behavior.
+func reconcilerWakes(table uint32, proto uint8, tun, ownPort uint32, sourced *atomic.Pointer[Sourced]) func(netlink.Message) bool {
 	return func(message netlink.Message) bool {
 		switch message.Kind {
 		case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
-			return notificationTable(message) == table && message.Pid != ownPort
-		case unix.RTM_DELRULE:
-			return ruleProtocol(message) == proto && message.Pid != ownPort
+			if message.Pid == ownPort {
+				return false
+			}
+			id := notificationTable(message)
+			if id == table {
+				return true
+			}
+			if sourced == nil {
+				return false
+			}
+			if key := sourced.Load(); key != nil {
+				return id == uint32(key.ID) || id == unix.RT_TABLE_MAIN && sourcedMainNotification(message, key.To)
+			}
+		case unix.RTM_NEWRULE, unix.RTM_DELRULE:
+			if message.Pid == ownPort {
+				return false
+			}
+			if message.Kind == unix.RTM_DELRULE && ruleProtocol(message) == proto {
+				return true
+			}
+			if sourced != nil && sourced.Load() != nil {
+				if rule, ok := decodeDumpedRule(message); ok && rule.Family == FamilyIPv6 && sourcedPriority(rule.Priority) {
+					return true
+				}
+			}
 		case unix.RTM_NEWADDR, unix.RTM_DELADDR:
 			return len(message.Data) >= unix.SizeofIfAddrmsg && binary.NativeEndian.Uint32(message.Data[4:]) == tun
 		}

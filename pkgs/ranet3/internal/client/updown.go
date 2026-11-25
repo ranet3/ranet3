@@ -67,17 +67,20 @@ func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
 	c.syncStateDir()
 	c.downSince.Store(&since)
 	c.runningMu.Lock()
-	c.applyInstalledLocked()
+	applyErr := c.applyInstalledLocked()
 	c.runningMu.Unlock()
 	closed := c.leave()
 	c.noteMove(true, control.CauseRequest, since, len(closed))
+	if applyErr != nil {
+		return control.Result{}, fmt.Errorf("control: this node is down but its reconciler did not finish stopping: %w", applyErr)
+	}
 	slog.Info(fmt.Sprintf("control: this node is down, %d session(s) closed", len(closed)))
 	return control.Result{Acted: closed,
 		Detail: fmt.Sprintf("This node is off the mesh with %d session(s) closed, and it stays off through a restart until ranet3 up", len(closed))}, nil
 }
 
-// Up removes the flag and puts the node back on the mesh, a subsystem somebody disabled staying disabled
-// it dials at once, and the kill switch follows on the reconciler's next pass, which up wakes
+// Up removes the flag and puts the node back on the mesh, a subsystem somebody disabled staying disabled.
+// A sourced reconciler completes admission before the node starts dialing.
 func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	defer func() { c.noteVerb(ctx, "up", "", control.Result{}, err) }()
 	if c.stateDir == "" {
@@ -88,7 +91,8 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	if err := c.refuseWhileStopping("go up"); err != nil {
 		return control.Result{}, err
 	}
-	if c.downSince.Load() == nil {
+	since := c.downSince.Load()
+	if since == nil {
 		return control.Result{Detail: "This node was already up"}, nil
 	}
 	if err := os.Remove(filepath.Join(c.stateDir, downFlag)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -99,8 +103,18 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	c.sessions.open()
 	c.downSince.Store(nil)
 	c.runningMu.Lock()
-	c.applyInstalledLocked()
+	applyErr := c.applyInstalledLocked()
 	c.runningMu.Unlock()
+	if applyErr != nil {
+		c.downSince.Store(since)
+		c.runningMu.Lock()
+		stopErr := c.applyInstalledLocked()
+		c.runningMu.Unlock()
+		c.leave()
+		flagErr := writeDownFlag(c.stateDir, *since)
+		c.syncStateDir()
+		return control.Result{}, errors.Join(fmt.Errorf("control: sourced protection failed while going up: %w", applyErr), stopErr, flagErr)
+	}
 	c.syncMesh()
 	c.noteMove(false, control.CauseRequest, time.Time{}, 0)
 	slog.Info("control: this node is back on the mesh")
@@ -112,14 +126,17 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 // an up node holds what its file and the stopped set say
 // the filter stays, since a down node's kernel still forwards and its services still trust mesh sources
 // c.runningMu is held
-func (c *Client) applyInstalledLocked() {
+func (c *Client) applyInstalledLocked() error {
 	up := c.downSince.Load() == nil
 	if set := c.reconcilerNow().Enable; set != nil {
-		set(up && c.running[control.SubsystemReconciler])
+		if err := set(up && c.running[control.SubsystemReconciler]); err != nil {
+			return err
+		}
 	}
 	if exit := c.exit.Load(); exit != nil {
 		(*exit).SetEnabled(up)
 	}
+	return nil
 }
 
 // refuseWhileDown is the answer a verb that needs the mesh gets while the node is off it, and nil while it is on it

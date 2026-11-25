@@ -46,6 +46,7 @@ func (c *nlConn) execute(kind, flags uint16, body []byte) ([]netlink.Message, er
 type linkInfo struct {
 	index uint32
 	name  string
+	flags uint32
 }
 
 // link asks about one device by index, or by name when index is 0, with a keyed RTM_GETLINK rather than a dump
@@ -71,7 +72,10 @@ func (c *nlConn) link(index uint32, name string) (linkInfo, error) {
 // decodeLink reads one RTM_NEWLINK, a lookup's reply or a dump's entry alike
 // the caller has checked that it holds a whole ifinfomsg
 func decodeLink(reply netlink.Message) linkInfo {
-	link := linkInfo{index: binary.NativeEndian.Uint32(reply.Data[4:])}
+	link := linkInfo{
+		index: binary.NativeEndian.Uint32(reply.Data[4:]),
+		flags: binary.NativeEndian.Uint32(reply.Data[8:]),
+	}
 	for kind, value := range reply.Attributes(unix.SizeofIfInfomsg) {
 		if kind == unix.IFLA_IFNAME {
 			link.name = unix.ByteSliceToString(value)

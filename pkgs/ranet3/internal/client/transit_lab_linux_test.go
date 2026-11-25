@@ -7,6 +7,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -232,6 +234,310 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 	})
 
 	labForwardedNothing(t, b)
+}
+
+// An office source outside the overlay reaches a different ULA subnet only
+// through the sourced mirror and an eligible session. Another supported source
+// with no such peer sees the terminal refusal, not the office or uplink wire.
+func TestSourcedOfficePacketUsesInstalledMirrorAndRefusesOtherSource(t *testing.T) {
+	office := netip.MustParsePrefix("fd5e:db8:10:1::/64")
+	officeHost := netip.MustParsePrefix("fd5e:db8:10:1::1/64")
+	uplinkHost := netip.MustParsePrefix("2001:db8:ff::1/64")
+	destination := netip.MustParsePrefix("fd5e:db8:10:2::/96")
+	receiverHost := netip.MustParsePrefix("fd5e:db8:10:2::3/128")
+	specs := []labSpec{
+		{announce: []string{office.String()}, dial: []int{1}, change: func(cfg *config.Config) {
+			cfg.Cap.Table = &kernel.Table{Sourced: &kernel.Sourced{To: []schema.Prefix{schema.PrefixFrom(destination)}}}
+		}},
+		{hosts: []netip.Prefix{receiverHost}, change: func(cfg *config.Config) {
+			cfg.Cap.Route = &babel.Routes{Announce: []schema.Announce{{
+				Prefix: schema.PrefixFrom(destination), From: schema.PrefixFrom(office),
+			}}}
+		}},
+	}
+	nodes := startLab(t, specs, []labLink{{
+		places: [2]int{0, 1},
+		ends: [2]netip.Prefix{
+			netip.MustParsePrefix("198.51.100.1/30"), netip.MustParsePrefix("198.51.100.2/30"),
+		},
+	}})
+	here, far := nodes[0], nodes[1]
+	if err := here.ns.Do(func() error {
+		conn, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		return conn.AddAddresses("vab", officeHost, uplinkHost)
+	}); err != nil {
+		t.Fatalf("give the office link two supported source networks: %v", err)
+	}
+	if err := far.ns.Do(func() error {
+		conn, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		return conn.AddAddresses("vba", netip.MustParsePrefix("2001:db8:ff::2/64"))
+	}); err != nil {
+		t.Fatalf("address the uplink's next hop: %v", err)
+	}
+	if err := here.ns.Do(func() error {
+		conn, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		link, err := net.InterfaceByName("vab")
+		if err != nil {
+			return err
+		}
+		return conn.RouteVia(link.Index, netip.MustParsePrefix("::/0"), netip.MustParseAddr("2001:db8:ff::2"))
+	}); err != nil {
+		t.Fatalf("install the independent uplink default that a missing refusal would leak through: %v", err)
+	}
+	peerState := t.TempDir()
+	if err := far.ns.Do(func() error { return far.client.SetStateDir(peerState) }); err != nil {
+		t.Fatalf("open the peer's durable state for its withdrawal: %v", err)
+	}
+	run(t, here.loopbackNode, far.loopbackNode)
+	waitFor(t, convergeBudget, "the eligible Babel peer for the office source", func() bool {
+		_, verdict, _ := here.client.Mesh.Routes.Resolve(officeHost.Addr(), receiverHost.Addr())
+		return verdict == netstack.RoutePeer
+	})
+	waitFor(t, convergeBudget, "the office and uplink networks in the host snapshot", func() bool {
+		state := here.client.KernelRuntime().Network()
+		officeSeen, uplinkSeen := false, false
+		for _, link := range state.IPv6.Links {
+			for _, prefix := range link.Prefixes {
+				officeSeen = officeSeen || prefix.Masked() == office
+				uplinkSeen = uplinkSeen || prefix.Masked() == uplinkHost.Masked()
+			}
+		}
+		return officeSeen && uplinkSeen
+	})
+	var reconciler *kernel.Reconciler
+	if err := here.ns.Do(func() (err error) {
+		reconciler, err = kernel.New(*here.cfg.ReconcilerTable(), here.client.KernelRuntime(), here.client.Mesh.Routes)
+		return err
+	}); err != nil {
+		t.Fatalf("open the actual sourced reconciler: %v", err)
+	}
+	here.client.SetReconciler(ReconcilerOf(reconciler))
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { finished <- reconciler.Run(ctx) }()
+	t.Cleanup(func() {
+		reconciler.DropHold()
+		cancel()
+		select {
+		case err := <-finished:
+			if err != nil {
+				t.Errorf("withdraw sourced policy: %v", err)
+			}
+		case <-time.After(convergeBudget):
+			t.Error("sourced reconciler did not stop")
+		}
+	})
+	select {
+	case <-reconciler.FirstPass():
+	case <-time.After(convergeBudget):
+		t.Fatal("sourced admission never completed")
+	}
+	if err := reconciler.FirstPassError(); err != nil {
+		t.Fatalf("sourced admission failed: %v", err)
+	}
+	var rules []kernel.DumpedRule
+	var mirrored int
+	var mainDefault bool
+	if err := here.ns.Do(func() (err error) {
+		rules, err = kernel.DumpRules()
+		if err != nil {
+			return err
+		}
+		rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_INET6)
+		if err != nil {
+			return err
+		}
+		messages, err := syscall.ParseNetlinkMessage(rib)
+		if err != nil {
+			return err
+		}
+		for _, message := range messages {
+			if message.Header.Type == syscall.RTM_NEWROUTE && len(message.Data) > 5 &&
+				message.Data[4] == 201 && message.Data[5] == kernel.DefaultProtocol {
+				mirrored++
+			}
+			if message.Header.Type == syscall.RTM_NEWROUTE && len(message.Data) > 5 &&
+				message.Data[0] == unix.AF_INET6 && message.Data[1] == 0 &&
+				message.Data[4] == unix.RT_TABLE_MAIN && message.Data[5] == unix.RTPROT_BOOT {
+				mainDefault = true
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the real rule and route tables: %v", err)
+	}
+	if mirrored == 0 || !mainDefault {
+		t.Errorf("mirror peer or independent uplink default did not read back: peer routes %d, default %v", mirrored, mainDefault)
+	}
+	for _, priority := range []uint32{5399, 5401, 5403, 5404} {
+		if !slices.ContainsFunc(rules, func(rule kernel.DumpedRule) bool {
+			return rule.Family == kernel.FamilyIPv6 && rule.Priority == priority && rule.Protocol == kernel.DefaultProtocol
+		}) {
+			t.Errorf("sourced rule %d did not read back: %v", priority, rules)
+		}
+	}
+	status, ok := reconciler.SourcedStatus()
+	if !ok || status.Named != 1 || status.Supported != 2 || status.Pairs != 2 ||
+		!slices.ContainsFunc(status.Answers, func(answer kernel.SourcedAnswer) bool {
+			return answer.From == office && answer.Kind == "tunnel"
+		}) {
+		t.Errorf("office peer was not actually admitted: %+v", status)
+	}
+	var receiver *net.UDPConn
+	if err := far.ns.Do(func() (err error) {
+		receiver, err = net.ListenUDP("udp6", &net.UDPAddr{IP: receiverHost.Addr().AsSlice(), Port: lineListen})
+		return err
+	}); err != nil {
+		t.Fatalf("open the peer receiver: %v", err)
+	}
+	defer receiver.Close()
+	var sender, ineligible *net.UDPConn
+	var capture int
+	if err := here.ns.Do(func() (err error) {
+		sender, err = net.ListenUDP("udp6", &net.UDPAddr{IP: officeHost.Addr().AsSlice()})
+		if err != nil {
+			return err
+		}
+		ineligible, err = net.ListenUDP("udp6", &net.UDPAddr{IP: uplinkHost.Addr().AsSlice()})
+		if err != nil {
+			sender.Close()
+			return err
+		}
+		capture, err = openCapture("vab", labRetry)
+		if err != nil {
+			sender.Close()
+			ineligible.Close()
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("open both source sockets and the uplink capture: %v", err)
+	}
+	defer sender.Close()
+	defer ineligible.Close()
+	defer unix.Close(capture)
+	peer := &net.UDPAddr{IP: receiverHost.Addr().AsSlice(), Port: lineListen}
+	payload := []byte("sourced office delivery")
+	if _, err := sender.WriteToUDP(payload, peer); err != nil {
+		t.Fatalf("eligible office packet: %v", err)
+	}
+	if err := receiver.SetReadDeadline(time.Now().Add(convergeBudget)); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 256)
+	n, from, err := receiver.ReadFromUDP(got)
+	if err != nil || !bytes.Equal(got[:n], payload) || !from.AddrPort().Addr().Is6() ||
+		from.AddrPort().Addr() != officeHost.Addr() {
+		t.Fatalf("peer did not receive the office payload: %q from %v, error %v", got[:n], from, err)
+	}
+	_, _ = ineligible.WriteToUDP([]byte("must not reach the peer"), peer)
+	if err := receiver.SetReadDeadline(time.Now().Add(3 * labRetry)); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err = receiver.ReadFromUDP(got)
+	if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("ineligible source reached the receiver: %q, error %v", got[:n], err)
+	}
+	wire := make([]byte, 1<<16)
+	for until := time.Now().Add(3 * labRetry); time.Now().Before(until); {
+		n, _, err := unix.Recvfrom(capture, wire, 0)
+		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read the uplink capture: %v", err)
+		}
+		packet := wire[:n]
+		if len(packet) >= 40 && packet[0]>>4 == 6 &&
+			netip.AddrFrom16([16]byte(packet[8:24])) == uplinkHost.Addr() &&
+			netip.AddrFrom16([16]byte(packet[24:40])) == receiverHost.Addr() {
+			t.Error("ineligible sourced packet escaped on the uplink")
+			break
+		}
+	}
+	if err := far.ns.Do(func() error {
+		_, err := far.client.Down(context.Background())
+		return err
+	}); err != nil {
+		t.Fatalf("withdraw the receiving mesh peer: %v", err)
+	}
+	waitFor(t, convergeBudget, "the peer route and sourced admission to withdraw", func() bool {
+		_, verdict, _ := here.client.Mesh.Routes.Resolve(officeHost.Addr(), receiverHost.Addr())
+		if verdict == netstack.RoutePeer {
+			return false
+		}
+		var pairs, mirror int
+		err := here.ns.Do(func() (err error) {
+			held, err := kernel.DumpRules()
+			if err != nil {
+				return err
+			}
+			for _, rule := range held {
+				if rule.Priority == 5403 && rule.Protocol == kernel.DefaultProtocol {
+					pairs++
+				}
+			}
+			rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_INET6)
+			if err != nil {
+				return err
+			}
+			messages, err := syscall.ParseNetlinkMessage(rib)
+			if err != nil {
+				return err
+			}
+			for _, message := range messages {
+				if message.Header.Type == syscall.RTM_NEWROUTE && len(message.Data) > 5 &&
+					message.Data[4] == 201 && message.Data[5] == kernel.DefaultProtocol {
+					mirror++
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read back admission withdrawal: %v", err)
+		}
+		status, ok := reconciler.SourcedStatus()
+		return ok && pairs == 0 && mirror == 0 && len(status.Answers) == 1 &&
+			!status.Answers[0].From.IsValid() && status.Answers[0].Kind == "refused"
+	})
+	if _, err := sender.WriteToUDP([]byte("must not follow the uplink after peer withdrawal"), peer); err != nil &&
+		!errors.Is(err, unix.ENETUNREACH) && !errors.Is(err, unix.EHOSTUNREACH) {
+		t.Fatalf("send after peer withdrawal: %v", err)
+	}
+	if err := receiver.SetReadDeadline(time.Now().Add(3 * labRetry)); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err = receiver.ReadFromUDP(got)
+	if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("office source reached a withdrawn peer: %q, error %v", got[:n], err)
+	}
+	for until := time.Now().Add(3 * labRetry); time.Now().Before(until); {
+		n, _, err := unix.Recvfrom(capture, wire, 0)
+		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read the uplink after peer withdrawal: %v", err)
+		}
+		packet := wire[:n]
+		if len(packet) >= 40 && packet[0]>>4 == 6 &&
+			netip.AddrFrom16([16]byte(packet[8:24])) == officeHost.Addr() &&
+			netip.AddrFrom16([16]byte(packet[24:40])) == receiverHost.Addr() {
+			t.Error("office packet escaped through the uplink after its peer withdrew")
+			break
+		}
+	}
 }
 
 // l, e and t, each in a network namespace of its own, l's and t's sessions going through e's, and i on e's uplink

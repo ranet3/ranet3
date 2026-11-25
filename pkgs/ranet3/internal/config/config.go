@@ -189,6 +189,9 @@ func (c *Config) ReconcilerTable() *kernel.Table {
 	}
 	source, _ := c.ExitPath()
 	table := c.Cap.Table.WithMode(c.Cap.Exit).WithPathSource(source)
+	if table.Sourced != nil {
+		table = table.WithSourcedOwn(c.Routes().Announce, c.Advertised())
+	}
 	return &table
 }
 

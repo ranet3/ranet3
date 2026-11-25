@@ -146,6 +146,15 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			conn.replies = []netlink.Message{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}
+			if name == "a zero-mark rule" {
+				// Reserved priorities use the all-protocol, exact-selector
+				// reader. Ordinary Rules must never prune them as ordinary.
+				all, err := plat.SourcedRules()
+				if err != nil || len(all) != 1 || !sourcedExactShape(all[0], rule, DefaultProtocol) {
+					t.Fatalf("the sourced zero-mark rule did not read back exactly: %v, %v", all, err)
+				}
+				return
+			}
 			got, err := plat.Rules()
 			if err != nil {
 				t.Fatal(err)

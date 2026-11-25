@@ -19,7 +19,7 @@ type Reconciler struct {
 	// Status is its own view of its last pass, the status's and the metrics'
 	Status func() control.KernelStatus
 	// Enable stops and starts it, for the write path and for down and up
-	Enable func(bool)
+	Enable func(bool) error
 	// DropHold has its next stop, the operator's, take the down set a down leaves
 	DropHold func()
 	// Table hands it a reloaded cap.table with the overlay and the prefixes cap.route announces

@@ -42,7 +42,7 @@ func writable(t *testing.T) *Client {
 	c := testClient(t)
 	c.Mesh.SetSteering(steering)
 	c.cfg.Store(&config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Listen: true}})
-	c.SetReconciler(Reconciler{Enable: func(bool) {}})
+	c.SetReconciler(Reconciler{Enable: func(bool) error { return nil }})
 	return c
 }
 
@@ -54,8 +54,9 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	c := writable(t)
 	var reconciler []string
 	c.SetReconciler(Reconciler{
-		Enable: func(on bool) {
+		Enable: func(on bool) error {
 			reconciler = append(reconciler, map[bool]string{true: "start", false: "stop"}[on])
+			return nil
 		},
 		DropHold: func() { reconciler = append(reconciler, "drop the hold") },
 	})
@@ -101,6 +102,24 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	}
 	if !strings.Contains(again.Detail, "already") {
 		t.Errorf("a repeated start answered %q, want it to say nothing moved", again.Detail)
+	}
+}
+
+func TestReconcilerEnableReturnsKernelFailureWithoutRecordingActive(t *testing.T) {
+	c := writable(t)
+	failure := errors.New("sourced refusal did not read back")
+	c.SetReconciler(Reconciler{Enable: func(on bool) error {
+		if on {
+			return failure
+		}
+		return nil
+	}})
+	if _, err := c.SetSubsystem(context.Background(), control.SubsystemReconciler, false); err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.SetSubsystem(context.Background(), control.SubsystemReconciler, true)
+	if !errors.Is(err, failure) || len(result.Acted) != 0 || c.subsystemRunning(control.SubsystemReconciler) {
+		t.Fatalf("failed enable was reported active: result %v, error %v, running %v", result, err, c.subsystemRunning(control.SubsystemReconciler))
 	}
 }
 

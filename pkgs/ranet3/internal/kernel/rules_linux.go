@@ -129,6 +129,31 @@ func (p *netlinkPlatform) Rules() ([]Rule, error) {
 	var out []Rule
 	for _, reply := range replies {
 		if rule, ok := p.decodeRule(reply); ok {
+			// Reserved sourced priorities are never ordinary rules, even
+			// after key removal: the ordinary decoder cannot distinguish
+			// their foreign unread-selector lookalikes for safe deletion.
+			if rule.Family == FamilyIPv6 && sourcedPriority(rule.Priority) {
+				continue
+			}
+			out = append(out, rule)
+		}
+	}
+	return out, nil
+}
+
+// SourcedRules reads every protocol through the reconciler's socket. A
+// protocol-155 lookalike with a selector our rules cannot encode must remain
+// visible: the ordinary protocol-filtered reader cannot establish its owner.
+func (p *netlinkPlatform) SourcedRules() ([]DumpedRule, error) {
+	body := make([]byte, sizeofFibRuleHdr)
+	body[0] = unix.AF_UNSPEC
+	replies, err := p.conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, body)
+	if err != nil {
+		return nil, fmt.Errorf("kernel: dump sourced rules: %w", err)
+	}
+	out := make([]DumpedRule, 0, len(replies))
+	for _, reply := range replies {
+		if rule, ok := decodeDumpedRule(reply); ok {
 			out = append(out, rule)
 		}
 	}

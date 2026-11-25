@@ -101,7 +101,9 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 		// a stopped reconciler asked to stop again is woken for a pass at once,
 		// which takes up a withdrawal still owed without waiting out its retry
 		if name == control.SubsystemReconciler && !on {
-			c.applySubsystem(name, on)
+			if err := c.applySubsystem(name, on); err != nil {
+				return control.Result{}, err
+			}
 		}
 		return control.Result{Acted: []string{string(name)},
 			Detail: fmt.Sprintf("The %s was already %s", name, startedStopped(on))}, nil
@@ -109,7 +111,9 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 	// The effect before the record, under the lock a second write would have
 	// to take, so no reader is told a subsystem is stopped while it is still
 	// acting and two writes cannot interleave their two halves.
-	c.applySubsystem(name, on)
+	if err := c.applySubsystem(name, on); err != nil {
+		return control.Result{}, err
+	}
 	c.running[name] = on
 	slog.Info(fmt.Sprintf("control: the %s is %s", name, startedStopped(on)))
 	return control.Result{Acted: []string{string(name)},
@@ -147,7 +151,7 @@ func (c *Client) subsystemRuns(name control.Subsystem) error {
 // keeps its own flag where its hot path can read it without reaching back
 // through this lock, and the responder reads the record itself because it is
 // consulted once per handshake rather than once per packet.
-func (c *Client) applySubsystem(name control.Subsystem, on bool) {
+func (c *Client) applySubsystem(name control.Subsystem, on bool) error {
 	switch name {
 	case control.SubsystemReconciler:
 		r := c.reconcilerNow()
@@ -155,11 +159,12 @@ func (c *Client) applySubsystem(name control.Subsystem, on bool) {
 			r.DropHold()
 		}
 		if set := r.Enable; set != nil {
-			set(on)
+			return set(on)
 		}
 	case control.SubsystemSteering:
 		c.Mesh.SetSteeringEnabled(on)
 	}
+	return nil
 }
 
 // subsystemRunning is the read the responder makes per inbound handshake.

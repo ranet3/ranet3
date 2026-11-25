@@ -319,6 +319,14 @@ func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 	if !waited || err != nil {
 		return err
 	}
+	// Capacity depends on the accepted file and currently up addresses, not
+	// the mesh's previous route snapshot. Refuse it before constructing the
+	// tun, the antispoof filter or an exit backend.
+	if table := d.cfg.ReconcilerTable(); table != nil && table.Sourced != nil {
+		if err := kernel.PreflightSourcedCapacity(*table, d.cfg.Routes().Announced()); err != nil {
+			return err
+		}
+	}
 	d.bus = events.New()
 	// an address an operator named that cannot be bound refuses the start
 	if d.opts.pprofAddr != "" {
@@ -503,7 +511,7 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 		// a platform that has no tables at all.
 		slog.Info(fmt.Sprintf("tun device %s ready with %d queues, reconciling its routes into %s",
 			mesh.Name, mesh.QueueCount(), routes.Where()))
-		if mode := d.cfg.ReconcilerTable().Mode(); mode != nil && mode.Refuses() {
+		if mode := d.cfg.ReconcilerTable().Mode(); routes.Table().Sourced != nil || mode != nil && mode.Refuses() {
 			firstPass = routes.FirstPass()
 		}
 	} else {
@@ -514,6 +522,18 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			mesh.Name, mesh.QueueCount()))
 	}
 	dials := awaitFirstPass(ctx, firstPass, firstPassWait)
+	if dials && d.routes != nil && d.routes.Table().Sourced != nil {
+		select {
+		case <-firstPass:
+			if err := d.routes.FirstPassError(); err != nil {
+				fail("kernel", err)
+				dials = false
+			}
+		default:
+			fail("kernel", fmt.Errorf("sourced protection did not finish its first pass within %s", firstPassWait))
+			dials = false
+		}
+	}
 	// the exit's run, which returns only once the mesh has closed, so nothing
 	// that closes the mesh waits for it
 	var exits sync.WaitGroup
@@ -600,7 +620,7 @@ func awaitFirstPass(ctx context.Context, firstPass <-chan struct{}, wait time.Du
 		case <-firstPass:
 		case <-ctx.Done():
 		case <-time.After(wait):
-			slog.Warn("kernel's first pass has not ended, so sessions are dialed before the kill switch is written", "waited", wait)
+			slog.Warn("kernel's first pass has not ended within the wait", "waited", wait)
 		}
 	}
 	return ctx.Err() == nil

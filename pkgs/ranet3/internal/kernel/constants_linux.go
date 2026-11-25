@@ -29,4 +29,17 @@ const (
 	// fallbackSetIDs is how many anonymous set IDs each chain takes, past
 	// the named sets' IDs 1 to 9, more than any chain's lines read
 	fallbackSetIDs = 10
+	// prioritySourcedTun sends unmarked packets arriving on the tun past the
+	// sourced block once the 5410 target and tun are both live.
+	prioritySourcedTun = 5399
+	// prioritySourcedMain looks only for a main route at least as specific as
+	// the protected destination, regardless of that route's protocol.
+	prioritySourcedMain = 5401
+	// prioritySourcedGuard refuses a pair whose foreign rule makes withdrawal
+	// of its lookup ambiguous.
+	prioritySourcedGuard = 5402
+	// prioritySourcedPeer looks admitted pairs up in the mirrored table.
+	prioritySourcedPeer = 5403
+	// prioritySourcedRefused refuses every protected packet not yet answered.
+	prioritySourcedRefused = 5404
 )

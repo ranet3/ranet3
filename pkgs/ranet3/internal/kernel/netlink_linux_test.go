@@ -155,7 +155,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	// platform's socket writes wakes nothing, and a monitor that takes what the
 	// platform's takes but joins the route groups alone hears the route's
 	// notification and none of the tun's addresses, one of which can arrive late.
-	wakes := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, plat.conn.(*nlConn).socket.Pid())
+	wakes := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, plat.conn.(*nlConn).socket.Pid(), nil)
 	routeWatch, err := openMonitor("route-monitor-test", unix.RTMGRP_IPV4_ROUTE|unix.RTMGRP_IPV6_ROUTE, wakes)
 	if err != nil {
 		t.Fatalf("open a monitor as the platform's: %v", err)

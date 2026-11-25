@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"slices"
 
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -62,6 +63,83 @@ func (s *Sourced) normalized(mesh schema.TableID) *Sourced {
 	out := *s
 	out.ID = mesh + 1
 	return &out
+}
+
+// WithSourcedOwn records unsourced announcements from the accepted file, not
+// from a mesh snapshot that may still describe the previous file.
+func (t Table) WithSourcedOwn(announced []schema.Announce, advertised []netip.Prefix) Table {
+	t.ownAnnounced = nil
+	if t.Sourced == nil {
+		return t
+	}
+	for _, entry := range announced {
+		if entry.From.IsValid() {
+			continue
+		}
+		if canonical, ok := canonicalPrefix(entry.Prefix.Prefix); ok && canonical.Addr().Is6() &&
+			canonical.Bits() != 0 && !slices.Contains(advertised, canonical) {
+			if _, whole := schema.Unroutable(canonical); !whole {
+				t.ownAnnounced = append(t.ownAnnounced, canonical)
+			}
+		}
+	}
+	return t
+}
+
+// sourcedSources collects exact networks, including nested ones, before the
+// tun exists. The network reader already excludes tentative link addresses.
+func (t Table) sourcedSources(network func() NetworkState, announced []netip.Prefix) map[netip.Prefix]struct{} {
+	sources := make(map[netip.Prefix]struct{})
+	add := func(prefix netip.Prefix) {
+		if canonical, ok := canonicalPrefix(prefix); ok && canonical.Addr().Is6() &&
+			!canonical.Addr().Is4In6() && canonical.Addr().IsGlobalUnicast() && canonical.Bits() > 0 {
+			sources[canonical] = struct{}{}
+		}
+	}
+	for _, prefix := range t.ownAnnounced {
+		add(prefix)
+	}
+	if network != nil {
+		for _, link := range network().IPv6.Links {
+			for _, prefix := range link.Prefixes {
+				add(prefix)
+			}
+		}
+	}
+	for _, prefix := range t.Assigned(announced) {
+		if address := prefix.Addr(); address.Is6() && address.IsGlobalUnicast() {
+			add(netip.PrefixFrom(address, address.BitLen()))
+		}
+	}
+	return sources
+}
+
+func (t Table) refuseSourcedCapacity(network func() NetworkState, announced []netip.Prefix) error {
+	if t.Sourced == nil {
+		return nil
+	}
+	destinations := len(t.Sourced.To)
+	pairs := destinations * len(t.sourcedSources(network, announced))
+	if destinations <= sourcedPairLimit && pairs <= sourcedPairLimit {
+		return nil
+	}
+	return sourcedCapacityError(destinations, pairs)
+}
+
+// PreflightSourcedCapacity checks accepted addresses and currently up links
+// before a daemon constructs its tun or other managed networking objects.
+// New repeats the check against its live runtime immediately before opening
+// its platform, so a link appearing between these reads is also refused.
+func PreflightSourcedCapacity(t Table, announced []netip.Prefix) error {
+	if t.Sourced == nil {
+		return nil
+	}
+	return preflightSourcedCapacity(t, announced)
+}
+
+func sourcedCapacityError(destinations, pairs int) error {
+	return fmt.Errorf("kernel: cap.table.sourced needs %d destinations and %d destination-source pairs, up to %d IPv6 rules including pair guards (limits: 16 destinations, 16 pairs, 97 rules)",
+		destinations, pairs, 1+2*destinations+4*pairs)
 }
 
 // SourcedLimits holds file-visible prefixes, not kernel occupancy. Own,

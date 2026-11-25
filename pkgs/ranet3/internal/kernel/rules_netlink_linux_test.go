@@ -168,6 +168,300 @@ func TestNetlinkZeroMarkTunRuleReadsBackAndWithdraws(t *testing.T) {
 	}
 }
 
+func TestNetlinkSourcedInitialOccupancyRefusesForeignAndAdoptsOwn(t *testing.T) {
+	const device = "ranetsource0"
+	plat := rootRulePlatform(t, device)
+	destination := schema.MustPrefix("fd5e:db8:10:2::/96")
+	table := plat.table
+	table.Sourced = &Sourced{To: []schema.Prefix{destination}, ID: 201}
+	standing := sourcedStandingRules(table.Sourced.To, nil)[0]
+	if err := plat.AddRule(standing); err != nil {
+		t.Fatalf("seed an owned main exception: %v", err)
+	}
+	t.Cleanup(func() { _ = plat.DelRule(standing) })
+	foreign := foreignTable(plat.conn.(*nlConn), 201, plat.index)
+	route := Route{Destination: destination.Prefix, Throw: true}
+	if err := foreign.AddRoute(route); err != nil {
+		t.Fatalf("seed a foreign mirror occupant: %v", err)
+	}
+	t.Cleanup(func() { _ = foreign.DelRoute(route) })
+	opened, err := newPlatform(table, Runtime{Interface: device})
+	if err == nil {
+		_ = opened.Close()
+		t.Fatal("a foreign route in table 201 was accepted before the first write")
+	}
+	if err := foreign.DelRoute(route); err != nil {
+		t.Fatalf("remove the foreign occupant: %v", err)
+	}
+	if err := plat.AddSourcedRoute(201, route); err != nil {
+		t.Fatalf("seed an exact mirror: %v", err)
+	}
+	t.Cleanup(func() { _ = plat.DelSourcedRoute(201, route) })
+	opened, err = newPlatform(table, Runtime{Interface: device})
+	if err != nil {
+		t.Fatalf("an exact rule and an exact mirror were not adopted: %v", err)
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type recordingPolicyConn struct {
+	netlinkConn
+	writes []netlink.Message
+}
+
+func (c *recordingPolicyConn) execute(kind, flags uint16, body []byte) ([]netlink.Message, error) {
+	switch kind {
+	case unix.RTM_NEWRULE, unix.RTM_DELRULE, unix.RTM_NEWROUTE, unix.RTM_DELROUTE, unix.RTM_NEWADDR, unix.RTM_DELADDR:
+		c.writes = append(c.writes, netlink.Message{Kind: kind, Data: slices.Clone(body)})
+	}
+	return c.netlinkConn.execute(kind, flags, body)
+}
+
+func TestNetlinkSourcedPassEstablishesStandingBeforeOrdinaryRules(t *testing.T) {
+	const device = "ranetstand0"
+	plat := rootRulePlatform(t, device)
+	recorder := &recordingPolicyConn{netlinkConn: plat.conn}
+	plat.conn = recorder
+	destination := schema.MustPrefix("fd5e:db8:10:2::/96")
+	table, runtime := platformFor(device)
+	table.Sourced = &Sourced{To: []schema.Prefix{destination}, ID: 201}
+	plat.retable(table)
+	reconciler := newReconciler(table, runtime, nil, netstack.NewRouteTable(), plat)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatalf("the first pass could not establish protection: %v", err)
+	}
+	if len(recorder.writes) < 2 {
+		t.Fatalf("no standing rule writes before the ordinary pass: %v", recorder.writes)
+	}
+	for index, priority := range []uint32{prioritySourcedRefused, prioritySourcedMain} {
+		write := recorder.writes[index]
+		dump, ok := decodeDumpedRule(write)
+		if !ok || write.Kind != unix.RTM_NEWRULE || dump.Priority != priority {
+			t.Fatalf("kernel write %d was not standing priority %d: %+v", index, priority, write)
+		}
+	}
+	all, err := plat.SourcedRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range sourcedStandingRules(table.Sourced.To, nil) {
+		if !slices.ContainsFunc(all, func(held DumpedRule) bool { return sourcedExactShape(held, rule, table.Proto) }) {
+			t.Fatalf("the standing rule did not read back: %s; held %v", rule, all)
+		}
+		if err := plat.DelRule(rule); err != nil {
+			t.Fatalf("clean up the standing rule %s: %v", rule, err)
+		}
+	}
+	if err := reconciler.withdraw(nil); err != nil {
+		t.Fatalf("clean up the ordinary rules: %v", err)
+	}
+}
+
+func TestNetlinkSourcedPassMirrorsWholeEntriesAndRefusalsFirst(t *testing.T) {
+	const device = "ranetmirror0"
+	plat := rootRulePlatform(t, device)
+	setLinkFlags(t, plat.conn.(*nlConn), plat.index, unix.IFF_UP)
+	recorder := &recordingPolicyConn{netlinkConn: plat.conn}
+	plat.conn = recorder
+	destination := schema.MustPrefix("fd5e:db8:10:2::/96")
+	broad := netip.MustParsePrefix("fd5e:db8:10::/48")
+	child := netip.MustParsePrefix("fd5e:db8:10:2::2000:0/112")
+	source := netip.MustParsePrefix("fd5e:db8:10:1::/64")
+	otherSource := netip.MustParsePrefix("fd5e:db8:11::/48")
+	table, runtime := platformFor(device)
+	table.Sourced = &Sourced{To: []schema.Prefix{destination}, ID: 201}
+	table.ownAnnounced = []netip.Prefix{source}
+	plat.retable(table)
+	routes := netstack.NewRouteTable()
+	routes.Set(netip.Prefix{}, broad, nil)
+	routes.Set(source, child, netstack.Unreachable)
+	routes.Set(otherSource, broad, netstack.Local)
+	reconciler := newReconciler(table, runtime, nil, routes, plat)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatalf("the pass did not mirror the desired routes: %v", err)
+	}
+	want := []Route{
+		{Destination: child, Source: source, Metric: holdMetric, Unreachable: true},
+		{Destination: broad, Source: otherSource, Metric: holdMetric, Throw: true},
+		{Destination: broad, Metric: defaultIPv6Metric},
+	}
+	view := plat.sourcedRouteView(201)
+	var writes []Route
+	for _, wire := range recorder.writes {
+		if wire.Kind == unix.RTM_NEWROUTE && notificationTable(wire) == 201 {
+			route, ok := view.decodeRoute(wire)
+			if !ok {
+				t.Fatalf("unreadable mirror write: %+v", wire)
+			}
+			writes = append(writes, route)
+		}
+	}
+	if len(writes) != len(want) || writes[2] != want[2] ||
+		!slices.Contains(writes[:2], want[0]) || !slices.Contains(writes[:2], want[1]) {
+		t.Fatalf("201 writes = %v, want whole hold and throw before the peer", writes)
+	}
+	held, foreign, err := plat.SourcedRoutes(201)
+	if err != nil || foreign != 0 || len(held) != len(want) {
+		t.Fatalf("201 readback = %v, foreign %d, error %v", held, foreign, err)
+	}
+	for _, route := range want {
+		if !slices.Contains(held, route) {
+			t.Fatalf("201 omitted whole route %s: %v", route, held)
+		}
+	}
+	ingress := sourcedIngressRule(device)
+	peer := sourcedPeerRule(destination, source, 201)
+	all, err := plat.SourcedRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range []Rule{ingress, peer} {
+		if !slices.ContainsFunc(all, func(held DumpedRule) bool { return sourcedExactShape(held, rule, table.Proto) }) {
+			t.Fatalf("sourced admission did not read back: %s, held %v", rule, all)
+		}
+	}
+	ordinaryMain, skip, lastMirror, admitted := -1, -1, -1, -1
+	for index, wire := range recorder.writes {
+		if wire.Kind == unix.RTM_NEWROUTE && notificationTable(wire) == 201 {
+			lastMirror = index
+		}
+		if wire.Kind != unix.RTM_NEWRULE {
+			continue
+		}
+		dump, ok := decodeDumpedRule(wire)
+		if !ok {
+			t.Fatalf("unreadable rule write: %+v", wire)
+		}
+		switch dump.Priority {
+		case priorityMain:
+			if dump.Family == FamilyIPv6 {
+				ordinaryMain = index
+			}
+		case prioritySourcedTun:
+			skip = index
+		case prioritySourcedPeer:
+			admitted = index
+		}
+	}
+	if ordinaryMain < 0 || ordinaryMain >= skip || lastMirror >= admitted || skip >= admitted {
+		t.Fatalf("unsafe 5410/5399/201/5403 order: main %d, skip %d, mirror %d, admission %d", ordinaryMain, skip, lastMirror, admitted)
+	}
+	if err := reconciler.withdraw(nil); err != nil {
+		t.Fatalf("withdraw sourced and ordinary policy: %v", err)
+	}
+	remaining, foreign, err := plat.SourcedRoutes(201)
+	if err != nil || foreign != 0 || len(remaining) != 0 {
+		t.Fatalf("201 remained after withdrawal: %v, foreign %d, error %v", remaining, foreign, err)
+	}
+	all, err = plat.SourcedRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range []Rule{ingress, peer} {
+		if slices.ContainsFunc(all, func(held DumpedRule) bool { return sourcedExactShape(held, rule, table.Proto) }) {
+			t.Fatalf("admission remained after withdrawal: %s, held %v", rule, all)
+		}
+	}
+	delSkip, delPeer, delMirror, delMain := -1, -1, -1, -1
+	for index, wire := range recorder.writes {
+		if wire.Kind == unix.RTM_DELROUTE && notificationTable(wire) == 201 && delMirror < 0 {
+			delMirror = index
+		}
+		if wire.Kind != unix.RTM_DELRULE {
+			continue
+		}
+		dump, ok := decodeDumpedRule(wire)
+		if !ok {
+			t.Fatalf("unreadable rule delete: %+v", wire)
+		}
+		switch dump.Priority {
+		case prioritySourcedTun:
+			delSkip = index
+		case prioritySourcedPeer:
+			delPeer = index
+		case priorityMain:
+			if dump.Family == FamilyIPv6 {
+				delMain = index
+			}
+		}
+	}
+	if delSkip < 0 || delSkip >= delMain || delPeer < 0 || delPeer >= delMirror {
+		t.Fatalf("unsafe withdrawal order: 5399 %d, 5410 %d, 5403 %d, 201 %d", delSkip, delMain, delPeer, delMirror)
+	}
+	reconciler.DropHold()
+	if err := reconciler.withdraw(errStopped); err != nil {
+		t.Fatalf("disable did not withdraw standing protection: %v", err)
+	}
+	all, err = plat.SourcedRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range sourcedStandingRules(table.Sourced.To, map[netip.Prefix]struct{}{source: {}}) {
+		if slices.ContainsFunc(all, func(held DumpedRule) bool { return sourcedExactShape(held, rule, table.Proto) }) {
+			t.Fatalf("disabled policy left standing rule %s: %v", rule, all)
+		}
+	}
+}
+
+// The actual kernel, not the desired route set, supplies a foreign-protocol
+// n+ main winner. Withdrawing that route removes the exception on the next pass.
+func TestNetlinkSourcedEffectiveMainRouteReportsKernelProtocol(t *testing.T) {
+	const device = "ranetmain0"
+	plat := rootRulePlatform(t, device)
+	setLinkFlags(t, plat.conn.(*nlConn), plat.index, unix.IFF_UP)
+	destination := schema.MustPrefix("fd5e:db8:10:2::/96")
+	child := netip.MustParsePrefix("fd5e:db8:10:2::1000:0/112")
+	table, runtime := platformFor(device)
+	table.Sourced = &Sourced{To: []schema.Prefix{destination}, ID: 201}
+	plat.retable(table)
+	reconciler := newReconciler(table, runtime, nil, netstack.NewRouteTable(), plat)
+	changed := reconciler.SourcedChanges()
+	readChange := func(what string) {
+		select {
+		case <-changed:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s did not change the kernel answer", what)
+		}
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	readChange("initial refusal")
+	main := plat.sourcedRouteView(schema.TableMain)
+	body := main.routeMessage(Route{Destination: child, Metric: 42}, false)
+	body[5] = unix.RTPROT_RA
+	if _, err := plat.conn.execute(unix.RTM_NEWROUTE, unix.NLM_F_ACK|unix.NLM_F_CREATE|unix.NLM_F_EXCL, body); err != nil {
+		t.Fatalf("add a main-table foreign-protocol route: %v", err)
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	status, ok := reconciler.SourcedStatus()
+	if !ok || len(status.Answers) != 2 || status.Answers[0].Kind != "refused" ||
+		status.Answers[1].Kind != "main" || status.Answers[1].MainPrefix != child ||
+		status.Answers[1].MainProtocol != unix.RTPROT_RA {
+		t.Fatalf("the real main readback did not name the route: %+v", status)
+	}
+	readChange("main winner")
+	if _, err := plat.conn.execute(unix.RTM_DELROUTE, unix.NLM_F_ACK, body); err != nil {
+		t.Fatalf("delete the main route this test installed: %v", err)
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = reconciler.SourcedStatus()
+	if len(status.Answers) != 1 || status.Answers[0].Kind != "refused" {
+		t.Fatalf("the withdrawn main exception remained in the answer: %+v", status)
+	}
+	readChange("main withdrawal")
+	reconciler.DropHold()
+	if err := reconciler.withdraw(errStopped); err != nil {
+		t.Fatalf("remove the sourced test policy: %v", err)
+	}
+}
+
 // countingRules is a netlink platform that counts the rules written through it
 type countingRules struct {
 	*netlinkPlatform

@@ -876,6 +876,380 @@ func TestDaemonWarnsOfTheReloadItRefuses(t *testing.T) {
 	leftNothing(t, f, was)
 }
 
+// A running sourced node refuses an oversized reload before changing any
+// policy, then removes its own sourced rules when only that key leaves.
+func TestDaemonSourcedReloadRefusalAndKeyOnlyRemoval(t *testing.T) {
+	claimNamespace(t)
+	const destination = "fd5e:db8:10:2::/96"
+	const named = "    sourced:\n      to: [" + destination + "]\n"
+	f := writeDaemon(t, named+leafCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&bus))
+	stopped := false
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+		select {
+		case <-code:
+		default:
+			signalSelf(t, syscall.SIGTERM)
+			_ = exited(t, code)
+		}
+	})
+	waitTill(t, "the sourced start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	original, err := os.ReadFile(f.opts.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startRules, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	standing := 0
+	for _, rule := range startRules {
+		if rule.To.String() == destination && (rule.Priority == 5401 || rule.Priority == 5404) &&
+			rule.Protocol == kernel.DefaultProtocol {
+			standing++
+		}
+	}
+	if standing < 2 {
+		t.Fatalf("the daemon did not install sourced protection before starting: %v", startRules)
+	}
+	routesBefore := ownRoutes(t)
+	many := make([]string, 17)
+	for i := range many {
+		many[i] = fmt.Sprintf("fd5e:db8:%x::/64", 0x100+i)
+	}
+	oversized := strings.Replace(string(original), named, "    sourced:\n      to: ["+strings.Join(many, ", ")+"]\n", 1)
+	if oversized == string(original) {
+		t.Fatal("the sourced key was missing from the fixture")
+	}
+	if err := os.WriteFile(f.opts.configPath, []byte(oversized), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathReload, &control.Request{}); status != http.StatusBadRequest ||
+		!strings.Contains(answer, "16 destinations") {
+		t.Fatalf("oversized sourced reload answered %d %q", status, answer)
+	}
+	after, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	routesAfter := ownRoutes(t)
+	if !slices.Equal(startRules, after) || routesAfter != routesBefore {
+		t.Fatalf("refused reload changed kernel policy: rules before %v, after %v; routes before %d, after %d",
+			startRules, after, routesBefore, routesAfter)
+	}
+	keyless := strings.Replace(string(original), named, "", 1)
+	if err := os.WriteFile(f.opts.configPath, []byte(keyless), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathReload, &control.Request{}); status != http.StatusOK {
+		t.Fatalf("key-only removal answered %d %q", status, answer)
+	}
+	held, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range startRules {
+		if rule.Protocol != kernel.DefaultProtocol || rule.Priority == 5400 || rule.Priority < 5399 || rule.Priority > 5404 {
+			continue
+		}
+		if slices.Contains(held, rule) {
+			t.Fatalf("key-only removal left sourced rule %+v", rule)
+		}
+	}
+	signalSelf(t, syscall.SIGTERM)
+	got := exited(t, code)
+	stopped = got >= 0
+	if got != 0 {
+		t.Errorf("the sourced daemon exited %d after SIGTERM", got)
+	}
+	leftNothing(t, f, was)
+}
+
+// Capacity from the accepted file must refuse a first start before client.New
+// can create a tun, not merely before kernel.New can write its first rule.
+func TestDaemonSourcedOversizeRefusesBeforeConstructingTheTun(t *testing.T) {
+	claimNamespace(t)
+	many := make([]string, 17)
+	for i := range many {
+		many[i] = fmt.Sprintf("fd5e:db8:%x::/64", 0x100+i)
+	}
+	f := writeDaemon(t, "    sourced:\n      to: ["+strings.Join(many, ", ")+"]\n"+leafCaps)
+	was := before(t)
+	prior, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := ownRoutes(t)
+	s := unforced(production)
+	s.node = func(cfg *config.Config, bus *events.Bus) (*client.Client, error) {
+		t.Error("oversized sourced config constructed a tun before refusal")
+		return client.New(cfg, bus)
+	}
+	if code := startDaemon(f.opts, s); code != 1 {
+		t.Errorf("oversized sourced start returned exit code %d", code)
+	}
+	after, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(prior, after) || ownRoutes(t) != routes {
+		t.Errorf("oversized first start changed rule or route policy: before %v, after %v", prior, after)
+	}
+	if _, err := net.InterfaceByName(daemonTUN); err == nil {
+		t.Error("oversized sourced start created a tun")
+	}
+	leftNothing(t, f, was)
+}
+
+// Disable retires standing policy. Synchronous enable rearms it. Graceful
+// stop retains only the standing protection, which the next daemon adopts
+// before an explicit key-only removal retires it.
+func TestDaemonSourcedDisableEnableStopRestartAndKeyRemoval(t *testing.T) {
+	claimNamespace(t)
+	const named = "    sourced:\n      to: [fd5e:db8:10:2::/96]\n"
+	f := writeDaemon(t, named+leafCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&bus))
+	stopped := false
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+		select {
+		case <-code:
+		default:
+			signalSelf(t, syscall.SIGTERM)
+			_ = exited(t, code)
+		}
+	})
+	waitTill(t, "sourced daemon start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	owned := func() []kernel.DumpedRule {
+		t.Helper()
+		rules, err := kernel.DumpRules()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.DeleteFunc(rules, func(rule kernel.DumpedRule) bool {
+			return rule.Protocol != kernel.DefaultProtocol || rule.Priority == 5400 ||
+				rule.Priority < 5399 || rule.Priority > 5404
+		})
+	}
+	if len(owned()) == 0 {
+		t.Fatal("the daemon did not install sourced protection")
+	}
+	request := &control.Request{Subsystem: control.SubsystemReconciler}
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathDisable, request); status != http.StatusOK {
+		t.Fatalf("disable reconciler answered %d %q", status, answer)
+	}
+	waitTill(t, "retire sourced rules after disable", func() bool { return len(owned()) == 0 })
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathEnable, request); status != http.StatusOK {
+		t.Fatalf("enable reconciler answered %d %q", status, answer)
+	}
+	restored := owned()
+	if !slices.ContainsFunc(restored, func(rule kernel.DumpedRule) bool { return rule.Priority == 5399 }) ||
+		!slices.ContainsFunc(restored, func(rule kernel.DumpedRule) bool { return rule.Priority == 5401 }) ||
+		!slices.ContainsFunc(restored, func(rule kernel.DumpedRule) bool { return rule.Priority == 5404 }) {
+		t.Errorf("enable replied before restoring sourced ingress and standing rules: %v", restored)
+	}
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("sourced daemon exited %d after SIGTERM", got)
+	}
+	stopped = true
+	standing := owned()
+	if !slices.ContainsFunc(standing, func(rule kernel.DumpedRule) bool { return rule.Priority == 5401 }) ||
+		!slices.ContainsFunc(standing, func(rule kernel.DumpedRule) bool { return rule.Priority == 5404 }) ||
+		slices.ContainsFunc(standing, func(rule kernel.DumpedRule) bool {
+			return rule.Priority == 5399 || rule.Priority == 5403
+		}) || ownRoutes(t) != 0 {
+		t.Errorf("stopped daemon did not retain only sourced refusal and main exception: %v", standing)
+	}
+	bus.Store(nil)
+	code = runAsync(f, watched(&bus))
+	stopped = false
+	waitTill(t, "restart with adopted sourced protection", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	if !slices.ContainsFunc(owned(), func(rule kernel.DumpedRule) bool { return rule.Priority == 5399 }) {
+		t.Error("the restarted daemon did not rearm its ingress rule")
+	}
+	original, err := os.ReadFile(f.opts.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.opts.configPath, []byte(strings.Replace(string(original), named, "", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathReload, &control.Request{}); status != http.StatusOK {
+		t.Errorf("key-only removal after restart answered %d %q", status, answer)
+	}
+	if left := owned(); len(left) != 0 {
+		t.Errorf("key-only removal after restart left sourced rules: %v", left)
+	}
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("keyless daemon exited %d after SIGTERM", got)
+	}
+	stopped = true
+	leftNothing(t, f, was)
+}
+
+// A foreign 201 entry makes enable refuse before restoring any rule or route.
+// Removing that entry permits the same daemon to enable on its next request.
+func TestDaemonSourcedEnableRefusesForeignMirrorBeforeWrites(t *testing.T) {
+	claimNamespace(t)
+	f := writeDaemon(t, "    sourced:\n      to: [fd5e:db8:10:2::/96]\n"+leafCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	var reconciler atomic.Pointer[kernel.Reconciler]
+	s := watched(&bus)
+	s.kernel = func(table kernel.Table, runtime kernel.Runtime, source kernel.RouteSource) (*kernel.Reconciler, error) {
+		value, err := production.kernel(table, runtime, source)
+		reconciler.Store(value)
+		return value, err
+	}
+	code := runAsync(f, s)
+	stopped := false
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+		select {
+		case <-code:
+		default:
+			signalSelf(t, syscall.SIGTERM)
+			_ = exited(t, code)
+		}
+	})
+	waitTill(t, "sourced daemon start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	request := &control.Request{Subsystem: control.SubsystemReconciler}
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathDisable, request); status != http.StatusOK {
+		t.Fatalf("disable reconciler answered %d %q", status, answer)
+	}
+	waitTill(t, "sourced withdrawal", func() bool {
+		rules, err := kernel.DumpRules()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return !slices.ContainsFunc(rules, func(rule kernel.DumpedRule) bool {
+			return rule.Protocol == kernel.DefaultProtocol && rule.Priority >= 5399 && rule.Priority <= 5404 &&
+				rule.Priority != 5400
+		})
+	})
+	conn, err := netlink.Dial(unix.NETLINK_ROUTE, netlink.Options{Timeout: daemonPrompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = conn.Close()
+		}
+	})
+	destination := netip.MustParsePrefix("fd5e:db8:10:2::/96")
+	foreign := []byte{unix.AF_INET6, 96, 0, 0, 201, unix.RTPROT_STATIC, unix.RT_SCOPE_UNIVERSE, unix.RTN_THROW, 0, 0, 0, 0}
+	foreign = netlink.PutAttr(foreign, unix.RTA_DST, netlink.AddressBytes(destination.Addr()))
+	if _, err := conn.Execute(unix.RTM_NEWROUTE, unix.NLM_F_REQUEST|unix.NLM_F_ACK|unix.NLM_F_CREATE|unix.NLM_F_EXCL, foreign); err != nil {
+		t.Fatalf("seed foreign table-201 throw: %v", err)
+	}
+	seeded := true
+	t.Cleanup(func() {
+		if seeded {
+			_, _ = conn.Execute(unix.RTM_DELROUTE, unix.NLM_F_REQUEST|unix.NLM_F_ACK, foreign)
+		}
+	})
+	prior, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := ownRoutes(t)
+	watch, err := netlink.Subscribe("sourced-enable", unix.NETLINK_ROUTE,
+		uint32(unix.RTMGRP_IPV4_RULE|1<<(unix.RTNLGRP_IPV6_RULE-1)), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watching := true
+	t.Cleanup(func() {
+		if watching {
+			_ = watch.Close()
+		}
+	})
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathEnable, request); status != http.StatusBadRequest ||
+		!strings.Contains(answer, "foreign routes") {
+		t.Fatalf("enable with foreign 201 replied %d %q", status, answer)
+	}
+	active := reconciler.Load()
+	if active == nil {
+		t.Fatal("the daemon did not construct its reconciler")
+	}
+	active.NetworkChanged(kernel.NetworkChange{})
+	time.Sleep(daemonQuiet)
+	var message [64 << 10]byte
+	for {
+		n, _, err := unix.Recvfrom(int(watch.Fd()), message[:], unix.MSG_DONTWAIT)
+		if errors.Is(err, unix.EAGAIN) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		updates, err := netlink.ParseMessages(message[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, update := range updates {
+			if update.Kind == unix.RTM_NEWRULE || update.Kind == unix.RTM_DELRULE {
+				t.Fatalf("refused enable changed a kernel rule: %v", update)
+			}
+		}
+	}
+	if err := watch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	watching = false
+	after, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(prior, after) || ownRoutes(t) != routes {
+		t.Fatalf("refused enable wrote policy: rules before %v, after %v; owned routes before %d, after %d",
+			prior, after, routes, ownRoutes(t))
+	}
+	if _, err := conn.Execute(unix.RTM_DELROUTE, unix.NLM_F_REQUEST|unix.NLM_F_ACK, foreign); err != nil {
+		t.Fatalf("remove foreign table-201 throw: %v", err)
+	}
+	seeded = false
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closed = true
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathEnable, request); status != http.StatusOK {
+		t.Fatalf("enable after removing foreign 201 replied %d %q", status, answer)
+	}
+	restored, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(restored, func(rule kernel.DumpedRule) bool {
+		return rule.Protocol == kernel.DefaultProtocol && rule.Priority == 5404 && rule.To == destination
+	}) {
+		t.Fatalf("successful enable replied before sourced refusal readback: %v", restored)
+	}
+	if status, answer := ask(t, f.opts.controlPath, http.MethodPost, control.PathDisable, request); status != http.StatusOK {
+		t.Fatalf("second disable answered %d %q", status, answer)
+	}
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("sourced daemon exited %d after SIGTERM", got)
+	}
+	stopped = true
+	leftNothing(t, f, was)
+}
+
 // A start with no cap.table over the down set an earlier start's stop left warns once naming each of its rules with the command
 // that deletes it, and leaves it, since no reconciler runs to take it
 func TestDaemonWithNoReconcilerWarnsOfTheDownSetLeft(t *testing.T) {

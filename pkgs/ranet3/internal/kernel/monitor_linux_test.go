@@ -41,7 +41,7 @@ const (
 // another writer's rule comes and goes without a pass, and a rule the reconciler adds itself is already in place
 func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 	plat, _ := writePlatform(t)
-	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort, nil)
 	owned := plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40})
 	for name, arm := range map[string]struct {
 		kind uint16
@@ -62,7 +62,7 @@ func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 // the monitor wakes on an address added to the tun or taken off it, whoever wrote it, and on no other link's
 func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 	plat, _ := writePlatform(t)
-	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort, nil)
 	tun := plat.addrMessage(netip.MustParsePrefix("192.0.2.1/32"))
 	other := slices.Clone(tun)
 	binary.NativeEndian.PutUint32(other[4:], plat.index+1)
@@ -87,7 +87,7 @@ func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 // writes through wrote, the kernel's own changes among them, which carry port 0, and on the tun's addresses whichever socket wrote them
 func TestRouteMonitorWakesOnARouteOnlyWhereAnotherSocketWroteIt(t *testing.T) {
 	plat, _ := writePlatform(t)
-	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort)
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort, nil)
 	elsewhere, _ := writePlatform(t)
 	elsewhere.table.ID = plat.table.ID + 1
 	for _, route := range []Route{{Destination: prefix("2001:db8:1::/48"), Metric: 1024}, {Destination: prefix("192.0.2.0/24"), Metric: 1024}} {
@@ -118,11 +118,53 @@ func TestRouteMonitorWakesOnARouteOnlyWhereAnotherSocketWroteIt(t *testing.T) {
 	}
 }
 
+func TestSourcedMonitorWakesOnIntersectingMainAndForeignPolicy(t *testing.T) {
+	plat, _ := writePlatform(t)
+	destination := schema.MustPrefix("fd5e:db8:10:2::/96")
+	var key atomic.Pointer[Sourced]
+	key.Store(&Sourced{ID: 201, To: []schema.Prefix{destination}})
+	wakes := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort, &key)
+	main := plat.sourcedRouteView(schema.TableMain)
+	mirror := plat.sourcedRouteView(201)
+	other := plat.sourcedRouteView(202)
+	for _, tc := range []struct {
+		name string
+		body []byte
+		port uint32
+		want bool
+	}{
+		{"main inside D", main.routeMessage(Route{Destination: netip.MustParsePrefix("fd5e:db8:10:2::1000:0/112")}, false), otherPort, true},
+		{"main containing D", main.routeMessage(Route{Destination: netip.MustParsePrefix("fd5e:db8:10::/48")}, false), otherPort, true},
+		{"main disjoint", main.routeMessage(Route{Destination: netip.MustParsePrefix("fd5e:db8:10:3::/96")}, false), otherPort, false},
+		{"main default", main.routeMessage(Route{Destination: netip.MustParsePrefix("::/0")}, false), otherPort, false},
+		{"mirror writer", mirror.routeMessage(Route{Destination: destination.Prefix}, false), otherPort, true},
+		{"other table", other.routeMessage(Route{Destination: destination.Prefix}, false), otherPort, false},
+		{"own socket", main.routeMessage(Route{Destination: destination.Prefix}, false), ownPort, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wakes(netlink.Message{Kind: unix.RTM_NEWROUTE, Data: tc.body, Pid: tc.port}); got != tc.want {
+				t.Fatalf("sourced route notification wake = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	peer := sourcedPeerRule(destination, netip.MustParsePrefix("fd5e:db8:10:1::/64"), 201)
+	x := netlink.PutAttr(plat.ruleMessage(peer), unix.FRA_IP_PROTO, []byte{unix.IPPROTO_UDP})
+	if !wakes(netlink.Message{Kind: unix.RTM_NEWRULE, Data: x, Pid: otherPort}) {
+		t.Fatal("a foreign unread-selector rule did not wake protection")
+	}
+	key.Store(nil)
+	if wakes(netlink.Message{Kind: unix.RTM_NEWROUTE, Data: main.routeMessage(Route{Destination: destination.Prefix}, false), Pid: otherPort}) ||
+		wakes(netlink.Message{Kind: unix.RTM_NEWROUTE, Data: mirror.routeMessage(Route{Destination: destination.Prefix}, false), Pid: otherPort}) ||
+		wakes(netlink.Message{Kind: unix.RTM_NEWRULE, Data: x, Pid: otherPort}) {
+		t.Fatal("a removed key continued waking on sourced objects")
+	}
+}
+
 // a datagram the monitor cannot parse and an overflow each wake it, where a datagram holding only a route of its own socket's does not
 func TestRouteMonitorWakesOnWhatItCannotReadPastItsOwnRoute(t *testing.T) {
 	plat, _ := writePlatform(t)
 	source := newScriptedSource(nil)
-	monitor := startMonitor("scripted", source, reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort))
+	monitor := startMonitor("scripted", source, reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, ownPort, nil))
 	t.Cleanup(func() { _ = monitor.Close() })
 	own := fromPort(notification(unix.RTM_NEWROUTE, plat.routeMessage(Route{Destination: prefix("2001:db8:1::/48"), Metric: 1024}, false)), ownPort)
 	source.queue <- scriptedRead{datagram: own}

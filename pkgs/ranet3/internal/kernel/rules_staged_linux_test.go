@@ -1801,7 +1801,7 @@ func stagedNotices(t *testing.T, l *stagedLab) (uint32, func() []stagedNotice) {
 	t.Helper()
 	plat := l.plat.netlinkPlatform
 	port := plat.conn.(*nlConn).socket.Pid()
-	wakes := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, port)
+	wakes := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto, plat.index, port, nil)
 	var mu sync.Mutex
 	var seen []stagedNotice
 	watch, err := openMonitor("staged-notices", unix.RTMGRP_IPV4_RULE|1<<(unix.RTNLGRP_IPV6_RULE-1), func(message netlink.Message) bool {
