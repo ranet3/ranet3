@@ -169,6 +169,16 @@ func checksumUDP(version, value int) []byte {
 	return raw
 }
 
+func TestValidUDPGROCoalescesIntoOneTUNPacket(t *testing.T) {
+	for _, version := range []int{4, 6} {
+		t.Run(fmt.Sprintf("ipv%d", version), func(t *testing.T) {
+			m := checksumMesh(t, version)
+			sock := checksumUDPListener(t, version)
+			checksumUDPGROWitness(t, m, sock, version)
+		})
+	}
+}
+
 func TestBadInnerChecksumNeverReachesASocket(t *testing.T) {
 	for _, version := range []int{4, 6} {
 		for _, protocol := range []string{"Tcp", "Udp"} {
@@ -182,6 +192,22 @@ func TestBadInnerChecksumNeverReachesASocket(t *testing.T) {
 }
 
 func testBadInnerChecksum(t *testing.T, version int, protocol string, badAt int) {
+	t.Helper()
+	m := checksumMesh(t, version)
+	_, farAddr := checksumAddresses(version)
+	before := checksumSNMP(t, protocol, version)
+	if protocol == "Udp" {
+		checksumUDPDelivery(t, m, version, badAt)
+	} else {
+		checksumTCPDelivery(t, m, version, badAt, farAddr)
+	}
+	waitUntil(t, "the bad checksum counter", func() bool { return checksumSNMP(t, protocol, version) >= before+1 })
+	if got := checksumSNMP(t, protocol, version); got != before+1 {
+		t.Fatalf("%s InCsumErrors rose by %d, want 1", protocol, got-before)
+	}
+}
+
+func checksumMesh(t *testing.T, version int) *Mesh {
 	t.Helper()
 	netnstest.EnterEmpty(t)
 	m, err := NewNamed(DefaultMTU, "csumtest0", false, nil)
@@ -200,19 +226,10 @@ func testBadInnerChecksum(t *testing.T, version int, protocol string, badAt int)
 		bits = 128
 	}
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(local, bits), Local)
-	before := checksumSNMP(t, protocol, version)
-	if protocol == "Udp" {
-		checksumUDPDelivery(t, m, version, badAt)
-	} else {
-		checksumTCPDelivery(t, m, version, badAt, farAddr)
-	}
-	waitUntil(t, "the bad checksum counter", func() bool { return checksumSNMP(t, protocol, version) >= before+1 })
-	if got := checksumSNMP(t, protocol, version); got != before+1 {
-		t.Fatalf("%s InCsumErrors rose by %d, want 1", protocol, got-before)
-	}
+	return m
 }
 
-func checksumUDPDelivery(t *testing.T, m *Mesh, version, badAt int) {
+func checksumUDPListener(t *testing.T, version int) *net.UDPConn {
 	t.Helper()
 	local, _ := checksumAddresses(version)
 	network := "udp4"
@@ -223,7 +240,35 @@ func checksumUDPDelivery(t *testing.T, m *Mesh, version, badAt int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sock.Close()
+	t.Cleanup(func() { _ = sock.Close() })
+	return sock
+}
+
+func checksumUDPGROWitness(t *testing.T, m *Mesh, sock *net.UDPConn, version int) {
+	t.Helper()
+	before := tunPackets(t, m.Name, receivedPackets)
+	checksumDelivery(t, m, version, checksumUDP(version, 81), checksumUDP(version, 82))
+	buf := make([]byte, 8)
+	for _, value := range []byte{81, 82} {
+		if err := sock.SetReadDeadline(time.Now().Add(deliveryTimeout)); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err := sock.ReadFromUDP(buf)
+		if err != nil || n != len(buf) || !bytes.Equal(buf, bytes.Repeat([]byte{value}, len(buf))) {
+			t.Fatalf("good UDP control value %d: read %d bytes, %v", value, n, err)
+		}
+	}
+	if written := tunPackets(t, m.Name, receivedPackets) - before; written != 1 {
+		t.Fatalf("two valid UDP datagrams used %d TUN receive packets, want one coalesced packet", written)
+	}
+}
+
+func checksumUDPDelivery(t *testing.T, m *Mesh, version, badAt int) {
+	t.Helper()
+	sock := checksumUDPListener(t, version)
+	if badAt >= 0 {
+		checksumUDPGROWitness(t, m, sock, version)
+	}
 	count, index := 3, badAt
 	if badAt < 0 {
 		count, index = 1, 0
