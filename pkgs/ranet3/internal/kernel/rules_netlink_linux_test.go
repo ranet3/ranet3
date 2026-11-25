@@ -439,10 +439,45 @@ func TestNetlinkSourcedEffectiveMainRouteReportsKernelProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, ok := reconciler.SourcedStatus()
-	if !ok || len(status.Answers) != 2 || status.Answers[0].Kind != "refused" ||
-		status.Answers[1].Kind != "main" || status.Answers[1].MainPrefix != child ||
-		status.Answers[1].MainProtocol != unix.RTPROT_RA {
-		t.Fatalf("the real main readback did not name the route: %+v", status)
+	if !ok || len(status.Answers) != 17 {
+		t.Fatalf("the main child did not partition the destination: %+v", status)
+	}
+	// A /112 leaves one sibling at each length from /97 through /112.
+	var refused [113]bool
+	var childSeen bool
+	for i, answer := range status.Answers {
+		if !answer.To.IsValid() || answer.To != answer.To.Masked() ||
+			!destination.Prefix.Contains(answer.To.Addr()) ||
+			answer.To.Bits() < destination.Prefix.Bits() || answer.From.IsValid() {
+			t.Fatalf("an answer escaped the destination or selected a source: %+v", status)
+		}
+		for _, earlier := range status.Answers[:i] {
+			if answer.To.Overlaps(earlier.To) {
+				t.Fatalf("the effective answers overlap: %+v", status)
+			}
+		}
+		if answer.To == child {
+			if childSeen || answer.Kind != "main" || answer.MainPrefix != child ||
+				answer.MainProtocol != unix.RTPROT_RA {
+				t.Fatalf("the child did not name the kernel's winning route: %+v", status)
+			}
+			childSeen = true
+			continue
+		}
+		bits := answer.To.Bits()
+		if answer.Kind != "refused" || answer.To.Overlaps(child) ||
+			bits <= destination.Prefix.Bits() || bits > child.Bits() || refused[bits] {
+			t.Fatalf("the complement was not refused exactly once: %+v", status)
+		}
+		refused[bits] = true
+	}
+	if !childSeen {
+		t.Fatalf("the main child is missing: %+v", status)
+	}
+	for bits := destination.Prefix.Bits() + 1; bits <= child.Bits(); bits++ {
+		if !refused[bits] {
+			t.Fatalf("the refused complement omitted /%d: %+v", bits, status)
+		}
 	}
 	readChange("main winner")
 	if _, err := plat.conn.execute(unix.RTM_DELROUTE, unix.NLM_F_ACK, body); err != nil {

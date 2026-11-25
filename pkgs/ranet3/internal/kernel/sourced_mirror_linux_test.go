@@ -22,16 +22,18 @@ import (
 
 type sourcedMirrorConn struct {
 	*fakeNetlink
-	mirror    []netlink.Message
-	main      []netlink.Message
-	mainReads int
-	failMain  bool
-	rules     []netlink.Message
-	writes    []netlink.Message
-	reads     int
-	failAck   bool
-	up        bool
-	view      netlinkPlatform
+	mirror       []netlink.Message
+	main         []netlink.Message
+	mainReads    int
+	failMain     bool
+	failMainOnce bool
+	rules        []netlink.Message
+	writes       []netlink.Message
+	reads        int
+	failAck      bool
+	failAckOnce  bool
+	up           bool
+	view         netlinkPlatform
 }
 
 func (c *sourcedMirrorConn) link(index uint32, _ string) (linkInfo, error) {
@@ -79,7 +81,8 @@ func (c *sourcedMirrorConn) execute(kind, flags uint16, body []byte) ([]netlink.
 				return c.mirror, nil
 			case uint32(schema.TableMain):
 				c.mainReads++
-				if c.failMain {
+				if c.failMain || c.failMainOnce {
+					c.failMainOnce = false
 					return nil, unix.EIO
 				}
 				return c.main, nil
@@ -95,7 +98,8 @@ func (c *sourcedMirrorConn) execute(kind, flags uint16, body []byte) ([]netlink.
 		write := netlink.Message{Kind: kind, Data: slices.Clone(body)}
 		c.writes = append(c.writes, write)
 		c.mirror = append(c.mirror, write)
-		if c.failAck {
+		if c.failAck || c.failAckOnce {
+			c.failAckOnce = false
 			return nil, unix.ENOBUFS
 		}
 	case unix.RTM_DELROUTE:
@@ -505,11 +509,24 @@ func TestSourcedEffectiveMainUsesAnyOriginAndSignalsOnlyChangedAnswers(t *testin
 		t.Fatal("first kernel answer produced no change")
 	}
 	status, ok := r.SourcedStatus()
+	child := netip.MustParsePrefix("fd5e:db8:10:2::1000:0/112")
+	sections := sourcedSections(destination.Prefix, []netip.Prefix{child})
 	if !ok || status.Named != 1 || status.Supported != 1 || status.Pairs != 1 || status.Rules != 4 ||
-		len(status.Answers) != 2 || status.Answers[0].Kind != "refused" ||
-		status.Answers[1].Kind != "main" || status.Answers[1].MainPrefix.String() != "fd5e:db8:10:2::1000:0/112" ||
-		status.Answers[1].MainProtocol != unix.RTPROT_RA {
-		t.Fatalf("main n-1 leaked or /112 RA winner missing: %+v", status)
+		len(status.Answers) != len(sections) {
+		t.Fatalf("effective destination partition missing: %+v", status)
+	}
+	for i, section := range sections {
+		answer := status.Answers[i]
+		if answer.To != section || answer.From.IsValid() {
+			t.Fatalf("false whole-destination or source answer: %+v", status)
+		}
+		if section == child {
+			if answer.Kind != "main" || answer.MainPrefix != child || answer.MainProtocol != unix.RTPROT_RA {
+				t.Fatalf("RA winner missing from child: %+v", answer)
+			}
+		} else if answer.Kind != "refused" || answer.MainPrefix.IsValid() {
+			t.Fatalf("suppressed n-1 route escaped into sibling: %+v", answer)
+		}
 	}
 	if err := r.observeSourced(nil); err != nil {
 		t.Fatal(err)
@@ -529,9 +546,14 @@ func TestSourcedEffectiveMainUsesAnyOriginAndSignalsOnlyChangedAnswers(t *testin
 		t.Fatal("new n-exact connected winner did not signal")
 	}
 	status, ok = r.SourcedStatus()
-	if !ok || status.Answers[0].Kind != "main" ||
-		status.Answers[0].MainPrefix != destination.Prefix || status.Answers[0].MainProtocol != unix.RTPROT_KERNEL {
-		t.Fatalf("connected n-exact winner missing: %+v", status)
+	if !ok || len(status.Answers) != len(sections) ||
+		!slices.ContainsFunc(status.Answers, func(answer SourcedAnswer) bool {
+			return answer.Kind == "main" && answer.MainPrefix == destination.Prefix &&
+				answer.MainProtocol == unix.RTPROT_KERNEL && answer.To != destination.Prefix
+		}) || !slices.ContainsFunc(status.Answers, func(answer SourcedAnswer) bool {
+		return answer.Kind == "main" && answer.MainPrefix == child && answer.MainProtocol == unix.RTPROT_RA
+	}) {
+		t.Fatalf("connected n-exact winner displaced a more specific route: %+v", status)
 	}
 	status.Answers[0].Kind = "corrupt"
 	again, _ := r.SourcedStatus()
@@ -564,10 +586,14 @@ func TestSourcedEffectiveHeldChildOverridesEligibleBroadPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, ok := r.SourcedStatus()
-	if !ok || status.Rules != 6 || len(status.Answers) != 3 ||
-		status.Answers[0].Kind != "refused" ||
-		status.Answers[1].Kind != "tunnel" || status.Answers[1].From != source ||
-		status.Answers[2].Kind != "refused" || status.Answers[2].From != source || status.Answers[2].To != child {
+	sections := sourcedSections(destination.Prefix, []netip.Prefix{child})
+	if !ok || status.Rules != 6 || len(status.Answers) != 1+len(sections) ||
+		status.Answers[0].Kind != "refused" || status.Answers[0].To != destination.Prefix ||
+		!slices.ContainsFunc(status.Answers, func(answer SourcedAnswer) bool {
+			return answer.Kind == "tunnel" && answer.From == source && answer.To != destination.Prefix
+		}) || !slices.ContainsFunc(status.Answers, func(answer SourcedAnswer) bool {
+		return answer.Kind == "refused" && answer.From == source && answer.To == child
+	}) {
 		t.Fatalf("coarse eligible pair swallowed a held child: %+v", status)
 	}
 	if conn.mainReads != 1 {
@@ -578,7 +604,9 @@ func TestSourcedEffectiveHeldChildOverridesEligibleBroadPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, _ = r.SourcedStatus()
-	if status.State != "pending" || status.Answers[len(status.Answers)-1].Kind != "pending" {
+	if status.State != "pending" || !slices.ContainsFunc(status.Answers, func(answer SourcedAnswer) bool {
+		return answer.Kind == "pending" && answer.From == source && answer.To == child
+	}) {
 		t.Fatalf("unmirrored hold reported settled packet carriage: %+v", status)
 	}
 	conn.mirror = append(conn.mirror, netlink.Message{Kind: unix.RTM_NEWROUTE, Data: conn.view.routeMessage(hold, false)})
@@ -600,6 +628,38 @@ func TestSourcedEffectiveHeldChildOverridesEligibleBroadPeer(t *testing.T) {
 	if status.State != "failing" || !strings.Contains(status.Error, "main routes") ||
 		len(status.Answers) != 1 || status.Answers[0].Kind != "unknown" {
 		t.Fatalf("failed main listing fabricated a known answer: %+v", status)
+	}
+}
+
+func TestSourcedMainThrowContinuesIntoProtectedAdmission(t *testing.T) {
+	r, _, _ := sourcedMirrorHarness(t)
+	destination := r.table.Sourced.To[0]
+	source := netip.MustParsePrefix("fd5e:db8:10:1::/64")
+	child := netip.MustParsePrefix("fd5e:db8:10:2::1000:0/112")
+	r.sourcedSources = map[netip.Prefix]struct{}{source: {}}
+	var rules []DumpedRule
+	for _, rule := range append(sourcedStandingRules(r.table.Sourced.To, r.sourcedSources),
+		sourcedPeerRule(destination, source, 201)) {
+		rules = append(rules, sourcedExpectedDump(rule, r.table.Proto))
+	}
+	peer := Route{Destination: destination.Prefix, Metric: routeMetric(destination.Prefix, false)}
+	mesh := netstack.NewRouteTable()
+	mesh.Set(netip.Prefix{}, destination.Prefix, &netstack.Peer{ID: "synthetic"})
+	r.src = mesh
+	main := []sourcedMainRoute{{to: child, protocol: unix.RTPROT_RA, kind: unix.RTN_THROW}}
+	answer := sourcedAnswerAt(r, destination, source.Addr(), child.Addr(), main, []Route{peer}, []Route{peer}, rules, true, true)
+	if answer.Kind != "tunnel" || !answer.Protection || answer.MainPrefix.IsValid() {
+		t.Fatalf("main throw was incorrectly terminal: %+v", answer)
+	}
+	rules = append(rules, sourcedExpectedDump(sourcedGuardRule(destination, source), r.table.Proto))
+	answer = sourcedAnswerAt(r, destination, source.Addr(), child.Addr(), main, []Route{peer}, []Route{peer}, rules, true, true)
+	if answer.Kind != "refused" || !answer.Protection || answer.MainPrefix.IsValid() {
+		t.Fatalf("throw bypassed retiring-pair guard: %+v", answer)
+	}
+	main[0].kind = unix.RTN_UNREACHABLE
+	answer = sourcedAnswerAt(r, destination, source.Addr(), child.Addr(), main, []Route{peer}, []Route{peer}, rules, true, true)
+	if answer.Kind != "refused" || answer.MainPrefix != child || answer.MainProtocol != unix.RTPROT_RA {
+		t.Fatalf("terminal main refusal continued past its winning route: %+v", answer)
 	}
 }
 

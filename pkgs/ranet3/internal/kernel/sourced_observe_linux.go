@@ -6,7 +6,6 @@
 package kernel
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -109,13 +108,18 @@ func sourcedAnswerAt(r *Reconciler, destination schema.Prefix, source, target ne
 	answer.Protection = mainRule && (refusal || guard)
 	if mainRule {
 		if winner, ok := sourcedMainWinner(main, source, target); ok {
-			answer.MainPrefix, answer.MainProtocol = winner.to, winner.protocol
-			if winner.kind == unix.RTN_UNICAST || winner.kind == unix.RTN_LOCAL {
+			switch winner.kind {
+			case unix.RTN_UNICAST, unix.RTN_LOCAL:
+				answer.MainPrefix, answer.MainProtocol = winner.to, winner.protocol
 				answer.Kind = "main"
-			} else {
+				return answer
+			case unix.RTN_THROW:
+				// A throw continues at the next rule, not at main's route.
+			default:
+				answer.MainPrefix, answer.MainProtocol = winner.to, winner.protocol
 				answer.Kind = "refused"
+				return answer
 			}
-			return answer
 		}
 	}
 	if guard {
@@ -203,35 +207,51 @@ func (p *netlinkPlatform) sourcedObserved(r *Reconciler, desired []Route) (Sourc
 			}
 		}
 		sections := sourcedSections(destination.Prefix, destinationCuts)
-		baseSection := slices.MinFunc(sections, func(a, b netip.Prefix) int { return cmp.Compare(a.Bits(), b.Bits()) })
-		baseline := sourcedAnswerAt(r, destination, netip.Addr{}, baseSection.Addr(), main, mirror, desired, rules, ingress, mainTarget)
-		baseline.To = destination.Prefix
-		status.Answers = append(status.Answers, baseline)
 		hosts := make([]SourcedAnswer, len(sections))
+		uniform := true
 		for i, section := range sections {
 			host := sourcedAnswerAt(r, destination, netip.Addr{}, section.Addr(), main, mirror, desired, rules, ingress, mainTarget)
 			host.To = section
 			hosts[i] = host
-			if !sourcedSameAnswer(host, baseline) {
-				status.Answers = append(status.Answers, host)
+			if i > 0 && !sourcedSameAnswer(host, hosts[0]) {
+				uniform = false
 			}
+		}
+		if uniform {
+			answer := hosts[0]
+			answer.To = destination.Prefix
+			status.Answers = append(status.Answers, answer)
+		} else {
+			status.Answers = append(status.Answers, hosts...)
+		}
+		var sourceAnswers []SourcedAnswer
+		if len(sources) != 0 {
+			sourceAnswers = make([]SourcedAnswer, len(sections))
 		}
 		for _, supported := range sources {
 			for _, part := range sourcedSections(supported, sourceCuts) {
-				sourceBase := sourcedAnswerAt(r, destination, part.Addr(), baseSection.Addr(), main, mirror, desired, rules, ingress, mainTarget)
-				sourceBase.To, sourceBase.From = destination.Prefix, part
-				inherited := sourcedSameAnswer(sourceBase, baseline)
-				if !inherited {
-					status.Answers = append(status.Answers, sourceBase)
-				}
+				sourceUniform, inherited := true, true
 				for i, section := range sections {
 					answer := sourcedAnswerAt(r, destination, part.Addr(), section.Addr(), main, mirror, desired, rules, ingress, mainTarget)
 					answer.To, answer.From = section, part
-					if inherited && sourcedSameAnswer(answer, hosts[i]) || !inherited && sourcedSameAnswer(answer, sourceBase) {
-						continue
+					sourceAnswers[i] = answer
+					if i > 0 && !sourcedSameAnswer(answer, sourceAnswers[0]) {
+						sourceUniform = false
 					}
-					status.Answers = append(status.Answers, answer)
+					if !sourcedSameAnswer(answer, hosts[i]) {
+						inherited = false
+					}
 				}
+				if inherited {
+					continue
+				}
+				if sourceUniform {
+					answer := sourceAnswers[0]
+					answer.To = destination.Prefix
+					status.Answers = append(status.Answers, answer)
+					continue
+				}
+				status.Answers = append(status.Answers, sourceAnswers...)
 			}
 		}
 	}
