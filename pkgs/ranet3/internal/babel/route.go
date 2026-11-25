@@ -148,9 +148,9 @@ type routeTable struct {
 	// update carries, plus one Hello interval for its transit
 	updateExpiry time.Duration
 	// advertisedUntil is, for each key, the latest time any finite update this
-	// node sent for it expires at a neighbor. A retraction moves nothing, since
-	// it is sent once and never acknowledged, and a neighbor that missed it
-	// may route the key through this node until then.
+	// node built for it would expire at a neighbor. A retraction moves nothing,
+	// since it is sent once and never acknowledged, and a neighbor that missed
+	// it may route the key through this node until then.
 	advertisedUntil map[routeKey]time.Time
 	// held is every key that lost its last route before its advertisedUntil,
 	// the end of the hold of RFC 8966 section 3.5.4, which no route table entry
@@ -517,10 +517,10 @@ func (rt *routeTable) wins(cost uint16, smoothed float64, incumbent *routeInfo, 
 // route, and reports whether it is held. RFC 8966 section 3.5.4 maintains a
 // retracted prefix "at least until it is guaranteed that no neighbour has
 // selected the current node as next hop for prefix P", and a neighbor may
-// have, until every finite update this node sent for it has expired there.
-// That holds for every way a key loses its last route, a flush at the route's
-// own expiry among them. A key whose updates have all expired, or that no
-// update ever named, loses its entry, so a covering route may serve it again.
+// have, until every finite update this node built for it would have expired
+// there. That holds for every way a key loses its last route, a flush at the
+// route's own expiry among them. A key whose updates have all expired, or that
+// no update ever named, loses its entry, so a covering route may serve it again.
 func (rt *routeTable) lose(key routeKey, now time.Time) bool {
 	if end := rt.advertisedUntil[key]; now.Before(end) {
 		rt.held[key] = struct{}{}

@@ -483,9 +483,10 @@ func (s *Speaker) adoptOwnLocked(key routeKey, now time.Time) {
 // behind the entry adoptOwnLocked installed, and reports whether the key is
 // held. A key given back takes its offers as its routes, selected at once.
 // With none selected it loses its last route, and is held until the latest
-// time any finite update this node sent for it expires at a neighbor, however
-// long ago it stopped being announced. A key this node still owns the other
-// way keeps an entry of this node's, the one ownEntryLocked names for it now.
+// time any finite update this node built for it would expire at a neighbor,
+// however long ago it stopped being announced. A key this node still owns the
+// other way keeps an entry of this node's, the one ownEntryLocked names for it
+// now.
 // A key to a host address this node still holds drops its offers, as receive
 // drops what a neighbor sends for it.
 func (s *Speaker) releaseOwnLocked(key routeKey, now time.Time) bool {
