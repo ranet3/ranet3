@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-24
+updated: 2026-11-25
 order: 30
 ---
 
@@ -192,10 +192,10 @@ The duration flags take the
   Android and iOS with `overlay` written print
   `Antispoof filter, not enforced on android` there, naming the platform. Then,
   under `cap.exit.fallback = "none"`, the kill switch's chains and sets in
-  `inet ranet3` as `Fallback` with its two chains, their hooks and priority and
-  the switch's state, each line of each chain with the packets and bytes the
-  drop counted, and each named set with what a lookup in it finds, or `not held`
-  where the kernel holds none of its chains. On macOS it is
+  `inet ranet3` as `Fallback` with its three chains, their hooks and priority
+  and the switch's state, each line with packets and bytes on its counted
+  accepts and drops, and each named set with what a lookup in it finds, or
+  `not held` where the kernel holds none of its chains. On macOS it is
   `Fallback, rejects on lo0, holding`, or another state of the switch, and each
   of [the rejects](../routing.md#the-kill-switch-on-macos) `lo0` holds, with no
   count. The dump and the chains are each read now through a socket of their

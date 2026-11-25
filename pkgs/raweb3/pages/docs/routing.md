@@ -717,19 +717,14 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
 #### The kill switch on Linux
 
 macOS's switch is routes, as
-[the kill switch on macOS](#the-kill-switch-on-macos) gives. With
-`cap.exit.fallback = "none"` the host's traffic leaves by a link outside the
-mesh only where a line of the chains below passes it while they read back as
-written, whether an exit is live or not, and after each stop their lifetime
-below says leaves the chains. The switch covers the host's own traffic and that
-of the links `forward` names. The chain's forwarded line below passes a
-forwarded packet from a link outside `forwarded`, such as a container's or a
-VM's, whose destination `fib daddr type` does not read as local, a type the
-kernel takes
-[in IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58)
-and
-[in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
-Two more rules close the routing side, in each family:
+[the kill switch on macOS](#the-kill-switch-on-macos) gives. On Linux,
+`cap.exit.fallback = "none"` writes three chains in `inet ranet3`. An unwritten
+fallback in mode 3 also asks for them. A bare mode 2 block, an explicit
+`"uplink"` fallback and a node without `cap.exit` do not. While the switch reads
+back as written, its chains pass only the packets below, whether an exit is live
+or not. The forward chain checks packets the kernel routes through this host,
+including packets from links that `forward` does not name. Two more rules close
+the routing side, in each family:
 
 | Priority | Rule                                                                                                                                  | What it does                                                                                                               |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -750,17 +745,17 @@ chains below.
 
 The routing side leaves open a socket bound to the uplink's address, which 5405
 sends by main, one bound to the uplink's device, and a mark another program's
-rule sends to main. The kill switch's two filter chains in the table
-`inet ranet3`, at priority 2147483646, hold them to their lines: `fallback` at
-`postrouting`, which judges the link a packet leaves by
-([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n437),
-[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n248)),
-and `output` at `output`, which sees the packets the host sends by the link of
-their first route
-([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
-[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116)).
-Both hold these lines, a reply line only for a protocol `inbound` lists, and
-`output` holds `fib daddr type local accept` ahead of its drop:
+rule sends to main. At priority 2147483646, `fallback` at `postrouting` judges
+the link a packet leaves by, `output` at `output` checks the host's own packets,
+and `routed` at `forward` judges forwarded packets before postrouting source
+translation. A packet accepted at one hook still meets the chains at later
+hooks. The first two chains share the lines below, with `output` adding
+`fib daddr type local accept` before the drop. Their `fib daddr type` test
+follows the kernel's
+[IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58)
+and
+[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89)
+address types. A reply line is present only for a protocol `inbound` lists:
 
 ```text
 oifname { "lo", "<tun>" } accept
@@ -779,6 +774,48 @@ ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
 ct direction reply ct protocol udp ct original proto-dst @udpports accept
 counter drop
 ```
+
+`routed` applies these lines in first-match order. The two reply lines are
+present only when `inbound` lists the respective protocol:
+
+```text
+oifname { "lo", "<tun>" } accept
+meta mark 0x00000072 accept
+iifname @forwarded accept
+ip saddr != @from4 accept
+ip6 saddr != @from6 accept
+ip daddr @lan4 accept
+ip6 daddr @lan6 accept
+ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
+ip6 daddr { fe80::/10, ff00::/8 } accept
+ip daddr @self4 accept
+ip6 daddr @self6 accept
+ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
+ct direction reply ct protocol udp ct original proto-dst @udpports accept
+icmp type { destination-unreachable, time-exceeded, parameter-problem } ct state related ct original ip saddr != @from4 ct reply ip saddr != @from4 counter accept
+icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } ct state related ct original ip6 saddr != @from6 ct reply ip6 saddr != @from6 counter accept
+counter drop
+```
+
+`from4` and `from6` hold exactly the outermost own-prefix source list of rule
+5430, including prefixes inside `overlay`. `self4` and `self6` hold the own
+destination prefixes outside it. A forwarded packet from an own prefix on a link
+outside `forwarded` to a public destination meets the last drop, even after a
+main-table route longer than the default has selected an uplink and even if
+another writer translates its source later. Packets into the tun, onto a named
+forwarding link, to the LAN, to an own prefix or to a link-local or multicast
+destination pass the earlier lines. An outside client's flow to an own-prefix
+server passes in the reply direction if `inbound` lists its original destination
+port. This includes any RELATED ICMP error quoting that flow, regardless of the
+error's type, before the later ICMP lines test it.
+
+The two counted ICMP accepts pass RELATED errors of the listed types, at every
+code, only when neither quoted-connection endpoint lies in `from4` or `from6`.
+The outer sender is not checked. A matching unauthenticated quote with
+additional payload can pass. IPv4 Source Quench and Redirect, ICMPv6 types
+outside 1-4, errors quoting no live flow and errors about own-endpoint flows
+without an earlier exception meet the counted drop. The separate
+[mesh transit decision](#transit) has its own policy.
 
 - The priority runs ahead of conntrack's
   [confirmation at 2147483647](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/netfilter_ipv4.h?id=940de590b839f71d6dc846160534bf202401b8b7#n43),
@@ -820,18 +857,8 @@ counter drop
   another link out of the uplink, IPv4 read that address as local and
   postrouting refused the send, and IPv6 read it as unicast and output's drop
   refused it.
-- The lines pass the mesh and `lo`, ranet3's underlay by its mark 0x72 exactly,
-  a packet forwarded from a link `forward` leaves out, which keeps its routes
-  from before ranet3, toward a destination that `fib daddr type` does not read
-  as local, as above, the LAN, link-local and multicast, which carry DHCP and
-  most of discovery, neighbor and router discovery to any address at the hop
-  limit of 255, as [RFC 4890](https://www.rfc-editor.org/rfc/rfc4890) section
-  4.4.1 lists them, Packet Too Big and fragmentation needed that the host itself
-  sends, with no input link, about a packet it forwards, this node's own
-  prefixes, the replies of a flow the far side opened to a service
-  `cap.exit.inbound` lists, keyed on the connection's protocol, so its ICMP
-  error passes too, and, at output alone, a destination `fib daddr type` reads
-  local, as above. The drop takes what none of them passes.
+- The first two chains' lines pass what the listing above names. The forward
+  chain applies its own first-match listing before postrouting.
 - `forwarded` holds `lo` and the links `forward` expands to. `lan4` and `lan6`
   hold the LAN: the connected networks of the links `forward` names, whole, and
   of the connected networks of every other link outside the mesh, the parts
@@ -847,9 +874,9 @@ counter drop
   [counts as a default](#routes-that-count-as-a-default) is left out whole.
   Status names it, and as public a network, or a prefix of its part outside the
   overlay, that the ranges and `cap.exit.lan` leave out in whole or in part.
-  `self4` and `self6` hold the prefixes 5445 names but the carve-outs, and
-  `tcpports` and `udpports` the ranges `inbound` lists. The rules and the sets
-  come from one derivation each pass.
+  `self4` and `self6` hold the prefixes 5445 names but the carve-outs, `from4`
+  and `from6` the source prefixes 5430 names, and `tcpports` and `udpports` the
+  ranges `inbound` lists. The rules and sets come from one derivation each pass.
 
 The table carries no owner flag, so the kernel does not delete the chains with
 the process that wrote them:
@@ -896,14 +923,15 @@ the process that wrote them:
   and logs nothing. Where the file in force asks for no switch it deletes the
   chains as the stops above do. The daemon exits 1 for
   [the supervisor's restart](service.md#restarts-and-the-network). While ranet3
-  stays down, the operator removes the chains left with
-  `nft delete chain inet ranet3 fallback` and
-  `nft delete chain inet ranet3 output`.
+  stays down, the operator deletes the chains left with
+  `nft delete chain inet ranet3 routed`, `nft delete chain inet ranet3 fallback`
+  and `nft delete chain inet ranet3 output`.
 - After `SIGKILL`, or another stop that withdraws nothing, the chains and the
   rules stay and the tun goes with the process. A start followed by
   `ranet3 down` withdraws them. With ranet3 stopped, the operator removes the
   switch by deleting the chains and the rules of `cap.table.proto` in both
-  families: `nft delete chain inet ranet3 fallback` and
+  families: `nft delete chain inet ranet3 routed`,
+  `nft delete chain inet ranet3 fallback`,
   `nft delete chain inet ranet3 output`, `ip rule flush protocol 155` and
   `ip -6 rule flush protocol 155` at the default protocol.
 - Nothing outlives a reboot, so the switch holds from ranet3's start, not from

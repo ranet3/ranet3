@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-22
+updated: 2026-11-25
 order: 50
 ---
 
@@ -454,11 +454,11 @@ so a file that loads never runs the mode on one.
 
 A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
 switch, which holds while no exit is live and the switch reads back as written.
-[The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
-the host's traffic leave by its own uplink, and gives the rules and the chains,
-the switch's reach, what each stop leaves of it, and what counts as the LAN, and
-[the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives the same
-for a Mac's rejects. An exit installs no default for its own traffic and refuses
+[The kill switch](routing.md#the-kill-switch-on-linux) lists in first-match
+order what the host's own and forwarded traffic can send out, including
+own-prefix sources on links outside `forward`, and gives the chains' lifetime.
+[The kill switch on macOS](routing.md#the-kill-switch-on-macos) gives the Mac's
+reject routes. An exit installs no default for its own traffic and refuses
 `cap.exit`, so no exit's egress meets the switch's chains.
 
 Application DNS is not yet kept on the exit, on Linux or macOS, as

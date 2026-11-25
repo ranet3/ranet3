@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-22
+updated: 2026-11-25
 order: 65
 ---
 
@@ -110,6 +110,10 @@ A packet larger than its session's budget is never sent as it is.
   `too_big` where it was read off the tun. A packet whose options cannot be read
   is dropped and answered with ICMP Parameter Problem, which names the octet at
   fault, and counted `invalid`.
+
+On Linux, ICMP errors about traffic routed through this host also meet
+[the kill switch's forward chain](routing.md#the-kill-switch-on-linux) when the
+switch is requested.
 
 A node that moves a steered packet on to its next segment answers or drops it
 the same way when the session to that segment carries less, and counts what it
