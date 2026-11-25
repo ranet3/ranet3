@@ -533,9 +533,9 @@ type Rule struct {
 	l3mdev bool
 	// To is FRA_DST and From is FRA_SRC, each optional
 	To, From schema.Prefix
-	// FWMark and FWMask are FRA_FWMARK and FRA_FWMASK. A zero mark means the
-	// rule does not select on one, and a zero mask with a nonzero mark is an
-	// exact match, which is how the kernel reads an absent FRA_FWMASK.
+	// FWMark and FWMask are FRA_FWMARK and FRA_FWMASK. Both zero means the
+	// rule does not select on a mark. A nonzero mask selects even a zero mark,
+	// while an absent mask with a nonzero mark is an exact match.
 	FWMark, FWMask uint32
 	// IIF is FRA_IIFNAME, the device a packet arrived on, empty for any
 	IIF string
@@ -613,7 +613,7 @@ func (r Rule) String() string {
 	if r.To.IsValid() {
 		parts = append(parts, "to "+r.To.String())
 	}
-	if r.FWMark != 0 {
+	if r.FWMark != 0 || r.FWMask != 0 {
 		mark := fmt.Sprintf("fwmark %#x", r.FWMark)
 		if r.FWMask != 0 {
 			mark += fmt.Sprintf("/%#x", r.FWMask)

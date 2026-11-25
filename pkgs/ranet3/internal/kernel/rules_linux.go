@@ -97,7 +97,7 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 	if rule.From.IsValid() {
 		body = netlink.PutAttr(body, unix.FRA_SRC, netlink.AddressBytes(rule.From.Addr()))
 	}
-	if rule.FWMark != 0 {
+	if rule.FWMark != 0 || rule.FWMask != 0 {
 		body = netlink.PutAttrU32(body, unix.FRA_FWMARK, rule.FWMark)
 		if rule.FWMask != 0 {
 			body = netlink.PutAttrU32(body, unix.FRA_FWMASK, rule.FWMask)

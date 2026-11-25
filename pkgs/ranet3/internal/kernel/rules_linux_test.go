@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -81,6 +82,24 @@ func TestRuleMessageCarriesTheMarkAndItsMask(t *testing.T) {
 	if mask := attrs[unix.FRA_FWMASK]; len(mask) != 4 || binary.NativeEndian.Uint32(mask) != 0xffff {
 		t.Errorf("FRA_FWMASK is %v", mask)
 	}
+
+	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, FWMask: ^uint32(0), IIF: "tun0", action: actionGoto, target: 5410, Priority: 5399}))
+	if mark := attrs[unix.FRA_FWMARK]; len(mark) != 4 || binary.NativeEndian.Uint32(mark) != 0 {
+		t.Errorf("zero-mark rule carried FRA_FWMARK %v", mark)
+	}
+	if mask := attrs[unix.FRA_FWMASK]; len(mask) != 4 || binary.NativeEndian.Uint32(mask) != ^uint32(0) {
+		t.Errorf("zero-mark rule carried FRA_FWMASK %v", mask)
+	}
+	if text := (Rule{Family: FamilyIPv6, FWMask: ^uint32(0)}).String(); !strings.Contains(text, "fwmark 0x0/0xffffffff") {
+		t.Errorf("zero-mark rule is logged as %q", text)
+	}
+	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, IIF: "tun0", action: actionGoto, target: 5410, Priority: 5399}))
+	if _, ok := attrs[unix.FRA_FWMARK]; ok {
+		t.Error("an unmarked rule carried FRA_FWMARK")
+	}
+	if _, ok := attrs[unix.FRA_FWMASK]; ok {
+		t.Error("an unmarked rule carried FRA_FWMASK")
+	}
 }
 
 // An input device goes out as FRA_IIFNAME with its terminator, the string the
@@ -122,6 +141,7 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 		"a mark rule":        {Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40},
 		"both selectors":     {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), From: schema.MustPrefix("10.1.0.0/16"), Table: 7, Priority: 90},
 		"a device rule":      {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},
+		"a zero-mark rule":   {Family: FamilyIPv6, FWMask: ^uint32(0), IIF: "tun0", action: actionGoto, target: 5410, Priority: 5399},
 		"an unreachable":     {Family: FamilyIPv6, IIF: "lo", action: actionUnreachable, Priority: 5450},
 	} {
 		t.Run(name, func(t *testing.T) {

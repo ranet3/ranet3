@@ -127,6 +127,47 @@ func TestNetlinkRuleActionsReadBackAndDeleteExactly(t *testing.T) {
 	}
 }
 
+func TestNetlinkZeroMarkTunRuleReadsBackAndWithdraws(t *testing.T) {
+	plat := rootRulePlatform(t, "ranetzero0")
+	main := Rule{Family: FamilyIPv6, Table: schema.TableMain, suppress: SuppressUpTo(0), Priority: 5410}
+	skip := Rule{Family: FamilyIPv6, IIF: "ranetzero0", FWMask: ^uint32(0), action: actionGoto, target: 5410, Priority: 5399}
+	for _, rule := range []Rule{main, skip} {
+		if err := plat.AddRule(rule); err != nil {
+			t.Fatalf("install %s: %v", rule, err)
+		}
+	}
+	want := []DumpedRule{
+		{Family: FamilyIPv6, Priority: main.Priority, Action: "lookup", Table: uint32(main.Table),
+			Suppress: main.suppress, Protocol: plat.table.Proto},
+		{Family: FamilyIPv6, Priority: skip.Priority, Action: "goto", Goto: skip.target,
+			IIF: skip.IIF, FWMask: skip.FWMask, Protocol: plat.table.Proto},
+	}
+	all, err := DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range want {
+		if !slices.Contains(all, rule) {
+			t.Fatalf("the kernel did not hold the exact rule %+v: %v", rule, all)
+		}
+	}
+	for _, rule := range []Rule{skip, main} {
+		if err := plat.DelRule(rule); err != nil {
+			t.Fatalf("delete %s: %v", rule, err)
+		}
+	}
+	all, err = DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, held := range all {
+		if held.Family == FamilyIPv6 && held.Protocol == plat.table.Proto &&
+			(held.Priority == skip.Priority || held.Priority == main.Priority) {
+			t.Fatalf("withdrawal left an owned rule: %+v", held)
+		}
+	}
+}
+
 // countingRules is a netlink platform that counts the rules written through it
 type countingRules struct {
 	*netlinkPlatform
