@@ -187,24 +187,25 @@ func TestBorderSetIsHeadedByTheWordItsBackendCallsItBy(t *testing.T) {
 	}
 }
 
-// fallbackFixture is a switch of one chain, holding, its drop having counted
-// twelve packets, nothing forwarded and no own prefix of IPv6
+// fallbackFixture is a holding switch's forward chain, with accept and drop counters.
 func fallbackFixture() *FallbackTable {
 	return &FallbackTable{
-		Where: "nftables table inet ranet3 chains fallback and output", Hook: "postrouting", Priority: 2147483646,
+		Where: "nftables table inet ranet3 chains fallback, output and routed", Hook: "postrouting, output and forward", Priority: 2147483646,
 		State: "holding", Held: true,
 		Rules: []FallbackTableRule{
-			{Spec: "oifname { lo, ranet3 } accept"},
-			{Spec: "meta mark 0x00000072 accept"},
-			{Spec: "meta iif != 0 iifname != @forwarded accept"},
-			{Spec: "ip daddr @lan4 accept"},
-			{Spec: "ip6 daddr @lan6 accept"},
-			{Spec: "ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept"},
-			{Spec: "ip6 daddr { fe80::/10, ff00::/8 } accept"},
-			{Spec: "ip daddr @self4 accept"},
-			{Spec: "ip6 daddr @self6 accept"},
-			{Spec: "ct direction reply ct protocol tcp ct original proto-dst @tcpports accept"},
-			{Spec: "counter drop", Packets: 12, Bytes: 720},
+			{Chain: "routed", Spec: "oifname { lo, ranet3 } accept"},
+			{Chain: "routed", Spec: "meta mark 0x00000072 accept"},
+			{Chain: "routed", Spec: "iifname @forwarded accept"},
+			{Chain: "routed", Spec: "ip saddr != @from4 accept"},
+			{Chain: "routed", Spec: "ip6 saddr != @from6 accept"},
+			{Chain: "routed", Spec: "ip daddr @lan4 accept"},
+			{Chain: "routed", Spec: "ip6 daddr @lan6 accept"},
+			{Chain: "routed", Spec: "ip daddr @self4 accept"},
+			{Chain: "routed", Spec: "ip6 daddr @self6 accept"},
+			{Chain: "routed", Spec: "ct direction reply ct protocol tcp ct original proto-dst @tcpports accept"},
+			{Chain: "routed", Spec: "icmp errors 3/11/12 related outside from4 counter accept", Packets: 2, Bytes: 120},
+			{Chain: "routed", Spec: "icmpv6 errors 1-4 related outside from6 counter accept"},
+			{Chain: "routed", Spec: "counter drop", Packets: 12, Bytes: 720},
 		},
 		Sets: []FallbackTableSet{
 			{Name: "forwarded"},
@@ -214,6 +215,8 @@ func fallbackFixture() *FallbackTable {
 			{Name: "self6"},
 			{Name: "tcpports", Elements: []string{"22", "60000-61000"}},
 			{Name: "udpports"},
+			{Name: "from4", Elements: []string{"192.0.2.0/25"}},
+			{Name: "from6", Elements: []string{"3fff:1::/64"}},
 		},
 	}
 }

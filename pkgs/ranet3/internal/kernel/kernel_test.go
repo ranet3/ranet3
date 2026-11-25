@@ -104,7 +104,7 @@ type fakeKernel struct {
 
 // fakeTableForm is the fake's switch read as linux's chains
 var fakeTableForm = fallbackForm{
-	where: "nftables table inet ranet3 chains fallback and output", fix: "nft delete chain inet ranet3 fallback and nft delete chain inet ranet3 output",
+	where: "nftables table inet ranet3 chains fallback, output and routed", fix: "nft delete chain inet ranet3 routed, nft delete chain inet ranet3 fallback and nft delete chain inet ranet3 output",
 	unheld: "the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
 }
 

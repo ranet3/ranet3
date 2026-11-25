@@ -20,15 +20,22 @@ import (
 // this build gives it, written apart from the switch's own list
 var earlierSets = map[string]string{"self4": "own4", "self6": "own6", "tcpports": "tcp_ports", "udpports": "udp_ports"}
 
-// earlierFallbackText is fallbackText with each set under the name an earlier
-// switch gave it, in its lines and their comments as in its own definition
+// An earlier switch had only the first two chains and seven named sets, under
+// the four older names. It did not write routed, from4, or from6.
 func earlierFallbackText(t *testing.T) string {
 	t.Helper()
+	full := fallbackText(t)
+	sets, _, foundSets := strings.Cut(full, "\tset from4 {")
+	_, tail, foundChain := strings.Cut(full, "\tchain fallback {")
+	chains, _, foundRouted := strings.Cut(tail, "\tchain routed {")
+	if !foundSets || !foundChain || !foundRouted {
+		t.Fatal("the earlier switch has no two-chain layout in the current fixture")
+	}
 	var pairs []string
 	for name, earlier := range earlierSets {
 		pairs = append(pairs, "@"+name+" ", "@"+earlier+" ", "set "+name+" {", "set "+earlier+" {")
 	}
-	return strings.NewReplacer(pairs...).Replace(fallbackText(t))
+	return strings.NewReplacer(pairs...).Replace(sets + "\tchain fallback {" + chains + "}\n")
 }
 
 // loadEarlierFallback loads earlierFallbackText with nft, as the table an

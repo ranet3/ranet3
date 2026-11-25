@@ -1397,6 +1397,10 @@ func (r *Reconciler) reconcile() error {
 	if judged {
 		exit, status = r.exitPass(held, snapshot, network)
 	}
+	var own []netip.Prefix
+	if judged && r.rules != nil {
+		own = r.ownPrefixes(snapshot)
+	}
 	desired := r.desired(snapshot, network)
 	// a pass that cannot list the tun keeps the last listing's, as the cover's families stand
 	if listed {
@@ -1408,7 +1412,7 @@ func (r *Reconciler) reconcile() error {
 	// the switch goes before the routes where the pass no longer asks for it
 	// and after them where it does, so on darwin the rejects and the routes
 	// out of the tun never contend for a key (see splitAtKeys)
-	sets, asked := r.fallbackFor(exit)
+	sets, asked := r.fallbackFor(exit, own)
 	var fallback *FallbackStatus
 	var fallbackErr error
 	if judged {
@@ -1434,7 +1438,7 @@ func (r *Reconciler) reconcile() error {
 		r.exitStatus.Fallback = fallback
 	}
 	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
-	err := errors.Join(addressErr, routesErr, r.applyRules(rules, snapshot, exit, judged), fallbackErr)
+	err := errors.Join(addressErr, routesErr, r.applyRules(rules, own, exit, judged), fallbackErr)
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1532,7 +1536,7 @@ func (r *Reconciler) audit() {
 // entry's listing failed. Where the view holds a down rule a stop left,
 // applyRulesDown stages and releases. A pass that cannot judge the mode
 // writes no rule here and reports what the view shows.
-func (r *Reconciler) applyRules(v *ruleView, snapshot []sadr.Route[*netstack.Peer], exit exitView, judged bool) error {
+func (r *Reconciler) applyRules(v *ruleView, own []netip.Prefix, exit exitView, judged bool) error {
 	if v == nil {
 		return nil
 	}
@@ -1557,7 +1561,7 @@ func (r *Reconciler) applyRules(v *ruleView, snapshot []sadr.Route[*netstack.Pee
 		r.reportRules(v, last)
 		return errors.Join(v.errs...)
 	}
-	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
+	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, own, exit)
 	r.derived.Store(&ruleSet)
 	if slices.ContainsFunc(v.rules, isDownRule) {
 		r.applyRulesDown(v, ruleSet)

@@ -1,61 +1,84 @@
 {
-  "where": "nftables table inet ranet3 chains fallback and output",
-  "hook": "postrouting",
+  "where": "nftables table inet ranet3 chains fallback, output and routed",
+  "hook": "postrouting, output and forward",
   "priority": 2147483646,
   "state": "holding",
   "held": true,
   "rules": [
     {
+      "chain": "routed",
       "spec": "oifname { lo, ranet3 } accept",
       "packets": 0,
       "bytes": 0
     },
     {
+      "chain": "routed",
       "spec": "meta mark 0x00000072 accept",
       "packets": 0,
       "bytes": 0
     },
     {
-      "spec": "meta iif != 0 iifname != @forwarded accept",
+      "chain": "routed",
+      "spec": "iifname @forwarded accept",
       "packets": 0,
       "bytes": 0
     },
     {
+      "chain": "routed",
+      "spec": "ip saddr != @from4 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "chain": "routed",
+      "spec": "ip6 saddr != @from6 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "chain": "routed",
       "spec": "ip daddr @lan4 accept",
       "packets": 0,
       "bytes": 0
     },
     {
+      "chain": "routed",
       "spec": "ip6 daddr @lan6 accept",
       "packets": 0,
       "bytes": 0
     },
     {
-      "spec": "ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept",
-      "packets": 0,
-      "bytes": 0
-    },
-    {
-      "spec": "ip6 daddr { fe80::/10, ff00::/8 } accept",
-      "packets": 0,
-      "bytes": 0
-    },
-    {
+      "chain": "routed",
       "spec": "ip daddr @self4 accept",
       "packets": 0,
       "bytes": 0
     },
     {
+      "chain": "routed",
       "spec": "ip6 daddr @self6 accept",
       "packets": 0,
       "bytes": 0
     },
     {
+      "chain": "routed",
       "spec": "ct direction reply ct protocol tcp ct original proto-dst @tcpports accept",
       "packets": 0,
       "bytes": 0
     },
     {
+      "chain": "routed",
+      "spec": "icmp errors 3/11/12 related outside from4 counter accept",
+      "packets": 2,
+      "bytes": 120
+    },
+    {
+      "chain": "routed",
+      "spec": "icmpv6 errors 1-4 related outside from6 counter accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "chain": "routed",
       "spec": "counter drop",
       "packets": 12,
       "bytes": 720
@@ -99,6 +122,18 @@
     {
       "name": "udpports",
       "elements": null
+    },
+    {
+      "name": "from4",
+      "elements": [
+        "192.0.2.0/25"
+      ]
+    },
+    {
+      "name": "from6",
+      "elements": [
+        "3fff:1::/64"
+      ]
     }
   ]
 }

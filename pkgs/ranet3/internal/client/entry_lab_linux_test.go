@@ -611,8 +611,8 @@ func TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch(t *test
 	probes = append(probes, entryToNeighbor(lab.leaf, local, index))
 	switchDrain(lab.tunCapture)
 	before, counted, switched := entryDropped(t, lab.leaf, border), entryCounted(t, lab.leaf), entrySwitchDrops(t, lab.leaf)
-	if len(switched) != 2 {
-		t.Fatalf("the kill switch holds a drop in the chains %v, want fallback and output", switched)
+	if len(switched) != 3 {
+		t.Fatalf("the kill switch holds a drop in the chains %v, want fallback, output and routed", switched)
 	}
 	next := lab.probe
 	sent := entrySend(t, probes, &next)

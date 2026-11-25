@@ -95,7 +95,7 @@ func TestFallbackPassesACarvedLeaseLessTheMeshsPrefixes(t *testing.T) {
 	if len(main) != 2 || main[0].To.Prefix != p("192.0.2.0/24") || main[1].To.Prefix != p("3fff::/48") {
 		t.Errorf("5445 looks main up for %v, want the two leases", main)
 	}
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, reconciler.ownPrefixes(snapshot))
 	if !asked {
 		t.Fatal("the mode does not ask for the table")
 	}

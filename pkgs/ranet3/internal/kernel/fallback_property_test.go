@@ -28,9 +28,9 @@ type switchPacket struct {
 	// oif is the device of the route the packet leaves by, and iif the one it
 	// arrived on or, for a tunnel's outer packet at postrouting, the tunnel,
 	// empty for the host's own
-	oif, iif    string
-	mark        uint32
-	destination netip.Addr
+	oif, iif            string
+	mark                uint32
+	source, destination netip.Addr
 	// hops is its hop limit, l4 its transport protocol, and icmpType and
 	// icmpCode its first two bytes past the network header
 	hops, l4, icmpType, icmpCode uint8
@@ -40,6 +40,9 @@ type switchPacket struct {
 	tracked, reply bool
 	protocol       uint8
 	port           uint16
+	related        bool
+	ctOriginal     netip.Addr
+	ctReply        netip.Addr
 	// local is a destination the fib types local, an address of the host's
 	// own as NAT at output may give a packet whose first route left by another
 	// link, as a lookup bound to one link sends out of it a packet to an
@@ -53,7 +56,7 @@ func (p switchPacket) String() string {
 	if p.tracked {
 		ct = fmt.Sprintf("tracked reply %v protocol %d original port %d", p.reply, p.protocol, p.port)
 	}
-	return fmt.Sprintf("oif %q iif %q mark %#x to %s local %v hop limit %d protocol %d type %d code %d %s", p.oif, p.iif, p.mark, p.destination, p.local, p.hops, p.l4, p.icmpType, p.icmpCode, ct)
+	return fmt.Sprintf("oif %q iif %q mark %#x from %s to %s local %v hop limit %d protocol %d type %d code %d related %v original %s reply %s %s", p.oif, p.iif, p.mark, p.source, p.destination, p.local, p.hops, p.l4, p.icmpType, p.icmpCode, p.related, p.ctOriginal, p.ctReply, ct)
 }
 
 // switchConfig is one drawn host: its links outside the mesh with their
@@ -66,19 +69,9 @@ type switchConfig struct {
 	entries  []Service
 }
 
-// switchModel is the chain at hook item 4's switch writes, as a function of
-// what the chain reads, written from the switch's lines rather than from the
-// encoder: the tun and lo, the underlay's mark, a packet forwarded from a link
-// forward leaves out but lo toward a destination the fib does not type
-// local, the LAN, link-local, multicast and the limited broadcast, neighbor
-// and router discovery at a hop limit of 255, the host's own Packet Too Big
-// and fragmentation needed, this node's own prefixes, a reply of a flow the
-// far side opened to a listed service, and at output a destination the fib
-// types local pass, and everything else is dropped. The LAN is each address
-// outside the overlay of a connected network of a link outside the mesh that
-// does not count as capturing the machine, where the link is one forward
-// names or the address lies inside a private or link-local range or a prefix
-// lan lists.
+// switchModel is the independent policy for the three hooks. Forward traffic
+// sourced from a thrown own prefix may leave only through a carve-out, a
+// listed inbound reply, or a related error whose flow endpoints are outside.
 func switchModel(c switchConfig, p switchPacket, hook uint32) bool {
 	v6 := p.destination.Is6()
 	switch {
@@ -86,11 +79,21 @@ func switchModel(c switchConfig, p switchPacket, hook uint32) bool {
 		return true
 	case p.mark == schema.UnderlayMark:
 		return true
-	case p.iif != "" && p.iif != Loopback && !slices.Contains(c.view.forwarded, p.iif) && !p.local:
+	}
+	if hook == unix.NF_INET_FORWARD {
+		switch {
+		case p.iif == Loopback || slices.Contains(c.view.forwarded, p.iif):
+			return true
+		case !slices.ContainsFunc(c.view.own, func(prefix netip.Prefix) bool { return prefix.Contains(p.source) }):
+			return true
+		}
+	}
+	switch {
+	case hook != unix.NF_INET_FORWARD && p.iif != "" && p.iif != Loopback && !slices.Contains(c.view.forwarded, p.iif) && !p.local:
 		return true
-	case v6 && p.l4 == unix.IPPROTO_ICMPV6 && 133 <= p.icmpType && p.icmpType <= 136 && p.hops == 255:
+	case hook != unix.NF_INET_FORWARD && v6 && p.l4 == unix.IPPROTO_ICMPV6 && 133 <= p.icmpType && p.icmpType <= 136 && p.hops == 255:
 		return true
-	case p.iif == "" && v6 && p.l4 == unix.IPPROTO_ICMPV6 && p.icmpType == 2, p.iif == "" && !v6 && p.l4 == unix.IPPROTO_ICMP && p.icmpType == 3 && p.icmpCode == 4:
+	case hook != unix.NF_INET_FORWARD && p.iif == "" && v6 && p.l4 == unix.IPPROTO_ICMPV6 && p.icmpType == 2, hook != unix.NF_INET_FORWARD && p.iif == "" && !v6 && p.l4 == unix.IPPROTO_ICMP && p.icmpType == 3 && p.icmpCode == 4:
 		return true
 	case hook == unix.NF_INET_LOCAL_OUT && p.local:
 		return true
@@ -101,16 +104,27 @@ func switchModel(c switchConfig, p switchPacket, hook uint32) bool {
 	if slices.ContainsFunc(switchLocal, func(local netip.Prefix) bool { return local.Contains(p.destination) }) {
 		return true
 	}
-	if slices.ContainsFunc(c.view.own, func(prefix netip.Prefix) bool { return prefix.Contains(p.destination) }) {
+	if slices.ContainsFunc(c.view.own, func(prefix netip.Prefix) bool {
+		return !schema.InsideOverlay(prefix, exitPassOverlay) && prefix.Contains(p.destination)
+	}) {
 		return true
 	}
-	if !p.tracked || !p.reply {
-		return false
-	}
-	return slices.ContainsFunc(c.entries, func(s Service) bool {
+	if p.tracked && p.reply && slices.ContainsFunc(c.entries, func(s Service) bool {
 		protocol := map[string]uint8{"tcp": unix.IPPROTO_TCP, "udp": unix.IPPROTO_UDP}[s.Protocol]
 		return protocol == p.protocol && s.First <= p.port && p.port <= s.Last
-	})
+	}) {
+		return true
+	}
+	if hook == unix.NF_INET_FORWARD && p.tracked && p.related &&
+		!slices.ContainsFunc(c.view.own, func(prefix netip.Prefix) bool { return prefix.Contains(p.ctOriginal) || prefix.Contains(p.ctReply) }) {
+		if !v6 && p.l4 == unix.IPPROTO_ICMP && slices.Contains([]uint8{3, 11, 12}, p.icmpType) {
+			return true
+		}
+		if v6 && p.l4 == unix.IPPROTO_ICMPV6 && 1 <= p.icmpType && p.icmpType <= 4 {
+			return true
+		}
+	}
+	return false
 }
 
 // switchPrivate is the ranges an address of a connected network counts as the
@@ -187,12 +201,14 @@ func (p switchPacket) header() []byte {
 	if p.destination.Is4() {
 		header := make([]byte, 20)
 		header[0], header[8], header[9] = 0x45, p.hops, p.l4
+		copy(header[12:], p.source.AsSlice())
 		copy(header[16:], p.destination.AsSlice())
 		return header
 	}
 	header := make([]byte, 40)
 	header[0], header[6], header[7] = 0x60, p.l4, p.hops
 	copy(header[24:], p.destination.AsSlice())
+	copy(header[8:], p.source.AsSlice())
 	return header
 }
 
@@ -287,6 +303,20 @@ func evaluateRule(t testing.TB, expressions [][]byte, sets map[uint32]switchSet,
 			}
 			direction, directed := fields[unix.NFTA_CT_DIRECTION]
 			switch key := switchBE32(t, fields[unix.NFTA_CT_KEY]); {
+			case key == unix.NFT_CT_STATE && !directed:
+				var state uint32 = 1 << 1
+				if p.related {
+					state = 1 << 2
+				}
+				register = binary.NativeEndian.AppendUint32(nil, state)
+			case (key == unix.NFT_CT_SRC_IP || key == unix.NFT_CT_SRC_IP6) && directed:
+				address := p.ctOriginal
+				if bytes.Equal(direction, []byte{nftables.CTReply}) {
+					address = p.ctReply
+				} else if !bytes.Equal(direction, []byte{nftables.CTOriginal}) {
+					t.Fatalf("ct loads an unknown direction %x", direction)
+				}
+				register = address.AsSlice()
 			case key == unix.NFT_CT_DIRECTION && !directed:
 				register = []byte{map[bool]uint8{true: nftables.CTReply, false: nftables.CTOriginal}[p.reply]}
 			case key == unix.NFT_CT_PROTOCOL && !directed:
@@ -295,6 +325,16 @@ func evaluateRule(t testing.TB, expressions [][]byte, sets map[uint32]switchSet,
 				register = binary.BigEndian.AppendUint16(nil, p.port)
 			default:
 				t.Fatalf("ct loads key %d with direction %x, which the evaluator does not model", key, direction)
+			}
+		case "bitwise":
+			switchRegister(t, name, fields[unix.NFTA_BITWISE_SREG])
+			switchRegister(t, name, fields[unix.NFTA_BITWISE_DREG])
+			mask, xor := switchValue(fields[unix.NFTA_BITWISE_MASK]), switchValue(fields[unix.NFTA_BITWISE_XOR])
+			if len(register) != int(switchBE32(t, fields[unix.NFTA_BITWISE_LEN])) || len(register) != len(mask) || len(mask) != len(xor) {
+				t.Fatalf("bitwise mask %x xor %x do not fit %x", mask, xor, register)
+			}
+			for i := range register {
+				register[i] = register[i]&mask[i] ^ xor[i]
 			}
 		case "cmp":
 			switchRegister(t, name, fields[unix.NFTA_CMP_SREG])
@@ -371,6 +411,7 @@ var switchModeled = map[string][]uint16{
 	"meta":      {unix.NFTA_META_KEY, unix.NFTA_META_DREG},
 	"payload":   {unix.NFTA_PAYLOAD_DREG, unix.NFTA_PAYLOAD_BASE, unix.NFTA_PAYLOAD_OFFSET, unix.NFTA_PAYLOAD_LEN},
 	"ct":        {unix.NFTA_CT_KEY, unix.NFTA_CT_DREG, unix.NFTA_CT_DIRECTION},
+	"bitwise":   {unix.NFTA_BITWISE_SREG, unix.NFTA_BITWISE_DREG, unix.NFTA_BITWISE_LEN, unix.NFTA_BITWISE_MASK, unix.NFTA_BITWISE_XOR},
 	"cmp":       {unix.NFTA_CMP_SREG, unix.NFTA_CMP_OP, unix.NFTA_CMP_DATA},
 	"lookup":    {unix.NFTA_LOOKUP_SET, unix.NFTA_LOOKUP_SET_ID, unix.NFTA_LOOKUP_SREG, unix.NFTA_LOOKUP_FLAGS},
 	"fib":       {unix.NFTA_FIB_DREG, unix.NFTA_FIB_RESULT, unix.NFTA_FIB_FLAGS},
@@ -428,8 +469,8 @@ var switchListed = []netip.Prefix{
 
 // switchOwn is the own prefixes a drawn host may throw
 var switchOwn = []netip.Prefix{
-	netip.MustParsePrefix("203.0.113.0/26"), netip.MustParsePrefix("203.0.113.128/32"),
-	netip.MustParsePrefix("2001:db8:5::/48"), netip.MustParsePrefix("2001:db8:6::1/128"),
+	netip.MustParsePrefix("203.0.113.0/26"), netip.MustParsePrefix("203.0.113.128/32"), netip.MustParsePrefix("192.0.2.0/25"),
+	netip.MustParsePrefix("2001:db8:5::/48"), netip.MustParsePrefix("2001:db8:6::1/128"), netip.MustParsePrefix("3fff:1::/64"),
 }
 
 // switchLinks is the links outside the mesh a drawn host may have
@@ -537,11 +578,11 @@ func TestFallbackChainGivesEachPacketTheVerdictOfItsLines(t *testing.T) {
 		if !valid {
 			return
 		}
-		s := c.view.fallbackSetsOf(switchTun, exitPassOverlay, c.services, nil)
+		s := c.view.fallbackSetsOf(switchTun, exitPassOverlay, c.services, nil, nil)
 		destinations, ports := c.destinations(), c.ports()
 		devices := slices.Concat([]string{Loopback, switchTun, switchTun + "0"}, switchLinks)
 		incoming := slices.Concat([]string{"", "", "docker1", Loopback}, switchLinks)
-		for i, chain := range fallbackChains {
+		for i, chain := range fallbackChains[:2] {
 			rules, err := s.rules(i)
 			if err != nil {
 				ht.Fatal(err)
@@ -571,7 +612,6 @@ func TestFallbackChainGivesEachPacketTheVerdictOfItsLines(t *testing.T) {
 					}
 				}
 				if chain.Hook == unix.NF_INET_LOCAL_OUT {
-					// nothing at output carries an input link
 					p.iif = ""
 				}
 				if got, want := evaluate(ht, rules, sets, p), switchModel(c, p, chain.Hook); got != want {
@@ -582,8 +622,99 @@ func TestFallbackChainGivesEachPacketTheVerdictOfItsLines(t *testing.T) {
 	})
 }
 
-// switchICMPTypes is the types a drawn packet's first byte past its header
-// holds: each the chain names and one on each side of it
+// The forward policy applies to every drawn host's own prefixes, including
+// sources inside overlay that self4 and self6 deliberately do not hold.
+func TestFallbackRoutedChainGivesEachPacketTheVerdictOfItsLines(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		c, valid := drawSwitch(ht)
+		if !valid {
+			return
+		}
+		s := c.view.fallbackSetsOf(switchTun, exitPassOverlay, c.services, nil, c.view.own)
+		rules, err := s.rules(2)
+		if err != nil {
+			ht.Fatal(err)
+		}
+		sets := switchSets(ht, s, rules)
+		check := func(name string, p switchPacket) {
+			if got, want := evaluate(ht, rules, sets, p), switchModel(c, p, unix.NF_INET_FORWARD); got != want {
+				ht.Fatalf("%s: routed gives %s accept %v, policy %v, on a host of\n%s", name, p, got, want, c)
+			}
+		}
+		for _, family := range []struct {
+			far, lan, link netip.Addr
+			l4             uint8
+			eligible       []uint8
+			excluded       []uint8
+		}{
+			{netip.MustParseAddr("203.0.113.251"), netip.MustParseAddr("198.51.100.20"), netip.MustParseAddr("169.254.1.1"),
+				unix.IPPROTO_ICMP, []uint8{3, 11, 12}, []uint8{4, 5}},
+			{netip.MustParseAddr("2001:db8:ffff::1"), netip.MustParseAddr("2001:db8:a::20"), netip.MustParseAddr("fe80::1"),
+				unix.IPPROTO_ICMPV6, []uint8{1, 2, 3, 4}, []uint8{5, 6}},
+		} {
+			var inside netip.Addr
+			for _, prefix := range c.view.own {
+				if prefix.Addr().Is4() == family.far.Is4() && (!inside.IsValid() || schema.InsideOverlay(prefix, exitPassOverlay)) {
+					inside = prefix.Masked().Addr()
+				}
+			}
+			if !inside.IsValid() {
+				continue
+			}
+			p := switchPacket{
+				oif: "eth0", iif: "docker1", source: inside, destination: family.far,
+				tracked: true, related: true, ctOriginal: family.far, ctReply: family.far,
+				l4: family.l4, icmpType: family.eligible[0],
+			}
+			for _, kind := range family.eligible {
+				p.icmpType = kind
+				for _, code := range []uint8{0, 4, 7} {
+					p.icmpCode = code
+					check("eligible type and code", p)
+				}
+			}
+			for _, kind := range family.excluded {
+				p.icmpType = kind
+				check("excluded type", p)
+			}
+			p.icmpType = family.eligible[0]
+			p.tracked = false
+			check("no connection", p)
+			p.tracked, p.related = true, false
+			check("not related", p)
+			p.related, p.ctOriginal = true, inside
+			check("original endpoint inside", p)
+			p.ctOriginal, p.ctReply = family.far, inside
+			check("reply endpoint inside", p)
+			p.ctReply = family.far
+			p.source, p.tracked = family.far, false
+			check("outside source", p)
+			p.source, p.iif = inside, Loopback
+			check("loopback input", p)
+			if len(c.view.forwarded) > 0 {
+				p.iif = c.view.forwarded[0]
+				check("named forwarded input", p)
+			}
+			p.iif, p.oif = "docker1", switchTun
+			check("tunnel output", p)
+			p.oif, p.mark = "eth0", schema.UnderlayMark
+			check("underlay mark", p)
+			p.mark, p.destination = 0, family.lan
+			check("LAN", p)
+			p.destination = family.link
+			check("link local", p)
+			p.destination = inside
+			check("own destination", p)
+			p.destination = family.far
+			for _, service := range c.entries {
+				p.tracked, p.reply, p.protocol, p.port = true, true, map[string]uint8{"tcp": unix.IPPROTO_TCP, "udp": unix.IPPROTO_UDP}[service.Protocol], service.First
+				p.ctReply = inside
+				check("listed inbound reply", p)
+			}
+		}
+	})
+}
+
 var switchICMPTypes = []uint8{1, 2, 3, 4, 132, 133, 134, 135, 136, 137}
 
 func (c switchConfig) String() string {
@@ -667,7 +798,7 @@ func TestFallbackWalkAndChainLetOutOnlyTheCarveOuts(t *testing.T) {
 			return mode
 		})
 		h := build(nil)
-		s := h.mode.fallbackSetsOf(tunDevice, h.rt.Overlay, nil, nil)
+		s := h.mode.fallbackSetsOf(tunDevice, h.rt.Overlay, nil, nil, nil)
 		// the lines of the switch's chain at hook, none where it writes no chain there
 		at := func(hook uint32) []fallbackRule {
 			i := slices.IndexFunc(fallbackChains, func(chain nftables.Chain) bool { return chain.Hook == hook })

@@ -64,12 +64,9 @@ const (
 	// FallbackUplink lets the host's traffic leave by the host's own default
 	// while no exit is live
 	FallbackUplink Fallback = "uplink"
-	// FallbackNone writes the kill switch whether an exit is live or not: on
-	// linux two chains of the table inet ranet3, whose lines and lifetime routing.md's
-	// "The kill switch on Linux" lists, and while it reads back as written the
-	// host's traffic leaves by a link outside the mesh only where one of its
-	// lines passes it. On macOS it is reject routes on lo0, which "The kill
-	// switch on macOS" lists with what passes them.
+	// FallbackNone writes the kill switch whether an exit is live or not.
+	// routing.md's "The kill switch on Linux" lists the three chains and
+	// their lifetime, and "The kill switch on macOS" lists the reject routes.
 	FallbackNone Fallback = "none"
 )
 

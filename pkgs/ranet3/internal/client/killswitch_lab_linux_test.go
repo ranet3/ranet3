@@ -239,6 +239,7 @@ func (lab *switchLab) notHolding(t *testing.T, state switchState, want kernel.Fa
 		}
 		return []nftables.Request{
 			nftables.Chain{Table: nftables.Table, Name: "fallback"}.Flush(unix.NFPROTO_INET), nftables.Chain{Table: nftables.Table, Name: "output"}.Flush(unix.NFPROTO_INET),
+			nftables.Chain{Table: nftables.Table, Name: "routed"}.Flush(unix.NFPROTO_INET),
 			switchLAN4.Delete(unix.NFPROTO_INET), made, switchHolder.Create(unix.NFPROTO_INET), lookup,
 		}, nil
 	}); err != nil {

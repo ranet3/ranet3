@@ -323,7 +323,7 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 			rows = append(rows, []string{"chain " + chain})
 		}
 		row := []string{rule.Spec}
-		if strings.HasSuffix(rule.Spec, "drop") {
+		if strings.HasSuffix(rule.Spec, "drop") || strings.HasSuffix(rule.Spec, "counter accept") {
 			row = append(row, fmt.Sprintf("%d packets, %d B", rule.Packets, rule.Bytes))
 		}
 		rows = append(rows, row)

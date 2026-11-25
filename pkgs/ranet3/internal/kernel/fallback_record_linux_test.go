@@ -101,7 +101,7 @@ func watchedSwitch(t *testing.T, device, uplink string) (*netlinkPlatform, *nets
 	routes := netstack.NewRouteTable()
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), routes, plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the table")
 	}

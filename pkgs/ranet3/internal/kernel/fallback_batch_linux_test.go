@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"reflect"
@@ -19,22 +20,33 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// Every request the switch's transaction sends, written whole, with nothing
-// forwarded, no LAN, no own prefix and no service, and remaking a stale chain
-// and a stale set, keeps the kind, flags and body testdata/fallback.golden
-// holds, and the remaking one is the whole one with the two deletions and no
-// deletion of the table. The root test holds the same chains beside nft's own
-// listing of them.
+// Every request of the new switch is checked byte for byte against its fixed
+// digest. The unchanged requests of the original two chains retain their
+// readable byte golden. The root test checks the nft listing independently.
 func TestFallbackBatchKeepsItsBytes(t *testing.T) {
-	var out bytes.Buffer
+	var old, all bytes.Buffer
 	write := func(name string, requests []nftables.Request, err error) {
 		t.Helper()
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		fmt.Fprintf(&out, "%s\n", name)
+		fmt.Fprintln(&old, name)
+		fmt.Fprintln(&all, name)
+		pastOutput := false
 		for _, request := range requests {
-			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
+			fmt.Fprintf(&all, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
+			// The original golden holds the first two chains and seven sets.
+			// Routed's first anonymous set precedes its first rule, so the
+			// boundary is the counted drop ending output, not routed's rule.
+			if pastOutput || bytes.Contains(request.Body, []byte("routed\x00")) ||
+				bytes.Contains(request.Body, []byte("from4\x00")) || bytes.Contains(request.Body, []byte("from6\x00")) {
+				continue
+			}
+			fmt.Fprintf(&old, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
+			if request.Kind == nftables.Command(unix.NFT_MSG_NEWRULE) &&
+				bytes.Contains(request.Body, []byte("output\x00")) && bytes.Contains(request.Body, []byte("counter drop\x00")) {
+				pastOutput = true
+			}
 		}
 	}
 	whole, err := fallbackBatch(fallbackSample, nftables.Contents{}, nil)
@@ -44,7 +56,10 @@ func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 	stale := nftables.Contents{Chains: fallbackChains[:1], Sets: fallbackNamed[:1]}
 	remade, err := fallbackBatch(fallbackSample, stale, nil)
 	write("the switch remaking its first chain and its first set", remade, err)
-	goldentest.Check(t, "./internal/kernel", "testdata/fallback.golden", out.Bytes())
+	goldentest.Check(t, "./internal/kernel", "testdata/fallback.golden", old.Bytes())
+	if got := fmt.Sprintf("%x", sha256.Sum256(all.Bytes())); got != "41649a8b27d7da2f4687de01a1e5e62c86420a6af3cf57a52b42ea9d223b9452" {
+		t.Errorf("the complete switch's netlink requests have SHA-256 %s, want the byte golden", got)
+	}
 	deletions := slices.DeleteFunc(slices.Clone(remade), func(r nftables.Request) bool {
 		return r.Kind != nftables.Command(unix.NFT_MSG_DELCHAIN) && r.Kind != nftables.Command(unix.NFT_MSG_DELSET) && r.Kind != nftables.Command(unix.NFT_MSG_DELTABLE)
 	})

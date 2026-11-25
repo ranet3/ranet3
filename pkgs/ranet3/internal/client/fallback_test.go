@@ -30,7 +30,7 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	}})
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, nil }
 	debug := kernel.FallbackDebug{
-		Where: "nftables table inet ranet3 chains fallback and output", Hook: "postrouting", Priority: 2147483646, Held: true,
+		Where: "nftables table inet ranet3 chains fallback, output and routed", Hook: "postrouting, output and forward", Priority: 2147483646, Held: true,
 		Rules: []kernel.FallbackDebugRule{{Spec: "counter drop", Packets: 3, Bytes: 180}},
 		Sets:  []kernel.FallbackDebugSet{{Name: "lan4", Elements: []string{"198.51.100.0/25"}}},
 	}
@@ -48,7 +48,7 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 		t.Errorf("the status wrote the unresolved names into the reconciler's own status %+v", switchState)
 	}
 	want := &control.FallbackTable{
-		Where: debug.Where, Hook: "postrouting", Priority: 2147483646, State: "holding", Held: true,
+		Where: debug.Where, Hook: "postrouting, output and forward", Priority: 2147483646, State: "holding", Held: true,
 		Rules: []control.FallbackTableRule{{Spec: "counter drop", Packets: 3, Bytes: 180}},
 		Sets:  []control.FallbackTableSet{{Name: "lan4", Elements: []string{"198.51.100.0/25"}}},
 	}

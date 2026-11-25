@@ -18,12 +18,10 @@ import (
 )
 
 // FallbackState is the switch fallback = "none" asks for, as a pass leaves it.
-// On Linux the switch is two chains of the table inet ranet3, which
-// let a packet leave by a link outside the mesh only where one of their lines
-// passes it, and drop the rest. The table carries no owner flag, so they
-// outlive the process that wrote them. routing.md's "The kill switch on Linux"
-// lists the lines and what each stop leaves of them. On macOS the switch is
-// reject routes on lo0 instead, which "The kill switch on macOS" lists.
+// On Linux its three chains in table inet ranet3 pass only the packets listed
+// in routing.md's "The kill switch on Linux" and drop the rest. The table
+// carries no owner flag, so the chains outlive the process that wrote them.
+// On macOS the switch is reject routes on lo0 instead.
 type FallbackState string
 
 const (
@@ -42,11 +40,9 @@ type FallbackStatus struct {
 	State FallbackState
 	// Fault is why the switch does not read back, under FallbackNotHolding
 	Fault string
-	// Dropped and DroppedBytes are the packets and bytes the last lines of
-	// both chains have dropped, summed, as the last read that succeeded found
-	// them, and DropsRead says a read of this process has. Uncounted says the
-	// switch counts nothing it refuses, as darwin's rejects, whose drops are
-	// never read
+	// Dropped and DroppedBytes sum the last lines of the three chains as the
+	// last successful read found them. DropsRead says a read succeeded.
+	// Uncounted marks a switch that counts no refusals, as on darwin.
 	Dropped, DroppedBytes uint64
 	DropsRead             bool
 	Uncounted             bool
@@ -99,15 +95,12 @@ type FallbackDebugSet struct {
 	Elements []string
 }
 
-// fallbackSets holds what the lines of one pass's switch on linux read:
-// the tun for the oifname line, the links of the forwarded set, the LAN's and
-// this node's own prefixes and inbound's ports, derived from the same exitView
-// its rules come from. Each prefix list is masked, sorted and each once.
+// fallbackSets holds one pass's Linux switch inputs, including the source
+// prefixes selected by rule 5430. Each prefix list is masked, sorted and unique.
 type fallbackSets struct {
 	// tun is the mesh's device, which the chain's first line passes with lo
 	tun string
-	// forwarded is the links forward expands to, whose forwarded traffic the
-	// forwarded line does not pass, so it meets the other lines
+	// forwarded is the links forward expands to
 	forwarded []string
 	// lan is each family's LAN, as routing.md's "The kill switch on Linux"
 	// lists it
@@ -116,6 +109,8 @@ type fallbackSets struct {
 	// them, less the carve-outs, which lan holds less the mesh's prefixes
 	// inside them
 	self4, self6 []netip.Prefix
+	// from is the outermost own prefixes, including those inside the overlay
+	from4, from6 []netip.Prefix
 	// tcp and udp are inbound's services of each protocol, joined
 	tcp, udp []Service
 	// captured is each connected network left out of lan because it counts as
@@ -137,8 +132,8 @@ var lanRanges = []netip.Prefix{
 }
 
 // fallbackSetsOf derives the switch's sets. carveOuts is each prefix inside the
-// overlay the LAN holds.
-func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []Service, carveOuts []netip.Prefix) fallbackSets {
+// overlay the LAN holds. The own prefixes are the same snapshot's 5430 source list.
+func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []Service, carveOuts, own []netip.Prefix) fallbackSets {
 	out := fallbackSets{tun: tun, forwarded: slices.Clone(v.forwarded)}
 	slices.Sort(out.forwarded)
 	inOverlay := Ranges(SchemaPrefixes(overlay))
@@ -172,6 +167,7 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 	out.lan4, out.lan6 = familyPrefixes(FamilyIPv4, lan), familyPrefixes(FamilyIPv6, lan)
 	self := slices.DeleteFunc(slices.Clone(v.own), func(prefix netip.Prefix) bool { return schema.InsideOverlay(prefix, overlay) })
 	out.self4, out.self6 = familyPrefixes(FamilyIPv4, self), familyPrefixes(FamilyIPv6, self)
+	out.from4, out.from6 = outermost(familyPrefixes(FamilyIPv4, own)), outermost(familyPrefixes(FamilyIPv6, own))
 	out.captured = slices.Compact(slices.SortedFunc(slices.Values(out.captured), comparePrefixes))
 	out.public = slices.Compact(slices.SortedFunc(slices.Values(out.public), comparePrefixes))
 	for _, service := range inbound {
@@ -227,7 +223,7 @@ func covers(network netip.Prefix, parts []netip.Prefix) bool {
 
 // fallbackFor is the sets of the switch exit asks for, none for a switch of
 // reject routes, which passes nothing by a line, and whether it asks for one
-func (r *Reconciler) fallbackFor(exit exitView) (fallbackSets, bool) {
+func (r *Reconciler) fallbackFor(exit exitView, own []netip.Prefix) (fallbackSets, bool) {
 	mode := r.table.Mode()
 	if !exit.on || !exit.fallback || mode == nil {
 		return fallbackSets{}, false
@@ -235,7 +231,7 @@ func (r *Reconciler) fallbackFor(exit exitView) (fallbackSets, bool) {
 	if r.switchForm().keys != nil {
 		return fallbackSets{}, true
 	}
-	return exit.fallbackSetsOf(r.rt.Interface, r.rt.Overlay, mode.Services(), exit.carvedLAN()), true
+	return exit.fallbackSetsOf(r.rt.Interface, r.rt.Overlay, mode.Services(), exit.carvedLAN(), own), true
 }
 
 // applyFallback writes the switch of sets where the pass asks for it,
@@ -489,7 +485,7 @@ type fallbackRead struct {
 	// fault names the first way the switch differs from what was written, its
 	// chains or a reject missing among them, empty where none does
 	fault string
-	// dropped and bytes are the packets and bytes the last lines of both chains have dropped, summed
+	// dropped and bytes sum the last lines of the three chains
 	dropped, bytes uint64
 	// remake is a chain or set a rewrite cannot mend in place, which goes first
 	remake bool

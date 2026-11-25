@@ -4,7 +4,7 @@ Policy rules, ipv4
 Wanted and missing: none
 Lookups: none
 
-Fallback, nftables table inet ranet3 chains fallback and output, postrouting at priority 2147483646, not holding, its chains are missing
+Fallback, nftables table inet ranet3 chains fallback, output and routed, postrouting, output and forward at priority 2147483646, not holding, its chains are missing
   not held
 Policy rules, ipv4
   Priority  Selects  Table  Owner
@@ -12,5 +12,5 @@ Policy rules, ipv4
 Wanted and missing: none
 Lookups: none
 
-Fallback, nftables table inet ranet3 chains fallback and output, postrouting at priority 2147483646, holding
+Fallback, nftables table inet ranet3 chains fallback, output and routed, postrouting, output and forward at priority 2147483646, holding
   read now: nftables: dump tables: operation not permitted

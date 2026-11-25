@@ -47,22 +47,27 @@ Antispoof filter, nftables table inet ranet3 chains antispoof and entry, read 3 
   set owned4   203.0.113.0/26, 198.51.100.7-198.51.100.9
   set none4    empty
 
-Fallback, nftables table inet ranet3 chains fallback and output, postrouting at priority 2147483646, holding
+Fallback, nftables table inet ranet3 chains fallback, output and routed, postrouting, output and forward at priority 2147483646, holding
+  chain routed
   oifname { lo, ranet3 } accept
   meta mark 0x00000072 accept
-  meta iif != 0 iifname != @forwarded accept
+  iifname @forwarded accept
+  ip saddr != @from4 accept
+  ip6 saddr != @from6 accept
   ip daddr @lan4 accept
   ip6 daddr @lan6 accept
-  ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
-  ip6 daddr { fe80::/10, ff00::/8 } accept
   ip daddr @self4 accept
   ip6 daddr @self6 accept
   ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
-  counter drop   12 packets, 720 B
-  set forwarded  empty
-  set lan4       198.51.100.0/25, 203.0.113.64-203.0.113.70
-  set lan6       2001:db8:a::/64
-  set self4      203.0.113.0/26
-  set self6      empty
-  set tcpports   22, 60000-61000
-  set udpports   empty
+  icmp errors 3/11/12 related outside from4 counter accept  2 packets, 120 B
+  icmpv6 errors 1-4 related outside from6 counter accept    0 packets, 0 B
+  counter drop                                              12 packets, 720 B
+  set forwarded                                             empty
+  set lan4                                                  198.51.100.0/25, 203.0.113.64-203.0.113.70
+  set lan6                                                  2001:db8:a::/64
+  set self4                                                 203.0.113.0/26
+  set self6                                                 empty
+  set tcpports                                              22, 60000-61000
+  set udpports                                              empty
+  set from4                                                 192.0.2.0/25
+  set from6                                                 3fff:1::/64

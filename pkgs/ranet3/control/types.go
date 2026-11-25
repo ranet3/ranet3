@@ -505,7 +505,7 @@ type KernelFallback struct {
 	// the rejects.
 	State  string `json:"state"`
 	Reason string `json:"reason,omitempty"`
-	// Dropped holds the packets and bytes the last lines of both chains have dropped, summed, as the last read of the chains that succeeded found them, left out until a read of the chains by this process has succeeded
+	// Dropped sums the last lines of the three chains as the last successful read found them, absent until a read by this process succeeds
 	Dropped *FallbackDrops `json:"dropped,omitempty"`
 	// Uncounted is a switch that counts nothing it refuses, macOS's, whose
 	// Dropped stays absent

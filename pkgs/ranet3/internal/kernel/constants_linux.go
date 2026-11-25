@@ -26,7 +26,7 @@ const (
 	// postrouting ahead of conntrack's confirmation at the last one, so a packet
 	// it drops confirms no entry
 	fallbackPriority = 2147483646
-	// fallbackSetIDs is how many anonymous set IDs each of the switch's chains
-	// takes, past the named sets' 1 to 7, more than its lines read
+	// fallbackSetIDs is how many anonymous set IDs each chain takes, past
+	// the named sets' IDs 1 to 9, more than any chain's lines read
 	fallbackSetIDs = 10
 )

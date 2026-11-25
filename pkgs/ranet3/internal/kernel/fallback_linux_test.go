@@ -52,6 +52,23 @@ const fallbackLines = `		oifname { "lo", "ranetsw0" } accept
 		ct direction reply ct protocol udp ct original proto-dst @udpports accept
 		counter drop
 `
+const routedLines = `		oifname { "lo", "ranetsw0" } accept
+		meta mark 0x00000072 accept
+		iifname @forwarded accept
+		ip saddr != @from4 accept
+		ip6 saddr != @from6 accept
+		ip daddr @lan4 accept
+		ip6 daddr @lan6 accept
+		ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
+		ip6 daddr { fe80::/10, ff00::/8 } accept
+		ip daddr @self4 accept
+		ip6 daddr @self6 accept
+		ct direction reply ct protocol tcp ct original proto-dst @tcpports accept
+		ct direction reply ct protocol udp ct original proto-dst @udpports accept
+		icmp type { destination-unreachable, time-exceeded, parameter-problem } ct state related ct original ip saddr != @from4 ct reply ip saddr != @from4 counter accept
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } ct state related ct original ip6 saddr != @from6 ct reply ip6 saddr != @from6 counter accept
+		counter drop
+`
 
 // fallbackText is fallbackSample's switch as nft spells it, each line under the
 // comment the platform writes for it
@@ -65,15 +82,19 @@ func fallbackText(t *testing.T) string {
 	set self6 { type ipv6_addr; flags interval; }
 	set tcpports { type inet_service; flags interval; elements = { 22, 2222 } }
 	set udpports { type inet_service; flags interval; elements = { 53, 60000-61000 } }
+	set from4 { type ipv4_addr; flags interval; elements = { 192.0.2.0/25 } }
+	set from6 { type ipv6_addr; flags interval; elements = { 3fff:1::/64 } }
 `
 	postrouting := strings.Split(strings.TrimSuffix(fallbackLines, "\n"), "\n")
 	output := slices.Insert(slices.Clone(postrouting), len(postrouting)-1, "\t\tfib daddr type local accept")
+	routed := strings.Split(strings.TrimSuffix(routedLines, "\n"), "\n")
 	for i, chain := range []struct {
 		header string
 		lines  []string
 	}{
 		{"\tchain fallback {\n\t\ttype filter hook postrouting priority 2147483646; policy accept;\n", postrouting},
 		{"\tchain output {\n\t\ttype filter hook output priority 2147483646; policy accept;\n", output},
+		{"\tchain routed {\n\t\ttype filter hook forward priority 2147483646; policy accept;\n", routed},
 	} {
 		rules, err := fallbackSample.rules(i)
 		if err != nil || len(rules) != len(chain.lines) {
@@ -81,6 +102,16 @@ func fallbackText(t *testing.T) string {
 		}
 		text += chain.header
 		for j, rule := range rules {
+			spec := strings.ReplaceAll(strings.TrimSpace(chain.lines[j]), `"`, "")
+			if i == 2 && j == len(chain.lines)-3 {
+				spec = "icmp errors 3/11/12 related outside from4 counter accept"
+			}
+			if i == 2 && j == len(chain.lines)-2 {
+				spec = "icmpv6 errors 1-4 related outside from6 counter accept"
+			}
+			if rule.spec != spec {
+				t.Fatalf("chain %s line %d encodes %q, want %q", fallbackChains[i].Name, j, rule.spec, spec)
+			}
 			text += fmt.Sprintf("%s comment %q\n", chain.lines[j], rule.spec)
 		}
 		text += "\t}\n"
@@ -146,7 +177,7 @@ add ct timeout inet %[1]s udp4 { protocol udp; l3proto ip; policy = { unreplied:
 		t.Fatalf("the other owners' listing holds %d lines with handles, want every chain, rule, set and object of theirs:\n%s", len(before), strings.Join(before, "\n"))
 	}
 	// lan4 made again without its interval flag, which only a delete mends
-	run(fmt.Sprintf("flush chain inet %[1]s fallback; flush chain inet %[1]s output; delete set inet %[1]s lan4; add set inet %[1]s lan4 { type ipv4_addr; }", nftables.Table))
+	run(fmt.Sprintf("flush chain inet %[1]s fallback; flush chain inet %[1]s output; flush chain inet %[1]s routed; delete set inet %[1]s lan4; add set inet %[1]s lan4 { type ipv4_addr; }", nftables.Table))
 	read, err := plat.readFallback(fallbackSample)
 	if err != nil || read.fault == "" || !read.remake {
 		t.Fatalf("with lan4 made again the switch reads back as %+v (%v), want a fault that remakes it", read, err)
@@ -201,7 +232,7 @@ func TestNetlinkFallbackMakesAgainASetItsCreateIsRefusedFor(t *testing.T) {
 	plat.retable(tbl)
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the switch")
 	}
@@ -214,7 +245,7 @@ func TestNetlinkFallbackMakesAgainASetItsCreateIsRefusedFor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = another.Close() })
 	forwarded := fallbackNamed[slices.IndexFunc(fallbackNamed, func(set nftables.Set) bool { return set.Name == "forwarded" })]
-	requests := []nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), forwarded.Delete(unix.NFPROTO_INET), oneField(t, forwarded)}
+	requests := []nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), fallbackRouted.Flush(unix.NFPROTO_INET), forwarded.Delete(unix.NFPROTO_INET), oneField(t, forwarded)}
 	if err := another.Batch(requests); err != nil {
 		t.Fatalf("another writer makes forwarded again: %v", err)
 	}
@@ -267,7 +298,7 @@ func TestNetlinkFallbackMakesAgainASetAnotherWriterMadeAnonymous(t *testing.T) {
 	plat.retable(tbl)
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the switch")
 	}
@@ -298,7 +329,7 @@ func TestNetlinkFallbackMakesAgainASetAnotherWriterMadeAnonymous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requests := slices.Concat([]nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), lan4.Delete(unix.NFPROTO_INET), create}, filled, []nftables.Request{line})
+	requests := slices.Concat([]nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), fallbackRouted.Flush(unix.NFPROTO_INET), lan4.Delete(unix.NFPROTO_INET), create}, filled, []nftables.Request{line})
 	if err := another.Batch(requests); err != nil {
 		t.Fatalf("another writer makes lan4 again anonymous: %v", err)
 	}
@@ -335,7 +366,7 @@ func TestNetlinkFallbackLeavesAnonymousSetsUnderEarlierNamesToItsFlush(t *testin
 	plat.retable(tbl)
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the switch")
 	}
@@ -477,7 +508,7 @@ func holdingSwitch(t *testing.T) (*netlinkPlatform, *Reconciler, fallbackSets) {
 	plat.retable(tbl)
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the switch")
 	}
@@ -738,7 +769,7 @@ func TestNetlinkFallbackReportsTheHolderOfASetItCannotMakeAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head := []nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), forwarded.Delete(unix.NFPROTO_INET), made}
+	head := []nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), fallbackRouted.Flush(unix.NFPROTO_INET), forwarded.Delete(unix.NFPROTO_INET), made}
 	if err := another.Batch(holdingForwarded(t, head, nftables.MetaLoad(unix.NFT_META_IIFNAME), nftables.Lookup(dynamic, false))); err != nil {
 		t.Fatalf("another writer makes forwarded again flagged dynamic and looks it up: %v", err)
 	}
@@ -797,15 +828,27 @@ func TestNetlinkFallbackNamesTheHolderOfASetItCannotMakeAgainAheadOfAnEarlierSet
 	if err != nil {
 		t.Fatal(err)
 	}
-	head := slices.Concat([]nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), lan4.Delete(unix.NFPROTO_INET), made}, added)
+	head := slices.Concat([]nftables.Request{fallbackChain.Flush(unix.NFPROTO_INET), fallbackOutput.Flush(unix.NFPROTO_INET), fallbackRouted.Flush(unix.NFPROTO_INET), lan4.Delete(unix.NFPROTO_INET), made}, added)
 	if err := another.Batch(holdingForwarded(t, head, nftables.DestinationLoad(unix.NFPROTO_IPV4), nftables.Lookup(single, false))); err != nil {
 		t.Fatalf("another writer makes lan4 again of single keys, looks it up and adds to forwarded: %v", err)
 	}
+	listing := func() string {
+		t.Helper()
+		out, err := exec.Command("nft", "-a", "list", "table", "inet", nftables.Table).CombinedOutput()
+		if err != nil {
+			t.Fatalf("list the switch before or after the refused batch: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	before := listing()
 	held := "and chain other holds a rule using it, so it stays until that rule goes, and the write failed: " + unix.EBUSY.Error()
 	for i := range 2 {
 		status, err := reconciler.applyFallback(sets, true)
 		if !errors.Is(err, unix.EBUSY) || status == nil || status.State != FallbackNotHolding || !strings.Contains(status.Fault, "its set lan4 reads back") || !strings.HasSuffix(status.Fault, held) {
 			t.Errorf("the switch's pass %d reports %+v (%v), want not holding with lan4's fault and %q", i+1, status, err, held)
+		}
+		if after := listing(); after != before {
+			t.Errorf("a refused write changed the three chains, nine sets or foreign objects:\nbefore:\n%s\nafter:\n%s", before, after)
 		}
 	}
 	if err := another.Batch([]nftables.Request{otherChain.Flush(unix.NFPROTO_INET), otherChain.Delete(unix.NFPROTO_INET)}); err != nil {
@@ -822,15 +865,80 @@ var fallbackSample = fallbackSets{
 	tun: "ranetsw0", forwarded: []string{"ranetfw0"},
 	lan4: []netip.Prefix{prefix("198.51.100.0/25")}, lan6: []netip.Prefix{prefix("2001:db8:a::/64")},
 	self4: []netip.Prefix{prefix("203.0.113.0/24")},
-	tcp:   []Service{{Protocol: "tcp", First: 22, Last: 22}, {Protocol: "tcp", First: 2222, Last: 2222}},
-	udp:   []Service{{Protocol: "udp", First: 53, Last: 53}, {Protocol: "udp", First: 60000, Last: 61000}},
+	from4: []netip.Prefix{prefix("192.0.2.0/25")}, from6: []netip.Prefix{prefix("3fff:1::/64")},
+	tcp: []Service{{Protocol: "tcp", First: 22, Last: 22}, {Protocol: "tcp", First: 2222, Last: 2222}},
+	udp: []Service{{Protocol: "udp", First: 53, Last: 53}, {Protocol: "udp", First: 60000, Last: 61000}},
+}
+
+// An installation with only the old two base chains and seven sets becomes a
+// complete three-chain switch in one transaction, then withdraws without
+// leaving a routed rule that holds the old shared sets.
+func TestNetlinkFallbackTakesOverTheTwoChainSwitch(t *testing.T) {
+	plat := rootRulePlatform(t, fallbackSample.tun)
+	old := nftables.Contents{Chains: fallbackChains[:2]}
+	requests := old.Rewrite(unix.NFPROTO_INET, nftables.Contents{}, nil)
+	elements := fallbackSample.elements()
+	for _, set := range fallbackNamed[:7] {
+		replaced, err := set.Replace(unix.NFPROTO_INET, elements[set.Name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, replaced...)
+	}
+	for i, chain := range old.Chains {
+		rules, err := fallbackSample.rules(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rule := range rules {
+			if rule.anonymous != nil {
+				made, err := rule.anonymous.Create(unix.NFPROTO_INET)
+				if err != nil {
+					t.Fatal(err)
+				}
+				filled, err := rule.anonymous.Fill(unix.NFPROTO_INET, rule.members)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requests = append(append(requests, made), filled...)
+			}
+			made, err := chain.Rule(unix.NFPROTO_INET, rule.spec, rule.expressions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, made)
+		}
+	}
+	conn, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.Batch(requests); err != nil {
+		t.Fatalf("write the old switch: %v", err)
+	}
+	if old, err := plat.readFallback(fallbackSample); err != nil || old.fault != "its set from4 is missing" {
+		t.Fatalf("the old switch reads as %+v (%v), want its absent source set", old, err)
+	}
+	if err := plat.writeFallback(fallbackSample, false); err != nil {
+		t.Fatalf("take over the old switch: %v", err)
+	}
+	if read, err := plat.readFallback(fallbackSample); err != nil || read.fault != "" {
+		t.Fatalf("the new switch reads as %+v (%v)", read, err)
+	}
+	if err := plat.deleteFallback(); err != nil {
+		t.Fatalf("withdraw the new switch: %v", err)
+	}
+	if read, err := plat.readFallback(fallbackSample); err != nil || read.fault == "" {
+		t.Fatalf("after withdrawal the switch reads as %+v (%v), want no chains", read, err)
+	}
 }
 
 // nft 1.1.7's own table of the same text reads back as the platform writes
 // it, and the platform's lists as nft's does and outlives the socket that
 // wrote it. A datagram bound to the uplink toward an address another link
 // holds, translated so by NAT at output or not, passes output's fib line and
-// meets postrouting's drop, and the read sums both chains' drops. Another
+// meets postrouting's drop, and the read sums all three chains' drops. Another
 // writer's change reads back as a fault until the next write.
 func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	plat := rootRulePlatform(t, "ranetsw0")
@@ -973,14 +1081,15 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	for _, set := range debug.Sets {
 		sets[set.Name] = set.Elements
 	}
-	// fifteen lines at postrouting and sixteen at output, each datagram output dropped kept from postrouting
-	if !debug.Held || len(debug.Rules) != 31 {
-		t.Fatalf("the debug read finds %+v, want the table's thirty-one lines", debug)
+	// fifteen lines at postrouting, sixteen at output and sixteen at forward
+	if !debug.Held || len(debug.Rules) != 47 {
+		t.Fatalf("the debug read finds %+v, want forty-seven lines", debug)
 	}
-	if routed, output := debug.Rules[14], debug.Rules[30]; routed.Spec != fallbackDrop || routed.Chain != "fallback" || routed.Packets != 4 ||
+	if fallback, output, routed := debug.Rules[14], debug.Rules[30], debug.Rules[46]; fallback.Spec != fallbackDrop || fallback.Chain != "fallback" || fallback.Packets != 4 ||
 		output.Spec != fallbackDrop || output.Chain != "output" || output.Packets != 1 ||
+		routed.Spec != fallbackDrop || routed.Chain != "routed" || routed.Packets != 0 ||
 		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"lo", "ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "self4": {"203.0.113.0/24"}, "self6": {},
-			"tcpports": {"22", "2222"}, "udpports": {"53", "60000-61000"}}) {
+			"tcpports": {"22", "2222"}, "udpports": {"53", "60000-61000"}, "from4": {"192.0.2.0/25"}, "from6": {"3fff:1::/64"}}) {
 		t.Errorf("the debug read finds %+v", debug)
 	}
 
@@ -1157,7 +1266,7 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	}
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the table")
 	}
@@ -1255,7 +1364,7 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	// the switch's chains flushed and lan4 made again without its interval
 	// flag, which only a delete mends, under a rule of another writer's chain
 	// that looks it up, so the switch's delete of it fails until that chain goes
-	run(fmt.Sprintf("flush chain inet %[1]s fallback; flush chain inet %[1]s output; delete set inet %[1]s lan4; add set inet %[1]s lan4 { type ipv4_addr; }; "+
+	run(fmt.Sprintf("flush chain inet %[1]s fallback; flush chain inet %[1]s output; flush chain inet %[1]s routed; delete set inet %[1]s lan4; add set inet %[1]s lan4 { type ipv4_addr; }; "+
 		"add chain inet %[1]s other; add rule inet %[1]s other ip daddr @lan4 accept", nftables.Table))
 	changed := time.Now()
 	settle(false, 0)
@@ -1309,16 +1418,33 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	const device, uplink = "ranetsw0", "ranetup0"
 	plat := rootRulePlatform(t, device)
 	tbl, rt := fallbackNoneOverUplink(t, device, uplink)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	outside := routedTUN(t, "ranetother0")
+	link, err := conn.link(0, "ranetother0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, link.index, unix.IFF_UP)
+	writeBatchSysctl(t, "ipv4/ip_forward", "1")
+	for _, name := range []string{"all", "default", "ranetother0"} {
+		writeBatchSysctl(t, "ipv4/conf/"+name+"/rp_filter", "0")
+	}
 	open := func() *Reconciler {
 		opened, err := newPlatform(tbl, rt)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), opened)
+		routes := netstack.NewRouteTable()
+		routes.Set(netip.Prefix{}, prefix("192.0.2.0/25"), netstack.Local)
+		return newReconciler(tbl, rt, tbl.Assigned(nil), routes, opened)
 	}
 	first := open()
 	exit, _ := first.exitPass(first.addresses, nil, first.readNetwork())
-	sets, asked := first.fallbackFor(exit)
+	sets, asked := first.fallbackFor(exit, first.ownPrefixes(first.src.Snapshot()))
 	if !asked {
 		t.Fatal("the mode does not ask for the table")
 	}
@@ -1365,9 +1491,13 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	if err := sendFrom(t, netip.MustParseAddr("192.0.2.7"), 9, ""); !errors.Is(err, unix.ENETUNREACH) {
 		t.Errorf("with the table and the down set a datagram to the overlay left with %v, want ENETUNREACH", err)
 	}
+	if _, err := unix.Write(outside, routedDatagram(netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("203.0.113.9"))); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return held().read.dropped == 2 })
 	stop = runThroughFirstPass(t, open())
-	if left := held(); left.read.fault != "" || left.read.dropped != 1 || left.rules != written {
-		t.Errorf("the next start holds %+v, want the table as written with the one drop and %d rules", left, written)
+	if left := held(); left.read.fault != "" || left.read.dropped != 2 || left.rules != written {
+		t.Errorf("the next start holds %+v, want the table as written with two drops and %d rules", left, written)
 	}
 	stop(nil)
 	if left := held(); left.read.fault != "its chains are missing" || left.listed || left.routes+left.addresses > 0 || !left.down {
@@ -1582,7 +1712,7 @@ func TestNetlinkFallbackKeepsTheFlaggedTablesDiagnosisBesideTheRewritesError(t *
 			plat.retable(tbl)
 			reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 			exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-			sets, asked := reconciler.fallbackFor(exit)
+			sets, asked := reconciler.fallbackFor(exit, nil)
 			if !asked {
 				t.Fatal("the mode does not ask for the switch")
 			}

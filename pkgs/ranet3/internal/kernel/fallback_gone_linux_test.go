@@ -191,7 +191,7 @@ func switchUnderAnotherWriter(t *testing.T) (*netlinkPlatform, *Reconciler, fall
 	plat.retable(tbl)
 	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
-	sets, asked := reconciler.fallbackFor(exit)
+	sets, asked := reconciler.fallbackFor(exit, nil)
 	if !asked {
 		t.Fatal("the mode does not ask for the switch")
 	}

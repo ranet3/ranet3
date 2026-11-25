@@ -60,6 +60,7 @@ func TestFallbackTableFollowsTheMode(t *testing.T) {
 		tun: "ranet3", forwarded: []string{"docker0"},
 		lan4: []netip.Prefix{prefix("198.51.100.0/24")}, lan6: []netip.Prefix{prefix("2001:db8:a::/64")},
 		self4: []netip.Prefix{prefix("203.0.113.0/24")},
+		from4: []netip.Prefix{prefix("203.0.113.0/24")},
 		tcp:   []Service{{Protocol: "tcp", First: 22, Last: 22}}, udp: []Service{{Protocol: "udp", First: 60000, Last: 61000}},
 	}
 	if fake.fallback == nil || !reflect.DeepEqual(*fake.fallback, want) {
@@ -271,7 +272,7 @@ const (
 	leftLine     = "kernel is leaving its kill switch after the mesh failed"
 	noneLine     = "kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes"
 	unlistedLine = "kernel is leaving any kill switch there after the mesh failed, which it could not list"
-	fakeWhere    = `" where="nftables table inet ranet3 chains fallback and output"`
+	fakeWhere    = `" where="nftables table inet ranet3 chains fallback, output and routed"`
 )
 
 // logged is slog's text from here to the end of t, read once what writes it has returned
@@ -487,11 +488,38 @@ func TestFallbackSetsLeaveOutTheOverlayAndWhatCapturesTheMachine(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := c.view.fallbackSetsOf("ranet3", c.overlay, nil, c.carveOuts)
+			got := c.view.fallbackSetsOf("ranet3", c.overlay, nil, c.carveOuts, nil)
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("the sets read\n%+v\nwant\n%+v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestFallbackSourcesMatchOwnSourceRulesInsideOverlay(t *testing.T) {
+	own := parsedPrefixes([]string{"192.0.2.0/25", "192.0.2.0/26", "203.0.113.0/25", "3fff:1::/64", "2001:db8:5::/48"})
+	view := exitView{own: own}
+	sets := view.fallbackSetsOf("ranet3", exitPassOverlay, nil, nil, own)
+	if !slices.Equal(sets.from4, parsedPrefixes([]string{"192.0.2.0/25", "203.0.113.0/25"})) ||
+		!slices.Equal(sets.from6, parsedPrefixes([]string{"2001:db8:5::/48", "3fff:1::/64"})) {
+		t.Fatalf("source sets are %v and %v", sets.from4, sets.from6)
+	}
+	if slices.Contains(sets.self4, prefix("192.0.2.0/25")) || slices.Contains(sets.self6, prefix("3fff:1::/64")) {
+		t.Fatalf("destination sets unexpectedly include overlay own prefixes: %v and %v", sets.self4, sets.self6)
+	}
+	var from4, from6 []netip.Prefix
+	for _, rule := range derivedRules(DefaultTable, exitPassOverlay, own, exitView{}) {
+		if rule.Priority != priorityOwn {
+			continue
+		}
+		if rule.Family == FamilyIPv4 {
+			from4 = append(from4, rule.From.Prefix)
+		} else {
+			from6 = append(from6, rule.From.Prefix)
+		}
+	}
+	if !slices.Equal(sets.from4, from4) || !slices.Equal(sets.from6, from6) {
+		t.Errorf("source sets %v and %v differ from 5430 %v and %v", sets.from4, sets.from6, from4, from6)
 	}
 }
 
@@ -551,7 +579,7 @@ func TestFallbackLANIsThePrivateAndLinkLocalPartsOfEachConnectedNetwork(t *testi
 				family.Links = append(family.Links, Link{Name: "eth0", Prefixes: []netip.Prefix{connected}})
 			}
 			view := exitView{on: true, fallback: true, network: network, lan: parsedPrefixes(c.listed)}
-			got := view.fallbackSetsOf("ranet3", exitPassOverlay, nil, nil)
+			got := view.fallbackSetsOf("ranet3", exitPassOverlay, nil, nil, nil)
 			if !slices.Equal(got.lan4, parsedPrefixes(c.lan4)) || !slices.Equal(got.lan6, parsedPrefixes(c.lan6)) || !slices.Equal(got.public, parsedPrefixes(c.public)) {
 				t.Errorf("connected to %v and listing %v the LAN reads %v and %v with %v public, want %v and %v with %v public",
 					c.connected, c.listed, got.lan4, got.lan6, got.public, c.lan4, c.lan6, c.public)

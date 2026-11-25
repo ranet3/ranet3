@@ -28,8 +28,8 @@ var (
 // tableForm is the switch's chains in nftables.Table as a log line and a
 // status read them
 var tableForm = fallbackForm{
-	where:  "nftables table inet " + nftables.Table + " chains " + fallbackChain.Name + " and " + fallbackOutput.Name,
-	fix:    "nft delete chain inet " + nftables.Table + " " + fallbackChain.Name + " and nft delete chain inet " + nftables.Table + " " + fallbackOutput.Name,
+	where:  "nftables table inet " + nftables.Table + " chains " + fallbackChain.Name + ", " + fallbackOutput.Name + " and " + fallbackRouted.Name,
+	fix:    "nft delete chain inet " + nftables.Table + " " + fallbackRouted.Name + ", nft delete chain inet " + nftables.Table + " " + fallbackChain.Name + " and nft delete chain inet " + nftables.Table + " " + fallbackOutput.Name,
 	unheld: "the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
 }
 
@@ -51,8 +51,10 @@ var fallbackChain = nftables.Chain{Table: nftables.Table, Name: "fallback", Type
 // forwarded.
 var fallbackOutput = nftables.Chain{Table: nftables.Table, Name: "output", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: fallbackPriority}
 
+var fallbackRouted = nftables.Chain{Table: nftables.Table, Name: "routed", Type: "filter", Hook: unix.NF_INET_FORWARD, Priority: fallbackPriority}
+
 // fallbackChains is the switch's chains, in the order the readback lists their lines
-var fallbackChains = []nftables.Chain{fallbackChain, fallbackOutput}
+var fallbackChains = []nftables.Chain{fallbackChain, fallbackOutput, fallbackRouted}
 
 // fallbackNamed is the switch's named sets, the IDs naming them to the rules
 // of the transaction that makes them
@@ -67,6 +69,8 @@ var fallbackNamed = []nftables.Set{
 	// bytes. nft reads tcp and udp as keywords, so neither names a set.
 	{Table: nftables.Table, Name: "tcpports", ID: 6, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
 	{Table: nftables.Table, Name: "udpports", ID: 7, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "from4", ID: 8, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "from6", ID: 9, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
 }
 
 // fallbackRetired is the names an earlier switch gave the sets self4, self6,
@@ -95,6 +99,8 @@ func (s fallbackSets) elements() map[string][]nftables.Interval {
 		"lan6":      nftables.Prefixes(s.lan6),
 		"self4":     nftables.Prefixes(s.self4),
 		"self6":     nftables.Prefixes(s.self6),
+		"from4":     nftables.Prefixes(s.from4),
+		"from6":     nftables.Prefixes(s.from6),
 		"tcpports":  ports(s.tcp),
 		"udpports":  ports(s.udp),
 	}
@@ -109,11 +115,13 @@ func ports(services []Service) []nftables.Interval {
 }
 
 type fallbackRule struct {
-	// spec is the line as nft lists it and also its comment
-	spec        string
-	expressions [][]byte
-	anonymous   *nftables.Set
-	members     []nftables.Interval
+	// spec is the readback's comment. Most lines use their nft text directly,
+	// but ICMP's full conditions exceed nft's 128-byte comment limit
+	spec         string
+	expressions  [][]byte
+	anonymous    *nftables.Set
+	members      []nftables.Interval
+	namedLookups int
 }
 
 // rules is the lines in order of the chain at index chain of fallbackChains,
@@ -138,6 +146,7 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 			return nil, err
 		}
 	}
+	routed := fallbackChains[chain].Hook == unix.NF_INET_FORWARD
 	oif := anonymous(nftables.TypeIfname, unix.IFNAMSIZ, 0)
 	var out []fallbackRule
 	out = append(out,
@@ -151,17 +160,32 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 			spec:        fmt.Sprintf("meta mark %#08x accept", schema.UnderlayMark),
 			expressions: append(nftables.MetaCompareValue(unix.NFT_META_MARK, unix.NFT_CMP_EQ, binary.NativeEndian.AppendUint32(nil, schema.UnderlayMark)), accept),
 		},
-		fallbackRule{
-			// a forwarded packet from a link outside forwarded whose destination the fib does not type local (nft_fib4_eval_type in
-			// nft_fib_ipv4.c, __nft_fib6_eval_type in nft_fib_ipv6.c). The type keeps the line off a packet a rule ahead of the
-			// local table sends on toward a destination it types local, and off a kernel tunnel's outer packet bound to a link toward
-			// an address another link holds, whose lookup passes over that address's local route (fib_trie.c, fib_lookup_good_nhc).
+	)
+	if routed {
+		out = append(out, fallbackRule{
+			spec:        "iifname @forwarded accept",
+			expressions: [][]byte{nftables.MetaLoad(unix.NFT_META_IIFNAME), nftables.Lookup(named("forwarded"), false), accept},
+		})
+		for _, family := range []struct {
+			proto uint8
+			set   string
+			spec  string
+		}{{unix.NFPROTO_IPV4, "from4", "ip saddr != @from4 accept"}, {unix.NFPROTO_IPV6, "from6", "ip6 saddr != @from6 accept"}} {
+			out = append(out, fallbackRule{
+				spec: family.spec,
+				expressions: slices.Concat(nftables.NFProto(family.proto), [][]byte{
+					nftables.SourceLoad(family.proto), nftables.Lookup(named(family.set), true), accept,
+				}),
+			})
+		}
+	} else {
+		out = append(out, fallbackRule{
 			spec: "meta iif != 0 iifname != @forwarded fib daddr type != local accept",
 			expressions: slices.Concat(nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4)),
 				[][]byte{nftables.MetaLoad(unix.NFT_META_IIFNAME), nftables.Lookup(named("forwarded"), true), nftables.FibDestinationType(),
 					nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_NEQ, binary.NativeEndian.AppendUint32(nil, unix.RTN_LOCAL))), accept}),
-		},
-	)
+		})
+	}
 	for _, line := range []struct {
 		proto uint8
 		set   string
@@ -172,43 +196,41 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 	out = append(out, addressLine(unix.NFPROTO_IPV4, "{ 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 }", nftables.Lookup(*link4, false), link4, nftables.Prefixes(linkLocal4)))
 	link6 := anonymous(nftables.TypeIPv6Addr, 16, unix.NFT_SET_INTERVAL)
 	out = append(out, addressLine(unix.NFPROTO_IPV6, "{ fe80::/10, ff00::/8 }", nftables.Lookup(*link6, false), link6, nftables.Prefixes(linkLocal6)))
-	// neighbor and router discovery, which RFC 4890 section 4.4.1 says must not be dropped, at the hop limit of 255 RFC 4861
-	// sections 6.1 and 7.1 require, to any destination, since a solicited advertisement goes to the solicitation's source
-	discovery := anonymous(nftables.TypeICMPv6Type, 1, 0)
-	var discoveryTypes []nftables.Interval
-	for icmpType := byte(133); icmpType <= 136; icmpType++ {
-		discoveryTypes = append(discoveryTypes, nftables.Key([]byte{icmpType}))
-	}
 	icmp := func(proto, l4 uint8) [][]byte {
 		return slices.Concat(nftables.NFProto(proto), nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{l4}))
 	}
-	// a packet with no input link at postrouting (ip_output in ip_output.c, ip6_output in ip6_output.c), such as the host's own,
-	// where a forwarded one reads its own
-	own := nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_EQ, make([]byte, 4))
-	out = append(out,
-		fallbackRule{
-			spec: "icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept",
-			expressions: slices.Concat(icmp(unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6), [][]byte{
-				nftables.TransportLoad(0, 1), nftables.Lookup(*discovery, false),
-				nftables.NetworkLoad(7, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{255})), accept,
-			}),
-			anonymous: discovery, members: discoveryTypes,
-		},
-		// the errors path MTU discovery reads, Packet Too Big of RFC 4443 and fragmentation needed of RFC 792, which the kernel sends
-		// only to the source of a packet too big for its next hop, a forwarded one among them, and the host's own alone
-		fallbackRule{
-			spec: "meta iif 0 icmpv6 type packet-too-big accept",
-			expressions: slices.Concat(own, icmp(unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6), [][]byte{
-				nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{2})), accept,
-			}),
-		},
-		fallbackRule{
-			spec: "meta iif 0 icmp type destination-unreachable icmp code 4 accept",
-			expressions: slices.Concat(own, icmp(unix.NFPROTO_IPV4, unix.IPPROTO_ICMP), [][]byte{
-				nftables.TransportLoad(0, 2), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{3, 4})), accept,
-			}),
-		},
-	)
+	if !routed {
+		// neighbor and router discovery at the hop limit required by RFC 4861
+		discovery := anonymous(nftables.TypeICMPv6Type, 1, 0)
+		var discoveryTypes []nftables.Interval
+		for icmpType := byte(133); icmpType <= 136; icmpType++ {
+			discoveryTypes = append(discoveryTypes, nftables.Key([]byte{icmpType}))
+		}
+		// a packet with no input link at postrouting (ip_output in ip_output.c, ip6_output in output_core.c)
+		own := nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_EQ, make([]byte, 4))
+		out = append(out,
+			fallbackRule{
+				spec: "icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept",
+				expressions: slices.Concat(icmp(unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6), [][]byte{
+					nftables.TransportLoad(0, 1), nftables.Lookup(*discovery, false),
+					nftables.NetworkLoad(7, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{255})), accept,
+				}),
+				anonymous: discovery, members: discoveryTypes,
+			},
+			fallbackRule{
+				spec: "meta iif 0 icmpv6 type packet-too-big accept",
+				expressions: slices.Concat(own, icmp(unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6), [][]byte{
+					nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{2})), accept,
+				}),
+			},
+			fallbackRule{
+				spec: "meta iif 0 icmp type destination-unreachable icmp code 4 accept",
+				expressions: slices.Concat(own, icmp(unix.NFPROTO_IPV4, unix.IPPROTO_ICMP), [][]byte{
+					nftables.TransportLoad(0, 2), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{3, 4})), accept,
+				}),
+			},
+		)
+	}
 	for _, line := range []struct {
 		proto uint8
 		set   string
@@ -230,6 +252,39 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 				nftables.CTLoadDirection(unix.NFT_CT_PROTO_DST, nftables.CTOriginal), nftables.Lookup(named(line.name+"ports"), false), accept,
 			),
 		})
+	}
+	if routed {
+		for _, family := range []struct {
+			proto   uint8
+			l4      uint8
+			key     uint32
+			set     string
+			spec    string
+			types   []byte
+			setType uint32
+		}{
+			{unix.NFPROTO_IPV4, unix.IPPROTO_ICMP, unix.NFT_CT_SRC_IP, "from4",
+				"icmp errors 3/11/12 related outside from4 counter accept", []byte{3, 11, 12}, 14},
+			{unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6, unix.NFT_CT_SRC_IP6, "from6",
+				"icmpv6 errors 1-4 related outside from6 counter accept", []byte{1, 2, 3, 4}, nftables.TypeICMPv6Type},
+		} {
+			types := anonymous(family.setType, 1, 0)
+			members := make([]nftables.Interval, 0, len(family.types))
+			for _, kind := range family.types {
+				members = append(members, nftables.Key([]byte{kind}))
+			}
+			out = append(out, fallbackRule{
+				spec: family.spec, namedLookups: 2,
+				expressions: slices.Concat(icmp(family.proto, family.l4), [][]byte{
+					nftables.TransportLoad(0, 1), nftables.Lookup(*types, false),
+				}, nftables.CTMatch(unix.NFT_CT_STATE, 1<<2, unix.NFT_CMP_NEQ), [][]byte{
+					nftables.CTLoadDirection(family.key, nftables.CTOriginal), nftables.Lookup(named(family.set), true),
+					nftables.CTLoadDirection(family.key, nftables.CTReply), nftables.Lookup(named(family.set), true),
+					nftables.Expression("counter", nil), accept,
+				}),
+				anonymous: types, members: members,
+			})
+		}
 	}
 	if fallbackChains[chain].Hook == unix.NF_INET_LOCAL_OUT {
 		// oifname reads the device of the packet's first route (__ip_local_out in ip_output.c, __ip6_local_out in output_core.c),
@@ -554,8 +609,8 @@ func chainFault(conn *nftables.Conn, s fallbackSets, chain int, held []nftables.
 		if rule.anonymous != nil {
 			line.Then = func(held nftables.Installed) (string, error) {
 				sets := nftables.LookupSets(held.Expressions)
-				if len(sets) != 1 {
-					return fmt.Sprintf("its chain %s's line %s looks up %v, where one set was written", name, rule.spec, sets), nil
+				if len(sets) != 1+rule.namedLookups {
+					return fmt.Sprintf("its chain %s's line %s looks up %v, where %d lookups were written", name, rule.spec, sets, 1+rule.namedLookups), nil
 				}
 				set := *rule.anonymous
 				set.Name = sets[0]
@@ -574,10 +629,10 @@ func chainFault(conn *nftables.Conn, s fallbackSets, chain int, held []nftables.
 	return nftables.ChainFault(name, lines, held)
 }
 
-// ReadFallback reads the switch through a socket of its own, so the
-// reconciler's stays with its one user
+// ReadFallback lists the switch through a socket of its own, independent of
+// the reconciler's watch and its last read.
 func ReadFallback() (FallbackDebug, error) {
-	out := FallbackDebug{Where: tableForm.where, Hook: "postrouting and output", Priority: fallbackPriority}
+	out := FallbackDebug{Where: tableForm.where, Hook: "postrouting, output and forward", Priority: fallbackPriority}
 	conn, err := nftables.Dial()
 	if err != nil {
 		return out, err
@@ -627,7 +682,7 @@ func readFallback(conn *nftables.Conn, s fallbackSets, tables map[uint8]uint32) 
 	return read, nil
 }
 
-// holdsSwitch is whether chains, a table's, hold either chain of the switch
+// holdsSwitch is whether chains, a table's, hold any chain of the switch
 func holdsSwitch(chains []string) bool {
 	return slices.ContainsFunc(fallbackChains, func(chain nftables.Chain) bool { return slices.Contains(chains, chain.Name) })
 }
