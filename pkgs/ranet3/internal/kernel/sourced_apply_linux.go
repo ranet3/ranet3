@@ -286,8 +286,8 @@ func (p *netlinkPlatform) retireSourced(r *Reconciler, desired []Route, staged b
 	}
 	var processed []Rule
 	for _, held := range v.rules {
-		peer, owned := sourcedOwnedPeer(held, key, p.table.Proto)
-		if !owned || slices.Contains(processed, peer) {
+		peer, retiring := r.sourcedRetiringPeer(held, key, p.table.Proto)
+		if !retiring || slices.Contains(processed, peer) {
 			continue
 		}
 		processed = append(processed, peer)
@@ -318,14 +318,35 @@ func (p *netlinkPlatform) retireSourced(r *Reconciler, desired []Route, staged b
 	return nil
 }
 
-func sourcedOwnedPeer(held DumpedRule, key *Sourced, proto uint8) (Rule, bool) {
+// A foreign 5403 lookalike can outlive the exact peer it shadowed. A pair
+// from either side of a reload still needs its guard without an exact peer.
+func (r *Reconciler) sourcedRetiringPeer(held DumpedRule, key *Sourced, proto uint8) (Rule, bool) {
 	if held.Priority != prioritySourcedPeer || held.Family != FamilyIPv6 ||
 		!held.To.IsValid() || !held.To.Addr().Is6() ||
 		!held.From.IsValid() || !held.From.Addr().Is6() {
 		return Rule{}, false
 	}
 	peer := sourcedPeerRule(schema.PrefixFrom(held.To), held.From, key.ID)
-	return peer, sourcedDeleteEquivalent(held, sourcedExpectedDump(peer, proto))
+	expected := sourcedExpectedDump(peer, proto)
+	if held == expected {
+		return peer, true
+	}
+	if !sourcedDeleteEquivalent(held, expected) {
+		return Rule{}, false
+	}
+	for _, named := range key.To {
+		if named.Prefix == held.To {
+			return peer, true
+		}
+	}
+	if r.reloadPrevious != nil && r.reloadPrevious.table.Sourced != nil {
+		for _, named := range r.reloadPrevious.table.Sourced.To {
+			if named.Prefix == held.To {
+				return peer, true
+			}
+		}
+	}
+	return Rule{}, false
 }
 
 // withdrawSourcedAdmission runs before ordinary 5410 can leave. A foreign
@@ -351,16 +372,21 @@ func (p *netlinkPlatform) withdrawSourcedAdmission(r *Reconciler) (safe bool, er
 	var debts []error
 	var processed []Rule
 	for _, held := range v.rules {
-		peer, owned := sourcedOwnedPeer(held, key, p.table.Proto)
-		if !owned || slices.Contains(processed, peer) {
+		peer, retiring := r.sourcedRetiringPeer(held, key, p.table.Proto)
+		if !retiring || slices.Contains(processed, peer) {
 			continue
 		}
-		processed = append(processed, peer)
 		ambiguous := sourcedAmbiguous(v.rules, peer, p.table.Proto)
 		if ambiguous {
 			if err := v.add(sourcedGuardRule(peer.To, peer.From.Prefix)); err != nil {
 				return false, errors.Join(errors.Join(debts...), err)
 			}
+		}
+		if !v.has(peer) {
+			if ambiguous {
+				debts = append(debts, fmt.Errorf("sourced peer %s has a foreign lookalike under a 5402 guard", peer))
+			}
+			continue
 		}
 		if sourcedShadowed(v.rules, peer, p.table.Proto) {
 			debts = append(debts, fmt.Errorf("sourced peer %s remains behind a foreign lookalike under a 5402 guard", peer))
@@ -539,28 +565,29 @@ func (p *netlinkPlatform) clearSourcedStanding() error {
 	return nil
 }
 
-func (p *netlinkPlatform) removeSourcedKey(r *Reconciler) error {
-	foreignSelector := func() error {
-		all, err := p.SourcedRules()
-		if err != nil {
-			return err
-		}
-		for _, held := range all {
-			if held.Family == FamilyIPv6 && sourcedPriority(held.Priority) &&
-				held.Protocol == p.table.Proto && held.Unread != 0 {
-				return fmt.Errorf("cannot remove sourced key while foreign selector stands at priority %d", held.Priority)
-			}
-		}
-		return nil
+func (p *netlinkPlatform) preflightSourcedRemoval() error {
+	all, err := p.SourcedRules()
+	if err != nil {
+		return err
 	}
-	if err := foreignSelector(); err != nil {
+	for _, held := range all {
+		if held.Family == FamilyIPv6 && sourcedPriority(held.Priority) &&
+			held.Protocol == p.table.Proto && held.Unread != 0 {
+			return fmt.Errorf("cannot remove sourced key while foreign selector stands at priority %d", held.Priority)
+		}
+	}
+	return nil
+}
+
+func (p *netlinkPlatform) removeSourcedKey(r *Reconciler) error {
+	if err := p.preflightSourcedRemoval(); err != nil {
 		return err
 	}
 	safe, err := p.withdrawSourcedAdmission(r)
 	if !safe || err != nil {
 		return err
 	}
-	if err := foreignSelector(); err != nil {
+	if err := p.preflightSourcedRemoval(); err != nil {
 		return err
 	}
 	return p.clearSourcedStanding()
