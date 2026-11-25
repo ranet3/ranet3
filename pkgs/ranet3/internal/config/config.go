@@ -100,6 +100,8 @@ type Auth struct {
 	Trust string `yaml:"trust" json:"trust" toml:"trust"`
 	// Authority is the list of public keys eligible to sign a trust document.
 	Authority []string `yaml:"authority,omitempty" json:"authority,omitempty" toml:"authority,omitempty"`
+	// Revoked lists compromised authority keys and their minimum recovery heights.
+	Revoked []RevokedKey `yaml:"revoked,omitempty" json:"revoked,omitempty" toml:"revoked,omitempty"`
 	// Aliases is the ID each peer may present in place of its DN and the ID this node presents to one, see [ike.Aliases]
 	Aliases ike.Aliases `yaml:"aliases,omitempty" json:"aliases,omitzero" toml:"aliases,omitempty"`
 }
@@ -420,6 +422,9 @@ func exactKeysIn(written any, field reflect.Type, path string) error {
 	if field.Kind() == reflect.Pointer {
 		field = field.Elem()
 	}
+	if number, ok := written.(int64); ok && number < 0 && field.Kind() >= reflect.Uint && field.Kind() <= reflect.Uint64 {
+		return fmt.Errorf("%q has a minus sign, and this field is never negative", strings.TrimSuffix(path, "."))
+	}
 	// the decoder leaves a map empty, with no error and nothing undecoded, for a value that is not a table
 	if _, table := written.(map[string]any); field.Kind() == reflect.Map && !table {
 		return fmt.Errorf("%q takes a table", strings.TrimSuffix(path, "."))
@@ -712,7 +717,7 @@ func (c *Config) Validate() error {
 	if err := c.validateNode(); err != nil {
 		return err
 	}
-	if err := c.Auth.validateAuthority(); err != nil {
+	if err := c.Auth.validateTrustKeys(); err != nil {
 		return err
 	}
 	// Returned as the capability wrote it. Each message already names the

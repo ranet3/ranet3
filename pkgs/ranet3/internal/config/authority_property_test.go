@@ -30,7 +30,7 @@ func TestAuthorityConfigProperty(t *testing.T) {
 		{strings.TrimSuffix(testAuthority, "="), false},
 	}
 	for _, candidate := range candidates[3:] {
-		if err := (Auth{Authority: []string{candidate.text}}).validateAuthority(); err == nil {
+		if err := (Auth{Authority: []string{candidate.text}}).validateTrustKeys(); err == nil {
 			t.Fatalf("accepted unsupported or malformed authority key %q", candidate.text)
 		}
 	}
@@ -56,7 +56,7 @@ func TestAuthorityConfigProperty(t *testing.T) {
 			}
 			keys = append(keys, candidate.text)
 		}
-		if err := (Auth{Authority: keys}).validateAuthority(); (err == nil) != want {
+		if err := (Auth{Authority: keys}).validateTrustKeys(); (err == nil) != want {
 			ht.Fatalf("authority key list %v: %v, want valid %v", keys, err, want)
 		}
 	})

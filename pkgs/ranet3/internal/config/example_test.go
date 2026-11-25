@@ -84,8 +84,12 @@ func TestShippedExamplesParse(t *testing.T) {
 		}
 		for which, variant := range variants {
 			t.Run(name+" "+which, func(t *testing.T) {
-				if _, err := load(t, "."+name, variant); err != nil {
+				cfg, err := load(t, "."+name, variant)
+				if err != nil {
 					t.Fatalf("the example no longer loads: %v", err)
+				}
+				if which == "shipped" && len(cfg.Auth.Revoked) != 0 {
+					t.Fatalf("shipped example revokes %d authority keys", len(cfg.Auth.Revoked))
 				}
 			})
 		}

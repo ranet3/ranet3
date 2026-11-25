@@ -30,6 +30,7 @@ auth:
   trust: /etc/ranet3/trust.json
   # Replace this example public SPKI with the deployed authority key.
   authority: ["MCowBQYDK2VwAyEA7vRDY0q9Dah4orYnH+P9+VDDuev6ghmNsdhocuu9duc="]
+  # revoked: [{ key: "MCowBQYDK2VwAyEAZ+47jCA4V9l+XpsxLQFHj0OW8zzog0Iw09LCmjad3YY=", height: 1 }]
   # For a peer that is not ranet3, remote names the endpoint each ID other than
   # a DN stands for, and local the ID this node presents to a peer in place of
   # its DN.

@@ -35,8 +35,9 @@ import (
 // capability to it, so a refusal is about the capability rather than about
 // what the node forgot to say.
 const (
-	testAuthority = "MCowBQYDK2VwAyEA7vRDY0q9Dah4orYnH+P9+VDDuev6ghmNsdhocuu9duc="
-	nodeYAML      = `
+	testAuthority        = "MCowBQYDK2VwAyEA7vRDY0q9Dah4orYnH+P9+VDDuev6ghmNsdhocuu9duc="
+	testRevokedAuthority = "MCowBQYDK2VwAyEAZ+47jCA4V9l+XpsxLQFHj0OW8zzog0Iw09LCmjad3YY="
+	nodeYAML             = `
 node: example/laptop
 auth:
   key: key.pem
@@ -1127,7 +1128,7 @@ func fullConfig() Config {
 	retryFirst, retryMax := schema.Duration(7*time.Second), schema.Duration(11*time.Minute)
 	return Config{
 		Node: identity.MustParse("example/laptop"),
-		Auth: Auth{Key: "key.pem", Trust: "trust.json", Authority: []string{testAuthority}, Aliases: ike.Aliases{
+		Auth: Auth{Key: "key.pem", Trust: "trust.json", Authority: []string{testAuthority}, Revoked: []RevokedKey{{Key: testRevokedAuthority, Height: 2}}, Aliases: ike.Aliases{
 			Remote: ike.RemoteAliases{
 				IP: map[string]identity.Identity{
 					"192.0.2.10":   identity.MustParse("example/gateway:1"),

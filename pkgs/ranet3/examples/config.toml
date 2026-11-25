@@ -36,6 +36,7 @@ key = "/etc/ranet3/key.pem"
 trust = "/etc/ranet3/trust.json"
 # Replace this example public SPKI with the deployed authority key.
 authority = ["MCowBQYDK2VwAyEA7vRDY0q9Dah4orYnH+P9+VDDuev6ghmNsdhocuu9duc="]
+# revoked = [{ key = "MCowBQYDK2VwAyEAZ+47jCA4V9l+XpsxLQFHj0OW8zzog0Iw09LCmjad3YY=", height = 1 }]
 
 # The IDs of RFC 7296 section 3.5 other than a DN, for a peer that is not
 # ranet3, such as strongSwan. A ranet3 peer names itself by its DN and needs
