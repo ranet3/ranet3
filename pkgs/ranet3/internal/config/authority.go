@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 
 	"ranet3.com/pkgs/ranet3/trust"
@@ -14,6 +15,8 @@ type RevokedKey struct {
 	Key    string `yaml:"key" json:"key" toml:"key"`
 	Height uint64 `yaml:"height" json:"height" toml:"height"`
 }
+
+var ErrAuthorityRevokedOverlap = errors.New("also lists an auth.authority key")
 
 func (a Auth) validateTrustKeys() error {
 	seen := make(map[string]struct{}, len(a.Authority)+len(a.Revoked))
@@ -44,7 +47,7 @@ func (a Auth) validateTrustKeys() error {
 			return fmt.Errorf("config: auth.revoked[%d] duplicates a public key", i)
 		}
 		if _, eligible := seen[der]; eligible {
-			return fmt.Errorf("config: auth.revoked[%d] also lists an auth.authority key", i)
+			return fmt.Errorf("config: auth.revoked[%d] %w", i, ErrAuthorityRevokedOverlap)
 		}
 		revoked[der] = struct{}{}
 	}

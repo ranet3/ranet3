@@ -95,9 +95,7 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	return errors.Join(append(result.refuse, result.aliases...)...)
 }
 
-// ValidateTrustReplacement checks a verified candidate with startup's
-// membership refusal policy without changing the running registry index.
-func ValidateTrustReplacement(cfg *config.Config, key ed25519.PrivateKey, x *trustdoc.Index) error {
+func checkTrustBase(cfg *config.Config) error {
 	if err := refuseExitModeHere(cfg); err != nil {
 		return err
 	}
@@ -107,11 +105,21 @@ func ValidateTrustReplacement(cfg *config.Config, key ed25519.PrivateKey, x *tru
 	if err := kernelexit.RefuseBorder(cfg.Border()); err != nil {
 		return err
 	}
-	result, err := checkMembership(cfg, key, trustMembers{x})
-	if err != nil {
+	return refuseEgressAdvertisedUnconditionally(cfg)
+}
+
+// ValidateTrustReplacement checks a verified candidate with startup's
+// membership refusal policy without changing the running registry index.
+func ValidateTrustReplacement(cfg *config.Config, key ed25519.PrivateKey, x *trustdoc.Index) error {
+	if err := checkTrustBase(cfg); err != nil {
 		return err
 	}
-	if err := refuseEgressAdvertisedUnconditionally(cfg); err != nil {
+	return checkTrustMembership(cfg, key, x)
+}
+
+func checkTrustMembership(cfg *config.Config, key ed25519.PrivateKey, x *trustdoc.Index) error {
+	result, err := checkMembership(cfg, key, trustMembers{x})
+	if err != nil {
 		return err
 	}
 	return errors.Join(append(result.refuse, result.aliases...)...)

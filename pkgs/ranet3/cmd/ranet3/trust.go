@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"ranet3.com/pkgs/ranet3/internal/client"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/trust"
 )
@@ -27,6 +28,7 @@ func trustCommand() *cobra.Command {
 	command.AddCommand(trustVerifyCommand())
 	command.AddCommand(trustInitCommand())
 	command.AddCommand(trustSignCommand())
+	command.AddCommand(trustResetCommand())
 	return command
 }
 
@@ -199,5 +201,32 @@ func trustVerifyCommand() *cobra.Command {
 		},
 	}
 	source.flags(command)
+	return command
+}
+
+func trustResetCommand() *cobra.Command {
+	var digest, configPath, stateDir string
+	command := &cobra.Command{
+		Use:   "reset",
+		Short: "Replace the stopped daemon's stored trust snapshot",
+		Long:  "Replace only the selected stopped daemon's trust store after checking the configured signed file.",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			message, err := client.ResetTrust(configPath, stateDir, digest)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(command.ErrOrStderr(), message)
+			return err
+		},
+	}
+	command.Flags().StringVar(&digest, "digest", "", "Expected 64-character lowercase SHA-256 digest")
+	command.Flags().StringVar(&configPath, "config", defaultConfig, "Configuration file of the stopped daemon")
+	command.Flags().StringVar(&stateDir, "state-dir", defaultStateDir, "State directory of the stopped daemon")
+	command.MarkFlagFilename("config")
+	command.MarkFlagDirname("state-dir")
+	command.RegisterFlagCompletionFunc("digest", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	})
 	return command
 }
