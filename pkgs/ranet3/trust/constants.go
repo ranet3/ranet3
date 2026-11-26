@@ -5,6 +5,7 @@ package trust
 
 const (
 	MaxSignedBytes       = 64 << 20
+	MaxStoreBytes        = MaxSignedBytes + 16<<10
 	MaxJSONBytes         = 256 << 20
 	MaxEntries           = 131072
 	MaxHeight            = 1<<53 - 1
