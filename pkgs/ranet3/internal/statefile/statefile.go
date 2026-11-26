@@ -91,28 +91,6 @@ func WriteSynced(path string, raw []byte) error {
 }
 
 func write(path string, raw []byte, sync bool) error {
-	if path == "" {
-		return errNoPath
-	}
-	temp := path + tempSuffix
-	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	// the mode the open gives holds only for a file it creates, and the umask
-	// takes from it, so a temporary file a crash left keeps its own without this
-	err = file.Chmod(mode)
-	if err == nil {
-		_, err = file.Write(raw)
-	}
-	if err == nil && sync {
-		err = file.Sync()
-	}
-	if err = errors.Join(err, file.Close()); err == nil {
-		err = os.Rename(temp, path)
-	}
-	if err != nil {
-		_ = os.Remove(temp)
-	}
+	_, _, err := writeStaged(path, raw, sync, replaceOps{})
 	return err
 }

@@ -13,3 +13,10 @@ const mode = 0o600
 // tempSuffix names the file a write fills before it is renamed into place.
 // One name per file, so a write after a crash overwrites what the crash left.
 const tempSuffix = ".tmp"
+
+const (
+	StageWrite         Stage = "write"
+	StageFileSync      Stage = "file sync"
+	StageRename        Stage = "rename"
+	StageDirectorySync Stage = "directory sync"
+)
