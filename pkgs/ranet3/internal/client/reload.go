@@ -105,7 +105,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := c.sameIdentityKey(cfg.Auth.Key); err != nil {
 		return err
 	}
-	families, err := validateLocalConfig(cfg, c.privateKey, x)
+	validation, err := checkMembership(cfg, c.privateKey, registryMembers{x})
 	if err != nil {
 		return err
 	}
@@ -148,15 +148,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	// a peer the trust document cannot support is skipped rather than refused
 	// or one stale entry would block every later reload
 	peers := effectivePeers(cfg, x)
-	refuse, skip := validatePeers(peers, x, families)
-	for _, problems := range [][]error{refuse, skip} {
-		for _, problem := range problems {
-			slog.Warn(fmt.Sprintf("reload: %v, each dialer toward it gives up at the next pass that finds it unsupported", problem))
-		}
-	}
-	for _, problem := range validateAliases(cfg.Auth.Aliases, x) {
-		slog.Warn(fmt.Sprintf("reload: %v, so no handshake can use it", problem))
-	}
+	warnReloadMembership(validation)
 
 	literals := !slices.Equal(c.index().Underlay(), x.Underlay())
 	c.storeIndex(x)

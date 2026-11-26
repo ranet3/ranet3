@@ -28,6 +28,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
+	trustdoc "ranet3.com/pkgs/ranet3/trust"
 )
 
 // refuseExitModeHere refuses cap.exit, or the part of it, this platform has no exit mode for, and fallback = "none" where it has no kill switch
@@ -70,7 +71,7 @@ func refuseForwardedHere(cfg *config.Config, tun string, network networkSource) 
 	return cfg.Cap.Exit.RefuseNamed(tun, state)
 }
 
-// validateRuntimeConfig is the startup check, which refuses a configuration the trust document does not support and logs a peer it only cannot dial
+// validateRuntimeConfig keeps the registry startup refusal policy.
 func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index) error {
 	if err := refuseExitModeHere(cfg); err != nil {
 		return err
@@ -81,23 +82,102 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	if err := kernelexit.RefuseBorder(cfg.Border()); err != nil {
 		return err
 	}
-	families, err := validateLocalConfig(cfg, privateKey, x)
+	result, err := checkMembership(cfg, privateKey, registryMembers{x})
 	if err != nil {
 		return err
 	}
 	if err := refuseEgressAdvertisedUnconditionally(cfg); err != nil {
 		return err
 	}
-	refuse, skip := validatePeers(effectivePeers(cfg, x), x, families)
-	for _, problem := range skip {
+	for _, problem := range result.skip {
 		slog.Warn(problem.Error())
 	}
-	refuse = append(refuse, validateAliases(cfg.Auth.Aliases, x)...)
-	return errors.Join(refuse...)
+	return errors.Join(append(result.refuse, result.aliases...)...)
 }
 
-// an entry naming what the trust document lacks is a typo or a peer the document no longer holds
-func validateAliases(aliases ike.Aliases, x *registry.Index) []error {
+// ValidateTrustReplacement checks a verified candidate with startup's
+// membership refusal policy without changing the running registry index.
+func ValidateTrustReplacement(cfg *config.Config, key ed25519.PrivateKey, x *trustdoc.Index) error {
+	if err := refuseExitModeHere(cfg); err != nil {
+		return err
+	}
+	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns, carriesEgress); err != nil {
+		return err
+	}
+	if err := kernelexit.RefuseBorder(cfg.Border()); err != nil {
+		return err
+	}
+	result, err := checkMembership(cfg, key, trustMembers{x})
+	if err != nil {
+		return err
+	}
+	if err := refuseEgressAdvertisedUnconditionally(cfg); err != nil {
+		return err
+	}
+	return errors.Join(append(result.refuse, result.aliases...)...)
+}
+
+type memberTarget struct {
+	family   string
+	dialable bool
+}
+
+type members interface {
+	Key(identity.Identity) (ed25519.PublicKey, error)
+	Nodes() []identity.Identity
+	Targets(identity.Identity) []memberTarget
+}
+
+type registryMembers struct{ *registry.Index }
+type trustMembers struct{ *trustdoc.Index }
+
+func (x registryMembers) Targets(id identity.Identity) []memberTarget {
+	targets := x.Index.Targets(id)
+	out := make([]memberTarget, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, memberTarget{target.AddressFamily, target.Dialable()})
+	}
+	return out
+}
+
+func (x trustMembers) Targets(id identity.Identity) []memberTarget {
+	targets := x.Index.Targets(id)
+	out := make([]memberTarget, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, memberTarget{target.Family, target.Address != nil})
+	}
+	return out
+}
+
+type membershipProblems struct {
+	refuse, skip, aliases []error
+}
+
+func checkMembership(cfg *config.Config, key ed25519.PrivateKey, x members) (membershipProblems, error) {
+	families, err := checkLocalMembership(cfg, key, x)
+	if err != nil {
+		return membershipProblems{}, err
+	}
+	return checkMembershipPeers(cfg, x, families), nil
+}
+
+func checkMembershipPeers(cfg *config.Config, x members, families map[string]struct{}) membershipProblems {
+	refuse, skip := checkPeers(effectiveMemberPeers(cfg, x), x, families)
+	return membershipProblems{refuse, skip, checkAliases(cfg.Auth.Aliases, x)}
+}
+
+func warnReloadMembership(problems membershipProblems) {
+	for _, category := range [][]error{problems.refuse, problems.skip} {
+		for _, problem := range category {
+			slog.Warn(fmt.Sprintf("reload: %v, each dialer toward it gives up at the next pass that finds it unsupported", problem))
+		}
+	}
+	for _, problem := range problems.aliases {
+		slog.Warn(fmt.Sprintf("reload: %v, so no handshake can use it", problem))
+	}
+}
+
+func checkAliases(aliases ike.Aliases, x members) []error {
 	var problems []error
 	for entry, named := range aliases.Entries() {
 		if _, err := x.Key(named.Node()); err != nil {
@@ -114,6 +194,10 @@ func validateAliases(aliases ike.Aliases, x *registry.Index) []error {
 // validateLocalConfig checks what this node says about itself, and reports the address families its own endpoints cover
 // each refusal is fatal on a reload too, since a node the trust document no longer names, or whose key no longer matches, should not carry on with a new one
 func validateLocalConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index) (map[string]struct{}, error) {
+	return checkLocalMembership(cfg, privateKey, registryMembers{x})
+}
+
+func checkLocalMembership(cfg *config.Config, privateKey ed25519.PrivateKey, x members) (map[string]struct{}, error) {
 	publicKey, err := x.Key(cfg.Node)
 	if err != nil {
 		return nil, fmt.Errorf("config: node: %w", err)
@@ -125,19 +209,18 @@ func validateLocalConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *r
 	for i, local := range cfg.LocalEndpoints() {
 		endpoint := cfg.Link.Endpoints[i]
 		registered := x.Targets(local)
-		if len(registered) == 0 || registered[0].AddressFamily != endpoint.Family {
+		if len(registered) == 0 || registered[0].family != endpoint.Family {
 			return nil, fmt.Errorf("config: link.endpoints %q/%s does not match the trust document", endpoint.Serial, endpoint.Family)
 		}
 		localFamilies[endpoint.Family] = struct{}{}
 	}
-	if err := validateExtraCost(cfg, x); err != nil {
+	if err := checkExtraCost(cfg, x); err != nil {
 		return nil, err
 	}
 	return localFamilies, nil
 }
 
-// validateExtraCost refuses an organization or node cap.babel cost.extra names and the trust document does not, since a misspelled name would charge nobody
-func validateExtraCost(cfg *config.Config, x *registry.Index) error {
+func checkExtraCost(cfg *config.Config, x members) error {
 	extra := cfg.Babel().Cost.Extra
 	known := make(map[string]struct{})
 	for _, node := range x.Nodes() {
@@ -271,6 +354,10 @@ func directedBroadcast(prefix netip.Prefix) bool {
 // effectivePeers is who this node dials: the configured list, or when all is set that list followed by every other node the trust document names
 // this node is never in it, and the document's order is kept, so one pair of files gives one order on every start
 func effectivePeers(cfg *config.Config, x *registry.Index) []identity.Identity {
+	return effectiveMemberPeers(cfg, registryMembers{x})
+}
+
+func effectiveMemberPeers(cfg *config.Config, x members) []identity.Identity {
 	if !cfg.Dial.All {
 		return cfg.Dial.To
 	}
@@ -311,6 +398,10 @@ func dials(cfg *config.Config, x *registry.Index) []dial {
 // validatePeers splits the peers the trust document cannot support into what a startup refuses and what it only logs, and a reload logs both
 // a node with no endpoint in a local family is only logged, or a v4-only host could never start against a document holding v6-only nodes
 func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies map[string]struct{}) (refuse, skip []error) {
+	return checkPeers(peers, registryMembers{x}, localFamilies)
+}
+
+func checkPeers(peers []identity.Identity, x members, localFamilies map[string]struct{}) (refuse, skip []error) {
 	for _, peer := range peers {
 		if _, err := x.Key(peer.Node()); err != nil {
 			refuse = append(refuse, fmt.Errorf("config: peer node %s not found", peer.Node()))
@@ -322,11 +413,11 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 				refuse = append(refuse, fmt.Errorf("config: peer endpoint %s not found", peer))
 				continue
 			}
-			if _, ok := localFamilies[targets[0].AddressFamily]; !ok {
+			if _, ok := localFamilies[targets[0].family]; !ok {
 				refuse = append(refuse, fmt.Errorf("config: peer endpoint %s has no matching local address family", peer))
 				continue
 			}
-			if !targets[0].Dialable() {
+			if !targets[0].dialable {
 				skip = append(skip, fmt.Errorf("config: peer endpoint %s carries no address", peer))
 			}
 			continue
@@ -334,11 +425,11 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 		// an endpoint the dialer will not take is reported here once rather than on every attempt
 		compatible, reachable := false, false
 		for _, endpoint := range targets {
-			if _, ok := localFamilies[endpoint.AddressFamily]; !ok {
+			if _, ok := localFamilies[endpoint.family]; !ok {
 				continue
 			}
 			compatible = true
-			if endpoint.Dialable() {
+			if endpoint.dialable {
 				reachable = true
 				break
 			}
