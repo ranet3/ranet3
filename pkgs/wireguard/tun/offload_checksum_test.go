@@ -17,11 +17,11 @@ import (
 
 type splitChecksumCase struct {
 	version, size, segments, tail int
-	ipv4Options, tcpOptions     int
-	protocol                    uint8
-	overlap                     bool
-	spacing                     int
-	seed                        uint64
+	ipv4Options, tcpOptions       int
+	protocol                      uint8
+	overlap                       bool
+	spacing                       int
+	seed                          uint64
 }
 
 func TestEverySplitSegmentCarriesAValidChecksum(t *testing.T) {
