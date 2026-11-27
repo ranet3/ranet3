@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-25
+updated: 2026-11-27
 order: 110
 ---
 
@@ -926,15 +926,6 @@ the old forward chain and kill switch go on refusing and dropping by the
 configuration they were written for. Delete them with
 `nft delete table ip ranet3`, `nft delete table ip6 ranet3` and
 `nft delete table inet ranet3_fallback`, or reboot.
-
-To downgrade a Linux node to a ranet3 binary from before the `routed` chain,
-stop the newer daemon first. A clean stop may already have removed the switch.
-If `routed` remains, delete it with `nft delete chain inet ranet3 routed`, then
-delete its two source sets with `nft delete set inet ranet3 from4` and
-`nft delete set inet ranet3 from6`, in that order, before starting the older
-binary. The older binary withdraws only `fallback` and `output`, and its
-withdrawal of their shared sets fails while `routed` still refers to them. Do
-not delete table `inet ranet3` or another writer's objects.
 
 #### What goes of another writer's
 
