@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-11-20
+updated: 2026-11-28
 order: 38
 ---
 
@@ -14,6 +14,30 @@ succeeds only between nodes the document names, each proving it holds the key of
 the block that lists it.
 
 The format is the `registry.json` of ranet: a JSON array of organizations.
+
+## Signed documents and running nodes
+
+The running node reads the JSON array described in [Format](#format) from
+`auth.trust` at startup and reload. It does not select a signed snapshot, read
+or write `trust.store`, or use `auth.authority` and `auth.revoked` to
+authenticate peers. The configuration loader parses and validates
+[authority keys](configuration-reference.md#authority-keys) and
+[revoked keys](configuration-reference.md#revoked-keys) on every file read.
+
+The separate [signed trust commands](cli.md#signed-trust-commands) operate on
+signed files without a daemon. `trust init` and `trust sign` take authored JSON
+as an object with a `nodes` list, not the array below. Each node has a `name`,
+an optional Ed25519 `key` and `endpoints`. Each endpoint has `family` and
+`port`, with optional `id` and `address`. `trust init` and `trust sign` produce
+signed COSE_Sign1 snapshots. `trust show` and `trust verify` verify them under
+the selected authority keys before using their contents.
+
+The standalone trust loader can evaluate signed snapshots and maintain a
+`trust.store`, but neither daemon startup nor reload calls it. `trust reset`
+targets a stopped daemon's existing store. It refuses an absent store or one
+without a stored signer listed as compromised, checks the configured signed file
+and its local membership and requires the expected digest before replacing the
+store. It does not contact or stop a running daemon.
 
 ## Format
 

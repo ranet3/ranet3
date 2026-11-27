@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-25
+updated: 2026-11-28
 order: 75
 ---
 
@@ -20,6 +20,8 @@ These commands run without a daemon:
 - `ranet3 completion`
 - `ranet3 help`
 - `ranet3 debug buildinfo`
+- `ranet3 key generate`
+- `ranet3 trust show`, `verify`, `init`, `sign` and `reset`
 
 Every command takes `-h` or `--help`. A word that names no command is refused,
 with the commands spelled within 2 edits of it.
@@ -177,6 +179,51 @@ exits 1. The page of each writer gives what a refusal leaves of it:
   version of the running node.
 
 [Reading a node](control-socket.md#reading-a-node) shows the output of each.
+
+## Signed trust commands
+
+These commands use local files, not the control socket.
+[Signed documents and running nodes](trust.md#signed-documents-and-running-nodes)
+distinguishes their files from the document the daemon currently reads.
+
+| Command                      | Help                                               | Flags                                                     |
+| ---------------------------- | -------------------------------------------------- | --------------------------------------------------------- |
+| `key generate`               | Generate an authority key                          | `--type`, `--out`                                         |
+| `trust show <signed file>`   | Show a verified trust document                     | `--authority`, `--config`, `--mesh`                       |
+| `trust verify <signed file>` | Verify a signed trust document                     | `--authority`, `--config`                                 |
+| `trust init <document.json>` | Sign a new mesh trust document                     | `--key`, `--out`                                          |
+| `trust sign <document.json>` | Sign a successor trust document                    | `--key`, `--previous`, `--out`, `--authority`, `--config` |
+| `trust reset`                | Replace the stopped daemon's stored trust snapshot | `--digest`, `--config`, `--state-dir`                     |
+
+- `key generate` requires `--type` (`ed25519`, `p256` or `p384`) and `--out`. It
+  writes a new PKCS8 PEM private key at mode 0600 without replacing a file, then
+  prints its public key as padded base64 DER SubjectPublicKeyInfo to standard
+  output.
+- `trust show` and `trust verify` each take exactly 1 signed file and require
+  `--authority` or `--config`. `--authority` takes a padded base64 DER
+  SubjectPublicKeyInfo and may be repeated. `--config` loads the eligible keys
+  from `auth.authority`. When both flags are given, the explicit keys select
+  verification, but the configuration is still loaded and checked.
+- `trust show` prints canonical document JSON to standard output and the
+  verified height, previous digest (or `none`), payload digest, signature
+  algorithm and signing-key fingerprint to standard error. `--mesh` also prints
+  the mesh identifier there. `trust verify` prints those facts to standard error
+  without the document or a `--mesh` flag. A signature that does not verify
+  yields no decoded document.
+- `trust init <document.json>` requires `--key` (an authority private key) and
+  `--out` (an absent signed-output file). It creates a mesh identifier and signs
+  height 1. `trust sign <document.json>` requires `--key`, `--previous` (a
+  signed parent file), `--out` and `--authority` or `--config` to verify that
+  parent. It keeps the parent's mesh identifier, increments its height and
+  records its payload digest as `previous`. Both commands require the input JSON
+  bytes to match the canonical render, write an absent output at mode 0600, and
+  print signed-file facts and the output path to standard error.
+- `trust reset` takes no arguments. `--digest` is a required 64-character
+  lowercase SHA-256 payload digest. `--config` defaults to
+  `/etc/ranet3/config.toml` and `--state-dir` to `/var/lib/ranet3` on Linux or
+  `/var/db/ranet3` on macOS. Its
+  [store checks and scope](trust.md#signed-documents-and-running-nodes) apply
+  even though it never contacts a daemon.
 
 ## Acting on the node
 

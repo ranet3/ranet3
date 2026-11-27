@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-22
+updated: 2026-11-28
 order: 35
 ---
 
@@ -110,15 +110,39 @@ nest the same names. A key not listed here is refused when the file loads.
 
 ## `auth`
 
-| Key       | Value | Default  | Meaning                                                 |
-| --------- | ----- | -------- | ------------------------------------------------------- |
-| `key`     | path  | required | This node's private key, a PKCS8 PEM Ed25519 file       |
-| `trust`   | path  | required | The [trust document](trust.md), a ranet `registry.json` |
-| `aliases` | table | none     | IDs other than a DN, for a peer that is not ranet3      |
+| Key         | Value | Default  | Meaning                                                 |
+| ----------- | ----- | -------- | ------------------------------------------------------- |
+| `key`       | path  | required | This node's private key, a PKCS8 PEM Ed25519 file       |
+| `trust`     | path  | required | The [trust document](trust.md), a ranet `registry.json` |
+| `authority` | list  | none     | Public keys available to the signed-file tools          |
+| `revoked`   | list  | none     | Compromised authority keys with recovery heights        |
+| `aliases`   | table | none     | IDs other than a DN, for a peer that is not ranet3      |
 
 - At startup the daemon waits for the files `key` and `trust` name to exist, as
   [restarts and the network](service.md#restarts-and-the-network) describes. A
   reload never waits for either.
+
+### Authority keys
+
+`auth.authority` is a list of public keys as canonical, padded base64 of
+canonical DER SubjectPublicKeyInfo. The accepted algorithms are Ed25519, ECDSA
+P-256 and ECDSA P-384. An Ed25519 key must encode a curve point of non-small
+order. Duplicate keys are refused.
+
+### Revoked keys
+
+`auth.revoked` is a list of objects with a `key` in the same public-key form and
+a `height` from 1 to 9007199254740991 inclusive. A key cannot appear twice in
+this list or also in `auth.authority`. At most 64 entries are accepted. Omitted
+or empty lists are accepted.
+
+The TOML shape is `authority = ["<public key>"]` and
+`revoked = [{ key = "<other public key>", height = 1 }]` inside `[auth]`. YAML
+and JSON use the same `auth` keys with a string array and an array of
+`key`/`height` objects. Replace the angle-bracket placeholders with canonical
+base64 DER keys. The
+[signed document boundary](trust.md#signed-documents-and-running-nodes)
+distinguishes load-time checks from what the running node uses.
 
 ### `auth.aliases`
 
