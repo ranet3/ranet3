@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -69,6 +70,7 @@ const (
 	daemonPort        = 20001
 	daemonPprofPort   = 20002
 	daemonMetricsPort = 20003
+	daemonPeerWait    = 60 * time.Second
 )
 
 var (
@@ -968,6 +970,365 @@ func TestDaemonSourcedReloadRefusalAndKeyOnlyRemoval(t *testing.T) {
 		t.Errorf("the sourced daemon exited %d after SIGTERM", got)
 	}
 	leftNothing(t, f, was)
+}
+
+// A bound office datagram reaches the authenticated receiver only after the
+// daemon's sourced rule and its source-specific mirror exist in the kernel.
+func TestDaemonSourcedOfficeDatagramReachesReceivingPeer(t *testing.T) {
+	claimNamespace(t)
+	const (
+		named       = "    sourced:\n      to: [fd5e:db8:10:2::/96]\n"
+		office      = "fd5e:db8:10:1::/64"
+		receiver    = "fd5e:db8:10:2::3/128"
+		destination = "fd5e:db8:10:2::/96"
+		peerPort    = 20004
+		receivePort = 9000
+	)
+	officeHost := netip.MustParsePrefix("fd5e:db8:10:1::1/64")
+	receiverHost := netip.MustParsePrefix(receiver)
+	dest := netip.MustParsePrefix(destination)
+	f := writeDaemon(t, named+leafCaps+
+		"  babel:\n    hello: 200ms\n    update: 400ms\n"+
+		"  route:\n    announce: ["+office+"]\n")
+	if err := f.peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	netnstest.OutsideAutomaticRange(t, peerPort, receivePort)
+	peerNS := netnstest.StartThread(t)
+	trustPath := filepath.Join(filepath.Dir(f.opts.configPath), "trust.json")
+	trustBytes, err := os.ReadFile(trustPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document registry.Registry
+	if err := json.Unmarshal(trustBytes, &document); err != nil {
+		t.Fatal(err)
+	}
+	peerPublic, peerPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerDER, err := x509.MarshalPKIXPublicKey(peerPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerKeyDER, err := x509.MarshalPKCS8PrivateKey(peerPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerKeyPath := filepath.Join(filepath.Dir(f.opts.configPath), "receiver-key.pem")
+	if err := os.WriteFile(peerKeyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: peerKeyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var peerNode registry.Node
+	peerIP, daemonIP := "198.51.100.2", "198.51.100.1"
+	foundPeer, foundDaemon := false, false
+	for i := range document[0].Nodes {
+		switch document[0].Nodes[i].CommonName {
+		case "peer":
+			peerNode = document[0].Nodes[i]
+			peerNode.Endpoints[0].Address = &peerIP
+			peerNode.Endpoints[0].Port = peerPort
+			foundPeer = true
+		case "start":
+			document[0].Nodes[i].Endpoints[0].Address = &daemonIP
+			foundDaemon = true
+		}
+	}
+	if !foundPeer || !foundDaemon {
+		t.Fatal("the fixture trust document does not name both endpoints")
+	}
+	document[0].Nodes = slices.DeleteFunc(document[0].Nodes, func(node registry.Node) bool {
+		return node.CommonName == "peer"
+	})
+	document = append(document, registry.Organization{
+		Organization: document[0].Organization,
+		PublicKey:    string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: peerDER})),
+		Nodes:        []registry.Node{peerNode},
+	})
+	trustBytes, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trustPath, trustBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	peerConfig := filepath.Join(filepath.Dir(f.opts.configPath), "receiver.yaml")
+	peerBody := fmt.Sprintf(`node: example/peer
+auth:
+  key: %s
+  trust: %s
+link:
+  port: %d
+  tun: receive0
+  endpoints:
+    - serial: "0"
+      family: ip4
+  listen: true
+overlay: [203.0.113.0/24, 3fff:a::/36]
+cap:
+  babel:
+    hello: 200ms
+    update: 400ms
+  route:
+    announce:
+      - prefix: %s
+        from: %s
+`, peerKeyPath, trustPath, peerPort, destination, office)
+	if err := os.WriteFile(peerConfig, []byte(peerBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(peerConfig)
+	if err != nil {
+		t.Fatalf("receiving peer configuration: %v", err)
+	}
+	conn, err := netnstest.OpenNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connClosed := false
+	t.Cleanup(func() {
+		if !connClosed {
+			conn.Close()
+		}
+	})
+	if err := conn.AddVeth("office0", "receive-link0", 0, peerNS.Path); err != nil {
+		t.Fatal(err)
+	}
+	linkRemoved := false
+	t.Cleanup(func() {
+		if !linkRemoved {
+			if err := netnstest.DelLink("office0"); err != nil {
+				t.Errorf("remove the fixture link: %v", err)
+			}
+		}
+	})
+	if err := conn.AddAddresses("office0", netip.MustParsePrefix("198.51.100.1/30"), officeHost); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	connClosed = true
+	if err := peerNS.Do(func() error {
+		conn, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		return conn.AddAddresses("receive-link0", netip.MustParsePrefix("198.51.100.2/30"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var receiving *client.Client
+	was := before(t)
+	if err := peerNS.Do(func() (err error) {
+		receiving, err = client.New(cfg, events.New())
+		if err != nil {
+			return err
+		}
+		conn, err := netnstest.OpenNetlink()
+		if err != nil {
+			receiving.Close()
+			return err
+		}
+		defer conn.Close()
+		if err := conn.AddAddresses(receiving.Mesh.Name, receiverHost); err != nil {
+			receiving.Close()
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("build receiving mesh peer: %v", err)
+	}
+	var listener *net.UDPConn
+	if err := peerNS.Do(func() (err error) {
+		listener, err = net.ListenUDP("udp6", &net.UDPAddr{IP: receiverHost.Addr().AsSlice(), Port: receivePort})
+		return err
+	}); err != nil {
+		receiving.Close()
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	peerDone := make(chan error, 1)
+	go func() {
+		peerDone <- peerNS.Do(func() error { receiving.Run(ctx); return nil })
+	}()
+	var bus atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&bus))
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close the receiving socket: %v", err)
+		}
+		if _, _, err := listener.ReadFromUDP(make([]byte, 1)); !errors.Is(err, net.ErrClosed) {
+			t.Errorf("the receiving socket did not close: %v", err)
+		}
+		cancel()
+		peerStopped := false
+		select {
+		case err := <-peerDone:
+			peerStopped = true
+			if err != nil {
+				t.Errorf("the receiving peer failed: %v", err)
+			}
+		case <-time.After(daemonSettle):
+			t.Error("the receiving peer did not terminate")
+		}
+		select {
+		case got := <-code:
+			if got != 0 {
+				t.Errorf("the sourced daemon exited %d", got)
+			}
+		default:
+			if recorded(&bus, "daemon.started") != 0 {
+				body, err := os.ReadFile(f.opts.configPath)
+				if err != nil {
+					t.Error(err)
+				} else if strings.Contains(string(body), named) {
+					if err := os.WriteFile(f.opts.configPath, []byte(strings.Replace(string(body), named, "", 1)), 0o600); err != nil {
+						t.Error(err)
+					} else if _, err := control.Dial(f.opts.controlPath).Reload(); err != nil {
+						t.Errorf("retire standing sourced policy: %v", err)
+					} else if rules, err := kernel.DumpRules(); err != nil {
+						t.Errorf("read back retired sourced rules: %v", err)
+					} else if slices.ContainsFunc(rules, func(rule kernel.DumpedRule) bool {
+						return rule.Protocol == kernel.DefaultProtocol &&
+							(rule.Priority == 5399 || rule.Priority == 5401 || rule.Priority == 5403 || rule.Priority == 5404)
+					}) {
+						t.Errorf("key-only removal left sourced rules: %v", rules)
+					}
+				}
+			}
+			signalSelf(t, syscall.SIGTERM)
+			if got := exited(t, code); got != 0 {
+				t.Errorf("the sourced daemon exited %d", got)
+			}
+		}
+		if err := netnstest.DelLink("office0"); err != nil {
+			t.Errorf("remove the fixture link: %v", err)
+		} else {
+			linkRemoved = true
+		}
+		if peerStopped {
+			if err := peerNS.Do(func() error {
+				if _, err := net.InterfaceByName("receive0"); err == nil {
+					return errors.New("the receiving peer left its tun")
+				}
+				if _, err := net.InterfaceByName("receive-link0"); err == nil {
+					return errors.New("the receiving peer left its underlay link")
+				}
+				return nil
+			}); err != nil {
+				t.Error(err)
+			}
+		}
+		leftNothing(t, f, was)
+	})
+	waitWithin(t, "daemon startup", daemonPeerWait, func() bool {
+		return recorded(&bus, "daemon.started") != 0
+	})
+	tun, err := net.InterfaceByName(daemonTUN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitWithin(t, "the office peer's sourced route", daemonPeerWait, func() bool {
+		route, err := kernel.RouteGet(officeHost.Addr(), receiverHost.Addr(), "")
+		return err == nil && route.Table == 201 && route.Prefix == dest &&
+			route.Source == netip.MustParsePrefix(office) &&
+			route.Type == "unicast" &&
+			slices.Contains(route.NextHops, kernel.NextHop{Device: daemonTUN})
+	})
+	rules, err := kernel.DumpRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rules, func(rule kernel.DumpedRule) bool {
+		return rule.Family == kernel.FamilyIPv6 && rule.Protocol == kernel.DefaultProtocol &&
+			rule.Priority == 5403 && rule.To == dest && rule.From == netip.MustParsePrefix(office) &&
+			rule.Table == 201 && rule.Action == "lookup"
+	}) {
+		t.Fatalf("the daemon's office admission rule did not read back: %v", rules)
+	}
+	for _, priority := range []uint32{5399, 5401, 5404} {
+		if !slices.ContainsFunc(rules, func(rule kernel.DumpedRule) bool {
+			if rule.Family != kernel.FamilyIPv6 || rule.Protocol != kernel.DefaultProtocol ||
+				rule.Priority != priority {
+				return false
+			}
+			if priority == 5399 {
+				return rule.IIF == daemonTUN && rule.Action == "goto"
+			}
+			return rule.To == dest && rule.From == netip.MustParsePrefix(office)
+		}) {
+			t.Fatalf("the daemon's sourced protection rule %d did not read back: %v", priority, rules)
+		}
+	}
+	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_INET6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes, err := syscall.ParseNetlinkMessage(rib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := 0
+	for _, route := range routes {
+		if route.Header.Type != syscall.RTM_NEWROUTE || len(route.Data) < unix.SizeofRtMsg ||
+			route.Data[0] != unix.AF_INET6 || route.Data[1] != byte(dest.Bits()) ||
+			route.Data[2] != byte(netip.MustParsePrefix(office).Bits()) ||
+			route.Data[4] != 201 || route.Data[5] != kernel.DefaultProtocol {
+			continue
+		}
+		attrs, err := syscall.ParseNetlinkRouteAttr(&route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var target, source netip.Addr
+		var device uint32
+		for _, attr := range attrs {
+			switch attr.Attr.Type {
+			case unix.RTA_DST:
+				target, _ = netip.AddrFromSlice(attr.Value)
+			case unix.RTA_SRC:
+				source, _ = netip.AddrFromSlice(attr.Value)
+			case unix.RTA_OIF:
+				if len(attr.Value) == 4 {
+					device = binary.NativeEndian.Uint32(attr.Value)
+				}
+			}
+		}
+		if target == dest.Addr() && source == netip.MustParsePrefix(office).Addr() && device == uint32(tun.Index) {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("expected one daemon-owned source-specific mirror to the receiver, found %d", matches)
+	}
+	sender, err := net.ListenUDP("udp6", &net.UDPAddr{IP: officeHost.Addr().AsSlice()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	payload := []byte("office delivery to receiving peer")
+	peerAddress := &net.UDPAddr{IP: receiverHost.Addr().AsSlice(), Port: receivePort}
+	if _, err := sender.WriteToUDP(payload, peerAddress); err != nil {
+		t.Fatalf("send the bound office datagram: %v", err)
+	}
+	if err := listener.SetReadDeadline(time.Now().Add(daemonPeerWait)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 256)
+	n, from, err := listener.ReadFromUDP(buf)
+	if err != nil || from == nil || from.AddrPort().Addr() != officeHost.Addr() ||
+		!bytes.Equal(buf[:n], payload) || listener.LocalAddr().(*net.UDPAddr).AddrPort() !=
+		netip.AddrPortFrom(receiverHost.Addr(), receivePort) {
+		t.Fatalf("wrong receiving endpoint, source or payload: from %v, bytes %q, error %v", from, buf[:n], err)
+	}
+	if err := listener.SetReadDeadline(time.Now().Add(daemonQuiet)); err != nil {
+		t.Fatal(err)
+	}
+	n, from, err = listener.ReadFromUDP(buf)
+	if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("ambiguous or duplicate receipt: from %v, bytes %q, error %v", from, buf[:n], err)
+	}
 }
 
 // Capacity from the accepted file must refuse a first start before client.New
