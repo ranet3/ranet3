@@ -34,17 +34,27 @@ func preflightSourcedOn(conn netlinkConn, t Table, announced []netip.Prefix, tun
 	if err != nil {
 		return fmt.Errorf("kernel: dump sourced links before creating tun: %w", err)
 	}
+	var index uint32
+	for _, reply := range links {
+		if reply.Kind != unix.RTM_NEWLINK || len(reply.Data) < unix.SizeofIfInfomsg {
+			continue
+		}
+		link := decodeLink(reply)
+		if link.name == tun {
+			index = link.index
+			break
+		}
+	}
 	addressRequest := make([]byte, unix.SizeofIfAddrmsg)
 	addressRequest[0] = unix.AF_INET6
 	addresses, err := conn.execute(unix.RTM_GETADDR, unix.NLM_F_DUMP, addressRequest)
 	if err != nil {
 		return fmt.Errorf("kernel: dump sourced addresses before creating tun: %w", err)
 	}
-	network := NetworkState{IPv6: NetworkFamily{Links: upAddresses(addresses, unix.AF_INET6, upLinks(links, 0))}}
+	network := NetworkState{IPv6: NetworkFamily{Links: upAddresses(addresses, unix.AF_INET6, upLinks(links, index))}}
 	if err := t.refuseSourcedCapacity(func() NetworkState { return network }, announced); err != nil {
 		return err
 	}
-	var index uint32
 	if link, err := conn.link(0, tun); err == nil {
 		index = link.index
 	} else if !errors.Is(err, unix.ENODEV) {

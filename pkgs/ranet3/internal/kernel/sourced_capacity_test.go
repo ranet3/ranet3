@@ -362,6 +362,8 @@ func TestSourcedRuleDeleteRespectsForeignFirstMatch(t *testing.T) {
 
 type sourcedPreflightReplies struct {
 	*fakeNetlink
+	linkReplies  []netlink.Message
+	addrReplies  []netlink.Message
 	routeReplies []netlink.Message
 	ruleReplies  []netlink.Message
 }
@@ -369,6 +371,10 @@ type sourcedPreflightReplies struct {
 func (f *sourcedPreflightReplies) execute(kind, flags uint16, body []byte) ([]netlink.Message, error) {
 	_, err := f.fakeNetlink.execute(kind, flags, body)
 	switch kind {
+	case unix.RTM_GETLINK:
+		return f.linkReplies, err
+	case unix.RTM_GETADDR:
+		return f.addrReplies, err
 	case unix.RTM_GETROUTE:
 		if body[0] == unix.AF_INET6 {
 			return f.routeReplies, err
@@ -417,6 +423,56 @@ func TestSourcedInitialOccupancyRefusesForeignBeforeWrites(t *testing.T) {
 		if sent.kind != unix.RTM_GETRULE && sent.kind != unix.RTM_GETROUTE {
 			t.Fatalf("preflight wrote a kernel object: kind %d", sent.kind)
 		}
+	}
+}
+
+func TestSourcedStartupExcludesExistingTunFromCapacity(t *testing.T) {
+	table := Table{ID: 200, Proto: DefaultProtocol, Sourced: &Sourced{To: namedDestinations(16), ID: 201}}
+	outside := netip.MustParseAddr("2001:db8:aa::1")
+	tunnel := netip.MustParseAddr("2001:db8:bb::1")
+	for _, tc := range []struct {
+		name    string
+		second  bool
+		refusal string
+	}{
+		{name: "one outside source"},
+		{name: "two outside sources", second: true, refusal: "needs 16 destinations and 32 destination-source pairs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &sourcedPreflightReplies{
+				fakeNetlink: &fakeNetlink{},
+				linkReplies: []netlink.Message{
+					linkMessage(2, "lan0", unix.IFF_UP),
+					linkMessage(7, "tun7", unix.IFF_UP),
+				},
+				addrReplies: []netlink.Message{
+					addressMessage(2, outside, outside, 64, 0, false),
+					addressMessage(7, tunnel, tunnel, 64, 0, false),
+				},
+			}
+			if tc.second {
+				other := netip.MustParseAddr("2001:db8:cc::1")
+				conn.linkReplies = append(conn.linkReplies, linkMessage(3, "lan1", unix.IFF_UP))
+				conn.addrReplies = append(conn.addrReplies, addressMessage(3, other, other, 64, 0, false))
+			}
+			err := preflightSourcedOn(conn, table, nil, "tun7")
+			if tc.refusal == "" && err != nil || tc.refusal != "" && (err == nil || !strings.Contains(err.Error(), tc.refusal)) {
+				t.Fatalf("preflight error %v, want %q", err, tc.refusal)
+			}
+			if tc.refusal == "" && len(conn.sent) < 4 {
+				t.Fatalf("accepted preflight did not read occupancy: %+v", conn.sent)
+			}
+			if tc.refusal != "" && len(conn.sent) != 2 {
+				t.Fatalf("capacity refusal did not precede occupancy: %+v", conn.sent)
+			}
+			for _, sent := range conn.sent {
+				switch sent.kind {
+				case unix.RTM_GETLINK, unix.RTM_GETADDR, unix.RTM_GETROUTE, unix.RTM_GETRULE:
+				default:
+					t.Fatalf("preflight wrote kernel object %d", sent.kind)
+				}
+			}
+		})
 	}
 }
 
