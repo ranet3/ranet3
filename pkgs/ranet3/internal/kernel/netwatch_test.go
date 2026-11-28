@@ -9,7 +9,10 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // quietWindow is how long a test waits to be sure the watch signals nothing
@@ -22,8 +25,7 @@ const idleSweep = time.Hour
 // testSweep is the sweep of a watch whose test waits on it
 const testSweep = quietWindow / 2
 
-// burstGap is how far into a settle window a test makes its second change
-// a watch without the window has read the first change well before it
+// burstGap puts the second notification inside the first settle window
 const burstGap = watchSettle / 4
 
 func addrs(list ...string) []netip.Addr {
@@ -131,7 +133,6 @@ func withAddress(address string) NetworkState {
 
 // a notification that leaves the state as it was signals nothing, and one that moves it signals once
 // a change the reader has not taken yet is merged with the next, and one the next undoes goes
-// changes inside one settle window signal once, from before the first to after the last
 func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	first, second, third, fourth := withAddress("192.0.2.1"), withAddress("192.0.2.2"), withAddress("192.0.2.3"), withAddress("192.0.2.4")
 	host := &scriptedHost{state: first}
@@ -207,19 +208,77 @@ func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	lastIs(fourth)
 	delivered()
 	quiet("a change undone before anything took it")
+}
 
-	host.set(second)
-	poke()
-	time.Sleep(burstGap)
-	host.set(third)
-	poke()
-	// the last change records each read before deliver merges it into one still waiting
-	lastIs(third)
-	if _, last := w.State(); !slices.Equal(last.Before.IPv4.Addresses, fourth.IPv4.Addresses) {
-		t.Fatalf("the burst was read in two, the last change starts at %v", last.Before.IPv4.Addresses)
-	}
-	signaled("a burst inside one settle window", fourth, third)
-	quiet("the rest of the burst")
+// two notifications inside one settle window read the final state once and signal one change
+func TestNetworkWatchCoalescesBurstWithinSettleWindow(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		first, second := withAddress("192.0.2.4"), withAddress("192.0.2.2")
+		last := withAddress("192.0.2.3")
+		host := &scriptedHost{state: first}
+		notify := make(chan struct{})
+		w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer w.Close()
+
+		checkWaiting := func(step string) {
+			t.Helper()
+			if reads := host.readCount(); reads != 1 {
+				t.Fatalf("%s: the burst was read before the settle window ended: %d reads, want 1", step, reads)
+			}
+			if current, change := w.State(); !slices.Equal(current.IPv4.Addresses, first.IPv4.Addresses) || !change.At.IsZero() {
+				t.Fatalf("%s: the watch read %v and signaled %+v before settling", step, current.IPv4.Addresses, change)
+			}
+			select {
+			case change := <-w.Changes():
+				t.Fatalf("%s: the watch signaled %+v before settling", step, change)
+			default:
+			}
+		}
+
+		host.set(second)
+		notify <- struct{}{}
+		synctest.Wait()
+		checkWaiting("first notification taken")
+
+		time.Sleep(burstGap)
+		host.set(last)
+		notify <- struct{}{}
+		synctest.Wait()
+		checkWaiting("second notification taken")
+
+		time.Sleep(watchSettle - burstGap - watchSettle/8)
+		checkWaiting("before the settle deadline")
+		time.Sleep(watchSettle / 8)
+		synctest.Wait()
+		if reads := host.readCount(); reads != 2 {
+			t.Fatalf("the burst made %d host reads, want the initial read and one settled read", reads)
+		}
+		if current, change := w.State(); !slices.Equal(current.IPv4.Addresses, last.IPv4.Addresses) ||
+			!slices.Equal(change.Before.IPv4.Addresses, first.IPv4.Addresses) ||
+			!slices.Equal(change.After.IPv4.Addresses, last.IPv4.Addresses) {
+			t.Fatalf("the burst ended at %v, and the last read changed %v to %v, want %v to %v",
+				current.IPv4.Addresses, change.Before.IPv4.Addresses, change.After.IPv4.Addresses,
+				first.IPv4.Addresses, last.IPv4.Addresses)
+		}
+		select {
+		case change := <-w.Changes():
+			if !slices.Equal(change.Before.IPv4.Addresses, first.IPv4.Addresses) ||
+				!slices.Equal(change.After.IPv4.Addresses, last.IPv4.Addresses) {
+				t.Fatalf("the burst signaled %v to %v, want %v to %v", change.Before.IPv4.Addresses, change.After.IPv4.Addresses,
+					first.IPv4.Addresses, last.IPv4.Addresses)
+			}
+		case <-time.After(quietWindow):
+			t.Fatal("the burst signaled nothing")
+		}
+		select {
+		case change := <-w.Changes():
+			t.Fatalf("the rest of the burst signaled %+v", change)
+		case <-time.After(quietWindow):
+		}
+	})(t)
 }
 
 // a link that comes up with no address, a network's length that moves under the same address, and a far end that moves under the same local
